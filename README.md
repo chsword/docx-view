@@ -64,7 +64,7 @@ console.log(reopened.getSnapshot());
 | `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、文字格式、部件列表和修订号 |
 | `setParagraphText(index, text)` | 修改段落文字，支持制表符和换行 |
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
-| `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
+| `deleteParagraph(index)` | 删除段落；若删除会破坏正文/单元格结构则就地清空段落，拒绝隐式删除分节符 |
 | `formatParagraph(index, format)` | 对齐方式和样式 ID；不会自动创建样式定义 |
 | `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
