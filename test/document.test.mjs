@@ -191,7 +191,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 8);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 11);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {

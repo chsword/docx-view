@@ -94,7 +94,11 @@ export class DocxEditor {
   private document: DocxDocument;
   private readonly root: HTMLDivElement;
   private readonly options: DocxEditorOptions;
-  private readonly paragraphs = new Map<number, { element: HTMLParagraphElement; text: string }>();
+  private readonly paragraphs = new Map<number, {
+    element: HTMLParagraphElement;
+    content: HTMLSpanElement;
+    text: string;
+  }>();
   private selected: number | null = null;
   private composing = false;
   private renderAfterComposition = false;
@@ -120,7 +124,7 @@ export class DocxEditor {
     if (this.destroyed) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      const text = this.readText(entry.element);
+      const text = this.readText(entry.content);
       if (text !== entry.text) {
         this.document.setParagraphText(index, text);
         entry.text = text;
@@ -173,6 +177,21 @@ export class DocxEditor {
     return text === '\n' && !element.textContent ? '' : text;
   }
 
+  private twipsToPx(value: number | undefined): number | undefined {
+    return value === undefined ? undefined : value / 15;
+  }
+
+  private focusContent(element: HTMLElement): void {
+    element.focus({ preventScroll: true });
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection) return;
+    const range = this.root.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
@@ -195,56 +214,98 @@ export class DocxEditor {
 
   private makeParagraph(paragraph: ParagraphInfo): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
+    const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
-    element.contentEditable = 'true';
-    element.spellcheck = false;
     element.dataset.paragraph = String(paragraph.index);
-    element.setAttribute('role', 'textbox');
-    element.setAttribute('aria-multiline', 'true');
-    element.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
     applyParagraphStyle(element, paragraph);
     if (paragraph.style) element.dataset.style = paragraph.style;
+    if (paragraph.numbering) {
+      const marker = this.root.ownerDocument.createElement('span');
+      marker.className = 'docx-numbering';
+      marker.contentEditable = 'false';
+      marker.setAttribute('aria-hidden', 'true');
+      marker.textContent = paragraph.numbering.text;
+      marker.dataset.suffix = paragraph.numbering.suffix;
+      if (paragraph.numbering.runFormat?.fontFamily) marker.style.fontFamily = paragraph.numbering.runFormat.fontFamily;
+      if (paragraph.numbering.runFormat?.bold !== undefined) marker.style.fontWeight = paragraph.numbering.runFormat.bold ? '700' : '400';
+      if (paragraph.numbering.runFormat?.italic !== undefined) marker.style.fontStyle = paragraph.numbering.runFormat.italic ? 'italic' : 'normal';
+      if (paragraph.numbering.runFormat?.underline !== undefined) marker.style.textDecoration = paragraph.numbering.runFormat.underline ? 'underline' : 'none';
+      if (paragraph.numbering.runFormat?.fontSize !== undefined) marker.style.fontSize = `${paragraph.numbering.runFormat.fontSize}pt`;
+      if (paragraph.numbering.runFormat?.color && /^[0-9a-f]{6}$/i.test(paragraph.numbering.runFormat.color)) marker.style.color = `#${paragraph.numbering.runFormat.color}`;
+      element.append(marker);
+      const left = this.twipsToPx(paragraph.numbering.indentLeft);
+      const hanging = this.twipsToPx(paragraph.numbering.indentHanging);
+      if (left !== undefined) element.style.marginLeft = `${left}px`;
+      if (hanging !== undefined) element.style.textIndent = `${-hanging}px`;
+      element.dataset.numberingLevel = String(paragraph.numbering.level);
+      element.dataset.numberingFormat = paragraph.numbering.format;
+    }
+    content.className = 'docx-paragraph-content';
+    content.contentEditable = 'true';
+    content.spellcheck = false;
+    content.setAttribute('role', 'textbox');
+    content.setAttribute('aria-multiline', 'true');
+    content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
+    if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    element.addEventListener('mousedown', (event) => {
+      const target = event.target as Node | null;
+      if (target && content.contains(target)) return;
+      event.preventDefault();
+      this.focusContent(content);
+    });
     for (const run of paragraph.runs) {
       const span = this.root.ownerDocument.createElement('span');
       span.textContent = run.text;
       applyRunStyle(span, run);
-      element.append(span);
+      content.append(span);
     }
-    if (!paragraph.runs.length) element.textContent = paragraph.text;
-    this.paragraphs.set(paragraph.index, { element, text: this.readText(element) });
-    element.addEventListener('focus', () => this.selectParagraph(paragraph.index));
-    element.addEventListener('blur', () => { if (!this.composing) this.flush(); });
-    element.addEventListener('compositionstart', () => { this.composing = true; });
-    element.addEventListener('compositionend', () => {
+    if (!paragraph.runs.length) content.textContent = paragraph.text;
+    element.append(content);
+    this.paragraphs.set(paragraph.index, { element, content, text: this.readText(content) });
+    content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
+    content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
+    content.addEventListener('compositionstart', () => { this.composing = true; });
+    content.addEventListener('compositionend', () => {
       this.composing = false;
       if (this.renderAfterComposition) {
         this.renderAfterComposition = false;
         this.render();
-      } else if (this.root.ownerDocument.activeElement !== element) {
+      } else if (this.root.ownerDocument.activeElement !== content) {
         this.flush();
       }
     });
-    element.addEventListener('paste', (event) => {
+    content.addEventListener('paste', (event) => {
       event.preventDefault();
-      this.insertText(element, event.clipboardData?.getData('text/plain') ?? '');
+      this.insertText(content, event.clipboardData?.getData('text/plain') ?? '');
     });
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
-    element.addEventListener('drop', (event) => { event.preventDefault(); });
-    element.addEventListener('keydown', (event) => {
+    content.addEventListener('drop', (event) => { event.preventDefault(); });
+    content.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.isComposing && !this.composing) {
         event.preventDefault();
-        this.insertText(element, '\n');
+        this.insertText(content, '\n');
+      }
+      if (event.key === 'Tab' && !event.isComposing && !this.composing && paragraph.numbering) {
+        this.flush();
+        const current = this.document.getParagraphs().find((item) => item.index === paragraph.index);
+        if (!current?.numbering) return;
+        const nextLevel = current.numbering.level + (event.shiftKey ? -1 : 1);
+        if (nextLevel < 0 || nextLevel > 8) return;
+        event.preventDefault();
+        this.document.setParagraphLevel(paragraph.index, event.shiftKey ? -1 : 1);
+        this.render();
+        this.options.onChange?.(this.document.getSnapshot());
       }
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
       }
     });
-    element.addEventListener('beforeinput', (event) => {
+    content.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
         event.preventDefault();
-        this.insertText(element, '\n');
+        this.insertText(content, '\n');
       }
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
@@ -285,7 +346,7 @@ export class DocxEditor {
     if (!this.root.contains(this.root.ownerDocument.activeElement)) return null;
     const selection = this.root.ownerDocument.getSelection();
     if (!selection?.rangeCount || this.selected === null) return null;
-    const paragraph = this.paragraphs.get(this.selected)?.element;
+    const paragraph = this.paragraphs.get(this.selected)?.content;
     const range = selection.getRangeAt(0);
     if (!paragraph?.contains(range.startContainer) || !paragraph.contains(range.endContainer)) return null;
     const prefix = range.cloneRange();
@@ -296,7 +357,7 @@ export class DocxEditor {
   }
 
   private restoreCaret(caret: { index: number; start: number; end: number }): void {
-    const paragraph = this.paragraphs.get(caret.index)?.element;
+    const paragraph = this.paragraphs.get(caret.index)?.content;
     if (!paragraph) return;
     paragraph.focus({ preventScroll: true });
     const range = this.root.ownerDocument.createRange();

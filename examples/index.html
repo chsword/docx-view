@@ -38,6 +38,12 @@
               <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
               <div class="tool-group"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div>
               <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option><option value="distribute">分散对齐</option></select></div>
+              <div class="tool-group">
+                <button class="tool wide" id="list-bullet" aria-label="项目符号列表" title="项目符号列表">• 列表</button>
+                <button class="tool wide" id="list-decimal" aria-label="编号列表" title="编号列表">1. 列表</button>
+                <button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button>
+                <button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button>
+              </div>
               <div class="tool-group insert-tools"><button id="add-paragraph" class="tool wide">＋ 段落</button><button id="add-table" class="tool wide">⊞ 表格</button></div>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>

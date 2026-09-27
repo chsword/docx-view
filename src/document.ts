@@ -1,8 +1,10 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo, StyleInfo,
+  AgentRequest, DocumentBlock, DocumentSnapshot, NumberingDefinition, NumberingInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo, StyleInfo,
 } from './types.js';
+import type { NumberingModel } from './numbering.js';
+import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
@@ -24,10 +26,20 @@ const MAX_TOTAL = 64 * 1024 * 1024;
 const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
+const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
+const NUMBERING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering';
 const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
 const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
 const THEME_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const encoder = new TextEncoder();
+
+interface NumberingContext {
+  revision: number;
+  mainPath: string;
+  numberingPath?: string;
+  stylesPath?: string;
+  model: NumberingModel;
+}
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -37,6 +49,55 @@ function decodeXml(bytes: Uint8Array): string {
 
 function encodeXml(xml: string): Uint8Array {
   return encoder.encode(xml.replace(/^(<\?xml\b[^?]*\bencoding\s*=\s*)(["'])[^"']*\2/i, '$1"UTF-8"'));
+}
+
+function dirname(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+}
+
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function relsPath(path: string): string {
+  const dir = dirname(path);
+  return `${dir ? `${dir}/` : ''}_rels/${basename(path)}.rels`;
+}
+
+function relativeTarget(fromPath: string, toPath: string): string {
+  const from = dirname(fromPath).split('/').filter(Boolean);
+  const to = toPath.split('/').filter(Boolean);
+  while (from.length && to.length && from[0] === to[0]) {
+    from.shift();
+    to.shift();
+  }
+  return [...from.map(() => '..'), ...to].join('/') || basename(toPath);
+}
+
+function nextRelationshipId(root: Element): string {
+  const used = new Set(children(root, 'Relationship', REL_NS).map((relation) => relation.getAttribute('Id')).filter(Boolean));
+  let index = 1;
+  while (used.has(`rId${index}`)) index++;
+  return `rId${index}`;
+}
+
+function resolveTarget(sourcePart: string, target: string): string {
+  const decoded = decodeURIComponent(target).replace(/^\//, '');
+  if (!decoded) throw new Error('Invalid relationship target.');
+  if (!target.startsWith('/')) {
+    const base = dirname(sourcePart).split('/').filter(Boolean);
+    for (const segment of decoded.split('/')) {
+      if (!segment || segment === '.') continue;
+      if (segment === '..') base.pop();
+      else base.push(segment);
+    }
+    const path = base.join('/');
+    validatePath(path);
+    return path;
+  }
+  validatePath(decoded);
+  return decoded;
 }
 
 function bodyOf(document: Document): Element {
@@ -73,6 +134,16 @@ function textElements(element: Element): Element[] {
     }
   }
   walk(element);
+  return result;
+}
+
+function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    if (name === 'ilvl') parent.insertBefore(result, children(parent, 'numId')[0] ?? null);
+    else parent.appendChild(result);
+  }
   return result;
 }
 
@@ -194,45 +265,6 @@ function ownRuns(paragraph: Element): Element[] {
   });
 }
 
-function dirname(path: string): string {
-  const slash = path.lastIndexOf('/');
-  return slash === -1 ? '' : path.slice(0, slash);
-}
-
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1);
-}
-
-function relsPath(path: string): string {
-  const dir = dirname(path);
-  return `${dir ? `${dir}/` : ''}_rels/${basename(path)}.rels`;
-}
-
-function nextRelationshipId(root: Element): string {
-  const used = new Set(children(root, 'Relationship', REL_NS).map((relation) => relation.getAttribute('Id')).filter(Boolean));
-  let index = 1;
-  while (used.has(`rId${index}`)) index++;
-  return `rId${index}`;
-}
-
-function resolveTarget(sourcePart: string, target: string): string {
-  const decoded = decodeURIComponent(target).replace(/^\//, '');
-  if (!decoded) throw new Error('Invalid relationship target.');
-  if (!target.startsWith('/')) {
-    const base = dirname(sourcePart).split('/').filter(Boolean);
-    for (const segment of decoded.split('/')) {
-      if (!segment || segment === '.') continue;
-      if (segment === '..') base.pop();
-      else base.push(segment);
-    }
-    const path = base.join('/');
-    validatePath(path);
-    return path;
-  }
-  validatePath(decoded);
-  return decoded;
-}
-
 function readRun(run: Element, index: number, styles: StylesContext, paragraph: Element): RunInfo {
   const direct = readRunProperties(children(run, 'rPr')[0], styles.theme);
   return {
@@ -243,7 +275,7 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
   };
 }
 
-function readParagraph(paragraph: Element, index: number, styles: StylesContext): ParagraphInfo {
+function readParagraph(paragraph: Element, index: number, styles: StylesContext, numbering?: NumberingInfo): ParagraphInfo {
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
   return {
     index,
@@ -251,6 +283,7 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext)
     ...direct,
     runs: ownRuns(paragraph).map((run, runIndex) => readRun(run, runIndex, styles, paragraph)),
     effective: computeEffectiveParagraphFormat(styles, paragraph),
+    numbering,
   };
 }
 
@@ -431,6 +464,102 @@ function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: stri
   }
 }
 
+function setWordAttr(element: Element, name: string, value: string | number): void {
+  element.setAttributeNS(WORD_NS, `w:${name}`, String(value));
+}
+
+function appendWordValueElement(parent: Element, name: string, value?: string | number): Element {
+  const element = wordElement(parent.ownerDocument!, name);
+  if (value !== undefined) setWordValue(element, String(value));
+  parent.appendChild(element);
+  return element;
+}
+
+function defaultNumberingDefinition(kind: 'bullet' | 'decimal' | 'multilevel'): Omit<NumberingDefinition, 'numId' | 'abstractNumId'> {
+  const makeLevel = (level: number, format: string, text: string, fontFamily?: string): NumberingDefinition['levels'][number] => ({
+    level,
+    start: 1,
+    format,
+    text,
+    suffix: 'tab',
+    justification: level === 0 ? 'left' : undefined,
+    indentLeft: 720 * (level + 1),
+    indentHanging: 360,
+    runFormat: fontFamily ? { fontFamily } : undefined,
+  });
+  if (kind === 'bullet') {
+    return {
+      multiLevelType: 'hybridMultilevel',
+      levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'bullet', level === 0 ? '•' : level % 2 ? '◦' : '▪', 'Symbol')),
+    };
+  }
+  if (kind === 'decimal') {
+    return {
+      multiLevelType: 'multilevel',
+      levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'decimal', `%${level + 1}.`)),
+    };
+  }
+  return {
+    multiLevelType: 'multilevel',
+    levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'decimal', Array.from({ length: level + 1 }, (_, index) => `%${index + 1}`).join('.') + '.')),
+  };
+}
+
+function appendRunProperties(parent: Element, format: RunFormat | undefined): void {
+  if (!format) return;
+  const props = wordElement(parent.ownerDocument!, 'rPr');
+  if (format.fontFamily) {
+    const fonts = wordElement(parent.ownerDocument!, 'rFonts');
+    for (const name of ['ascii', 'hAnsi', 'eastAsia', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
+    props.appendChild(fonts);
+  }
+  if (format.bold !== undefined) setWordValue(appendWordValueElement(props, 'b'), format.bold ? '1' : '0');
+  if (format.italic !== undefined) setWordValue(appendWordValueElement(props, 'i'), format.italic ? '1' : '0');
+  if (format.color) appendWordValueElement(props, 'color', format.color);
+  if (format.fontSize !== undefined && format.fontSize !== null) {
+    appendWordValueElement(props, 'sz', format.fontSize * 2);
+    appendWordValueElement(props, 'szCs', format.fontSize * 2);
+  }
+  if (format.underline !== undefined) appendWordValueElement(props, 'u', format.underline ? 'single' : 'none');
+  if (props.childNodes.length) parent.appendChild(props);
+}
+
+function buildLevelElement(document: Document, definition: NumberingDefinition['levels'][number]): Element {
+  const level = wordElement(document, 'lvl');
+  setWordAttr(level, 'ilvl', definition.level);
+  appendWordValueElement(level, 'start', definition.start ?? 1);
+  appendWordValueElement(level, 'numFmt', definition.format);
+  if (definition.restart !== undefined) appendWordValueElement(level, 'lvlRestart', definition.restart);
+  if (definition.paragraphStyle) appendWordValueElement(level, 'pStyle', definition.paragraphStyle);
+  if (definition.isLegal) appendWordValueElement(level, 'isLgl');
+  appendWordValueElement(level, 'suff', definition.suffix);
+  appendWordValueElement(level, 'lvlText', definition.text);
+  if (definition.justification) appendWordValueElement(level, 'lvlJc', definition.justification);
+  if (definition.indentLeft !== undefined || definition.indentHanging !== undefined) {
+    const props = wordElement(document, 'pPr');
+    const ind = wordElement(document, 'ind');
+    if (definition.indentLeft !== undefined) setWordAttr(ind, 'left', definition.indentLeft);
+    if (definition.indentHanging !== undefined) setWordAttr(ind, 'hanging', definition.indentHanging);
+    props.appendChild(ind);
+    level.appendChild(props);
+  }
+  appendRunProperties(level, definition.runFormat);
+  return level;
+}
+
+function insertNumberingNode(root: Element, node: Element): void {
+  const childrenInRoot = children(root);
+  if (node.localName === 'abstractNum') {
+    root.insertBefore(node, childrenInRoot.find(child => ['num', 'numIdMacAtCleanup'].includes(child.localName ?? '')) ?? null);
+    return;
+  }
+  if (node.localName === 'num') {
+    root.insertBefore(node, childrenInRoot.find(child => child.localName === 'numIdMacAtCleanup') ?? null);
+    return;
+  }
+  root.appendChild(node);
+}
+
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -463,6 +592,7 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -602,7 +732,12 @@ export class DocxDocument {
           if (relation.getAttribute('Type') === type && relation.getAttribute('TargetMode') !== 'External') {
             const target = relation.getAttribute('Target');
             if (!target) continue;
-            const path = resolveTarget(this.mainPath, target);
+            let path: string;
+            try {
+              path = resolveTarget(this.mainPath, target);
+            } catch {
+              continue;
+            }
             if (this.parts.has(path)) return path;
           }
         }
@@ -611,9 +746,23 @@ export class DocxDocument {
     return fallback && this.parts.has(fallback) ? fallback : undefined;
   }
 
+  private getNumberingPath(): string | undefined {
+    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}numbering.xml`;
+    return this.getRelatedPartPath(NUMBERING_REL, this.parts.has(conventional)
+      ? conventional
+      : this.parts.has('word/numbering.xml') ? 'word/numbering.xml' : undefined);
+  }
+
+  private getStylesPath(): string | undefined {
+    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}styles.xml`;
+    return this.getRelatedPartPath(STYLES_REL, this.parts.has(conventional)
+      ? conventional
+      : this.parts.has('word/styles.xml') ? 'word/styles.xml' : undefined);
+  }
+
   private getStylesContext(): StylesContext {
     if (this.stylesCache?.revision === this.revision) return this.stylesCache.context;
-    const stylesPath = this.getRelatedPartPath(STYLES_REL, 'word/styles.xml');
+    const stylesPath = this.getStylesPath();
     const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
     let stylesRoot: Element | undefined;
     let themeRoot: Element | undefined;
@@ -624,8 +773,33 @@ export class DocxDocument {
     return context;
   }
 
-  private buildParagraphs(document = this.getPartDocument(this.mainPath), styles = this.getStylesContext()): ParagraphInfo[] {
-    return descendants(bodyOf(document), 'p').map((paragraph, index) => readParagraph(paragraph, index, styles));
+  private getNumberingContext(): NumberingContext {
+    if (this.numberingContextCache?.revision === this.revision && this.numberingContextCache.mainPath === this.mainPath) {
+      return this.numberingContextCache;
+    }
+    const numberingPath = this.getNumberingPath();
+    const stylesPath = this.getStylesPath();
+    const numbering = numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined;
+    const styles = stylesPath && this.parts.has(stylesPath) ? this.getPartDocument(stylesPath) : undefined;
+    const context = {
+      revision: this.revision,
+      mainPath: this.mainPath,
+      numberingPath,
+      stylesPath,
+      model: parseNumberingModel(numbering, styles),
+    };
+    this.numberingContextCache = context;
+    return context;
+  }
+
+  private buildParagraphs(
+    document = this.getPartDocument(this.mainPath),
+    styles = this.getStylesContext(),
+    numbering = this.getNumberingContext(),
+  ): ParagraphInfo[] {
+    const elements = descendants(bodyOf(document), 'p');
+    const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
+    return elements.map((paragraph, index) => readParagraph(paragraph, index, styles, numberingByParagraph.get(paragraph)));
   }
 
   private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
@@ -659,7 +833,8 @@ export class DocxDocument {
   getSnapshot(): DocumentSnapshot {
     const document = this.getPartDocument(this.mainPath);
     const stylesContext = this.getStylesContext();
-    const paragraphs = this.buildParagraphs(document, stylesContext);
+    const numberingContext = this.getNumberingContext();
+    const paragraphs = this.buildParagraphs(document, stylesContext, numberingContext);
     return {
       revision: this.revision,
       paragraphs,
@@ -667,6 +842,10 @@ export class DocxDocument {
       parts: this.listParts(),
       styles: stylesContext.styles.map(cloneStyleInfo),
     };
+  }
+
+  getNumberingDefinitions(): NumberingDefinition[] {
+    return this.getNumberingContext().model.definitions;
   }
 
   getStyles(): StyleInfo[] {
@@ -691,6 +870,109 @@ export class DocxDocument {
     const runElement = ownRuns(paragraphElement)[run];
     if (!runElement) throw new Error(`Run ${run} does not exist.`);
     return computeEffectiveRunFormat(this.getStylesContext(), paragraphElement, runElement);
+  }
+
+  setParagraphNumbering(index: number, numId: number, level = 0): void {
+    assertIndex(numId);
+    assertIndex(level);
+    if (numId < 1) throw new Error('numId must be at least 1. Use clearParagraphNumbering() to remove numbering.');
+    if (level > 8) throw new Error('level must be between 0 and 8.');
+    this.updatePartXml(this.mainPath, document => {
+      const props = properties(paragraphAt(document, index), 'pPr');
+      const numPr = property(props, 'numPr');
+      setWordValue(numberingProperty(numPr, 'ilvl'), String(level));
+      setWordValue(numberingProperty(numPr, 'numId'), String(numId));
+    });
+  }
+
+  clearParagraphNumbering(index: number): void {
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    const styleHasNumbering = paragraph.style ? this.getNumberingContext().model.paragraphStyles.has(paragraph.style) : false;
+    this.updatePartXml(this.mainPath, document => {
+      const props = properties(paragraphAt(document, index), 'pPr');
+      const existing = children(props, 'numPr')[0];
+      if (existing) props.removeChild(existing);
+      if (styleHasNumbering) {
+        const numPr = property(props, 'numPr');
+        setWordValue(numberingProperty(numPr, 'numId'), '0');
+        const ilvl = children(numPr, 'ilvl')[0];
+        if (ilvl) numPr.removeChild(ilvl);
+      }
+    });
+  }
+
+  setParagraphLevel(index: number, delta: number): void {
+    if (!Number.isSafeInteger(delta)) throw new Error('delta must be a safe integer.');
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    if (!paragraph.numbering) throw new Error('Paragraph does not have numbering.');
+    this.setParagraphNumbering(index, paragraph.numbering.numId, Math.max(0, Math.min(8, paragraph.numbering.level + delta)));
+  }
+
+  createNumbering(kind: 'bullet' | 'decimal' | 'multilevel' | NumberingDefinition): number {
+    const definition = typeof kind === 'string' ? defaultNumberingDefinition(kind) : kind;
+    const levels = [...(definition.levels.length ? definition.levels : defaultNumberingDefinition('decimal').levels)];
+    const seenLevels = new Set<number>();
+    for (const level of levels) {
+      if (!Number.isSafeInteger(level.level) || level.level < 0 || level.level > 8) {
+        throw new Error('Numbering levels must be integers between 0 and 8.');
+      }
+      if (seenLevels.has(level.level)) throw new Error('Numbering definition contains duplicate levels.');
+      seenLevels.add(level.level);
+    }
+    const next = new Map(this.parts);
+    const types = this.getPartDocument('[Content_Types].xml');
+    const relationsPath = relsPath(this.mainPath);
+    const rels = next.has(relationsPath)
+      ? this.getPartDocument(relationsPath)
+      : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    let numberingPath = this.getNumberingPath();
+    if (!numberingPath) {
+      numberingPath = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}numbering.xml`;
+      const relationship = rels.createElementNS(REL_NS, 'Relationship');
+      relationship.setAttribute('Id', nextRelationshipId(rels.documentElement!));
+      relationship.setAttribute('Type', NUMBERING_REL);
+      relationship.setAttribute('Target', relativeTarget(this.mainPath, numberingPath));
+      rels.documentElement!.appendChild(relationship);
+    }
+    const numberingDocument = next.has(numberingPath)
+      ? this.getPartDocument(numberingPath)
+      : parseXml(`<w:numbering xmlns:w="${WORD_NS}"/>`);
+    const numberingRoot = numberingDocument.documentElement!;
+    const existingAbstractIds = children(numberingRoot, 'abstractNum')
+      .map(element => Number(element.getAttributeNS(WORD_NS, 'abstractNumId')))
+      .filter(Number.isFinite);
+    const existingNumIds = children(numberingRoot, 'num')
+      .map(element => Number(element.getAttributeNS(WORD_NS, 'numId')))
+      .filter(Number.isFinite);
+    const abstractNumId = (existingAbstractIds.length ? Math.max(...existingAbstractIds) : 0) + 1;
+    const numId = (existingNumIds.length ? Math.max(...existingNumIds) : 0) + 1;
+    const abstract = wordElement(numberingDocument, 'abstractNum');
+    setWordAttr(abstract, 'abstractNumId', abstractNumId);
+    if (definition.nsid) appendWordValueElement(abstract, 'nsid', definition.nsid);
+    if (definition.multiLevelType) appendWordValueElement(abstract, 'multiLevelType', definition.multiLevelType);
+    if (definition.tmpl) appendWordValueElement(abstract, 'tmpl', definition.tmpl);
+    if (definition.styleLink) appendWordValueElement(abstract, 'styleLink', definition.styleLink);
+    if (definition.numStyleLink) appendWordValueElement(abstract, 'numStyleLink', definition.numStyleLink);
+    for (const level of levels.sort((a, b) => a.level - b.level)) abstract.appendChild(buildLevelElement(numberingDocument, level));
+    insertNumberingNode(numberingRoot, abstract);
+    const num = wordElement(numberingDocument, 'num');
+    setWordAttr(num, 'numId', numId);
+    appendWordValueElement(num, 'abstractNumId', abstractNumId);
+    insertNumberingNode(numberingRoot, num);
+    const typesRoot = types.documentElement!;
+    if (!children(typesRoot, 'Override', CONTENT_TYPES_NS).some(override => override.getAttribute('PartName') === `/${numberingPath}`)) {
+      const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+      override.setAttribute('PartName', `/${numberingPath}`);
+      override.setAttribute('ContentType', NUMBERING_TYPE);
+      typesRoot.appendChild(override);
+    }
+    next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+    next.set(relationsPath, encodeXml(serializeXml(rels)));
+    next.set(numberingPath, encodeXml(serializeXml(numberingDocument)));
+    this.commitParts(next);
+    return numId;
   }
 
   setParagraphText(index: number, text: string): void {
@@ -781,7 +1063,7 @@ export class DocxDocument {
       rejectNullFormatValues(style.run, 'style.run');
     }
     const draft = new DocxDocument(new Map([...this.parts].map(([path, bytes]) => [path, Uint8Array.from(bytes)])));
-    const stylesPath = draft.getRelatedPartPath(STYLES_REL, 'word/styles.xml') ?? (() => {
+    const stylesPath = draft.getStylesPath() ?? (() => {
       const path = `${dirname(draft.mainPath) ? `${dirname(draft.mainPath)}/` : ''}styles.xml`;
       const relsDocument = draft.parts.has(relsPath(draft.mainPath))
         ? draft.getPartDocument(relsPath(draft.mainPath))
@@ -902,6 +1184,9 @@ export class DocxDocument {
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
         case 'formatParagraph': draft.formatParagraph(operation.index, operation.format); break;
+        case 'setParagraphNumbering': draft.setParagraphNumbering(operation.index, operation.numId, operation.level); break;
+        case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
+        case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;

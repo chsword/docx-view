@@ -1,11 +1,33 @@
 import { DocxDocument, DocxEditor } from '../src/index.js';
 import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
+import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) throw new Error(`找不到界面元素：${id}`);
   return node as T;
+}
+
+const recentNumbering = new Map<'bullet' | 'decimal', number>();
+
+function applyNumbering(kind: 'bullet' | 'decimal'): void {
+  const index = selectedIndex();
+  const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
+  const numId = findReusableNumberingId(doc.getParagraphs(), doc.getNumberingDefinitions(), kind, index, recentNumbering.get(kind)) ?? doc.createNumbering(kind);
+  doc.setParagraphNumbering(index, numId, paragraph.numbering?.level ?? 0);
+  recentNumbering.set(kind, numId);
+  editor.render();
+  refresh();
+  message(kind === 'bullet' ? '已应用项目符号列表。' : '已应用编号列表。');
+}
+
+function changeNumberingLevel(delta: number): void {
+  const index = selectedIndex();
+  doc.setParagraphLevel(index, delta);
+  editor.render();
+  refresh();
+  message(delta > 0 ? '已提高列表级别。' : '已降低列表级别。');
 }
 
 let doc = createSample();
@@ -36,6 +58,16 @@ function createSample(): DocxDocument {
   sample.formatParagraph(4, { style: 'BodyText' }, { validateStyle: true });
   sample.insertParagraph('02  从一个小计划开始');
   sample.formatParagraph(5, { style: 'Heading1' }, { validateStyle: true });
+  const bullet = sample.createNumbering('bullet');
+  sample.insertParagraph('梳理文档结构与保留策略');
+  sample.setParagraphNumbering(6, bullet);
+  sample.insertParagraph('验证浏览器内可视化编辑体验');
+  sample.setParagraphNumbering(7, bullet);
+  const decimal = sample.createNumbering('multilevel');
+  sample.insertParagraph('第一阶段：实现编号与项目符号');
+  sample.setParagraphNumbering(8, decimal, 0);
+  sample.insertParagraph('解析 numbering.xml 与多级编号');
+  sample.setParagraphNumbering(9, decimal, 1);
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
@@ -98,7 +130,16 @@ function updateSelection(): void {
   const color = element<HTMLInputElement>('font-color');
   const style = element<HTMLSelectElement>('paragraph-style');
   const alignment = element<HTMLSelectElement>('alignment');
+  const bullet = element<HTMLButtonElement>('list-bullet');
+  const decimal = element<HTMLButtonElement>('list-decimal');
+  const indent = element<HTMLButtonElement>('list-indent');
+  const outdent = element<HTMLButtonElement>('list-outdent');
   size.disabled = color.disabled = style.disabled = alignment.disabled = !paragraph;
+  bullet.disabled = decimal.disabled = !paragraph;
+  indent.disabled = !paragraph?.numbering || paragraph.numbering.level >= 8;
+  outdent.disabled = !paragraph?.numbering || paragraph.numbering.level <= 0;
+  bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
+  decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
   const firstRun = paragraph?.runs[0];
   const effectiveRun = firstRun?.effective ?? firstRun;
   size.value = effectiveRun?.fontSize ? String(effectiveRun.fontSize) : '';
@@ -163,6 +204,7 @@ function setDocument(next: DocxDocument, name: string): void {
   editor.flush();
   editor.setDocument(next);
   doc = next;
+  recentNumbering.clear();
   filename = name;
   element('document-name').textContent = filename;
   refresh();
@@ -195,6 +237,10 @@ element<HTMLSelectElement>('alignment').addEventListener('change', (event) => {
     message('已更新段落对齐方式。');
   });
 });
+element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
+element('list-decimal').addEventListener('click', () => run(() => applyNumbering('decimal')));
+element('list-indent').addEventListener('click', () => run(() => changeNumberingLevel(1)));
+element('list-outdent').addEventListener('click', () => run(() => changeNumberingLevel(-1)));
 element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event) => {
   const style = (event.target as HTMLSelectElement).value;
   if (!style) return;
@@ -205,6 +251,10 @@ element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event)
     message(`已应用段落样式 ${style}。`);
   });
 });
+element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
+element('list-decimal').addEventListener('click', () => run(() => applyNumbering('decimal')));
+element('list-indent').addEventListener('click', () => run(() => changeNumberingLevel(1)));
+element('list-outdent').addEventListener('click', () => run(() => changeNumberingLevel(-1)));
 element('add-paragraph').addEventListener('click', () => run(() => {
   editor.flush();
   doc.insertParagraph('在这里写下新的想法。');
