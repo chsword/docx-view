@@ -6,13 +6,14 @@ export const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationsh
 export const CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
 export const OFFICE_DOCUMENT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
 const TRANSPARENT_WORD_WRAPPERS = new Set(['sdt', 'sdtContent', 'customXml']);
+export const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 export function parseXml(xml: string): Document {
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
     throw new Error('DTD and entity declarations are not supported.');
   }
   return new DOMParser({
-    onError: (level, message) => { throw new Error(`Invalid XML (${level}): ${message}`); },
+    onError: (level: string, message: string) => { throw new Error(`Invalid XML (${level}): ${message}`); },
   }).parseFromString(xml, 'application/xml');
 }
 

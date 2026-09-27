@@ -1,0 +1,165 @@
+# docx-view 工程约定
+
+这份约定来自对 12 个 PR（#7–#10、#19–#22、#23–#26）的逐条 review。下面每条规则都对应真实发生过、而且**在多个 PR 里重复发生**的缺陷。开工前读一遍，能省掉一整轮返工。
+
+规则按「踩坑代价」排序，不按代码结构排序。
+
+---
+
+## 1. 部件路径必须从关系解析，不能硬编码
+
+**重复了 5 次**：#8（`numbering.xml`）、#10（`media/*`）、#24（`footnotes.xml`）、#7（`styles.xml`），以及 #10 合并进 `main` 时再次回归（畸形 `Target` 让 `getParagraphs()` 抛错）。
+
+`word/numbering.xml`、`word/footnotes.xml`、`word/media/image1.png` 这些名字只是**惯例**，不是规范。真实文档里关系的 `Target` 可以是任何相对路径（`fn.xml`、`sub/numbering.xml`、带 URL 编码的名字）。
+
+- 通过所在部件的 `.rels` 解析 `r:id` → 真实部件路径。
+- **每个部件有自己的 `.rels`**：主文档是 `word/_rels/document.xml.rels`，页眉是 `word/_rels/header1.xml.rels`，脚注是 `word/_rels/footnotes.xml.rels`。所以解析函数必须接受「源部件路径」参数，不能写死主文档。
+- `Target` 畸形（`..`、`sub\x.xml`、`num%bering.xml`、绝对路径）时**降级**，不要让 `getParagraphs()` / `getSnapshot()` 抛错——#8 最初就是这样让整个文档打不开的。
+- 新建部件前先查有没有既存关系，否则会出现两条同类型关系，Word 直接拒绝（#24 实际发生）。
+
+## 2. 在 run 的真实父节点上插入，不是段落上
+
+**重复了 3 次**：#10（`insertImage`）、#24（`insertFootnote`）、#25（`insertHyperlink`）。
+
+典型错误：
+
+```ts
+const runs = ownRuns(paragraph);          // descendants，可能来自 w:hyperlink / w:ins / w:sdtContent
+paragraph.insertBefore(newRun, runs[i]);  // ✗ DOMException: child not in parent
+```
+
+`ownRuns()` / `descendants()` 返回的 run 可能嵌在 `w:hyperlink`、`w:ins`、`w:del`、`w:sdtContent`、`w:smartTag` 里。插入时用 `runs[i].parentNode.insertBefore(...)`，并且要想清楚新节点应该在包裹元素**内**还是**外**（给已有超链接的文字加脚注：引用应该在链接外；给链接文字改格式：在链接内）。
+
+## 3. OOXML 子元素顺序是强约束，用 `PROPERTY_ORDER` / `property()`
+
+**违反 4 次**（#7 `defineStyle`、#9 `tblPr`/`tcPr`、#24 `footnotePr`/`pos`、#10 `wp:anchor` 必需属性），**正确 2 次**（#23 `sectPr`、#26 `pPr`）。
+
+`CT_PPr`、`CT_RPr`、`CT_TblPr`、`CT_TcPr`、`CT_SectPr`、`CT_Style`、`CT_Settings`、`CT_FtnProps` 全是 XSD `sequence`。顺序错了 Word 报「无法读取的内容」，用户看到的是文件损坏提示。
+
+- 仓库里已有 `PROPERTY_ORDER` + `property()` 机制专门解决这个问题。**新增字段补进对应的顺序表**，不要 `appendChild`。
+- 新增一类属性容器（如 `sectPr`、`tblPr`）时，为它建一张顺序表，照 `PROPERTY_ORDER` 的形状写。
+- DrawingML 侧还有 `use="required"` 的属性（`wp:anchor` 的 `locked`、`layoutInCell`、`behindDoc`、`relativeHeight`、`allowOverlap`，`a:CT_Point2D` 的 `x`/`y`）。缺一个就是修复提示。
+- 自测方式：把生成的容器子元素名抽出来，和规范 sequence 求一次「是否升序」，比肉眼看可靠。
+
+## 4. 界面装饰元素绝不能流回文档
+
+**重复了 3 次**：#8（编号标记，已修）、#24（脚注引用 `<sup>`）、#26（制表位前导符）。
+
+编号、项目符号、脚注标记、制表位前导符、编辑标记（`¶` `→` `·`）都是**渲染产物**，不是文档内容。一旦它们进了 contenteditable 的可读文本，`readText()` → `flush()` → `setParagraphText()` 会把它们当字面文本写进 DOCX，而且**每编辑一次叠加一次**（#24 实测 `body` → `ody1` → `ody11`）。
+
+统一做法（PR #8 已落地，照搬，不要另写）：
+
+- 装饰节点带 `contentEditable="false"`、`data-docx-mark`、CSS `user-select: none; pointer-events: none`；
+- `readText()` 显式跳过 `dataset.image` / `data-docx-mark` / `contentEditable === 'false'` 的节点；
+- 回归测试断言：装饰开关切换前后 `getParagraphs()[i].text` 不变。
+
+## 5. 读出来的格式对象必须能原样写回
+
+**#26 一个 PR 里三处**（`borders.shadow`、`shading.color`、`tabs.leader`）。
+
+根因：读侧无条件写 `shadow: undefined`，校验侧用 `'shadow' in value` 判存在——`undefined` 也算存在，于是校验拒绝自己刚产出的对象：
+
+```ts
+d.setParagraphBorders(0, d.getParagraphs()[0].borders);  // ✗ border.shadow must be boolean
+```
+
+「读出来 → 改一个字段 → 写回去」是格式工具栏、格式刷、Agent 批量改格式的基本模式。二选一并贯彻到所有读函数：
+
+- 读侧用条件展开，不产出 `undefined` 键；或
+- 校验侧统一用 `value.x !== undefined`。
+
+每类格式对象都要有一条**往返测试**：`set(read())` 不抛错且结果等价。这一条测试能兜住以后新增的所有字段。
+
+## 6. 读路径才是安全闸门
+
+**#25 的安全缺陷**：写路径把 `javascript:` / `data:` / `vbscript:` / `file:` 拦得很干净，但 `isUnsafeHyperlink` 一看到 `w:anchor` 有值就返回 `false`，不检查 `r:id` 解析出的 target。构造一个带恶意 `Target` 的 `.docx` 完全不需要经过写路径。
+
+威胁模型是「**文档内容是不可信输入**」，用户不会用你的 API 攻击自己：
+
+- 安全判定放在**读路径**，以最终解析出的 target 为依据，与其他字段是否存在无关；
+- 渲染前再判一次，`unsafe` 的不生成 `href` / 不加载 / 不执行；
+- 外部关系目标（`TargetMode="External"`、`a:blip@r:link`）**不主动请求**，渲染占位；
+- 测试必须**直接构造恶意 XML / rels**，写路径的测试不能替代。
+
+## 7. 一个事务一次提交、一次 revision
+
+**违反 4 次**：#9（`insertTable` 每个单元格提交一次，40×10 耗时 11.9 秒、revision +401）、#10（VML 图片上 no-op 仍 +2）、#24（`ensureNotePart` 在前置检查之前就提交了部件和关系，失败后留下垃圾）、#25（`insertHyperlink` 一次 +3，失败仍留下孤儿关系）。
+
+- 公开方法内部无论做多少步，**只提交一次、revision 只 +1**；
+- **所有前置检查做完再提交**，不要「先建部件再校验」——失败必须让文档和 revision 完全不变；
+- 真正的 no-op 不要推进 revision（推进了就是骗调用方缓存失效）；
+- `applyOperations` 的「全成功或全回滚」语义不能被子步骤的提交打破。
+
+## 8. 不要在每次读取时重新解析部件
+
+**重复 5 次**：#7（有效格式按 run 重算、`styles.xml` 解析三遍）、#8（每次读重新解析 numbering + styles + rels）、#10（渲染 O(images²)）、#26（`getSettings()` 每段落一次）、#19（读路径完全没缓存，`getParagraphs()` 每次 47ms）。
+
+编辑器在每次变更后都 `render()`，每次 `blur` 都 `flush()`。「一次读取解析一个部件」在这种调用频率下直接变成卡顿。
+
+- 解析结果按部件缓存，**失效键包含 `revision` 和该部件字节**；
+- 缓存后要有一条测试断言「改了字节之后读到的是新值」（#10 的 dataUrl 缓存就差这条）；
+- 公开的 `getPartDocument()` 承诺返回**分离的 DOM**，所以它要返回缓存的深拷贝，不能把内部 DOM 暴露出去。
+
+## 9. `w:val="0"` 是显式关闭，缺失才是未设置
+
+`w:b`、`w:i`、`w:u` 这类 toggle 属性，`w:val="0"` / `"false"` 表示**显式关闭**，会覆盖样式链上继承来的 `true`；元素缺失才表示「未设置、继续继承」。把两者混为一谈是样式解析最常见的错（#7 专门测过这条）。
+
+## 10. 段落索引只有一套命名空间
+
+**#24**（脚注正文段落报 `index: 2`，与正文 `p2` 撞号，Agent 改错段落）、**#23**（`collectSections` 自己数段落、跳过 `w:txbxContent`，导致 `endParagraph` 偏移、`insertSectionBreak` 对合法段落抛错）。
+
+- 正文段落索引的唯一来源是 `descendants(body, 'p')` 的顺序，**不要另起一套遍历**；
+- 页眉、页脚、脚注、尾注、文本框里的段落**不复用**正文索引命名空间，用独立寻址（或干脆不暴露 index），并在 README 写明。
+
+## 11. 透明包裹元素要穿透
+
+`w:sdt` / `w:sdtContent` / `w:customXml` 可以包在 block、`w:tr`、`w:tc`、run 任何一级上，模板类文档里非常常见。判定「直接父节点是不是 `w:body` / `w:tc`」的代码遇到它们一律失效（#16/#20 的段落被删空、#17/#21 的表格行不可见）。
+
+- 用统一的 `isTransparentWordWrapper()` / `childrenThroughTransparent()`，不要每处写一套；
+- 判断结构不变量时向上找**最近的非透明祖先**，不看直接父节点。
+
+## 12. 破坏结构不变量时就地清空，不要抛错
+
+`deleteParagraph` 的既有语义（README 也这么写）是「**保留**正文 / 单元格必要的空段落」——删掉内容、留下空 `w:p`，不是拒绝操作。#20 把 body 一侧改成抛错，结果：与 README 矛盾、破坏既有 API、而且对 `applyOperations` 是实质破坏（一个「清空最后一段」的操作会让整批回滚，模型无法预判）。
+
+抛错只留给真正无法修复的情况：非法索引、以及既有的「拒绝隐式删除分节符」。
+
+## 13. Schema 和运行时校验必须一致
+
+#8（schema 允许 `numId: 0`，运行时拒绝）、#26（border 的 `required: []` 与运行时要求 style/size/space/color 矛盾，且段落侧和 run 侧两套形状不一致）。
+
+`AGENT_OPERATION_SCHEMA` 是给模型看的契约。schema 放过而运行时拒绝，意味着一个「合法」的工具调用会在批次中途触发整批回滚，模型没有任何办法预判。新增 Agent 操作时，schema 和校验函数一起改，并加一条「schema 合法的输入运行时必接受」的测试。
+
+## 14. 测试不要写成「恰好能过的形状」
+
+真实发生过的盲区：
+
+- #9 的单元格测试**全都没有 `w:tcPr`**，于是「替换段落插到 `tcPr` 之前」没被发现（带 `tcPr` 的单元格才是常态）；
+- #10 的多图测试用了**两张图共用一个 `rId`**，恰好是唯一能过的形状，不同 rId 立刻抛错；
+- #7 的测试和实现犯了**同一个拼写错误**（`firstCol` vs 规范的 `firstColumn`），互相掩盖；
+- #24 的 `convertNote` 测试用小写 `/footnoteRef/` grep，漏掉了残留的 `rStyle`。
+
+写测试时问一句：**这个用例是不是恰好避开了实现的薄弱处？** 至少覆盖带完整可选属性的形状、多实例且标识不同的形状、以及规范里的精确拼写。
+
+## 15. rebase 时要重新实现，不是文本上解冲突
+
+阶段 1 四个 PR 合并的实测教训：
+
+- **在地基 PR 之前分叉的分支，会自带一份同名函数的旧副本。** PR #10 早于 #7 分叉，于是它有自己的 `readRun` / `readParagraph`，里面是一份旧的 run 属性解析器。正确做法是**丢掉自己那份、保留 `main` 的实现，只把自己的新能力缝进去**（#10 最终只需给 `readRun` 加一个 `paragraphIndex` 和可选的图片上下文）。两份都留会得到两条行为不一致的读路径。
+- **不要留下平行的读路径。** #10 原本有 `paragraphsWithRelationships()`，`main` 有 `buildParagraphs()`，两者都能产出 `ParagraphInfo`。合并时把前者收敛成后者的代理，否则同一份数据有两种读法，缓存和新字段只会落在其中一条上。
+- **冲突边界经常落在函数体中间**，两侧结尾都缺一个闭合括号，而共享后缀只能闭合其中一侧。机械拼接会得到 `'}' expected`。拼接前先看冲突之后的第一行是什么。
+- **集成完成的判据是跑起来，不是能编译。** 合并 #10 时我们引入过一个回归：接上它的关系解析后，畸形 `Target`（如 `..`）会让 `getParagraphs()` 抛错，正好打破规则 1 的既有回归测试。是测试发现的，不是类型检查。**合并后必须跑全量测试**，并额外验证几个特性叠加的场景（例如「表格单元格内的段落同时有样式、编号和图片」）——这类场景在任何单个分支上都无法测到。
+- 合并提交要写清**冲突是怎么解的**：哪一侧被丢弃、为什么、以及做了哪些签名改动。下一个 rebase 的人靠这个判断基线。
+
+---
+
+## 通用底线
+
+- `npm run check` 与 `npm test` 必须通过；每个修复配一条回归测试。
+- **无损优先**：未理解的 XML 原样保留，往返不丢部件 / 属性 / 未知元素。
+- 不破坏现有 API 签名与行为；新能力走新方法或可选参数。
+- 核心逻辑不依赖浏览器全局 `document`（用 `@xmldom/xmldom`）；只有 `src/editor.ts` 可以用真实 DOM。
+- 不新增运行时依赖；确有必要在 PR 描述里说明理由。
+- 安全边界不放松：不执行文档内脚本、不把文档 XML 当 HTML、不主动请求外部 URL，保留 ZIP / XML / 文本长度限制与路径穿越校验。性能优化**不是**削减校验的理由（#19 把良构性闸门拆了，结果能提交出让 `load()` 拒绝的文档）。
+- 畸形输入**降级**，不要让读取方法抛错：悬空 `r:id`、缺失部件、未知枚举值、`0` 或负的尺寸、声明数量与实际不符。
+- 多 PR 并行时**只改自己范围内的文件**。发现别人范围内的 bug，在 PR 描述里指出，不要顺手改——那些 PR 正在被独立 review，顺手改会造成连环冲突。
