@@ -3,7 +3,7 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, DocumentBlock, DocumentSnapshot, NumberingDefinition, NumberingInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
-import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
+import { computeParagraphNumbering, parseNumberingModel, parseStyleNumberingReferences } from './numbering.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
@@ -56,6 +56,16 @@ function resolveTarget(basePath: string, target: string): string {
 function relationshipsPath(partPath: string): string {
   const folder = dirname(partPath);
   return `${folder ? `${folder}/` : ''}_rels/${basename(partPath)}.rels`;
+}
+
+function relativeTarget(fromPath: string, toPath: string): string {
+  const from = dirname(fromPath).split('/').filter(Boolean);
+  const to = toPath.split('/').filter(Boolean);
+  while (from.length && to.length && from[0] === to[0]) {
+    from.shift();
+    to.shift();
+  }
+  return [...from.map(() => '..'), ...to].join('/') || basename(toPath);
 }
 
 function bodyOf(document: Document): Element {
@@ -582,7 +592,7 @@ export class DocxDocument {
     const paragraph = this.getParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     const { styles } = this.getNumberingDocuments();
-    const styleHasNumbering = paragraph.style ? parseNumberingModel(undefined, styles).styles.has(paragraph.style) : false;
+    const styleHasNumbering = paragraph.style ? parseStyleNumberingReferences(styles).has(paragraph.style) : false;
     this.updatePartXml(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       const existing = children(props, 'numPr')[0];
@@ -631,7 +641,7 @@ export class DocxDocument {
       const relationship = rels.createElementNS(REL_NS, 'Relationship');
       relationship.setAttribute('Id', `rId${relationIndex}`);
       relationship.setAttribute('Type', NUMBERING_REL);
-      relationship.setAttribute('Target', basename(numberingPath));
+      relationship.setAttribute('Target', relativeTarget(this.mainPath, numberingPath));
       rels.documentElement!.appendChild(relationship);
     }
     const numberingDocument = next.has(numberingPath)

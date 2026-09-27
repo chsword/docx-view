@@ -109,7 +109,7 @@ function parseLevel(level: Element, explicitLevel?: number): NumberingLevelDefin
   };
 }
 
-function parseStyles(stylesDocument?: Document): Map<string, StyleNumberingReference> {
+export function parseStyleNumberingReferences(stylesDocument?: Document): Map<string, StyleNumberingReference> {
   const result = new Map<string, StyleNumberingReference>();
   const root = stylesDocument?.documentElement;
   if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'styles') return result;
@@ -196,7 +196,7 @@ function mergeLevel(base: NumberingLevelDefinition | undefined, override: Number
 }
 
 export function parseNumberingModel(numberingDocument?: Document, stylesDocument?: Document): NumberingModel {
-  const styles = parseStyles(stylesDocument);
+  const styles = parseStyleNumberingReferences(stylesDocument);
   const abstracts = parseAbstracts(numberingDocument);
   const nums = parseNums(numberingDocument);
   const abstractMemo = new Map<number, ResolvedAbstractNumbering | null>();
