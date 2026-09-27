@@ -187,10 +187,10 @@ export class DocxEditor {
 
   private makeImage(paragraph: number, image: ImageInfo): HTMLElement {
     const wrapper = this.root.ownerDocument.createElement(image.placement === 'floating' ? 'div' : 'span');
-    wrapper.className = `docx-image${this.selectedImageInfo?.relationshipId === image.relationshipId ? ' selected' : ''}`;
+    wrapper.className = `docx-image${this.selectedImageInfo?.id === image.id ? ' selected' : ''}`;
     wrapper.contentEditable = 'false';
     wrapper.tabIndex = 0;
-    wrapper.dataset.image = image.relationshipId;
+    wrapper.dataset.image = image.id;
     wrapper.dataset.paragraph = String(paragraph);
     wrapper.style.position = 'relative';
     wrapper.style.display = image.placement === 'floating' ? 'block' : 'inline-block';
@@ -342,7 +342,7 @@ export class DocxEditor {
     if (!this.selectedImageInfo || !['Delete', 'Backspace'].includes(event.key)) return;
     const active = this.root.ownerDocument.activeElement as HTMLElement | null;
     const image = active?.closest('[data-image]') as HTMLElement | null;
-    if (!image || image.dataset.image !== this.selectedImageInfo.relationshipId) return;
+    if (!image || image.dataset.image !== this.selectedImageInfo.id) return;
     event.preventDefault();
     this.document.deleteImage(this.selectedImageInfo);
     this.render();

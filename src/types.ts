@@ -26,9 +26,11 @@ export interface ParagraphInfo extends ParagraphFormat {
 }
 
 export interface ImageInfo {
+  id: string;
   paragraph: number;
   run: number;
   ordinal?: number;
+  sourcePartPath?: string;
   relationshipId: string;
   partPath?: string;
   contentType?: string;

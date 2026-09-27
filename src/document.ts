@@ -214,6 +214,7 @@ function readRun(
   paragraph: number,
   relationships: Map<string, RelationshipTarget>,
   getContentType: (path: string) => string | undefined,
+  sourcePartPath: string,
 ): RunInfo {
   const props = children(run, 'rPr')[0];
   const get = (name: string) => props ? children(props, name)[0] : undefined;
@@ -221,7 +222,7 @@ function readRun(
   const size = wordValue(get('sz'));
   const underline = get('u');
   const color = wordValue(get('color'));
-  const images = readRunImages(run, paragraph, index, relationships, getContentType);
+  const images = readRunImages(run, paragraph, index, relationships, getContentType, sourcePartPath);
   return {
     index, text: textOf(run), bold: toggle('b'), italic: toggle('i'),
     underline: underline ? !['none', '0', 'false'].includes(wordValue(underline) ?? '') : undefined,
@@ -237,17 +238,18 @@ function readParagraph(
   index: number,
   relationships: Map<string, RelationshipTarget>,
   getContentType: (path: string) => string | undefined,
+  sourcePartPath: string,
 ): ParagraphInfo {
   const props = children(paragraph, 'pPr')[0];
   const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
   const runElements = ownRuns(paragraph);
-  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, index, relationships, getContentType));
+  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, index, relationships, getContentType, sourcePartPath));
   return {
     index, text: textOf(paragraph), runs,
     style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
     alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
-    images: runElements.flatMap((run, runIndex) => readRunImages(run, index, runIndex, relationships, getContentType)),
+    images: runElements.flatMap((run, runIndex) => readRunImages(run, index, runIndex, relationships, getContentType, sourcePartPath)),
   };
 }
 
@@ -518,7 +520,7 @@ export class DocxDocument {
   private paragraphsWithRelationships(): ParagraphInfo[] {
     const relationships = this.relationshipsFor(this.mainPath);
     return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p')
-      .map((paragraph, index) => readParagraph(paragraph, index, relationships, (path) => this.getContentType(path)));
+      .map((paragraph, index) => readParagraph(paragraph, index, relationships, (path) => this.getContentType(path), this.mainPath));
   }
 
   getPartBytes(path: string): Uint8Array {
@@ -618,7 +620,7 @@ export class DocxDocument {
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{
         type: 'paragraph',
-        paragraph: readParagraph(child, indices.get(child)!, relationships, (path) => this.getContentType(path)),
+        paragraph: readParagraph(child, indices.get(child)!, relationships, (path) => this.getContentType(path), this.mainPath),
       }];
       if (child.localName === 'tbl') return [{
         type: 'table',
@@ -642,11 +644,14 @@ export class DocxDocument {
 
   private resolveImage(image: ImageInfo | string): ImageInfo {
     const matches = this.getImages().filter((item) => typeof image === 'string'
-      ? item.relationshipId === image
+      ? item.id === image || item.relationshipId === image
       : item.relationshipId === image.relationshipId && item.paragraph === image.paragraph &&
         item.run === image.run && item.ordinal === image.ordinal);
     if (!matches.length) throw new Error(`Image ${image} does not exist.`);
-    if (matches.length > 1) throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo instead.`);
+    if (typeof image === 'string' && matches.every((item) => item.id !== image) && matches.length > 1) {
+      throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo or image.id instead.`);
+    }
+    if (matches.length > 1) throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo or image.id instead.`);
     return matches[0]!;
   }
 

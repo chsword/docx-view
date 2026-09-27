@@ -218,9 +218,11 @@ function readDrawingImage(
     const contentType = relation?.partPath ? getContentType(relation.partPath) : undefined;
     const crop = readCrop(firstChild(firstChild(pic, PIC_NS, 'blipFill'), A_NS, 'srcRect'));
     result.push({
+      id: '',
       paragraph,
       run,
       relationshipId,
+      sourcePartPath: '',
       partPath: relation?.partPath,
       contentType,
       widthEmu,
@@ -258,8 +260,10 @@ function readVmlImage(
     const widthEmu = clampEmu(widthMatch ? ptToEmu(Number(widthMatch[1])) : 0);
     const heightEmu = clampEmu(heightMatch ? ptToEmu(Number(heightMatch[1])) : 0);
     return [{
+      id: '',
       paragraph,
       run,
+      sourcePartPath: '',
       relationshipId,
       partPath: relation?.partPath,
       contentType: relation?.partPath ? getContentType(relation.partPath) : undefined,
@@ -280,6 +284,7 @@ export function readRunImages(
   run: number,
   relationships: Map<string, RelationshipTarget>,
   getContentType: (path: string) => string | undefined,
+  sourcePartPath = '',
 ): ImageInfo[] {
   const images: ImageInfo[] = [];
   for (let child = runElement.firstChild; child; child = child.nextSibling) {
@@ -292,7 +297,12 @@ export function readRunImages(
       images.push(...readVmlImage(element, paragraph, run, relationships, getContentType));
     }
   }
-  return images.map((image, ordinal) => ({ ...image, ordinal }));
+  return images.map((image, ordinal) => ({
+    ...image,
+    ordinal,
+    sourcePartPath,
+    id: `${sourcePartPath}:${paragraph}:${run}:${ordinal}:${image.relationshipId}`,
+  }));
 }
 
 export function detectImageSize(bytes: Uint8Array, contentType?: string): { width: number; height: number } | null {
