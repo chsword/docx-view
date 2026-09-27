@@ -566,12 +566,20 @@ export class DocxDocument {
   }
 
   clearParagraphNumbering(index: number): void {
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    const { styles } = this.getNumberingDocuments();
+    const styleHasNumbering = paragraph.style ? parseNumberingModel(undefined, styles).styles.has(paragraph.style) : false;
     this.updatePartXml(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
-      const numPr = property(props, 'numPr');
-      setWordValue(numberingProperty(numPr, 'numId'), '0');
-      const ilvl = children(numPr, 'ilvl')[0];
-      if (ilvl) numPr.removeChild(ilvl);
+      const existing = children(props, 'numPr')[0];
+      if (existing) props.removeChild(existing);
+      if (styleHasNumbering) {
+        const numPr = property(props, 'numPr');
+        setWordValue(numberingProperty(numPr, 'numId'), '0');
+        const ilvl = children(numPr, 'ilvl')[0];
+        if (ilvl) numPr.removeChild(ilvl);
+      }
     });
   }
 

@@ -101,6 +101,25 @@ test('createNumbering creates package parts and survives export roundtrip', asyn
   assert.equal(reopened.getParagraphs()[0].numbering.isBullet, true);
 });
 
+test('createNumbering works when the main document is stored at a custom package path', async () => {
+  const base = await DocxDocument.create().toUint8Array();
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(base);
+  const main = await zip.file('word/document.xml').async('uint8array');
+  zip.file('custom/main.xml', main);
+  zip.remove('word/document.xml');
+  zip.file('_rels/.rels', (await zip.file('_rels/.rels').async('string')).replace('word/document.xml', 'custom/main.xml'));
+  zip.file('[Content_Types].xml', (await zip.file('[Content_Types].xml').async('string')).replace('/word/document.xml', '/custom/main.xml'));
+  const doc = await DocxDocument.load(await zip.generateAsync({ type: 'uint8array' }));
+  const numId = doc.createNumbering('decimal');
+  doc.setParagraphNumbering(0, numId);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reopened.mainDocumentPath, 'custom/main.xml');
+  assert.equal(reopened.getParagraphs()[0].numbering.text, '1.');
+  assert.ok(reopened.listParts().includes('custom/numbering.xml'));
+  assert.match(reopened.getPartXml('custom/_rels/main.xml.rels'), /Target="numbering.xml"/);
+});
+
 test('setParagraphLevel clamps between 0 and 8 and clearParagraphNumbering removes direct numPr', () => {
   const doc = DocxDocument.create();
   const numId = doc.createNumbering('multilevel');
