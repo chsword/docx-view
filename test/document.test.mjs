@@ -382,6 +382,8 @@ test('broken relationships, missing media parts and invalid extents do not crash
 
 test('operations schema includes the image operations', () => {
   assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
+  const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
+  assert.equal(resize.properties.size.anyOf.length, 2);
 });
 
 test('malformed XML, DTD, broken package targets and oversized parts are rejected atomically', async () => {

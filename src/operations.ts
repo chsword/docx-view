@@ -129,6 +129,14 @@ const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
+const imageSizeShape = {
+  ...shape({
+    widthEmu: { type: 'number', exclusiveMinimum: 0 },
+    heightEmu: { type: 'number', exclusiveMinimum: 0 },
+    keepAspect: { type: 'boolean' },
+  }, []),
+  anyOf: [{ required: ['widthEmu'] }, { required: ['heightEmu'] }],
+};
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
 
@@ -176,11 +184,7 @@ export const AGENT_OPERATION_SCHEMA = {
           }, ['image', 'bytes']),
           operation('resizeImage', {
             image: text,
-            size: shape({
-              widthEmu: { type: 'number', exclusiveMinimum: 0 },
-              heightEmu: { type: 'number', exclusiveMinimum: 0 },
-              keepAspect: { type: 'boolean' },
-            }, []),
+            size: imageSizeShape,
           }),
           operation('setImageAlt', { image: text, alt: text, title: text }, ['image', 'alt']),
           operation('deleteImage', { image: text }),

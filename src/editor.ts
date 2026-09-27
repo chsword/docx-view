@@ -189,7 +189,7 @@ export class DocxEditor {
     const wrapper = this.root.ownerDocument.createElement(image.placement === 'floating' ? 'div' : 'span');
     wrapper.className = `docx-image${this.selectedImageInfo?.id === image.id ? ' selected' : ''}`;
     wrapper.contentEditable = 'false';
-    wrapper.tabIndex = 0;
+    wrapper.tabIndex = image.behindDoc ? -1 : 0;
     wrapper.dataset.image = image.id;
     wrapper.dataset.paragraph = String(paragraph);
     wrapper.style.position = 'relative';
@@ -206,6 +206,15 @@ export class DocxEditor {
       else if (image.wrap === 'none') { wrapper.style.position = 'absolute'; wrapper.style.right = '0'; }
       wrapper.style.zIndex = image.behindDoc ? '0' : '1';
     }
+    const viewport = this.root.ownerDocument.createElement('span');
+    viewport.style.display = 'block';
+    viewport.style.width = '100%';
+    viewport.style.height = '100%';
+    viewport.style.overflow = 'hidden';
+    const stage = this.root.ownerDocument.createElement('span');
+    stage.style.display = 'block';
+    stage.style.width = '100%';
+    stage.style.height = '100%';
     const img = this.root.ownerDocument.createElement('img');
     img.src = this.document.getImageDataUrl(image);
     img.alt = image.alt ?? '';
@@ -226,8 +235,10 @@ export class DocxEditor {
       image.flipH ? 'scaleX(-1)' : '',
       image.flipV ? 'scaleY(-1)' : '',
     ].filter(Boolean);
-    if (transforms.length) img.style.transform = `${img.style.transform ? `${img.style.transform} ` : ''}${transforms.join(' ')}`.trim();
-    wrapper.append(img);
+    if (transforms.length) stage.style.transform = transforms.join(' ');
+    stage.append(img);
+    viewport.append(stage);
+    wrapper.append(viewport);
     for (const handle of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
       const node = this.root.ownerDocument.createElement('span');
       node.className = `docx-image-handle docx-image-handle-${handle}`;

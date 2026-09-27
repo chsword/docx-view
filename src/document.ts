@@ -655,8 +655,8 @@ export class DocxDocument {
     return matches[0]!;
   }
 
-  private inferImageSize(bytes: Uint8Array, widthEmu?: number, heightEmu?: number): { widthEmu: number; heightEmu: number } {
-    const detected = detectImageSize(bytes);
+  private inferImageSize(bytes: Uint8Array, contentType?: string, widthEmu?: number, heightEmu?: number): { widthEmu: number; heightEmu: number } {
+    const detected = detectImageSize(bytes, contentType);
     if (widthEmu && heightEmu) return { widthEmu, heightEmu };
     if (detected) {
       const aspect = detected.width / detected.height;
@@ -777,15 +777,18 @@ export class DocxDocument {
     if (options.paragraph !== undefined) assertIndex(options.paragraph);
     if (options.run !== undefined) assertIndex(options.run);
     if (options.alt !== undefined) assertText(options.alt, 'alt');
-    const size = this.inferImageSize(options.bytes, options.widthEmu, options.heightEmu);
+    const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
     const main = this.getPartDocument(this.mainPath);
+    const paragraphs = descendants(bodyOf(main), 'p');
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
-      : descendants(bodyOf(main), 'p').at(-1) ?? paragraphAt(main, 0);
+      : paragraphs.at(-1) ?? paragraphAt(main, 0);
+    const paragraphIndex = paragraphs.indexOf(paragraph);
     const targetRuns = ownRuns(paragraph);
     const beforeRun = options.run !== undefined ? targetRuns[options.run] : undefined;
     if (options.run !== undefined && !beforeRun) throw new Error(`Run ${options.run} does not exist.`);
+    const insertedRunIndex = options.run ?? targetRuns.length;
     const relPath = resolveRelationshipsPath(this.mainPath);
     const next = this.ensureMediaContentType(partPath, options.contentType);
     next.set(partPath, Uint8Array.from(options.bytes));
@@ -808,7 +811,9 @@ export class DocxDocument {
     else paragraph.appendChild(run);
     next.set(this.mainPath, encodeXml(serializeXml(main)));
     this.commitParts(next);
-    return this.resolveImage(relationshipId);
+    return this.getImages().find((image) => image.sourcePartPath === this.mainPath &&
+      image.paragraph === paragraphIndex && image.run === insertedRunIndex &&
+      image.relationshipId === relationshipId && image.ordinal === 0) ?? this.resolveImage(relationshipId);
   }
 
   replaceImageBytes(image: ImageInfo | string, bytes: Uint8Array, contentType?: string): void {
@@ -864,7 +869,7 @@ export class DocxDocument {
         nextWidth = Math.round(size.heightEmu * (info.widthEmu / info.heightEmu));
       }
     }
-    this.updatePartXml(this.mainPath, (document) => {
+    this.updatePartXml(info.sourcePartPath ?? this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
@@ -884,7 +889,7 @@ export class DocxDocument {
     assertText(alt, 'alt');
     if (title !== undefined) assertText(title, 'title');
     const info = this.resolveImage(image);
-    this.updatePartXml(this.mainPath, (document) => {
+    this.updatePartXml(info.sourcePartPath ?? this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
@@ -902,7 +907,8 @@ export class DocxDocument {
 
   deleteImage(image: ImageInfo | string): void {
     const info = this.resolveImage(image);
-    const main = this.getPartDocument(this.mainPath);
+    const sourcePart = info.sourcePartPath ?? this.mainPath;
+    const main = this.getPartDocument(sourcePart);
     const run = ownRuns(paragraphAt(main, info.paragraph))[info.run];
     if (!run) throw new Error(`Run ${info.run} does not exist.`);
     const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
@@ -910,13 +916,11 @@ export class DocxDocument {
     run.removeChild(imageElement);
     const next = new Map(this.parts);
     if (isEmptyRun(run)) run.parentNode!.removeChild(run);
-    next.set(this.mainPath, encodeXml(serializeXml(main)));
-    const relPath = resolveRelationshipsPath(this.mainPath);
+    next.set(sourcePart, encodeXml(serializeXml(main)));
+    const relPath = resolveRelationshipsPath(sourcePart);
     if (this.hasPart(relPath)) {
       const rels = this.getPartDocument(relPath);
-      const sourcePart = sourcePartFromRelationshipsPath(relPath) ?? this.mainPath;
-      const sourceDocument = sourcePart === this.mainPath ? main : this.getPartDocument(sourcePart);
-      if (!documentUsesRelationship(sourceDocument, info.relationshipId)) {
+      if (!documentUsesRelationship(main, info.relationshipId)) {
         const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
           .find((rel) => rel.getAttribute('Id') === info.relationshipId);
         relationship?.parentNode?.removeChild(relationship);
