@@ -183,6 +183,13 @@ test('deleteParagraph keeps normal body deletions working', () => {
   assert.deepEqual(doc.getParagraphs().map(p => p.text), ['first', 'third']);
 });
 
+test('paragraph indexes stay table-interleaved and cell deletes use tc protection', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', 'cell', 'after']);
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', '', 'after']);
+});
+
 test('format toggles explicitly disable formatting and retain OOXML property order', () => {
   const doc = DocxDocument.create();
   doc.formatRun(0, 0, { color: 'AABBCC', underline: true, fontSize: 12 });
