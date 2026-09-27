@@ -77,6 +77,17 @@ function paragraphContainer(paragraph: Element): Element {
   throw new Error('Paragraph is not inside a body or table cell container.');
 }
 
+function insertPointAfterLastBlock(container: Element): Node | null {
+  const nodes = children(container);
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i]!;
+    if (['p', 'tbl'].includes(node.localName ?? '') || (isTransparentWrapper(node) && blockElements(node).length)) {
+      return node.nextSibling;
+    }
+  }
+  return children(container, 'tcPr')[0]?.nextSibling ?? container.firstChild;
+}
+
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
   function walk(node: Node): void {
@@ -473,7 +484,7 @@ export class DocxDocument {
       parent.removeChild(paragraph);
       const last = blockElements(container).at(-1);
       if (container.localName === 'tc' && last?.localName !== 'p') {
-        container.insertBefore(newParagraph(document, ''), null);
+        container.insertBefore(newParagraph(document, ''), insertPointAfterLastBlock(container));
       }
     });
   }
