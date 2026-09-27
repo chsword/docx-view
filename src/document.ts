@@ -5,7 +5,7 @@ import type {
 } from './types.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
-  serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
+  isValidXmlCharCode, serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import {
   assertIndex,
@@ -82,12 +82,9 @@ function elementText(element: Element): string {
     const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
     if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
     const code = Number.parseInt(value, 16);
-    return Number.isFinite(code) ? String.fromCharCode(code) : '';
+    return Number.isFinite(code) && isValidXmlCharCode(code) ? String.fromCharCode(code) : '�';
   }
-  if (element.localName === 'br') {
-    const type = element.getAttributeNS(WORD_NS, 'type') ?? wordValue(element);
-    return type === 'textWrapping' || !type ? '\n' : '\n';
-  }
+  if (element.localName === 'br') return '\n';
   return '\n';
 }
 
@@ -196,10 +193,14 @@ function readShading(element: Element | undefined): Shading | undefined {
   if (!element) return undefined;
   const fill = element.getAttributeNS(WORD_NS, 'fill');
   const color = element.getAttributeNS(WORD_NS, 'color');
+  const fillValue = fill && /^(auto|[a-f\d]{6})$/i.test(fill) ? (fill.toLowerCase() === 'auto' ? 'auto' : fill.toUpperCase()) : 'auto';
+  const colorValue = color && /^(auto|[a-f\d]{6})$/i.test(color)
+    ? (color.toLowerCase() === 'auto' ? 'auto' : color.toUpperCase())
+    : undefined;
   return {
     pattern: wordValue(element) ?? 'clear',
-    fill: fill && /^(auto|[a-f\d]{6})$/i.test(fill) ? fill.toUpperCase() : 'AUTO',
-    color: color && /^(auto|[a-f\d]{6})$/i.test(color) ? color.toUpperCase() : undefined,
+    fill: fillValue,
+    ...(colorValue !== undefined ? { color: colorValue } : {}),
   };
 }
 
@@ -210,12 +211,13 @@ function readBorderSide(element: Element | undefined): BorderSide | undefined {
   const space = Number(element.getAttributeNS(WORD_NS, 'space') ?? 0);
   const color = element.getAttributeNS(WORD_NS, 'color') ?? 'auto';
   const shadow = element.getAttributeNS(WORD_NS, 'shadow');
+  const colorValue = /^(auto|[a-f\d]{6})$/i.test(color) ? (color.toLowerCase() === 'auto' ? 'auto' : color.toUpperCase()) : 'auto';
   return {
     style,
     size: Number.isFinite(size) && size >= 0 ? size : 0,
     space: Number.isFinite(space) && space >= 0 ? space : 0,
-    color: /^(auto|[a-f\d]{6})$/i.test(color) ? color.toUpperCase() : 'AUTO',
-    shadow: shadow === null ? undefined : !['0', 'false', 'off'].includes(shadow.toLowerCase()),
+    color: colorValue,
+    ...(shadow !== null ? { shadow: !['0', 'false', 'off'].includes(shadow.toLowerCase()) } : {}),
   };
 }
 
@@ -223,7 +225,7 @@ function normalizeTabStop(tab: TabStop): TabStop {
   return {
     position: Number.isFinite(tab.position) ? tab.position : 0,
     alignment: tab.alignment,
-    leader: tab.leader,
+    ...(tab.leader !== undefined ? { leader: tab.leader } : {}),
   };
 }
 
@@ -250,7 +252,8 @@ function writeBorderSide(element: Element, border: BorderSide): void {
   setWordValue(element, border.style);
   element.setAttributeNS(WORD_NS, 'w:sz', String(Math.max(0, Math.min(border.size, 2048))));
   element.setAttributeNS(WORD_NS, 'w:space', String(Math.max(0, border.space)));
-  element.setAttributeNS(WORD_NS, 'w:color', border.color);
+  const color = border.color.toLowerCase() === 'auto' ? 'auto' : border.color.toUpperCase();
+  element.setAttributeNS(WORD_NS, 'w:color', color);
   if (border.shadow !== undefined) element.setAttributeNS(WORD_NS, 'w:shadow', border.shadow ? '1' : '0');
   else {
     element.removeAttributeNS(WORD_NS, 'shadow');
@@ -261,13 +264,29 @@ function writeBorderSide(element: Element, border: BorderSide): void {
 
 function writeShading(element: Element, shading: Shading): void {
   setWordValue(element, shading.pattern);
-  element.setAttributeNS(WORD_NS, 'w:fill', shading.fill);
-  if (shading.color !== undefined) element.setAttributeNS(WORD_NS, 'w:color', shading.color);
+  element.setAttributeNS(WORD_NS, 'w:fill', shading.fill.toLowerCase() === 'auto' ? 'auto' : shading.fill.toUpperCase());
+  if (shading.color !== undefined) {
+    element.setAttributeNS(WORD_NS, 'w:color', shading.color.toLowerCase() === 'auto' ? 'auto' : shading.color.toUpperCase());
+  }
   else {
     element.removeAttributeNS(WORD_NS, 'color');
     element.removeAttribute('w:color');
     element.removeAttribute('color');
   }
+}
+
+function normalizeTabsForWrite(tabs: TabStop[]): TabStop[] {
+  const byPosition = new Map<number, TabStop>();
+  for (const tab of tabs) {
+    const position = Math.floor(tab.position);
+    if (!Number.isFinite(position)) continue;
+    if (tab.alignment === 'clear') {
+      byPosition.delete(position);
+      continue;
+    }
+    byPosition.set(position, { ...tab, position });
+  }
+  return [...byPosition.values()].sort((a, b) => a.position - b.position);
 }
 
 function ownRuns(paragraph: Element): Element[] {
@@ -584,18 +603,23 @@ export class DocxDocument {
       if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
       if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
       if (format.tabs !== undefined) {
-        if (format.tabs === null) {
+        if (format.tabs === null || format.tabs.length === 0) {
           removeChildren(props, 'tabs');
         } else {
-          const tabs = property(props, 'tabs');
-          while (tabs.firstChild) tabs.removeChild(tabs.firstChild);
-          format.tabs.forEach((tab) => {
-            const element = wordElement(document, 'tab');
-            setWordValue(element, tab.alignment);
-            element.setAttributeNS(WORD_NS, 'w:pos', String(Math.floor(tab.position)));
-            if (tab.leader) element.setAttributeNS(WORD_NS, 'w:leader', tab.leader);
-            tabs.appendChild(element);
-          });
+          const normalizedTabs = normalizeTabsForWrite(format.tabs);
+          if (!normalizedTabs.length) {
+            removeChildren(props, 'tabs');
+          } else {
+            const tabs = property(props, 'tabs');
+            while (tabs.firstChild) tabs.removeChild(tabs.firstChild);
+            normalizedTabs.forEach((tab) => {
+              const element = wordElement(document, 'tab');
+              setWordValue(element, tab.alignment);
+              element.setAttributeNS(WORD_NS, 'w:pos', String(Math.floor(tab.position)));
+              if (tab.leader) element.setAttributeNS(WORD_NS, 'w:leader', tab.leader);
+              tabs.appendChild(element);
+            });
+          }
         }
       }
       if (format.borders !== undefined) {
@@ -695,8 +719,8 @@ export class DocxDocument {
   insertSymbol(paragraph: number, run: number, font: string, charCode: number): void {
     assertIndex(run);
     assertText(font, 'font');
-    if (!Number.isSafeInteger(charCode) || charCode < 0 || charCode > 0xffff) {
-      throw new Error('charCode must be an integer in [0, 65535].');
+    if (!isValidXmlCharCode(charCode) || charCode > 0xffff) {
+      throw new Error('charCode must be an XML-valid BMP code point.');
     }
     this.updatePartXml(this.mainPath, document => {
       const target = ownRuns(paragraphAt(document, paragraph))[run];

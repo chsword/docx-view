@@ -1,5 +1,5 @@
 import type { AgentRequest, BorderSide, ParagraphFormat, RunFormat, Shading, TabStop } from './types.js';
-import { assertText } from './xml.js';
+import { assertText, isValidXmlCharCode } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -61,7 +61,7 @@ export function validateTabStop(value: unknown): asserts value is TabStop {
   if (!['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'].includes(String(value.alignment))) {
     throw new Error('tab.alignment is invalid.');
   }
-  if ('leader' in value && (typeof value.leader !== 'string' || !['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'].includes(value.leader))) {
+  if (value.leader !== undefined && (typeof value.leader !== 'string' || !['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'].includes(value.leader))) {
     throw new Error('tab.leader is invalid.');
   }
 }
@@ -79,7 +79,7 @@ export function validateBorderSide(value: unknown): asserts value is BorderSide 
   if (typeof value.size !== 'number' || !Number.isFinite(value.size) || value.size < 0) throw new Error('border.size must be a non-negative number.');
   if (typeof value.space !== 'number' || !Number.isFinite(value.space) || value.space < 0) throw new Error('border.space must be a non-negative number.');
   if (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color)) throw new Error('border.color must be auto or six hexadecimal digits.');
-  if ('shadow' in value && typeof value.shadow !== 'boolean') throw new Error('border.shadow must be boolean.');
+  if (value.shadow !== undefined && typeof value.shadow !== 'boolean') throw new Error('border.shadow must be boolean.');
 }
 
 export function validateBorders(value: unknown): asserts value is ParagraphFormat['borders'] {
@@ -95,7 +95,7 @@ export function validateShading(value: unknown): asserts value is Shading {
   keys(value, ['pattern', 'fill', 'color']);
   assertText(value.pattern, 'shading.pattern');
   if (typeof value.fill !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.fill)) throw new Error('shading.fill must be auto or six hexadecimal digits.');
-  if ('color' in value && (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color))) {
+  if (value.color !== undefined && (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color))) {
     throw new Error('shading.color must be auto or six hexadecimal digits.');
   }
 }
@@ -150,8 +150,8 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'insertSymbol':
         keys(op, ['type', 'paragraph', 'run', 'font', 'charCode']);
         assertIndex(op.paragraph); assertIndex(op.run); assertText(op.font, 'font');
-        if (typeof op.charCode !== 'number' || !Number.isSafeInteger(op.charCode) || op.charCode < 0 || op.charCode > 0xffff) {
-          throw new Error('charCode must be an integer in [0, 65535].');
+        if (typeof op.charCode !== 'number' || !isValidXmlCharCode(op.charCode) || op.charCode > 0xffff) {
+          throw new Error('charCode must be an XML-valid BMP code point.');
         }
         break;
       case 'insertTable':
@@ -168,6 +168,13 @@ const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
+const borderSide = shape({
+  style: text,
+  size: { type: 'number', minimum: 0 },
+  space: { type: 'number', minimum: 0 },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  shadow: { type: 'boolean' },
+}, ['style', 'size', 'space', 'color']);
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
 
@@ -195,12 +202,12 @@ export const AGENT_OPERATION_SCHEMA = {
               }, ['position', 'alignment']),
             },
             borders: shape({
-              top: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-              left: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-              bottom: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-              right: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-              between: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-              bar: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              top: borderSide,
+              left: borderSide,
+              bottom: borderSide,
+              right: borderSide,
+              between: borderSide,
+              bar: borderSide,
             }, []),
             shading: shape({
               pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
@@ -212,10 +219,7 @@ export const AGENT_OPERATION_SCHEMA = {
             bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
             fontSize: { type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 },
             fontFamily: text, color: { type: 'string', pattern: '^[a-fA-F0-9]{6}$' },
-            border: shape({
-              style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 },
-              color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' },
-            }),
+            border: borderSide,
             shading: shape({
               pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
             }, ['pattern', 'fill']),
@@ -228,12 +232,12 @@ export const AGENT_OPERATION_SCHEMA = {
             }, ['position', 'alignment']),
           } }),
           operation('setParagraphBorders', { index, borders: shape({
-            top: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-            left: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-            bottom: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-            right: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-            between: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
-            bar: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            top: borderSide,
+            left: borderSide,
+            bottom: borderSide,
+            right: borderSide,
+            between: borderSide,
+            bar: borderSide,
           }, []) }),
           operation('setParagraphShading', { index, shading: shape({
             pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },

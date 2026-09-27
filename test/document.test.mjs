@@ -249,15 +249,34 @@ test('reads paragraph tabs including leader and alignment', () => {
   const doc = withBody('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720" w:leader="dot"/><w:tab w:val="right" w:pos="1440"/></w:tabs></w:pPr><w:r><w:t>a</w:t></w:r></w:p>');
   assert.deepEqual(doc.getParagraphs()[0].tabs, [
     { position: 720, alignment: 'left', leader: 'dot' },
-    { position: 1440, alignment: 'right', leader: undefined },
+    { position: 1440, alignment: 'right' },
   ]);
 });
 
 test('setParagraphTabs writes tabs in property order', () => {
   const doc = DocxDocument.create();
   doc.setParagraphTabs(0, [{ position: 2000, alignment: 'decimal', leader: 'dot' }]);
+  assert.doesNotThrow(() => doc.setParagraphTabs(0, doc.getParagraphs()[0].tabs));
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.match(xml, /<w:tabs><w:tab w:val="decimal" w:pos="2000" w:leader="dot"\/><\/w:tabs>/);
+});
+
+test('setParagraphTabs normalizes order and handles clear/empty', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphTabs(0, [
+    { position: 2880, alignment: 'right' },
+    { position: 720, alignment: 'left' },
+    { position: 2880, alignment: 'clear' },
+    { position: 720, alignment: 'center' },
+  ]);
+  assert.deepEqual(doc.getParagraphs()[0].tabs, [{ position: 720, alignment: 'center' }]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:tab w:val="center" w:pos="720"\/>/);
+  assert.doesNotMatch(xml, /w:pos="2880"/);
+  doc.formatParagraph(0, { tabs: [] });
+  xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /<w:tabs\/>/);
+  assert.doesNotMatch(xml, /<w:tabs>/);
 });
 
 test('setParagraphBorders writes supported border sides', () => {
@@ -269,6 +288,7 @@ test('setParagraphBorders writes supported border sides', () => {
   const paragraph = doc.getParagraphs()[0];
   assert.equal(paragraph.borders?.top?.style, 'single');
   assert.equal(paragraph.borders?.between?.shadow, true);
+  assert.doesNotThrow(() => doc.setParagraphBorders(0, paragraph.borders));
   doc.setParagraphBorders(0, { between: { style: 'dotted', size: 4, space: 2, color: '00FF00' } });
   assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:shadow=/);
 });
@@ -277,6 +297,8 @@ test('setParagraphShading reads and writes fill values', () => {
   const doc = DocxDocument.create();
   doc.setParagraphShading(0, { pattern: 'clear', fill: 'AABBCC', color: 'auto' });
   assert.equal(doc.getParagraphs()[0].shading?.fill, 'AABBCC');
+  assert.equal(doc.getParagraphs()[0].shading?.color, 'auto');
+  assert.doesNotThrow(() => doc.setParagraphShading(0, doc.getParagraphs()[0].shading));
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:shd w:val="clear" w:fill="AABBCC" w:color="auto"\/>/);
   doc.setParagraphShading(0, { pattern: 'clear', fill: 'AABBCC' });
   assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:color="auto"/);
@@ -325,6 +347,12 @@ test('insertSymbol writes w:sym and contributes to text', () => {
   assert.equal(doc.getParagraphs()[0].text, `a${String.fromCharCode(0xF04A)}`);
 });
 
+test('insertSymbol rejects invalid XML code points', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.insertSymbol(0, 0, 'Wingdings', 0x0001), /XML-valid/);
+  assert.throws(() => doc.insertSymbol(0, 0, 'Wingdings', 0xD800), /XML-valid/);
+});
+
 test('tab/noBreakHyphen/softHyphen and breaks map to paragraph text', () => {
   const doc = withBody('<w:p><w:r><w:t>A</w:t><w:tab/><w:noBreakHyphen/><w:softHyphen/><w:br/><w:cr/></w:r></w:p>');
   assert.equal(doc.getParagraphs()[0].text, 'A\t\u2011\u00ad\n\n');
@@ -369,6 +397,13 @@ test('agent validation accepts border/shading/symbol operations', () => {
     ],
   });
   assert.equal(doc.getParagraphs()[0].shading?.fill, 'EEEEEE');
+});
+
+test('agent schema requires core border fields and optional shadow', () => {
+  const border = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .find((op) => op.properties?.type?.const === 'formatRun')
+    ?.properties?.format?.properties?.border;
+  assert.deepEqual(border.required, ['style', 'size', 'space', 'color']);
 });
 
 test('formatRun can write and clear run border/shading', () => {

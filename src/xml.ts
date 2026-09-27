@@ -62,3 +62,10 @@ export function assertText(text: unknown, name = 'text'): asserts text is string
     throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
   }
 }
+
+export function isValidXmlCharCode(value: number): boolean {
+  return Number.isSafeInteger(value) &&
+    (value === 0x9 || value === 0xa || value === 0xd ||
+      (value >= 0x20 && value <= 0xd7ff) ||
+      (value >= 0xe000 && value <= 0xfffd));
+}

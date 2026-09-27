@@ -197,7 +197,7 @@ element('set-tabs').addEventListener('click', () => run(() => {
   message('已设置段落制表位。');
 }));
 element('clear-tabs').addEventListener('click', () => run(() => {
-  doc.formatParagraph(selectedIndex(), { tabs: [] });
+  doc.formatParagraph(selectedIndex(), { tabs: null });
   editor.render();
   refresh();
   message('已清除段落制表位。');

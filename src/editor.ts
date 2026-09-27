@@ -69,8 +69,14 @@ export class DocxEditor {
     const caret = this.captureCaret();
     this.flush();
     this.paragraphs.clear();
+    let defaultTabStopTwips = 720;
+    try {
+      defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+    } catch {
+      defaultTabStopTwips = 720;
+    }
     const fragment = this.root.ownerDocument.createDocumentFragment();
-    this.appendBlocks(fragment, this.document.getBlocks());
+    this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
     if (caret) this.restoreCaret(caret);
@@ -86,18 +92,25 @@ export class DocxEditor {
   }
 
   private readText(element: HTMLElement): string {
-    const clone = element.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll('[data-docx-mark]').forEach((mark) => mark.remove());
-    // Native editing can introduce line-break elements (e.g. via mobile keyboards).
-    if (!clone.querySelector('br, div, p')) return clone.textContent ?? '';
-    const text = clone.innerText.replace(/\r\n?/g, '\n');
-    return text === '\n' && !clone.textContent ? '' : text;
+    const marks = Array.from(element.querySelectorAll<HTMLElement>('[data-docx-mark]'));
+    const locations = marks.map((mark) => ({ mark, parent: mark.parentNode, next: mark.nextSibling }));
+    for (const mark of marks) {
+      mark.parentNode?.removeChild(mark);
+    }
+    try {
+      // Native editing can introduce line-break elements (e.g. via mobile keyboards).
+      if (!element.querySelector('br, div, p')) return element.textContent ?? '';
+      const text = element.innerText.replace(/\r\n?/g, '\n');
+      return text === '\n' && !element.textContent ? '' : text;
+    } finally {
+      for (const { mark, parent, next } of locations) parent?.insertBefore(mark, next);
+    }
   }
 
-  private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
+  private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
-        parent.appendChild(this.makeParagraph(block.paragraph));
+        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips));
       } else {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
@@ -106,7 +119,7 @@ export class DocxEditor {
           const tr = body.insertRow();
           for (const cell of row.cells) {
             const td = tr.insertCell();
-            this.appendBlocks(td, cell.blocks);
+            this.appendBlocks(td, cell.blocks, defaultTabStopTwips);
           }
         }
         parent.appendChild(table);
@@ -114,7 +127,7 @@ export class DocxEditor {
     }
   }
 
-  private makeParagraph(paragraph: ParagraphInfo): HTMLParagraphElement {
+  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     element.className = 'docx-paragraph';
     element.contentEditable = 'true';
@@ -127,13 +140,12 @@ export class DocxEditor {
     element.style.minHeight = '1.5em';
     if (paragraph.alignment) element.style.textAlign = paragraph.alignment === 'both' ? 'justify' : paragraph.alignment;
     if (paragraph.style) element.dataset.style = paragraph.style;
-    const defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
-    if (paragraph.shading?.fill && paragraph.shading.fill !== 'AUTO') element.style.backgroundColor = `#${paragraph.shading.fill}`;
+    if (paragraph.shading?.fill && paragraph.shading.fill !== 'auto') element.style.backgroundColor = `#${paragraph.shading.fill}`;
     if (paragraph.borders) {
       for (const [key, side] of Object.entries(paragraph.borders)) {
         if (!side || ['none', 'nil'].includes(side.style)) continue;
         const width = `${Math.min(24, Math.max(0, side.size)) / 8}pt`;
-        const color = side.color === 'AUTO' ? '#000' : `#${side.color}`;
+        const color = side.color === 'auto' ? '#000' : `#${side.color}`;
         const style = this.borderStyle(side.style);
         if (key === 'between') continue;
         if (key === 'bar') element.style.borderLeft = `${width} ${style} ${color}`;
@@ -143,8 +155,9 @@ export class DocxEditor {
         if (key === 'bottom') element.style.borderBottom = `${width} ${style} ${color}`;
       }
     }
+    let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
-      this.appendRun(element, paragraph, run, defaultTabStopTwips);
+      currentLineOffsetPx = this.appendRun(element, paragraph, run, defaultTabStopTwips, currentLineOffsetPx);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
     if (this.options.showFormattingMarks) element.append(this.makeMark('¶', '段落标记'));
@@ -186,37 +199,43 @@ export class DocxEditor {
     return element;
   }
 
-  private appendRun(paragraphElement: HTMLElement, paragraph: ParagraphInfo, run: RunInfo, defaultTabStopTwips: number): void {
+  private appendRun(
+    paragraphElement: HTMLElement,
+    paragraph: ParagraphInfo,
+    run: RunInfo,
+    defaultTabStopTwips: number,
+    currentLineOffsetPx: number,
+  ): number {
     const runSpan = this.root.ownerDocument.createElement('span');
     this.applyRunStyle(runSpan, run);
     const segments = run.text.split(/(\t|\n)/);
-    let current = 0;
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
       if (!segment) continue;
       if (segment === '\n') {
         runSpan.append(this.root.ownerDocument.createElement('br'));
         if (this.options.showFormattingMarks) runSpan.append(this.makeMark('↵', '换行符'));
-        current = 0;
+        currentLineOffsetPx = 0;
         continue;
       }
       if (segment === '\t') {
         const nextText = segments.slice(i + 1).find((part) => part !== '\t' && part !== '\n') ?? '';
-        const tab = this.makeTabSpan(paragraph, runSpan, current, nextText, defaultTabStopTwips);
+        const tab = this.makeTabSpan(paragraph, run, currentLineOffsetPx, nextText, defaultTabStopTwips);
         runSpan.append(tab);
-        current += Number.parseFloat(tab.style.width || '0');
+        currentLineOffsetPx += Number.parseFloat(tab.style.width || '0');
         if (this.options.showFormattingMarks) runSpan.append(this.makeMark('→', '制表符'));
         continue;
       }
       runSpan.append(this.root.ownerDocument.createTextNode(segment));
-      current += this.measure(segment, runSpan);
+      currentLineOffsetPx += this.measure(segment, run);
     }
     paragraphElement.append(runSpan);
+    return currentLineOffsetPx;
   }
 
   private makeTabSpan(
     paragraph: ParagraphInfo,
-    sample: HTMLElement,
+    run: RunInfo,
     currentPx: number,
     following: string,
     defaultTabStopTwips: number,
@@ -229,9 +248,9 @@ export class DocxEditor {
     const stop = this.nextTabStop(paragraph.tabs ?? [], currentPx);
     const defaultTab = defaultTabStopTwips * 96 / 1440;
     const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
-    const nextWidth = this.measure(following, sample);
+    const nextWidth = this.measure(following, run);
     const decimalMatch = /[.,，．]/.exec(following);
-    const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), sample) : nextWidth;
+    const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), run) : nextWidth;
     const alignment = stop ? stop.alignment : 'left';
     const rawWidth = alignment === 'center' ? target - currentPx - nextWidth / 2
       : alignment === 'right' ? target - currentPx - nextWidth
@@ -244,9 +263,17 @@ export class DocxEditor {
     if (leader) {
       const leaderWidth = Math.max(8, width);
       span.style.width = `${leaderWidth}px`;
-      span.textContent = leader.repeat(Math.max(1, Math.floor(leaderWidth / Math.max(2, this.measure(leader, sample)))));
-      span.style.overflow = 'hidden';
-      span.style.verticalAlign = 'baseline';
+      const leaderVisual = this.makeMark(
+        leader.repeat(Math.max(1, Math.floor(leaderWidth / Math.max(2, this.measure(leader, run))))),
+        '制表位前导符',
+      );
+      leaderVisual.style.position = 'absolute';
+      leaderVisual.style.inset = '0';
+      leaderVisual.style.overflow = 'hidden';
+      leaderVisual.style.whiteSpace = 'nowrap';
+      leaderVisual.style.opacity = '0.7';
+      span.style.position = 'relative';
+      span.append(leaderVisual);
     }
     return span;
   }
@@ -291,9 +318,9 @@ export class DocxEditor {
     if (run.fontSize !== undefined) span.style.fontSize = `${run.fontSize}pt`;
     if (run.fontFamily) span.style.fontFamily = run.fontFamily;
     if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
-    if (run.shading?.fill && run.shading.fill !== 'AUTO') span.style.backgroundColor = `#${run.shading.fill}`;
+    if (run.shading?.fill && run.shading.fill !== 'auto') span.style.backgroundColor = `#${run.shading.fill}`;
     if (run.border && !['none', 'nil'].includes(run.border.style)) {
-      span.style.border = `${Math.max(0.5, run.border.size / 8)}pt ${this.borderStyle(run.border.style)} ${run.border.color === 'AUTO' ? '#000' : `#${run.border.color}`}`;
+      span.style.border = `${Math.max(0.5, run.border.size / 8)}pt ${this.borderStyle(run.border.style)} ${run.border.color === 'auto' ? '#000' : `#${run.border.color}`}`;
       span.style.padding = '0 0.05em';
     }
   }
@@ -313,10 +340,13 @@ export class DocxEditor {
     }
   }
 
-  private measure(text: string, sample: HTMLElement): number {
+  private measure(text: string, run: RunInfo): number {
     if (!this.metrics || !text) return 0;
-    const style = this.root.ownerDocument.defaultView?.getComputedStyle(sample);
-    this.metrics.font = style ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '16px sans-serif';
+    const fontStyle = run.italic ? 'italic' : 'normal';
+    const fontWeight = run.bold ? '700' : '400';
+    const fontSize = `${run.fontSize ?? 11}pt`;
+    const fontFamily = run.fontFamily ?? 'Arial, sans-serif';
+    this.metrics.font = `${fontStyle} ${fontWeight} ${fontSize} ${fontFamily}`;
     return this.metrics.measureText(text).width;
   }
 
