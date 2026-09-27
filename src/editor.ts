@@ -127,6 +127,7 @@ export class DocxEditor {
     element.style.minHeight = '1.5em';
     if (paragraph.alignment) element.style.textAlign = paragraph.alignment === 'both' ? 'justify' : paragraph.alignment;
     if (paragraph.style) element.dataset.style = paragraph.style;
+    const defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
     if (paragraph.shading?.fill && paragraph.shading.fill !== 'AUTO') element.style.backgroundColor = `#${paragraph.shading.fill}`;
     if (paragraph.borders) {
       for (const [key, side] of Object.entries(paragraph.borders)) {
@@ -143,7 +144,7 @@ export class DocxEditor {
       }
     }
     for (const run of paragraph.runs) {
-      this.appendRun(element, paragraph, run);
+      this.appendRun(element, paragraph, run, defaultTabStopTwips);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
     if (this.options.showFormattingMarks) element.append(this.makeMark('¶', '段落标记'));
@@ -185,7 +186,7 @@ export class DocxEditor {
     return element;
   }
 
-  private appendRun(paragraphElement: HTMLElement, paragraph: ParagraphInfo, run: RunInfo): void {
+  private appendRun(paragraphElement: HTMLElement, paragraph: ParagraphInfo, run: RunInfo, defaultTabStopTwips: number): void {
     const runSpan = this.root.ownerDocument.createElement('span');
     this.applyRunStyle(runSpan, run);
     const segments = run.text.split(/(\t|\n)/);
@@ -201,7 +202,7 @@ export class DocxEditor {
       }
       if (segment === '\t') {
         const nextText = segments.slice(i + 1).find((part) => part !== '\t' && part !== '\n') ?? '';
-        const tab = this.makeTabSpan(paragraph, runSpan, current, nextText);
+        const tab = this.makeTabSpan(paragraph, runSpan, current, nextText, defaultTabStopTwips);
         runSpan.append(tab);
         current += Number.parseFloat(tab.style.width || '0');
         if (this.options.showFormattingMarks) runSpan.append(this.makeMark('→', '制表符'));
@@ -213,29 +214,37 @@ export class DocxEditor {
     paragraphElement.append(runSpan);
   }
 
-  private makeTabSpan(paragraph: ParagraphInfo, sample: HTMLElement, currentPx: number, following: string): HTMLSpanElement {
+  private makeTabSpan(
+    paragraph: ParagraphInfo,
+    sample: HTMLElement,
+    currentPx: number,
+    following: string,
+    defaultTabStopTwips: number,
+  ): HTMLSpanElement {
     const span = this.root.ownerDocument.createElement('span');
     span.className = 'docx-tab';
     span.contentEditable = 'false';
     span.setAttribute('aria-hidden', 'true');
     span.textContent = '\t';
     const stop = this.nextTabStop(paragraph.tabs ?? [], currentPx);
-    const defaultTabStop = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
-    const defaultTab = defaultTabStop * 96 / 1440;
+    const defaultTab = defaultTabStopTwips * 96 / 1440;
     const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
     const nextWidth = this.measure(following, sample);
     const decimalMatch = /[.,，．]/.exec(following);
     const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), sample) : nextWidth;
     const alignment = stop?.alignment ?? 'left';
-    const width = Math.max(8, alignment === 'center' ? target - currentPx - nextWidth / 2
+    const rawWidth = alignment === 'center' ? target - currentPx - nextWidth / 2
       : alignment === 'right' ? target - currentPx - nextWidth
-        : alignment === 'decimal' ? target - currentPx - decimalLeft : target - currentPx);
+        : alignment === 'decimal' ? target - currentPx - decimalLeft : target - currentPx;
+    const width = Math.max(0, rawWidth);
     span.style.display = 'inline-block';
     span.style.width = `${Math.max(0, width)}px`;
     if (alignment === 'bar') span.style.borderLeft = '1px solid currentColor';
     const leader = this.leader(stop?.leader);
     if (leader) {
-      span.textContent = leader.repeat(Math.max(1, Math.floor(width / Math.max(2, this.measure(leader, sample)))));
+      const leaderWidth = Math.max(8, width);
+      span.style.width = `${leaderWidth}px`;
+      span.textContent = leader.repeat(Math.max(1, Math.floor(leaderWidth / Math.max(2, this.measure(leader, sample)))));
       span.style.overflow = 'hidden';
       span.style.verticalAlign = 'baseline';
     }
