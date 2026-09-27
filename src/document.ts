@@ -248,7 +248,7 @@ function setWordAttr(element: Element, name: string, value: string | number): vo
   element.setAttributeNS(WORD_NS, `w:${name}`, String(value));
 }
 
-function appendWordNode(parent: Element, name: string, value?: string | number): Element {
+function appendWordValueElement(parent: Element, name: string, value?: string | number): Element {
   const element = wordElement(parent.ownerDocument!, name);
   if (value !== undefined) setWordValue(element, String(value));
   parent.appendChild(element);
@@ -287,28 +287,28 @@ function appendRunProperties(parent: Element, format: RunFormat | undefined): vo
     for (const name of ['ascii', 'hAnsi', 'eastAsia', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
     props.appendChild(fonts);
   }
-  if (format.bold !== undefined) setWordValue(appendWordNode(props, 'b'), format.bold ? '1' : '0');
-  if (format.italic !== undefined) setWordValue(appendWordNode(props, 'i'), format.italic ? '1' : '0');
-  if (format.color) appendWordNode(props, 'color', format.color);
+  if (format.bold !== undefined) setWordValue(appendWordValueElement(props, 'b'), format.bold ? '1' : '0');
+  if (format.italic !== undefined) setWordValue(appendWordValueElement(props, 'i'), format.italic ? '1' : '0');
+  if (format.color) appendWordValueElement(props, 'color', format.color);
   if (format.fontSize !== undefined) {
-    appendWordNode(props, 'sz', format.fontSize * 2);
-    appendWordNode(props, 'szCs', format.fontSize * 2);
+    appendWordValueElement(props, 'sz', format.fontSize * 2);
+    appendWordValueElement(props, 'szCs', format.fontSize * 2);
   }
-  if (format.underline !== undefined) appendWordNode(props, 'u', format.underline ? 'single' : 'none');
+  if (format.underline !== undefined) appendWordValueElement(props, 'u', format.underline ? 'single' : 'none');
   if (props.childNodes.length) parent.appendChild(props);
 }
 
 function buildLevelElement(document: Document, definition: NumberingDefinition['levels'][number]): Element {
   const level = wordElement(document, 'lvl');
   setWordAttr(level, 'ilvl', definition.level);
-  appendWordNode(level, 'start', definition.start ?? 1);
-  appendWordNode(level, 'numFmt', definition.format);
-  if (definition.restart !== undefined) appendWordNode(level, 'lvlRestart', definition.restart);
-  if (definition.paragraphStyle) appendWordNode(level, 'pStyle', definition.paragraphStyle);
-  if (definition.isLegal) appendWordNode(level, 'isLgl');
-  appendWordNode(level, 'suff', definition.suffix);
-  appendWordNode(level, 'lvlText', definition.text);
-  if (definition.justification) appendWordNode(level, 'lvlJc', definition.justification);
+  appendWordValueElement(level, 'start', definition.start ?? 1);
+  appendWordValueElement(level, 'numFmt', definition.format);
+  if (definition.restart !== undefined) appendWordValueElement(level, 'lvlRestart', definition.restart);
+  if (definition.paragraphStyle) appendWordValueElement(level, 'pStyle', definition.paragraphStyle);
+  if (definition.isLegal) appendWordValueElement(level, 'isLgl');
+  appendWordValueElement(level, 'suff', definition.suffix);
+  appendWordValueElement(level, 'lvlText', definition.text);
+  if (definition.justification) appendWordValueElement(level, 'lvlJc', definition.justification);
   if (definition.indentLeft !== undefined || definition.indentHanging !== undefined) {
     const props = wordElement(document, 'pPr');
     const ind = wordElement(document, 'ind');
@@ -627,18 +627,18 @@ export class DocxDocument {
     const numId = (existingNumIds.length ? Math.max(...existingNumIds) : 0) + 1;
     const abstract = wordElement(numberingDocument, 'abstractNum');
     setWordAttr(abstract, 'abstractNumId', abstractNumId);
-    if (definition.nsid) appendWordNode(abstract, 'nsid', definition.nsid);
-    if (definition.multiLevelType) appendWordNode(abstract, 'multiLevelType', definition.multiLevelType);
-    if (definition.tmpl) appendWordNode(abstract, 'tmpl', definition.tmpl);
-    if (definition.styleLink) appendWordNode(abstract, 'styleLink', definition.styleLink);
-    if (definition.numStyleLink) appendWordNode(abstract, 'numStyleLink', definition.numStyleLink);
+    if (definition.nsid) appendWordValueElement(abstract, 'nsid', definition.nsid);
+    if (definition.multiLevelType) appendWordValueElement(abstract, 'multiLevelType', definition.multiLevelType);
+    if (definition.tmpl) appendWordValueElement(abstract, 'tmpl', definition.tmpl);
+    if (definition.styleLink) appendWordValueElement(abstract, 'styleLink', definition.styleLink);
+    if (definition.numStyleLink) appendWordValueElement(abstract, 'numStyleLink', definition.numStyleLink);
     for (const level of levels.sort((a, b) => a.level - b.level)) {
       abstract.appendChild(buildLevelElement(numberingDocument, level));
     }
     insertNumberingNode(numberingRoot, abstract);
     const num = wordElement(numberingDocument, 'num');
     setWordAttr(num, 'numId', numId);
-    appendWordNode(num, 'abstractNumId', abstractNumId);
+    appendWordValueElement(num, 'abstractNumId', abstractNumId);
     insertNumberingNode(numberingRoot, num);
     const hasOverride = children(types.documentElement!, 'Override', CONTENT_TYPES_NS)
       .some(override => override.getAttribute('PartName') === `/${numberingPath}`);

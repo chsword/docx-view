@@ -303,10 +303,11 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
 function effectiveParagraphNumbering(paragraph: Element, styles: Map<string, StyleNumberingReference>): StyleNumberingReference | undefined {
   const props = children(paragraph, 'pPr')[0];
   const numPr = props ? children(props, 'numPr')[0] : undefined;
-  const numId = parseInteger(wordValue(numPr ? children(numPr, 'numId')[0] : undefined));
-  if (numId !== undefined) {
+  if (numPr) {
+    const numId = parseInteger(wordValue(children(numPr, 'numId')[0]));
+    if (numId === undefined) return undefined;
     if (numId < 1) return undefined;
-    return { numId, level: parseInteger(wordValue(children(numPr!, 'ilvl')[0])) ?? 0 };
+    return { numId, level: parseInteger(wordValue(children(numPr, 'ilvl')[0])) ?? 0 };
   }
   const styleId = props ? wordValue(children(props, 'pStyle')[0]) : undefined;
   return styleId ? styles.get(styleId) : undefined;
