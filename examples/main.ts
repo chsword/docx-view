@@ -8,6 +8,24 @@ function element<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
+function applyNumbering(kind: 'bullet' | 'decimal'): void {
+  const index = selectedIndex();
+  const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
+  const numId = doc.createNumbering(kind);
+  doc.setParagraphNumbering(index, numId, paragraph.numbering?.level ?? 0);
+  editor.render();
+  refresh();
+  message(kind === 'bullet' ? '已应用项目符号列表。' : '已应用编号列表。');
+}
+
+function changeNumberingLevel(delta: number): void {
+  const index = selectedIndex();
+  doc.setParagraphLevel(index, delta);
+  editor.render();
+  refresh();
+  message(delta > 0 ? '已提高列表级别。' : '已降低列表级别。');
+}
+
 let doc = createSample();
 let filename = '产品计划.docx';
 let xmlRevision = -1;
@@ -30,6 +48,16 @@ function createSample(): DocxDocument {
   sample.insertParagraph('点击任意段落开始编辑，也可以在右侧运行一组 Agent 指令。所有处理都发生在你的浏览器里，文件不会上传。');
   sample.insertParagraph('02  从一个小计划开始');
   sample.formatRun(5, 0, { bold: true, fontSize: 16, color: '3567D6' });
+  const bullet = sample.createNumbering('bullet');
+  sample.insertParagraph('梳理文档结构与保留策略');
+  sample.setParagraphNumbering(6, bullet);
+  sample.insertParagraph('验证浏览器内可视化编辑体验');
+  sample.setParagraphNumbering(7, bullet);
+  const decimal = sample.createNumbering('multilevel');
+  sample.insertParagraph('第一阶段：实现编号与项目符号');
+  sample.setParagraphNumbering(8, decimal, 0);
+  sample.insertParagraph('解析 numbering.xml 与多级编号');
+  sample.setParagraphNumbering(9, decimal, 1);
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
@@ -68,7 +96,15 @@ function updateSelection(): void {
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
   const alignment = element<HTMLSelectElement>('alignment');
+  const bullet = element<HTMLButtonElement>('list-bullet');
+  const decimal = element<HTMLButtonElement>('list-decimal');
+  const indent = element<HTMLButtonElement>('list-indent');
+  const outdent = element<HTMLButtonElement>('list-outdent');
   size.disabled = color.disabled = alignment.disabled = !paragraph;
+  bullet.disabled = decimal.disabled = !paragraph;
+  indent.disabled = outdent.disabled = !paragraph?.numbering;
+  bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
+  decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
   size.value = paragraph?.runs[0]?.fontSize ? String(paragraph.runs[0].fontSize) : '';
   const runColor = paragraph?.runs[0]?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
@@ -161,6 +197,10 @@ element<HTMLSelectElement>('alignment').addEventListener('change', (event) => {
     message('已更新段落对齐方式。');
   });
 });
+element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
+element('list-decimal').addEventListener('click', () => run(() => applyNumbering('decimal')));
+element('list-indent').addEventListener('click', () => run(() => changeNumberingLevel(1)));
+element('list-outdent').addEventListener('click', () => run(() => changeNumberingLevel(-1)));
 element('add-paragraph').addEventListener('click', () => run(() => {
   editor.flush();
   doc.insertParagraph('在这里写下新的想法。');

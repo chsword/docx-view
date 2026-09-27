@@ -19,6 +19,10 @@ export function assertIndex(value: unknown): asserts value is number {
   }
 }
 
+export function assertInteger(value: unknown, name = 'value'): asserts value is number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} must be a safe integer.`);
+}
+
 export function validateRunFormat(value: unknown): asserts value is RunFormat {
   object(value);
   keys(value, ['bold', 'italic', 'underline', 'fontSize', 'fontFamily', 'color']);
@@ -74,6 +78,18 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'index']); assertIndex(op.index); break;
       case 'formatParagraph':
         keys(op, ['type', 'index', 'format']); assertIndex(op.index); validateParagraphFormat(op.format); break;
+      case 'setParagraphNumbering':
+        keys(op, ['type', 'index', 'numId', 'level']);
+        assertIndex(op.index); assertIndex(op.numId);
+        if ('level' in op) {
+          assertIndex(op.level);
+          if (op.level > 8) throw new Error('level must be between 0 and 8.');
+        }
+        break;
+      case 'clearParagraphNumbering':
+        keys(op, ['type', 'index']); assertIndex(op.index); break;
+      case 'setParagraphLevel':
+        keys(op, ['type', 'index', 'delta']); assertIndex(op.index); assertInteger(op.delta, 'delta'); break;
       case 'formatRun':
         keys(op, ['type', 'paragraph', 'run', 'format']);
         assertIndex(op.paragraph); assertIndex(op.run); validateRunFormat(op.format); break;
@@ -92,6 +108,7 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
 
 const text = { type: 'string', maxLength: 1_000_000 };
 const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const integer = { type: 'integer', minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER };
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
@@ -115,6 +132,9 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('formatParagraph', { index, format: shape({
             alignment: { enum: ['left', 'center', 'right', 'both'] }, style: text,
           }, []) }),
+          operation('setParagraphNumbering', { index, numId: index, level: { ...index, maximum: 8 } }, ['index', 'numId']),
+          operation('clearParagraphNumbering', { index }),
+          operation('setParagraphLevel', { index, delta: integer }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
             bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
             fontSize: { type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 },

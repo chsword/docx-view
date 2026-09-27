@@ -1,8 +1,9 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
+  AgentRequest, DocumentBlock, DocumentSnapshot, NumberingDefinition, NumberingInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
+import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
@@ -15,6 +16,8 @@ const MAX_TOTAL = 64 * 1024 * 1024;
 const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
+const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
+const NUMBERING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering';
 const encoder = new TextEncoder();
 
 function decodeXml(bytes: Uint8Array): string {
@@ -25,6 +28,33 @@ function decodeXml(bytes: Uint8Array): string {
 
 function encodeXml(xml: string): Uint8Array {
   return encoder.encode(xml.replace(/^(<\?xml\b[^?]*\bencoding\s*=\s*)(["'])[^"']*\2/i, '$1"UTF-8"'));
+}
+
+function dirname(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index === -1 ? '' : path.slice(0, index);
+}
+
+function basename(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index === -1 ? path : path.slice(index + 1);
+}
+
+function resolveTarget(basePath: string, target: string): string {
+  const stack = dirname(basePath).split('/').filter(Boolean);
+  for (const segment of target.replace(/^\//, '').split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') stack.pop();
+    else stack.push(segment);
+  }
+  const path = stack.join('/');
+  validatePath(path);
+  return path;
+}
+
+function relationshipsPath(partPath: string): string {
+  const folder = dirname(partPath);
+  return `${folder ? `${folder}/` : ''}_rels/${basename(partPath)}.rels`;
 }
 
 function bodyOf(document: Document): Element {
@@ -61,6 +91,16 @@ function textElements(element: Element): Element[] {
     }
   }
   walk(element);
+  return result;
+}
+
+function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    if (name === 'ilvl') parent.insertBefore(result, children(parent, 'numId')[0] ?? null);
+    else parent.appendChild(result);
+  }
   return result;
 }
 
@@ -192,7 +232,7 @@ function readRun(run: Element, index: number): RunInfo {
   };
 }
 
-function readParagraph(paragraph: Element, index: number): ParagraphInfo {
+function readParagraph(paragraph: Element, index: number, numbering?: NumberingInfo): ParagraphInfo {
   const props = children(paragraph, 'pPr')[0];
   const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
   return {
@@ -200,7 +240,98 @@ function readParagraph(paragraph: Element, index: number): ParagraphInfo {
     style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
     alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
+    numbering,
   };
+}
+
+function setWordAttr(element: Element, name: string, value: string | number): void {
+  element.setAttributeNS(WORD_NS, `w:${name}`, String(value));
+}
+
+function appendWordNode(parent: Element, name: string, value?: string | number): Element {
+  const element = wordElement(parent.ownerDocument!, name);
+  if (value !== undefined) setWordValue(element, String(value));
+  parent.appendChild(element);
+  return element;
+}
+
+function defaultNumberingDefinition(kind: 'bullet' | 'decimal' | 'multilevel'): Omit<NumberingDefinition, 'numId' | 'abstractNumId'> {
+  const makeLevel = (level: number, format: string, text: string, fontFamily?: string): NumberingDefinition['levels'][number] => ({
+    level,
+    start: 1,
+    format,
+    text,
+    suffix: 'tab',
+    justification: level === 0 ? 'left' : undefined,
+    indentLeft: 720 * (level + 1),
+    indentHanging: 360,
+    runFormat: fontFamily ? { fontFamily } : undefined,
+  });
+  if (kind === 'bullet') {
+    return { multiLevelType: 'hybridMultilevel', levels: [makeLevel(0, 'bullet', '•', 'Symbol')] };
+  }
+  if (kind === 'decimal') {
+    return { multiLevelType: 'singleLevel', levels: [makeLevel(0, 'decimal', '%1.')] };
+  }
+  return {
+    multiLevelType: 'multilevel',
+    levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'decimal', Array.from({ length: level + 1 }, (_, index) => `%${index + 1}`).join('.') + '.')),
+  };
+}
+
+function appendRunProperties(parent: Element, format: RunFormat | undefined): void {
+  if (!format) return;
+  const props = wordElement(parent.ownerDocument!, 'rPr');
+  if (format.fontFamily) {
+    const fonts = wordElement(parent.ownerDocument!, 'rFonts');
+    for (const name of ['ascii', 'hAnsi', 'eastAsia', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
+    props.appendChild(fonts);
+  }
+  if (format.bold !== undefined) setWordValue(appendWordNode(props, 'b'), format.bold ? '1' : '0');
+  if (format.italic !== undefined) setWordValue(appendWordNode(props, 'i'), format.italic ? '1' : '0');
+  if (format.color) appendWordNode(props, 'color', format.color);
+  if (format.fontSize !== undefined) {
+    appendWordNode(props, 'sz', format.fontSize * 2);
+    appendWordNode(props, 'szCs', format.fontSize * 2);
+  }
+  if (format.underline !== undefined) appendWordNode(props, 'u', format.underline ? 'single' : 'none');
+  if (props.childNodes.length) parent.appendChild(props);
+}
+
+function buildLevelElement(document: Document, definition: NumberingDefinition['levels'][number]): Element {
+  const level = wordElement(document, 'lvl');
+  setWordAttr(level, 'ilvl', definition.level);
+  appendWordNode(level, 'start', definition.start ?? 1);
+  appendWordNode(level, 'numFmt', definition.format);
+  if (definition.restart !== undefined) appendWordNode(level, 'lvlRestart', definition.restart);
+  if (definition.paragraphStyle) appendWordNode(level, 'pStyle', definition.paragraphStyle);
+  if (definition.isLegal) appendWordNode(level, 'isLgl');
+  appendWordNode(level, 'suff', definition.suffix);
+  appendWordNode(level, 'lvlText', definition.text);
+  if (definition.justification) appendWordNode(level, 'lvlJc', definition.justification);
+  if (definition.indentLeft !== undefined || definition.indentHanging !== undefined) {
+    const props = wordElement(document, 'pPr');
+    const ind = wordElement(document, 'ind');
+    if (definition.indentLeft !== undefined) setWordAttr(ind, 'left', definition.indentLeft);
+    if (definition.indentHanging !== undefined) setWordAttr(ind, 'hanging', definition.indentHanging);
+    props.appendChild(ind);
+    level.appendChild(props);
+  }
+  appendRunProperties(level, definition.runFormat);
+  return level;
+}
+
+function insertNumberingNode(root: Element, node: Element): void {
+  const childrenInRoot = children(root);
+  if (node.localName === 'abstractNum') {
+    root.insertBefore(node, childrenInRoot.find(child => ['num', 'numIdMacAtCleanup'].includes(child.localName ?? '')) ?? null);
+    return;
+  }
+  if (node.localName === 'num') {
+    root.insertBefore(node, childrenInRoot.find(child => child.localName === 'numIdMacAtCleanup') ?? null);
+    return;
+  }
+  root.appendChild(node);
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -363,15 +494,43 @@ export class DocxDocument {
     return path;
   }
 
+  private getNumberingPath(): string | undefined {
+    const relsPath = relationshipsPath(this.mainPath);
+    if (!this.parts.has(relsPath)) return undefined;
+    const rels = this.getPartDocument(relsPath).documentElement;
+    if (!rels || rels.namespaceURI !== REL_NS || rels.localName !== 'Relationships') return undefined;
+    const relationship = children(rels, 'Relationship', REL_NS).find(rel =>
+      rel.getAttribute('Type') === NUMBERING_REL && rel.getAttribute('TargetMode') !== 'External');
+    const target = relationship?.getAttribute('Target');
+    return target ? resolveTarget(this.mainPath, decodeURIComponent(target)) : undefined;
+  }
+
+  private getNumberingDocuments(): { numbering?: Document; styles?: Document } {
+    const numberingPath = this.getNumberingPath();
+    return {
+      numbering: numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined,
+      styles: this.parts.has('word/styles.xml') ? this.getPartDocument('word/styles.xml') : undefined,
+    };
+  }
+
+  private readParagraphs(document = this.getPartDocument(this.mainPath)): { paragraphs: ParagraphInfo[]; infoByElement: Map<Element, ParagraphInfo> } {
+    const paragraphElements = descendants(bodyOf(document), 'p');
+    const { numbering, styles } = this.getNumberingDocuments();
+    const numberingByParagraph = computeParagraphNumbering(paragraphElements, parseNumberingModel(numbering, styles));
+    const paragraphs = paragraphElements.map((paragraph, index) => readParagraph(paragraph, index, numberingByParagraph.get(paragraph)));
+    return { paragraphs, infoByElement: new Map(paragraphElements.map((paragraph, index) => [paragraph, paragraphs[index]!])) };
+  }
+
   getParagraphs(): ParagraphInfo[] {
-    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p').map(readParagraph);
+    return this.readParagraphs().paragraphs;
   }
 
   getBlocks(): DocumentBlock[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
+    const document = this.getPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const { infoByElement } = this.readParagraphs(document);
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
-      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
+      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: infoByElement.get(child)! }];
       if (child.localName === 'tbl') return [{
         type: 'table',
         rows: children(child, 'tr').map(row => ({
@@ -386,6 +545,101 @@ export class DocxDocument {
 
   getSnapshot(): DocumentSnapshot {
     return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts() };
+  }
+
+  getNumberingDefinitions(): NumberingDefinition[] {
+    const { numbering, styles } = this.getNumberingDocuments();
+    return parseNumberingModel(numbering, styles).definitions;
+  }
+
+  setParagraphNumbering(index: number, numId: number, level = 0): void {
+    assertIndex(numId);
+    assertIndex(level);
+    this.updatePartXml(this.mainPath, document => {
+      const props = properties(paragraphAt(document, index), 'pPr');
+      const numPr = property(props, 'numPr');
+      setWordValue(numberingProperty(numPr, 'ilvl'), String(Math.min(8, level)));
+      setWordValue(numberingProperty(numPr, 'numId'), String(numId));
+    });
+  }
+
+  clearParagraphNumbering(index: number): void {
+    this.updatePartXml(this.mainPath, document => {
+      const props = children(paragraphAt(document, index), 'pPr')[0];
+      const numPr = props ? children(props, 'numPr')[0] : undefined;
+      if (props && numPr) props.removeChild(numPr);
+    });
+  }
+
+  setParagraphLevel(index: number, delta: number): void {
+    if (!Number.isSafeInteger(delta)) throw new Error('delta must be a safe integer.');
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    if (!paragraph.numbering) throw new Error('Paragraph does not have numbering.');
+    this.setParagraphNumbering(index, paragraph.numbering.numId, Math.max(0, Math.min(8, paragraph.numbering.level + delta)));
+  }
+
+  createNumbering(kind: 'bullet' | 'decimal' | 'multilevel' | NumberingDefinition): number {
+    const definition = typeof kind === 'string' ? defaultNumberingDefinition(kind) : kind;
+    const next = new Map(this.parts);
+    const types = this.getPartDocument('[Content_Types].xml');
+    const relsPath = relationshipsPath(this.mainPath);
+    const rels = next.has(relsPath)
+      ? this.getPartDocument(relsPath)
+      : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const relElements = children(rels.documentElement!, 'Relationship', REL_NS);
+    let numberingPath = this.getNumberingPath();
+    if (!numberingPath) {
+      numberingPath = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}numbering.xml`;
+      const existingIds = new Set(relElements.map(rel => rel.getAttribute('Id')).filter((value): value is string => Boolean(value)));
+      let relationIndex = 1;
+      while (existingIds.has(`rId${relationIndex}`)) relationIndex++;
+      const relationship = rels.createElementNS(REL_NS, 'Relationship');
+      relationship.setAttribute('Id', `rId${relationIndex}`);
+      relationship.setAttribute('Type', NUMBERING_REL);
+      relationship.setAttribute('Target', basename(numberingPath));
+      rels.documentElement!.appendChild(relationship);
+    }
+    const numberingDocument = next.has(numberingPath)
+      ? this.getPartDocument(numberingPath)
+      : parseXml(`<w:numbering xmlns:w="${WORD_NS}"/>`);
+    const numberingRoot = numberingDocument.documentElement!;
+    const existingAbstractIds = children(numberingRoot, 'abstractNum')
+      .map(element => Number(element.getAttributeNS(WORD_NS, 'abstractNumId')))
+      .filter(Number.isFinite);
+    const existingNumIds = children(numberingRoot, 'num')
+      .map(element => Number(element.getAttributeNS(WORD_NS, 'numId')))
+      .filter(Number.isFinite);
+    const abstractNumId = (existingAbstractIds.length ? Math.max(...existingAbstractIds) : 0) + 1;
+    const numId = (existingNumIds.length ? Math.max(...existingNumIds) : 0) + 1;
+    const abstract = wordElement(numberingDocument, 'abstractNum');
+    setWordAttr(abstract, 'abstractNumId', abstractNumId);
+    if (definition.nsid) appendWordNode(abstract, 'nsid', definition.nsid);
+    if (definition.multiLevelType) appendWordNode(abstract, 'multiLevelType', definition.multiLevelType);
+    if (definition.tmpl) appendWordNode(abstract, 'tmpl', definition.tmpl);
+    if (definition.styleLink) appendWordNode(abstract, 'styleLink', definition.styleLink);
+    if (definition.numStyleLink) appendWordNode(abstract, 'numStyleLink', definition.numStyleLink);
+    for (const level of [...(definition.levels.length ? definition.levels : defaultNumberingDefinition('decimal').levels)].sort((a, b) => a.level - b.level)) {
+      abstract.appendChild(buildLevelElement(numberingDocument, { ...level, level: Math.max(0, Math.min(8, level.level)) }));
+    }
+    insertNumberingNode(numberingRoot, abstract);
+    const num = wordElement(numberingDocument, 'num');
+    setWordAttr(num, 'numId', numId);
+    appendWordNode(num, 'abstractNumId', abstractNumId);
+    insertNumberingNode(numberingRoot, num);
+    const hasOverride = children(types.documentElement!, 'Override', CONTENT_TYPES_NS)
+      .some(override => override.getAttribute('PartName') === `/${numberingPath}`);
+    if (!hasOverride) {
+      const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+      override.setAttribute('PartName', `/${numberingPath}`);
+      override.setAttribute('ContentType', NUMBERING_TYPE);
+      types.documentElement!.appendChild(override);
+    }
+    next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+    next.set(relsPath, encodeXml(serializeXml(rels)));
+    next.set(numberingPath, encodeXml(serializeXml(numberingDocument)));
+    this.commitParts(next);
+    return numId;
   }
 
   setParagraphText(index: number, text: string): void {
@@ -527,6 +781,9 @@ export class DocxDocument {
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
         case 'formatParagraph': draft.formatParagraph(operation.index, operation.format); break;
+        case 'setParagraphNumbering': draft.setParagraphNumbering(operation.index, operation.numId, operation.level); break;
+        case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
+        case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;

@@ -62,8 +62,10 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .paper { min-height: 850px; padding: 53px 48px 65px; max-width: 795px; margin: 0 auto; background: #fff; box-shadow: 0 2px 8px #2939570b, 0 0 0 1px #e9edf3; }
 .docx-editor { font-size: 11pt; line-height: 1.9; overflow-wrap: anywhere; color: #394a61; }
 .docx-paragraph { position: relative; margin: 0 0 16px; border-radius: 2px; outline: 0; tab-size: 4; }
-.docx-paragraph:focus { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
-.docx-paragraph:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
+.docx-paragraph:focus-within { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
+.docx-paragraph-content { display: inline; outline: 0; white-space: inherit; }
+.docx-paragraph-content:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
+.docx-numbering { display: inline-block; min-width: 1.4em; margin-right: .2em; user-select: none; pointer-events: none; white-space: pre; }
 .docx-paragraph[data-style="Title"] { font-size: 26pt; }
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }

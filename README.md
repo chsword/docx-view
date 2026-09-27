@@ -2,7 +2,7 @@
 
 一个面向浏览器和 AI Agent 的 TypeScript / JavaScript DOCX 编辑组件库，包含无需后端的静态 `examples`。
 
-**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式和基础表格的可视化编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。
+**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、编号/项目符号列表和基础表格的可视化编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。
 
 ## 运行
 
@@ -66,6 +66,11 @@ console.log(reopened.getSnapshot());
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
 | `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
 | `formatParagraph(index, format)` | 对齐方式和样式 ID；不会自动创建样式定义 |
+| `getNumberingDefinitions()` | 读取 `word/numbering.xml` 中已解析的编号定义 |
+| `setParagraphNumbering(index, numId, level?)` | 为段落绑定指定编号定义与级别（默认 0） |
+| `clearParagraphNumbering(index)` | 清除段落上的直接编号绑定 |
+| `createNumbering(kind)` | 创建新的项目符号 / 编号 / 多级编号定义并返回新的 `numId` |
+| `setParagraphLevel(index, delta)` | 提高 / 降低段落列表级别，结果钳制在 `0..8` |
 | `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
@@ -93,7 +98,7 @@ editor.render();
 // editor.destroy();
 ```
 
-输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。
+输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。
 
 组件还提供 `selectedParagraph`、`setDocument(doc)` 和 `destroy()`。`docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引。格式工具栏由宿主实现；演示工具栏作用于整段，而不是任意选中的字符范围。
 
@@ -159,7 +164,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。
@@ -169,10 +174,10 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、显式 run 格式、段落对齐和基础表格；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
+当前可视化视图支持正文段落、显式 run 格式、段落对齐、基础表格和基于 `numbering.xml` 的项目符号 / 编号列表；**不承诺与 Word 像素级一致或精确分页**。列表计数目前只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制；样式整体继承、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析完整样式继承。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
 XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点渲染，不将文档 XML 当作 HTML；粘贴仅接受纯文本，不主动加载外部关系目标。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
-测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、表格与分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。
+测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、表格与分节、格式顺序、编号解析与创建、多级编号、style `numPr`、legal numbering、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。
