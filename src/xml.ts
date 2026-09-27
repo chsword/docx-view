@@ -5,6 +5,7 @@ export const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/
 export const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
 export const CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
 export const OFFICE_DOCUMENT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
+export const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 export const MAX_XML_TEXT_LENGTH = 1_000_000;
 const INVALID_XML_TEXT_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/u;
 
@@ -13,7 +14,7 @@ export function parseXml(xml: string): Document {
     throw new Error('DTD and entity declarations are not supported.');
   }
   return new DOMParser({
-    onError: (level, message) => { throw new Error(`Invalid XML (${level}): ${message}`); },
+    onError: (level: string, message: string) => { throw new Error(`Invalid XML (${level}): ${message}`); },
   }).parseFromString(xml, 'application/xml');
 }
 
@@ -74,7 +75,6 @@ export function sanitizeTextWithInfo(text: string): { text: string; truncated: b
     if (tail >= 0xd800 && tail <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
     return { text: text.slice(0, end), truncated: true, truncatedAt: end };
   }
-
   let result = '';
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index);

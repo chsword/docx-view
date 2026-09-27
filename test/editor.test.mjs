@@ -4,15 +4,16 @@ import { DocxDocument } from '../dist/document.js';
 import { DocxEditor } from '../dist/editor.js';
 import { sanitizeTextWithInfo } from '../dist/xml.js';
 
-function makeFlushEditor({ text, previous = '', options = {}, document = DocxDocument.create() }) {
+function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.document = document;
   editor.options = options;
-  const element = { text };
-  editor.paragraphs = new Map([[0, { element, text: previous, failed: false }]]);
+  const element = { text: elementText };
+  const content = { text };
+  editor.paragraphs = new Map([[0, { element, content, text: previous, failed: false }]]);
   editor.readText = (entry) => entry.text;
-  return { editor, element, document };
+  return { editor, element, content, document };
 }
 
 test('flush sanitizes disallowed control characters before commit', () => {
@@ -37,6 +38,12 @@ test('flush preserves tab and newline text', () => {
   const { editor, document } = makeFlushEditor({ text: 'a\tb\nc' });
   assert.doesNotThrow(() => editor.flush());
   assert.equal(document.getParagraphs()[0].text, 'a\tb\nc');
+});
+
+test('flush reads inner content text instead of outer paragraph wrapper text', () => {
+  const { editor, document } = makeFlushEditor({ text: '用户文本', elementText: '1. 用户文本' });
+  assert.doesNotThrow(() => editor.flush());
+  assert.equal(document.getParagraphs()[0].text, '用户文本');
 });
 
 test('flush truncates overlong input, reports once, and commits legal text', () => {
@@ -147,8 +154,10 @@ test('setDocument and destroy remain usable after flush commit failures', () => 
   const removed = [];
   let rootRemoved = false;
   editor.handleSelection = () => {};
+  editor.handleRootKeydown = () => {};
   editor.root = {
     ownerDocument: { removeEventListener: (...args) => removed.push(args) },
+    removeEventListener: (...args) => removed.push(args),
     remove: () => { rootRemoved = true; },
   };
   const next = DocxDocument.create();
@@ -159,8 +168,9 @@ test('setDocument and destroy remain usable after flush commit failures', () => 
   assert.equal(editor.destroyed, true);
   assert.equal(editor.paragraphs.size, 0);
   assert.equal(rootRemoved, true);
-  assert.equal(removed.length, 1);
+  assert.equal(removed.length, 2);
   assert.equal(removed[0][0], 'selectionchange');
+  assert.equal(removed[1][0], 'keydown');
 });
 
 test('sanitizeTextWithInfo preserves surrogate pairs when truncating at max length', () => {
