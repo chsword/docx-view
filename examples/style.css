@@ -54,6 +54,7 @@ h1 { font-size: 29px; line-height: 1.3; font-weight: 650; letter-spacing: 1px; m
 .text-underline { text-decoration: underline; }
 .tool.wide { font-family: inherit; font-size: 11px; white-space: nowrap; }
 select { border: 1px solid var(--border); border-radius: 5px; color: #536077; background: #fff; min-height: 30px; padding: 4px 7px; font-size: 11px; max-width: 100%; }
+input { border: 1px solid var(--border); border-radius: 5px; color: #536077; background: #fff; min-height: 30px; padding: 4px 7px; font-size: 11px; max-width: 100%; }
 .color-control { position: relative; display: grid; place-items: center; width: 30px; height: 30px; overflow: hidden; }
 .color-control input { position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
 .color-control span { font: 16px Georgia, serif; border-bottom: 3px solid var(--accent); pointer-events: none; }
@@ -62,16 +63,32 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .paper { min-height: 850px; padding: 53px 48px 65px; max-width: 795px; margin: 0 auto; background: #fff; box-shadow: 0 2px 8px #2939570b, 0 0 0 1px #e9edf3; }
 .docx-editor { font-size: 11pt; line-height: 1.9; overflow-wrap: anywhere; color: #394a61; }
 .docx-paragraph { position: relative; margin: 0 0 16px; border-radius: 2px; outline: 0; tab-size: 4; }
-.docx-paragraph:focus { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
-.docx-paragraph:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
+.docx-paragraph:focus-within { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
+.docx-paragraph-content { display: inline; outline: 0; white-space: inherit; }
+.docx-paragraph-content:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
+.docx-numbering { display: inline-block; min-width: 1.4em; user-select: none; pointer-events: none; white-space: pre; }
+.docx-numbering[data-suffix="space"] { margin-right: .2em; }
+.docx-numbering[data-suffix="tab"] { margin-right: .75em; }
+.docx-image { box-shadow: inset 0 0 0 1px #d9e2f1; background: #f8fbff; }
+.docx-image.selected, .docx-image:focus { outline: 2px solid #80a3ed; outline-offset: 2px; }
+.docx-image-handle { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: #3567d6; border: 1px solid #fff; box-shadow: 0 0 0 1px #b7c7e6; }
+.docx-image-handle-nw { left: -4px; top: -4px; cursor: nwse-resize; }
+.docx-image-handle-n { left: calc(50% - 4px); top: -4px; cursor: ns-resize; }
+.docx-image-handle-ne { right: -4px; top: -4px; cursor: nesw-resize; }
+.docx-image-handle-e { right: -4px; top: calc(50% - 4px); cursor: ew-resize; }
+.docx-image-handle-se { right: -4px; bottom: -4px; cursor: nwse-resize; }
+.docx-image-handle-s { left: calc(50% - 4px); bottom: -4px; cursor: ns-resize; }
+.docx-image-handle-sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
+.docx-image-handle-w { left: -4px; top: calc(50% - 4px); cursor: ew-resize; }
 .docx-paragraph[data-style="Title"] { font-size: 26pt; }
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }
 .docx-note-ref { font-size: 0.75em; vertical-align: super; user-select: none; pointer-events: none; color: #4b5f82; }
 .docx-note-ref::before { content: attr(data-note-marker); }
 .docx-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 21px 0 26px; font-size: 10pt; }
+.docx-table caption { caption-side: top; text-align: left; color: #7b879a; font-size: 10px; padding-bottom: 6px; }
 .docx-table td { border: 1px solid #dbe3ed; padding: 10px 11px; vertical-align: top; }
-.docx-table tr:first-child td { background: #f3f6fb; }
+.docx-table tr:first-child td, .docx-table tr[data-header="true"] td { background: #f3f6fb; }
 .docx-table .docx-paragraph { margin: 0; }
 .document-footer { display: flex; gap: 10px; justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); font-size: 10px; color: #8693a7; }
 .document-footer b { font-weight: 400; margin: 0 10px; color: #c7d0dd; }

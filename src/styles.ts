@@ -1,0 +1,552 @@
+import type { Element } from '@xmldom/xmldom';
+import type { ParagraphFormat, RunFormat, StyleInfo } from './types.js';
+import { WORD_NS, children, wordValue } from './xml.js';
+
+const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+
+const DEFAULT_THEME_COLORS: Record<string, string> = {
+  dk1: '000000',
+  lt1: 'FFFFFF',
+  dk2: '1F1F1F',
+  lt2: 'EEECE1',
+  accent1: '4472C4',
+  accent2: 'ED7D31',
+  accent3: 'A5A5A5',
+  accent4: 'FFC000',
+  accent5: '5B9BD5',
+  accent6: '70AD47',
+  hlink: '0563C1',
+  folHlink: '954F72',
+};
+
+const DEFAULT_THEME_FONTS: Record<string, string> = {
+  majorAscii: 'Cambria',
+  majorHAnsi: 'Cambria',
+  majorEastAsia: 'Cambria',
+  majorBidi: 'Times New Roman',
+  minorAscii: 'Calibri',
+  minorHAnsi: 'Calibri',
+  minorEastAsia: 'Calibri',
+  minorBidi: 'Arial',
+};
+
+type StyleType = StyleInfo['type'];
+type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol' | 'band1Horz' | 'band2Horz';
+
+interface ThemeInfo {
+  colors: Record<string, string>;
+  fonts: Record<string, string>;
+}
+
+interface TableStyleLayer {
+  paragraph?: ParagraphFormat;
+  run?: RunFormat;
+}
+
+interface TableMeta {
+  rows: Element[];
+  rowIndex: Map<Element, number>;
+  cellIndex: WeakMap<Element, number>;
+  look?: Element;
+  rowBandSize: number;
+}
+
+interface TableContext {
+  conditions: TableCondition[];
+  chain: ParsedStyle[];
+}
+
+interface ParagraphContext {
+  direct: ParagraphFormat;
+  paragraphStyles: ParsedStyle[];
+  tableParagraph: ParagraphFormat[];
+  tableRun: RunFormat[];
+  effectiveParagraph: ParagraphFormat;
+}
+
+interface ParsedStyle extends StyleInfo {
+  conditions?: Partial<Record<TableCondition, TableStyleLayer>>;
+}
+
+export interface StylesContext {
+  docDefaults: {
+    paragraph: ParagraphFormat;
+    run: RunFormat;
+  };
+  styles: StyleInfo[];
+  byId: Map<string, ParsedStyle>;
+  defaults: Partial<Record<StyleType, string>>;
+  theme: ThemeInfo;
+  _tableMeta?: WeakMap<Element, TableMeta>;
+  _tableContext?: WeakMap<Element, TableContext>;
+  _paragraphContext?: WeakMap<Element, ParagraphContext>;
+}
+
+function wordAttr(element: Element | undefined, name: string): string | undefined {
+  return element?.getAttributeNS(WORD_NS, name) ?? undefined;
+}
+
+function normalizeHex(value: string | undefined): string | undefined {
+  return value && /^[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : undefined;
+}
+
+function readOnOff(element: Element | undefined): boolean | undefined {
+  if (!element) return undefined;
+  const value = (wordValue(element) ?? '1').toLowerCase();
+  return ['0', 'false', 'off'].includes(value) ? false : true;
+}
+
+function readNumber(value: string | undefined): number | undefined {
+  return value !== undefined && /^-?\d+$/.test(value) ? Number(value) : undefined;
+}
+
+function cloneParagraphFormat(format: ParagraphFormat | undefined): ParagraphFormat | undefined {
+  return format ? { ...format } : undefined;
+}
+
+function cloneRunFormat(format: RunFormat | undefined): RunFormat | undefined {
+  return format ? { ...format } : undefined;
+}
+
+function mergeParagraphFormats(...formats: Array<ParagraphFormat | undefined>): ParagraphFormat {
+  const merged: ParagraphFormat = {};
+  for (const format of formats) {
+    if (!format) continue;
+    for (const [key, value] of Object.entries(format) as Array<[keyof ParagraphFormat, ParagraphFormat[keyof ParagraphFormat]]>) {
+      if (value !== undefined && value !== null) (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeRunFormats(...formats: Array<RunFormat | undefined>): RunFormat {
+  const merged: RunFormat = {};
+  for (const format of formats) {
+    if (!format) continue;
+    for (const [key, value] of Object.entries(format) as Array<[keyof RunFormat, RunFormat[keyof RunFormat]]>) {
+      if (value !== undefined && value !== null) (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
+function rgbToHsl(red: number, green: number, blue: number): [number, number, number] {
+  const r = red / 255;
+  const g = green / 255;
+  const b = blue / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return [0, 0, lightness];
+  const delta = max - min;
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  const hue = (
+    max === r ? (g - b) / delta + (g < b ? 6 : 0)
+      : max === g ? (b - r) / delta + 2
+        : (r - g) / delta + 4
+  ) / 6;
+  return [hue, saturation, lightness];
+}
+
+function hueToRgb(low: number, high: number, hue: number): number {
+  if (hue < 0) hue += 1;
+  if (hue > 1) hue -= 1;
+  if (hue < 1 / 6) return low + (high - low) * 6 * hue;
+  if (hue < 1 / 2) return high;
+  if (hue < 2 / 3) return low + (high - low) * (2 / 3 - hue) * 6;
+  return low;
+}
+
+function hslToRgb(hue: number, saturation: number, lightness: number): [number, number, number] {
+  if (saturation === 0) {
+    const value = Math.floor(lightness * 255);
+    return [value, value, value];
+  }
+  const high = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const low = 2 * lightness - high;
+  return [
+    Math.floor(hueToRgb(low, high, hue + 1 / 3) * 255),
+    Math.floor(hueToRgb(low, high, hue) * 255),
+    Math.floor(hueToRgb(low, high, hue - 1 / 3) * 255),
+  ];
+}
+
+function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined): string | undefined {
+  const base = normalizeHex(hex);
+  if (!base) return undefined;
+  const shadeValue = shade && /^[0-9a-f]{2}$/i.test(shade) ? parseInt(shade, 16) / 255 : undefined;
+  const tintValue = tint && /^[0-9a-f]{2}$/i.test(tint) ? parseInt(tint, 16) / 255 : undefined;
+  if (shadeValue === undefined && tintValue === undefined) return base;
+  const channels = base.match(/../g)!.map((channel) => parseInt(channel, 16));
+  const [hue, saturation, lightness] = rgbToHsl(channels[0]!, channels[1]!, channels[2]!);
+  let transformedLightness = lightness;
+  if (shadeValue !== undefined) transformedLightness *= shadeValue;
+  if (tintValue !== undefined) transformedLightness = transformedLightness * tintValue + (1 - tintValue);
+  const transformed = hslToRgb(hue, saturation, Math.max(0, Math.min(1, transformedLightness)));
+  return transformed.map((channel) => channel.toString(16).padStart(2, '0').toUpperCase()).join('');
+}
+
+function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
+  if (!element) return undefined;
+  const direct = normalizeHex(wordAttr(element, 'val'));
+  if (direct && direct.toLowerCase() !== 'auto') return direct;
+  const themeColor = {
+    text1: 'dk1',
+    background1: 'lt1',
+    text2: 'dk2',
+    background2: 'lt2',
+  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
+  return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
+}
+
+function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
+  if (!element) return undefined;
+  const direct = normalizeHex(wordAttr(element, 'color'));
+  if (direct && direct.toLowerCase() !== 'auto') return direct;
+  const themeColor = {
+    text1: 'dk1',
+    background1: 'lt1',
+    text2: 'dk2',
+    background2: 'lt2',
+  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
+  return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
+}
+
+function resolveThemeFont(theme: ThemeInfo, value: string | undefined, fallback?: string): string | undefined {
+  return value ? theme.fonts[value] ?? fallback : fallback;
+}
+
+function readFontFamily(theme: ThemeInfo, fonts: Element | undefined): { fontFamily?: string; fontFamilyEastAsia?: string } {
+  if (!fonts) return {};
+  const ascii = wordAttr(fonts, 'ascii') ?? wordAttr(fonts, 'hAnsi');
+  const eastAsia = wordAttr(fonts, 'eastAsia');
+  const fontFamily = ascii
+    ?? resolveThemeFont(theme, wordAttr(fonts, 'asciiTheme') ?? wordAttr(fonts, 'hAnsiTheme'))
+    ?? resolveThemeFont(theme, wordAttr(fonts, 'eastAsiaTheme'))
+    ?? eastAsia;
+  const fontFamilyEastAsia = eastAsia
+    ?? resolveThemeFont(theme, wordAttr(fonts, 'eastAsiaTheme'), fontFamily);
+  return { fontFamily, fontFamilyEastAsia };
+}
+
+export function readParagraphProperties(props: Element | undefined): ParagraphFormat {
+  if (!props) return {};
+  const spacing = children(props, 'spacing')[0];
+  const indent = children(props, 'ind')[0];
+  const alignment = wordValue(children(props, 'jc')[0]);
+  return {
+    style: wordValue(children(props, 'pStyle')[0]),
+    alignment: ['left', 'center', 'right', 'both', 'distribute'].includes(alignment ?? '')
+      ? alignment as ParagraphFormat['alignment'] : undefined,
+    indentLeft: readNumber(wordAttr(indent, 'left') ?? wordAttr(indent, 'start')),
+    indentRight: readNumber(wordAttr(indent, 'right') ?? wordAttr(indent, 'end')),
+    indentFirstLine: readNumber(wordAttr(indent, 'firstLine')),
+    indentHanging: readNumber(wordAttr(indent, 'hanging')),
+    spacingBefore: readNumber(wordAttr(spacing, 'before')),
+    spacingAfter: readNumber(wordAttr(spacing, 'after')),
+    lineSpacing: readNumber(wordAttr(spacing, 'line')),
+    lineSpacingRule: wordAttr(spacing, 'lineRule') as ParagraphFormat['lineSpacingRule'] | undefined,
+    keepNext: readOnOff(children(props, 'keepNext')[0]),
+    keepLines: readOnOff(children(props, 'keepLines')[0]),
+    pageBreakBefore: readOnOff(children(props, 'pageBreakBefore')[0]),
+    widowControl: readOnOff(children(props, 'widowControl')[0]),
+    outlineLevel: readNumber(wordValue(children(props, 'outlineLvl')[0])),
+  };
+}
+
+export function readRunProperties(props: Element | undefined, theme: StylesContext['theme']): RunFormat {
+  if (!props) return {};
+  const underline = children(props, 'u')[0];
+  const underlineValue = wordValue(underline);
+  const size = wordValue(children(props, 'sz')[0]) ?? wordValue(children(props, 'szCs')[0]);
+  const fonts = children(props, 'rFonts')[0];
+  return {
+    style: wordValue(children(props, 'rStyle')[0]),
+    bold: readOnOff(children(props, 'b')[0]),
+    italic: readOnOff(children(props, 'i')[0]),
+    underline: underline ? !['none', '0', 'false'].includes((underlineValue ?? 'single').toLowerCase()) : undefined,
+    underlineStyle: underline && underlineValue && !['0', 'false', 'none'].includes(underlineValue.toLowerCase()) ? underlineValue : undefined,
+    underlineColor: resolveUnderlineColor(theme, underline),
+    fontSize: size && Number.isFinite(Number(size)) ? Number(size) / 2 : undefined,
+    ...readFontFamily(theme, fonts),
+    color: resolveThemeColor(theme, children(props, 'color')[0]),
+    strike: readOnOff(children(props, 'strike')[0]),
+    doubleStrike: readOnOff(children(props, 'dstrike')[0]),
+    verticalAlign: wordValue(children(props, 'vertAlign')[0]) as RunFormat['verticalAlign'] | undefined,
+    smallCaps: readOnOff(children(props, 'smallCaps')[0]),
+    allCaps: readOnOff(children(props, 'caps')[0]),
+    highlight: wordValue(children(props, 'highlight')[0]) ?? undefined,
+    characterSpacing: readNumber(wordValue(children(props, 'spacing')[0])),
+  };
+}
+
+function themeColorValue(node: Element | undefined): string | undefined {
+  if (!node) return undefined;
+  return normalizeHex(node.getAttribute('val') ?? undefined)
+    ?? normalizeHex(node.getAttribute('lastClr') ?? undefined);
+}
+
+function parseTheme(themeElement: Element | undefined): ThemeInfo {
+  if (!themeElement) return { colors: { ...DEFAULT_THEME_COLORS }, fonts: { ...DEFAULT_THEME_FONTS } };
+  const colorScheme = Array.from(themeElement.getElementsByTagNameNS(DRAWINGML_NS, 'clrScheme'))[0];
+  const fontScheme = Array.from(themeElement.getElementsByTagNameNS(DRAWINGML_NS, 'fontScheme'))[0];
+  const colors = { ...DEFAULT_THEME_COLORS };
+  if (colorScheme) {
+    for (const name of Object.keys(colors)) {
+      const entry = Array.from(colorScheme.childNodes).find((child) =>
+        child.nodeType === 1 && (child as Element).localName === name) as Element | undefined;
+      const value = themeColorValue(
+        entry ? Array.from(entry.childNodes).find((child) => child.nodeType === 1) as Element | undefined : undefined,
+      );
+      if (value) colors[name] = value;
+    }
+  }
+  const fonts = { ...DEFAULT_THEME_FONTS };
+  const fontSections = [
+    ['majorFont', 'major'],
+    ['minorFont', 'minor'],
+  ] as const;
+  for (const [sectionName, prefix] of fontSections) {
+    const section = fontScheme
+      ? Array.from(fontScheme.childNodes).find((child) => child.nodeType === 1 && (child as Element).localName === sectionName) as Element | undefined
+      : undefined;
+    const latin = section ? Array.from(section.getElementsByTagNameNS(DRAWINGML_NS, 'latin'))[0] : undefined;
+    const ea = section ? Array.from(section.getElementsByTagNameNS(DRAWINGML_NS, 'ea'))[0] : undefined;
+    const cs = section ? Array.from(section.getElementsByTagNameNS(DRAWINGML_NS, 'cs'))[0] : undefined;
+    const latinTypeface = latin?.getAttribute('typeface') || fonts[`${prefix}Ascii`] || '';
+    fonts[`${prefix}Ascii`] = latinTypeface;
+    fonts[`${prefix}HAnsi`] = latinTypeface;
+    fonts[`${prefix}EastAsia`] = ea?.getAttribute('typeface') || latinTypeface;
+    fonts[`${prefix}Bidi`] = cs?.getAttribute('typeface') || fonts[`${prefix}Bidi`] || latinTypeface;
+  }
+  return { colors, fonts };
+}
+
+function parseStyleType(value: string | undefined): StyleType | undefined {
+  return ['paragraph', 'character', 'table', 'numbering'].includes(value ?? '') ? value as StyleType : undefined;
+}
+
+export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element): StylesContext {
+  const theme = parseTheme(themeRoot);
+  if (!stylesRoot || stylesRoot.namespaceURI !== WORD_NS || stylesRoot.localName !== 'styles') {
+    return { docDefaults: { paragraph: {}, run: {} }, styles: [], byId: new Map(), defaults: {}, theme };
+  }
+  const docDefaults = children(stylesRoot, 'docDefaults')[0];
+  const paragraphDefault = readParagraphProperties(children(children(docDefaults ?? stylesRoot, 'pPrDefault')[0] ?? stylesRoot, 'pPr')[0]);
+  const runDefault = readRunProperties(children(children(docDefaults ?? stylesRoot, 'rPrDefault')[0] ?? stylesRoot, 'rPr')[0], theme);
+  const styles: ParsedStyle[] = [];
+  const defaults: Partial<Record<StyleType, string>> = {};
+  for (const styleElement of children(stylesRoot, 'style')) {
+    const type = parseStyleType(wordAttr(styleElement, 'type'));
+    const id = wordAttr(styleElement, 'styleId');
+    if (!type || !id) continue;
+    const style: ParsedStyle = {
+      id,
+      name: wordValue(children(styleElement, 'name')[0]) ?? id,
+      type,
+      basedOn: wordValue(children(styleElement, 'basedOn')[0]) ?? undefined,
+      next: wordValue(children(styleElement, 'next')[0]) ?? undefined,
+      link: wordValue(children(styleElement, 'link')[0]) ?? undefined,
+      aliases: (wordValue(children(styleElement, 'aliases')[0]) ?? '')
+        .split(',').map((value) => value.trim()).filter(Boolean),
+      isDefault: ['1', 'true', 'on'].includes((wordAttr(styleElement, 'default') ?? '').toLowerCase()) || undefined,
+      quickFormat: !!children(styleElement, 'qFormat')[0] || undefined,
+      paragraph: cloneParagraphFormat(readParagraphProperties(children(styleElement, 'pPr')[0])),
+      run: cloneRunFormat(readRunProperties(children(styleElement, 'rPr')[0], theme)),
+      conditions: {},
+    };
+    for (const conditionElement of children(styleElement, 'tblStylePr')) {
+      const condition = wordAttr(conditionElement, 'type') as TableCondition | undefined;
+      if (!condition || !['firstRow', 'lastRow', 'firstCol', 'lastCol', 'band1Horz', 'band2Horz'].includes(condition)) continue;
+      style.conditions![condition] = {
+        paragraph: cloneParagraphFormat(readParagraphProperties(children(conditionElement, 'pPr')[0])),
+        run: cloneRunFormat(readRunProperties(children(conditionElement, 'rPr')[0], theme)),
+      };
+    }
+    if (style.isDefault && !defaults[type]) defaults[type] = id;
+    styles.push(style);
+  }
+  return {
+    docDefaults: { paragraph: paragraphDefault, run: runDefault },
+    styles,
+    byId: new Map(styles.map((style) => [style.id, style])),
+    defaults,
+    theme,
+  };
+}
+
+function resolveStyleChain(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
+  const chain: ParsedStyle[] = [];
+  const seen = new Set<string>();
+  let currentId = id;
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    const style = context.byId.get(currentId);
+    if (!style || style.type !== type) break;
+    chain.unshift(style);
+    currentId = style.basedOn;
+  }
+  return chain;
+}
+
+function resolveStyleChainOrDefault(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
+  const explicit = resolveStyleChain(context, id, type);
+  if (explicit.length) return explicit;
+  if (context.defaults[type] && context.defaults[type] !== id) return resolveStyleChain(context, context.defaults[type], type);
+  return explicit;
+}
+
+function closestAncestor(element: Element, localName: string): Element | undefined {
+  let current = element.parentNode;
+  while (current) {
+    if (current.nodeType === 1) {
+      const candidate = current as Element;
+      if (candidate.namespaceURI === WORD_NS && candidate.localName === localName) return candidate;
+    }
+    current = current.parentNode;
+  }
+  return undefined;
+}
+
+function readLookFlag(look: Element | undefined, name: string, defaultValue: boolean): boolean {
+  const value = wordAttr(look, name);
+  if (value === undefined) return defaultValue;
+  return !['0', 'false', 'off'].includes(value.toLowerCase());
+}
+
+function tableMeta(context: StylesContext, table: Element): TableMeta {
+  const cache = context._tableMeta ??= new WeakMap<Element, TableMeta>();
+  const existing = cache.get(table);
+  if (existing) return existing;
+  const rows = children(table, 'tr');
+  const rowIndex = new Map<Element, number>();
+  const cellIndex = new WeakMap<Element, number>();
+  rows.forEach((row, index) => {
+    rowIndex.set(row, index);
+    children(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
+  });
+  const tableProps = children(table, 'tblPr')[0];
+  const rowBandSize = Math.max(1, readNumber(wordValue(children(tableProps ?? table, 'tblStyleRowBandSize')[0])) ?? 1);
+  const meta = { rows, rowIndex, cellIndex, look: children(tableProps ?? table, 'tblLook')[0], rowBandSize };
+  cache.set(table, meta);
+  return meta;
+}
+
+function tableContext(context: StylesContext, paragraph: Element): TableContext {
+  const cache = context._tableContext ??= new WeakMap<Element, TableContext>();
+  const existing = cache.get(paragraph);
+  if (existing) return existing;
+  const table = closestAncestor(paragraph, 'tbl');
+  if (!table) {
+    const empty = { conditions: [], chain: [] };
+    cache.set(paragraph, empty);
+    return empty;
+  }
+  const cell = closestAncestor(paragraph, 'tc');
+  const row = closestAncestor(paragraph, 'tr');
+  if (!cell || !row) {
+    const empty = { conditions: [], chain: [] };
+    cache.set(paragraph, empty);
+    return empty;
+  }
+  const meta = tableMeta(context, table);
+  const rowPosition = meta.rowIndex.get(row) ?? -1;
+  const cellPosition = meta.cellIndex.get(cell) ?? -1;
+  const conditions: TableCondition[] = [];
+  const look = meta.look;
+  const firstRow = readLookFlag(look, 'firstRow', false);
+  const lastRow = readLookFlag(look, 'lastRow', false);
+  const firstColumn = readLookFlag(look, 'firstColumn', false);
+  const lastColumn = readLookFlag(look, 'lastColumn', false);
+  if (rowPosition === 0 && firstRow) conditions.push('firstRow');
+  if (rowPosition === meta.rows.length - 1 && lastRow) conditions.push('lastRow');
+  const cellCount = children(row, 'tc').length;
+  if (cellPosition === 0 && firstColumn) conditions.push('firstCol');
+  if (cellPosition === cellCount - 1 && lastColumn) conditions.push('lastCol');
+  if (!readLookFlag(look, 'noHBand', false)) {
+    const bandStart = firstRow ? 1 : 0;
+    const bandEnd = meta.rows.length - (lastRow ? 1 : 0);
+    if (rowPosition >= bandStart && rowPosition < bandEnd) {
+      const bandIndex = Math.floor((rowPosition - bandStart) / meta.rowBandSize);
+      conditions.push(bandIndex % 2 === 0 ? 'band1Horz' : 'band2Horz');
+    }
+  }
+  const styleId = wordValue(children(children(table, 'tblPr')[0] ?? table, 'tblStyle')[0]) ?? undefined;
+  const resolved = { conditions, chain: resolveStyleChainOrDefault(context, styleId, 'table') };
+  cache.set(paragraph, resolved);
+  return resolved;
+}
+
+function tableParagraphFormats(context: StylesContext, paragraph: Element): ParagraphFormat[] {
+  const { conditions, chain } = tableContext(context, paragraph);
+  const formats: ParagraphFormat[] = [];
+  for (const style of chain) {
+    formats.push(style.paragraph ?? {});
+    for (const condition of conditions) {
+      if (style.conditions?.[condition]?.paragraph) formats.push(style.conditions[condition]!.paragraph!);
+    }
+  }
+  return formats;
+}
+
+function tableRunFormats(context: StylesContext, paragraph: Element): RunFormat[] {
+  const { conditions, chain } = tableContext(context, paragraph);
+  const formats: RunFormat[] = [];
+  for (const style of chain) {
+    formats.push(style.run ?? {});
+    for (const condition of conditions) {
+      if (style.conditions?.[condition]?.run) formats.push(style.conditions[condition]!.run!);
+    }
+  }
+  return formats;
+}
+
+function paragraphContext(context: StylesContext, paragraph: Element): ParagraphContext {
+  const cache = context._paragraphContext ??= new WeakMap<Element, ParagraphContext>();
+  const existing = cache.get(paragraph);
+  if (existing) return existing;
+  const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
+  const paragraphStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'paragraph');
+  const tableParagraph = tableParagraphFormats(context, paragraph);
+  const tableRun = tableRunFormats(context, paragraph);
+  const resolved = {
+    direct,
+    paragraphStyles,
+    tableParagraph,
+    tableRun,
+    effectiveParagraph: mergeParagraphFormats(
+      context.docDefaults.paragraph,
+      ...tableParagraph,
+      ...paragraphStyles.map((style) => style.paragraph),
+      direct,
+    ),
+  };
+  cache.set(paragraph, resolved);
+  return resolved;
+}
+
+export function computeEffectiveParagraphFormat(context: StylesContext, paragraph: Element): ParagraphFormat {
+  return paragraphContext(context, paragraph).effectiveParagraph;
+}
+
+export function computeEffectiveRunFormat(context: StylesContext, paragraph: Element, run: Element): RunFormat {
+  const direct = readRunProperties(children(run, 'rPr')[0], context.theme);
+  const resolvedParagraph = paragraphContext(context, paragraph);
+  const characterStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'character');
+  return mergeRunFormats(
+    context.docDefaults.run,
+    ...resolvedParagraph.tableRun,
+    ...resolvedParagraph.paragraphStyles.map((style) => style.run),
+    ...characterStyles.map((style) => style.run),
+    direct,
+  );
+}
+
+export function cloneStyleInfo(style: StyleInfo): StyleInfo {
+  return {
+    ...style,
+    aliases: style.aliases ? [...style.aliases] : undefined,
+    paragraph: cloneParagraphFormat(style.paragraph),
+    run: cloneRunFormat(style.run),
+  };
+}
