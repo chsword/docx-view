@@ -1,0 +1,56 @@
+name: Deploy examples to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check types
+        run: npm run check
+      - name: Test library
+        run: npm test
+      - name: Build static examples
+        run: npm run build:examples
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3.0.1
+        with:
+          path: examples-dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5.0.0
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4.0.5

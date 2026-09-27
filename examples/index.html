@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eef2f7" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%233567d6'/%3E%3Ctext x='20' y='28' text-anchor='middle' font-size='26' fill='white'%3E纸%3C/text%3E%3C/svg%3E" />
+    <title>纸间 · DOCX 编辑工作台</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="纸间首页"><span class="brand-icon">纸</span><span>纸间 <small>DOCX STUDIO</small></span></a>
+        <div class="top-actions">
+          <span class="privacy"><i></i> 文件仅在本地浏览器处理</span>
+          <button id="new-document" class="button">新建文档</button>
+          <button id="open-document" class="button">打开 DOCX</button>
+          <button id="download-document" class="button primary">↓ 下载 DOCX</button>
+          <input id="file-input" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+        </div>
+      </header>
+
+      <main>
+        <section class="intro">
+          <div><div class="eyebrow">LOCAL FIRST · OPEN XML · AGENT READY</div><h1>让文档，保持开放。</h1><p>可视化编辑、底层 XML 与 AI 指令，在同一张工作台相遇。</p></div>
+          <span class="version-pill">开源编辑器 / 技术预览</span>
+        </section>
+        <div id="status" class="status" role="status" aria-live="polite">已准备好。点击正文开始编辑。</div>
+        <section class="workspace" aria-label="文档工作台">
+          <div class="document-panel">
+            <div class="document-heading"><div><span class="file-icon">W</span><span id="document-name">产品计划.docx</span></div><span class="local-badge">本地文档</span></div>
+            <div class="toolbar" role="toolbar" aria-label="段落格式工具栏">
+              <div class="tool-group">
+                <button class="tool text-bold" id="format-bold" aria-label="整段加粗" title="整段加粗" aria-pressed="false">B</button>
+                <button class="tool text-italic" id="format-italic" aria-label="整段斜体" title="整段斜体" aria-pressed="false">I</button>
+                <button class="tool text-underline" id="format-underline" aria-label="整段下划线" title="整段下划线" aria-pressed="false">U</button>
+              </div>
+              <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
+              <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option></select></div>
+              <div class="tool-group insert-tools"><button id="add-paragraph" class="tool wide">＋ 段落</button><button id="add-table" class="tool wide">⊞ 表格</button></div>
+            </div>
+            <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>
+            <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>
+          </div>
+
+          <aside class="inspector">
+            <div class="inspector-heading"><span class="eyebrow">DEVELOPER WORKSPACE</span><h2>不止于所见</h2><p>同一份文档，三种操作方式。</p></div>
+            <div class="tabs" role="tablist" aria-label="开发者工具">
+              <button id="tab-agent" class="tab active" role="tab" aria-selected="true" aria-controls="panel-agent">Agent 指令</button>
+              <button id="tab-xml" class="tab" role="tab" aria-selected="false" aria-controls="panel-xml" tabindex="-1">OOXML</button>
+              <button id="tab-snapshot" class="tab" role="tab" aria-selected="false" aria-controls="panel-snapshot" tabindex="-1">文档快照</button>
+            </div>
+            <section id="panel-agent" class="tab-panel" role="tabpanel" aria-labelledby="tab-agent">
+              <div class="panel-title"><h3>用结构化指令编辑</h3><span class="code-badge">JSON</span></div>
+              <p class="panel-description">直接调用 <code>applyOperations()</code>。批量修改与修订校验，让 Agent 操作可控。</p>
+              <label for="agent-input" class="field-label">请求内容</label><textarea id="agent-input" class="code-editor" spellcheck="false" aria-describedby="agent-hint"></textarea>
+              <div class="panel-actions"><button id="reset-agent" class="button subtle">填入当前修订示例</button><button id="apply-agent" class="button primary">运行指令 →</button></div>
+              <p id="agent-hint" class="hint">段落与文本片段索引从 0 开始。文档变化后请检查 expectedRevision；失败时不会提交部分修改。</p>
+              <div class="tip-card"><span class="tip-icon">✦</span><div><strong>为你的 AI 工作流准备</strong><p>这里是本地 JSON API 演示，不连接模型。将快照交给 Agent，再把结构化指令带回来。</p></div></div>
+            </section>
+            <section id="panel-xml" class="tab-panel" role="tabpanel" aria-labelledby="tab-xml" hidden>
+              <div class="panel-title"><h3>直达文档底层</h3><span class="code-badge">XML</span></div>
+              <p class="panel-description">选择 ZIP 包内的 XML 部件，查看与修改原始 OOXML。其他部件在导出时保留。</p>
+              <label for="xml-part" class="field-label">XML 部件</label><select id="xml-part" class="full-width"></select>
+              <label for="xml-input" class="field-label">部件源码</label><textarea id="xml-input" class="code-editor xml-editor" spellcheck="false"></textarea>
+              <div class="panel-actions"><button id="reload-xml" class="button subtle">重新读取</button><button id="apply-xml" class="button primary">应用 XML →</button></div>
+              <p class="hint">这是高级编辑入口。XML 语法正确不代表满足 Word 的全部结构约束，请保留原文件。</p>
+            </section>
+            <section id="panel-snapshot" class="tab-panel" role="tabpanel" aria-labelledby="tab-snapshot" hidden>
+              <div class="panel-title"><h3>实时文档快照</h3><span class="code-badge">READ ONLY</span></div>
+              <p class="panel-description"><code>getSnapshot()</code> 返回修订号、段落、文本片段、块结构和部件清单。</p>
+              <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
+            </section>
+            <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式与基础表格；不是 Word 排版引擎，不模拟精确分页。图片、页眉等未展示内容仍保存在包中。修改段落文字可能改变文字片段的格式分布；仅查看不会重写它。</p></div>
+          </aside>
+        </section>
+        <footer class="page-footer"><span>纸间 · 给文档更多可能</span><span>无上传 · 无云端存储 · 无外部字体</span></footer>
+      </main>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
