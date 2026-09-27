@@ -4,8 +4,8 @@ import type {
   AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
 import {
-  assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
-  serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
+  assertText, children, childrenThroughTransparent, CONTENT_TYPES_NS, descendants, isTransparentWordWrapper,
+  OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
 
@@ -16,7 +16,6 @@ const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
 const encoder = new TextEncoder();
-const TRANSPARENT_WRAPPERS = new Set(['sdt', 'sdtContent', 'customXml']);
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -46,7 +45,7 @@ function paragraphAt(document: Document, index: number): Element {
 }
 
 function isTransparentWrapper(element: Element): boolean {
-  return element.namespaceURI === WORD_NS && TRANSPARENT_WRAPPERS.has(element.localName ?? '');
+  return isTransparentWordWrapper(element);
 }
 
 function blockPositions(parent: Element): { block: Element; parent: Element }[] {
@@ -414,8 +413,8 @@ export class DocxDocument {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
       if (child.localName === 'tbl') return [{
         type: 'table',
-        rows: children(child, 'tr').map(row => ({
-          cells: children(row, 'tc').map(cell => ({ blocks: walk(cell) })),
+        rows: childrenThroughTransparent(child, 'tr').map(row => ({
+          cells: childrenThroughTransparent(row, 'tc').map(cell => ({ blocks: walk(cell) })),
         })),
       }];
       return [];

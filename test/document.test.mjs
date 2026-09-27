@@ -122,6 +122,15 @@ test('tables and cell editing retain a valid final paragraph', () => {
   assert.throws(() => doc.insertTable([]), /Table/);
 });
 
+test('getBlocks keeps row/cell transparent wrappers in table traversal', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:sdt><w:sdtPr/><w:sdtContent><w:tr><w:tc><w:p><w:r><w:t>rowctl</w:t></w:r></w:p></w:tc></w:tr></w:sdtContent></w:sdt><w:tr><w:customXml><w:tc><w:p><w:r><w:t>cellctl</w:t></w:r></w:p></w:tc></w:customXml></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  const table = doc.getBlocks().find(block => block.type === 'table');
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0].cells[0].blocks[0].paragraph.text, 'rowctl');
+  assert.equal(table.rows[1].cells[0].blocks[0].paragraph.text, 'cellctl');
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', 'rowctl', 'cellctl', 'after']);
+});
+
 test('insertions precede section properties and deletion protects section breaks', () => {
   const doc = DocxDocument.create();
   doc.insertParagraph('first', 0);
