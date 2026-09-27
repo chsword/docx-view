@@ -463,16 +463,17 @@ export class DocxDocument {
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
-      parent.removeChild(paragraph);
-      const last = blockElements(container).at(-1);
-      if (container.localName === 'tc' && last?.localName !== 'p') {
-        container.insertBefore(newParagraph(document, ''), null);
-      }
       if (container.localName === 'body') {
+        const last = blockElements(container).filter(block => block !== paragraph).at(-1);
         if (!last) throw new Error('Cannot delete the last body paragraph; Word requires at least one body paragraph.');
         if (last.localName === 'tbl') {
           throw new Error('Cannot delete this paragraph; Word requires a body paragraph after the final table.');
         }
+      }
+      parent.removeChild(paragraph);
+      const last = blockElements(container).at(-1);
+      if (container.localName === 'tc' && last?.localName !== 'p') {
+        container.insertBefore(newParagraph(document, ''), null);
       }
     });
   }
