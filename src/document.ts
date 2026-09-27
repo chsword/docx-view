@@ -261,6 +261,13 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
   }
 }
 
+function fieldInstruction(link: { url?: string; anchor?: string }): string {
+  const chunks = ['HYPERLINK'];
+  if (link.url) chunks.push(`"${link.url.replace(/"/g, '""')}"`);
+  if (link.anchor) chunks.push(`\\l "${link.anchor.replace(/"/g, '""')}"`);
+  return chunks.join(' ');
+}
+
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -523,6 +530,7 @@ export class DocxDocument {
         const instruction = field.getAttributeNS(WORD_NS, 'instr') ?? field.getAttribute('w:instr') ?? '';
         const parsed = parseFldSimpleHyperlink(instruction);
         if (!parsed) continue;
+        const tooltip = field.getAttributeNS(WORD_NS, 'tooltip') ?? field.getAttribute('w:tooltip') ?? undefined;
         const linkedRuns = descendants(field, 'r')
           .map(run => runIndices.get(run))
           .filter((index): index is number => index !== undefined);
@@ -532,7 +540,7 @@ export class DocxDocument {
           runs: linkedRuns,
           text: textOf(field),
           ...parsed,
-          tooltip: undefined,
+          tooltip,
           isExternal: Boolean(parsed.url),
           unsafe: isUnsafeHyperlink(parsed),
         });
@@ -576,12 +584,26 @@ export class DocxDocument {
     const run = ownRuns(paragraph)[hyperlink.runs[0]!] ?? null;
     let node: Node | null = run;
     while (node && node !== paragraph) {
-      if (node.nodeType === 1 && (node as Element).namespaceURI === WORD_NS && (node as Element).localName === 'hyperlink') {
+      if (node.nodeType === 1 && (node as Element).namespaceURI === WORD_NS &&
+          ['hyperlink', 'fldSimple'].includes((node as Element).localName ?? '')) {
         return node as Element;
       }
       node = node.parentNode;
     }
     throw new Error('Hyperlink node was not found.');
+  }
+
+  private resolveHyperlink(reference: HyperlinkInfo | number): HyperlinkInfo {
+    const hyperlinks = this.getHyperlinks();
+    if (typeof reference === 'number') {
+      const hyperlink = hyperlinks[reference];
+      if (!hyperlink) throw new Error('Hyperlink does not exist.');
+      return hyperlink;
+    }
+    const hyperlink = hyperlinks.find(item => item.paragraph === reference.paragraph &&
+      item.runs[0] === reference.runs[0] && item.text === reference.text);
+    if (!hyperlink) throw new Error('Hyperlink does not exist.');
+    return hyperlink;
   }
 
   private splitRunAtOffset(paragraph: Element, offset: number): void {
@@ -663,15 +685,21 @@ export class DocxDocument {
     link: { url?: string; anchor?: string; tooltip?: string },
   ): void {
     assertHyperlinkInput(link);
-    const current = typeof hyperlink === 'number' ? this.getHyperlinks()[hyperlink] : hyperlink;
-    if (!current) throw new Error('Hyperlink does not exist.');
+    const current = this.resolveHyperlink(hyperlink);
+    const currentNodeName = this.hyperlinkNode(current, this.getPartDocument(this.mainPath)).localName;
     let nextRelationshipId = current.relationshipId;
+    const currentRelationshipUsers = current.relationshipId
+      ? this.getHyperlinks().filter(item => item.relationshipId === current.relationshipId).length
+      : 0;
     this.ensureMainRelationshipsPart();
-    if (link.url && link.url !== current.url) {
+    if (currentNodeName !== 'fldSimple' && link.url && link.url !== current.url) {
       this.updatePartXml(this.mainRelationshipsPath(), rels => {
-        if (!nextRelationshipId) nextRelationshipId = this.nextRelationshipId(rels);
-        const existing = children(rels.documentElement!, 'Relationship', REL_NS)
-          .find(item => item.getAttribute('Id') === nextRelationshipId);
+        const canReuse = Boolean(current.relationshipId && currentRelationshipUsers <= 1);
+        nextRelationshipId = canReuse ? current.relationshipId : this.nextRelationshipId(rels);
+        const existing = canReuse
+          ? children(rels.documentElement!, 'Relationship', REL_NS)
+            .find(item => item.getAttribute('Id') === nextRelationshipId)
+          : undefined;
         const relationship = existing ?? rels.createElementNS(REL_NS, 'Relationship');
         relationship.setAttribute('Id', nextRelationshipId!);
         relationship.setAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink');
@@ -682,14 +710,20 @@ export class DocxDocument {
     }
     this.updatePartXml(this.mainPath, document => {
       const node = this.hyperlinkNode(current, document);
-      if (link.url) node.setAttributeNS(DOC_REL_NS, 'r:id', nextRelationshipId!);
-      else node.removeAttributeNS(DOC_REL_NS, 'id');
-      if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
-      else node.removeAttributeNS(WORD_NS, 'anchor');
-      if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
-      else node.removeAttributeNS(WORD_NS, 'tooltip');
+      if (node.localName === 'fldSimple') {
+        node.setAttributeNS(WORD_NS, 'w:instr', fieldInstruction(link));
+        if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+        else node.removeAttributeNS(WORD_NS, 'tooltip');
+      } else {
+        if (link.url) node.setAttributeNS(DOC_REL_NS, 'r:id', nextRelationshipId!);
+        else { node.removeAttributeNS(DOC_REL_NS, 'id'); node.removeAttribute('r:id'); }
+        if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+        else node.removeAttributeNS(WORD_NS, 'anchor');
+        if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+        else node.removeAttributeNS(WORD_NS, 'tooltip');
+      }
     });
-    if (current.relationshipId && (!link.url || link.url !== current.url)) {
+    if (current.relationshipId && (!link.url || current.relationshipId !== nextRelationshipId)) {
       const stillUsed = this.getHyperlinks().some(item => item.relationshipId === current.relationshipId);
       if (!stillUsed && this.parts.has(this.mainRelationshipsPath())) {
         this.updatePartXml(this.mainRelationshipsPath(), rels => {
@@ -705,8 +739,7 @@ export class DocxDocument {
   }
 
   removeHyperlink(hyperlink: HyperlinkInfo | number, options: { keepText?: boolean } = {}): void {
-    const link = typeof hyperlink === 'number' ? this.getHyperlinks()[hyperlink] : hyperlink;
-    if (!link) throw new Error('Hyperlink does not exist.');
+    const link = this.resolveHyperlink(hyperlink);
     this.updatePartXml(this.mainPath, document => {
       const node = this.hyperlinkNode(link, document);
       const parent = node.parentNode as Element;
@@ -736,6 +769,9 @@ export class DocxDocument {
     assertText(name, 'name');
     assertIndex(range.startParagraph);
     if (range.endParagraph !== undefined) assertIndex(range.endParagraph);
+    if (range.endParagraph !== undefined && range.endParagraph < range.startParagraph) {
+      throw new Error('range.endParagraph must be >= range.startParagraph.');
+    }
     if (!name) throw new Error('name must not be empty.');
     if (this.getBookmarks({ includeInternal: true }).some(bookmark => bookmark.name === name)) {
       throw new Error(`Bookmark "${name}" already exists.`);

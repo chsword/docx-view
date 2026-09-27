@@ -359,6 +359,37 @@ test('updateHyperlink rewrites attributes and relationship target', () => {
   assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /https:\/\/b.example/);
 });
 
+test('updateHyperlink supports fldSimple links', () => {
+  const doc = withBody('<w:p><w:fldSimple w:instr="HYPERLINK &quot;https://legacy.example&quot;"><w:r><w:t>legacy</w:t></w:r></w:fldSimple></w:p>');
+  doc.updateHyperlink(0, { url: 'https://new.example?q=""', anchor: 'a"b', tooltip: 'tip' });
+  assert.equal(doc.getHyperlinks()[0].url, 'https://new.example?q=""');
+  assert.equal(doc.getHyperlinks()[0].anchor, 'a"b');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tooltip="tip"/);
+});
+
+test('updateHyperlink does not retarget other links sharing a relationship id', () => {
+  const doc = withBody('<w:p><w:hyperlink r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:t>one</w:t></w:r></w:hyperlink><w:r><w:t> </w:t></w:r><w:hyperlink r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:t>two</w:t></w:r></w:hyperlink></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://old.example" TargetMode="External"/></Relationships>'), 'application/vnd.openxmlformats-package.relationships+xml');
+  doc.updateHyperlink(0, { url: 'https://new.example' });
+  const links = doc.getHyperlinks();
+  assert.equal(links[0].url, 'https://new.example');
+  assert.equal(links[1].url, 'https://old.example');
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /https:\/\/new.example/);
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /https:\/\/old.example/);
+});
+
+test('updateHyperlink can convert external link to anchor-only link', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  doc.insertHyperlink({ paragraph: 0, start: 0, end: 3 }, { url: 'https://a.example' });
+  const id = doc.getHyperlinks()[0].relationshipId;
+  doc.updateHyperlink(0, { anchor: 'dest' });
+  assert.equal(doc.getHyperlinks()[0].url, undefined);
+  assert.equal(doc.getHyperlinks()[0].anchor, 'dest');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /r:id=/);
+  assert.doesNotMatch(doc.getPartXml('word/_rels/document.xml.rels'), new RegExp(`Id="${id}"`));
+});
+
 test('agent operations validate hyperlink and bookmark commands', () => {
   const doc = DocxDocument.create();
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'insertHyperlink', target: { paragraph: 0, start: 0, end: 0 }, link: { url: 'javascript:1' } }] }), /http, https or mailto/);
@@ -366,4 +397,5 @@ test('agent operations validate hyperlink and bookmark commands', () => {
   assert.equal(snapshot.bookmarks[0].name, 'b1');
   doc.applyOperations({ operations: [{ type: 'deleteBookmark', name: 'b1' }] });
   assert.equal(doc.getBookmarks().length, 0);
+  assert.throws(() => doc.insertBookmark('reverse', { startParagraph: 1, endParagraph: 0 }), />=/);
 });

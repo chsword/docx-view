@@ -62,8 +62,12 @@ export function assertHyperlinkInput(link: HyperlinkTarget): void {
 export function parseFldSimpleHyperlink(instruction: string): HyperlinkTarget | null {
   const normalized = instruction.replace(/\s+/g, ' ').trim();
   if (!/^HYPERLINK\b/i.test(normalized)) return null;
-  const url = normalized.match(/HYPERLINK\s+"([^"]+)"/i)?.[1];
-  const anchor = normalized.match(/\\l\s+"([^"]+)"/i)?.[1];
+  const parseQuoted = (pattern: RegExp): string | undefined => {
+    const value = normalized.match(pattern)?.[1];
+    return value ? value.replace(/""/g, '"') : undefined;
+  };
+  const url = parseQuoted(/HYPERLINK\s+"((?:[^"]|"")+)"/i);
+  const anchor = parseQuoted(/\\l\s+"((?:[^"]|"")+)"/i);
   if (!url && !anchor) return null;
   return { url: url ?? undefined, anchor: anchor ?? undefined };
 }

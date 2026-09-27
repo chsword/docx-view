@@ -16,6 +16,19 @@ export class DocxEditor {
   private renderAfterComposition = false;
   private destroyed = false;
 
+  private dispatchLinkClick(target: HTMLElement): void {
+    const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+    if (!EventClass) return;
+    this.root.dispatchEvent(new EventClass('docx-linkclick', {
+      bubbles: true,
+      detail: {
+        url: target.dataset.docxUrl,
+        anchor: target.dataset.docxAnchor,
+        unsafe: target.dataset.docxUnsafe === 'true',
+      },
+    }));
+  }
+
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
     this.options = options;
@@ -140,8 +153,11 @@ export class DocxEditor {
         if (run.hyperlink.url) span.dataset.docxUrl = run.hyperlink.url;
         if (span instanceof HTMLAnchorElement) {
           span.href = run.hyperlink.url ?? `#${run.hyperlink.anchor ?? ''}`;
-          span.target = '_blank';
-          span.rel = 'noopener noreferrer';
+          if (run.hyperlink.url) {
+            span.target = '_blank';
+            span.rel = 'noopener noreferrer';
+          }
+          span.tabIndex = 0;
           if (!run.underline) span.style.textDecoration = 'underline';
           if (!run.color) span.style.color = '#0563C1';
         } else if (run.hyperlink.unsafe) {
@@ -171,6 +187,11 @@ export class DocxEditor {
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     element.addEventListener('drop', (event) => { event.preventDefault(); });
     element.addEventListener('keydown', (event) => {
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      if (target && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        return;
+      }
       if (event.key === 'Enter' && !event.isComposing && !this.composing) {
         event.preventDefault();
         this.insertText(element, '\n');
@@ -184,16 +205,15 @@ export class DocxEditor {
       if (!target) return;
       if (!(event.ctrlKey || event.metaKey)) return;
       event.preventDefault();
-      const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
-      if (!EventClass) return;
-      this.root.dispatchEvent(new EventClass('docx-linkclick', {
-        bubbles: true,
-        detail: {
-          url: target.dataset.docxUrl,
-          anchor: target.dataset.docxAnchor,
-          unsafe: target.dataset.docxUnsafe === 'true',
-        },
-      }));
+      this.dispatchLinkClick(target);
+    });
+    element.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      if (!target) return;
+      event.preventDefault();
+      this.dispatchLinkClick(target);
     });
     element.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
