@@ -1069,6 +1069,15 @@ test('insertHyperlink supports runs inside hyperlink containers', () => {
   assert.equal(doc.getHyperlinks().some((item) => item.url === 'https://example.com' && item.text === 'linked'), true);
 });
 
+test('insertHyperlink keeps insertion inside w:sdtContent for sdt-wrapped runs', () => {
+  const doc = withBody('<w:p xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>wrapped text</w:t></w:r></w:sdtContent></w:sdt></w:p>');
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 7 }, { url: 'https://example.com' });
+  assert.equal(link.text, 'wrapped');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:sdtContent><w:hyperlink [^>]*><w:r><w:rPr><w:rStyle w:val="Hyperlink"/);
+  assert.doesNotMatch(xml, /<w:sdt><w:hyperlink /);
+});
+
 test('failed insertHyperlink does not change revision or leave orphan relationship', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
