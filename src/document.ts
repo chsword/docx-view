@@ -14,8 +14,8 @@ import {
 } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
 import {
-  assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
-  serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
+  assertText, children, childrenThroughTransparent, CONTENT_TYPES_NS, descendants, isTransparentWordWrapper,
+  OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
 import { collectSections, readSections, SECTION_ORDER } from './section.js';
@@ -368,6 +368,14 @@ function property(parent: Element, name: string): Element {
   return result;
 }
 
+function nearestNonTransparentAncestor(element: Element): Element {
+  let result = element;
+  while (isTransparentWordWrapper(result) && result.parentNode?.nodeType === 1) {
+    result = result.parentNode as Element;
+  }
+  return result;
+}
+
 function sectionProperty(parent: Element, name: string): Element {
   let result = children(parent, name)[0];
   if (!result) {
@@ -706,9 +714,13 @@ function bodyBlocks(body: Element): Element[] {
   return children(body).filter(child => ['p', 'tbl'].includes(child.localName ?? ''));
 }
 
+function tableRows(table: Element): Element[] {
+  return childrenThroughTransparent(table, 'tr');
+}
+
 function tableAt(document: Document, index: number): Element {
   assertIndex(index);
-  const table = children(bodyOf(document), 'tbl')[index];
+  const table = childrenThroughTransparent(bodyOf(document), 'tbl')[index];
   if (!table) throw new Error(`Table ${index} does not exist.`);
   return table;
 }
@@ -734,7 +746,7 @@ function ensureTableGrid(table: Element): Element {
   if (!grid) {
     grid = wordElement(table.ownerDocument!, 'tblGrid');
     const tableProps = children(table, 'tblPr')[0];
-    table.insertBefore(grid, tableProps?.nextSibling ?? children(table, 'tr')[0] ?? null);
+    table.insertBefore(grid, tableProps?.nextSibling ?? tableRows(table)[0] ?? null);
     for (const width of tableGrid(table)) grid.appendChild(gridCol(table.ownerDocument!, width));
   } else if (!children(grid, 'gridCol').length) {
     for (const width of tableGrid(table)) grid.appendChild(gridCol(table.ownerDocument!, width));
@@ -750,7 +762,7 @@ function removeWordChildren(parent: Element | undefined, ...names: string[]): vo
 }
 
 function ensureCellParagraph(cell: Element): void {
-  if (!children(cell).some(child => child.localName === 'p')) cell.appendChild(newParagraph(cell.ownerDocument!, ''));
+  if (!childrenThroughTransparent(cell, 'p').length) cell.appendChild(newParagraph(cell.ownerDocument!, ''));
 }
 
 function blankCell(document: Document): Element {
@@ -885,7 +897,7 @@ function setCellFormat(cell: Element, format: CellFormat): void {
 type XmlCellRef = { cell: Element; row: number; start: number; colSpan: number; rowSpan: number; isContinuation: boolean };
 
 function tableModel(table: Element): { rows: Element[]; grid: number[]; matrix: XmlCellRef[][]; refs: XmlCellRef[] } {
-  const rows = children(table, 'tr');
+  const rows = tableRows(table);
   const grid = tableGrid(table);
   const matrix: XmlCellRef[][] = Array.from({ length: rows.length }, () => []);
   const refs: XmlCellRef[] = [];
@@ -968,7 +980,7 @@ function buildTable(document: Document, rows: number, cols: number, format?: Tab
 
 function repairVerticalMerges(table: Element): void {
   const active = new Map<number, { end: number }>();
-  for (const row of children(table, 'tr')) {
+  for (const row of tableRows(table)) {
     const nextActive = new Map<number, { end: number }>();
     for (const position of rowCells(row)) {
       const props = tableProperty(position.cell, 'tcPr');
@@ -1532,7 +1544,7 @@ export class DocxDocument {
         return paragraph ? [{ type: 'paragraph', paragraph }] : [];
       }
       if (child.localName === 'tbl') return [readTable(child, walk)];
-      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
+      if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
     const blocks = walk(body);
@@ -2149,8 +2161,18 @@ export class DocxDocument {
       if (setup.type !== undefined) setWordValue(sectionProperty(sectPr, 'type'), setup.type);
       if (setup.pageWidth !== undefined || setup.pageHeight !== undefined || setup.orientation !== undefined) {
         const size = sectionProperty(sectPr, 'pgSz');
-        if (setup.pageWidth !== undefined) size.setAttributeNS(WORD_NS, 'w:w', String(Math.max(0, Math.trunc(setup.pageWidth))));
-        if (setup.pageHeight !== undefined) size.setAttributeNS(WORD_NS, 'w:h', String(Math.max(0, Math.trunc(setup.pageHeight))));
+        const parsedWidth = Number(size.getAttributeNS(WORD_NS, 'w') ?? size.getAttribute('w:w'));
+        const parsedHeight = Number(size.getAttributeNS(WORD_NS, 'h') ?? size.getAttribute('w:h'));
+        let width = Number.isFinite(parsedWidth) ? Math.max(0, Math.trunc(parsedWidth)) : 11906;
+        let height = Number.isFinite(parsedHeight) ? Math.max(0, Math.trunc(parsedHeight)) : 16838;
+        if (setup.pageWidth !== undefined) width = Math.max(0, Math.trunc(setup.pageWidth));
+        if (setup.pageHeight !== undefined) height = Math.max(0, Math.trunc(setup.pageHeight));
+        if (setup.orientation !== undefined && setup.pageWidth === undefined && setup.pageHeight === undefined) {
+          if (setup.orientation === 'landscape' && width < height) [width, height] = [height, width];
+          if (setup.orientation === 'portrait' && width > height) [width, height] = [height, width];
+        }
+        size.setAttributeNS(WORD_NS, 'w:w', String(width));
+        size.setAttributeNS(WORD_NS, 'w:h', String(height));
         if (setup.orientation !== undefined) size.setAttributeNS(WORD_NS, 'w:orient', setup.orientation);
       }
       if (setup.margins) {
@@ -2319,6 +2341,13 @@ export class DocxDocument {
 
   private setHeaderFooterText(section: number, text: string, type: 'header' | 'footer', kind: 'default' | 'first' | 'even'): void {
     assertText(text);
+    const map = type === 'header' ? this.getSection(section).headers : this.getSection(section).footers;
+    const existingPath = map[kind];
+    if (existingPath && this.parts.has(existingPath)) {
+      const existingDocument = this.getPartDocument(existingPath);
+      const current = descendants(blockContainerOf(existingDocument), 'p').map(textOf).join('\n');
+      if (current === text) return;
+    }
     const path = type === 'header' ? this.createHeader(section, kind) : this.createFooter(section, kind);
     this.updatePartXml(path, part => {
       const container = blockContainerOf(part);
@@ -2408,15 +2437,16 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const parent = paragraph.parentNode as Element;
+      const container = nearestNonTransparentAncestor(parent);
       // A cell must end with a paragraph, and section properties must not be silently lost.
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
       parent.removeChild(paragraph);
-      const last = children(parent).filter(child => child.localName !== 'sectPr').at(-1);
-      if ((parent.localName === 'tc' && last?.localName !== 'p') ||
-          (parent.localName === 'body' && !children(parent, 'p').length)) {
-        parent.insertBefore(newParagraph(document, ''), children(parent, 'sectPr')[0] ?? null);
+      const paragraphs = childrenThroughTransparent(container, 'p');
+      if ((container.localName === 'tc' && !paragraphs.length) ||
+          (container.localName === 'body' && !paragraphs.length)) {
+        container.insertBefore(newParagraph(document, ''), children(container, 'sectPr')[0] ?? null);
       }
     });
   }
@@ -2579,7 +2609,7 @@ export class DocxDocument {
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
       if (child.localName === 'tbl') return [readTable(child, walk)];
-      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
+      if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
     const table = readTable(tableAt(document, index), walk);
@@ -2591,18 +2621,22 @@ export class DocxDocument {
     assertIndex(at);
     this.updatePartXml(this.mainPath, document => {
       const element = tableAt(document, table);
-      const rows = children(element, 'tr');
+      const rows = tableRows(element);
       if (at > rows.length) throw new Error(`Row ${at} does not exist.`);
       const tr = wordElement(document, 'tr');
       for (let i = 0; i < tableGrid(element).length; i++) tr.appendChild(blankCell(document));
-      element.insertBefore(tr, rows[at] ?? null);
+      const anchor = rows[at] ?? null;
+      const parent = (anchor?.parentNode?.nodeType === 1 ? anchor.parentNode as Element : undefined)
+        ?? (rows.at(-1)?.parentNode?.nodeType === 1 ? rows.at(-1)!.parentNode as Element : undefined)
+        ?? element;
+      parent.insertBefore(tr, anchor);
     });
   }
 
   deleteTableRow(table: number, at: number): void {
     this.updatePartXml(this.mainPath, document => {
       const element = tableAt(document, table);
-      const rows = children(element, 'tr');
+      const rows = tableRows(element);
       const row = rows[at];
       if (!row) throw new Error(`Row ${at} does not exist.`);
       if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
@@ -2619,7 +2653,7 @@ export class DocxDocument {
           }
         }
       }
-      element.removeChild(row);
+      row.parentNode!.removeChild(row);
       repairVerticalMerges(element);
     });
   }
@@ -2635,7 +2669,7 @@ export class DocxDocument {
       grid.insertBefore(gridCol(document, widths[Math.max(0, Math.min(at, widths.length - 1))] ?? 2250), children(grid, 'gridCol')[at] ?? null);
       const model = tableModel(element);
       const handled = new Set<Element>();
-      for (const [rowIndex, row] of children(element, 'tr').entries()) {
+      for (const [rowIndex, row] of tableRows(element).entries()) {
         const covering = at < widths.length ? model.matrix[rowIndex]?.[at] : undefined;
         if (covering && covering.rowSpan > 1) {
           if (handled.has(covering.cell)) continue;
@@ -2678,7 +2712,7 @@ export class DocxDocument {
       const model = tableModel(element);
       grid.removeChild(columns[at]!);
       const handled = new Set<Element>();
-      for (const [rowIndex, row] of children(element, 'tr').entries()) {
+      for (const [rowIndex, row] of tableRows(element).entries()) {
         const covering = model.matrix[rowIndex]?.[at];
         if (covering && covering.rowSpan > 1) {
           if (handled.has(covering.cell)) continue;
@@ -2788,7 +2822,7 @@ export class DocxDocument {
 
   formatTableRow(table: number, row: number, format: RowFormat): void {
     this.updatePartXml(this.mainPath, document => {
-      const element = children(tableAt(document, table), 'tr')[row];
+      const element = tableRows(tableAt(document, table))[row];
       if (!element) throw new Error(`Row ${row} does not exist.`);
       setRowFormat(element, format);
     });
@@ -2803,7 +2837,7 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, document => {
       const cell = cellAt(tableAt(document, table), row, col).cell;
       ensureCellParagraph(cell);
-      const paragraph = children(cell, 'p')[0];
+      const paragraph = childrenThroughTransparent(cell, 'p')[0];
       if (!paragraph) throw new Error('Cell paragraph does not exist.');
       const indices = new Map(descendants(bodyOf(document), 'p').map((item, index) => [item, index]));
       const index = indices.get(paragraph);

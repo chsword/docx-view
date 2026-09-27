@@ -405,12 +405,13 @@ export class DocxEditor {
     editable.setAttribute('aria-multiline', 'true');
     editable.setAttribute('aria-labelledby', label.id);
     const renderedText = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
+    const normalizedRenderedText = renderedText.replace(/\r\n?/g, '\n').trimEnd();
     editable.textContent = renderedText;
     if (!plainEditable) editable.setAttribute('aria-readonly', 'true');
     editable.addEventListener('blur', () => {
       if (!plainEditable) return;
       const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
-      if (text === renderedText) return;
+      if (text === normalizedRenderedText) return;
       if (type === 'header') this.document.setHeaderText(0, text, kind);
       else this.document.setFooterText(0, text, kind);
       this.render();
