@@ -687,7 +687,7 @@ export class DocxDocument {
       const target = ownRuns(paragraphAt(document, paragraph))[run];
       if (!target) throw new Error(`Run ${run} does not exist.`);
       const br = wordElement(document, 'br');
-      br.setAttributeNS(WORD_NS, 'w:type', type);
+      if (type !== 'textWrapping') br.setAttributeNS(WORD_NS, 'w:type', type);
       target.appendChild(br);
     });
   }

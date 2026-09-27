@@ -232,7 +232,7 @@ export class DocxEditor {
     const nextWidth = this.measure(following, sample);
     const decimalMatch = /[.,，．]/.exec(following);
     const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), sample) : nextWidth;
-    const alignment = stop?.alignment ?? 'left';
+    const alignment = stop ? stop.alignment : 'left';
     const rawWidth = alignment === 'center' ? target - currentPx - nextWidth / 2
       : alignment === 'right' ? target - currentPx - nextWidth
         : alignment === 'decimal' ? target - currentPx - decimalLeft : target - currentPx;

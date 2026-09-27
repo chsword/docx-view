@@ -312,7 +312,7 @@ test('insertBreak supports text/page/column types', () => {
   doc.insertBreak(0, 0, 'page');
   doc.insertBreak(0, 0, 'column');
   const xml = doc.getPartXml(doc.mainDocumentPath);
-  assert.match(xml, /w:type="textWrapping"/);
+  assert.match(xml, /<w:br\/>/);
   assert.match(xml, /w:type="page"/);
   assert.match(xml, /w:type="column"/);
 });
