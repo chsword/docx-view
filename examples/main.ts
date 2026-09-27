@@ -104,7 +104,7 @@ function loadXmlParts(): void {
     option.value = option.textContent = path;
     return option;
   }));
-  xmlPart.value = Array.from(xmlPart.options).some((option) => option.value === previous) ? previous : 'word/document.xml';
+  xmlPart.value = Array.from(xmlPart.options).some((option) => option.value === previous) ? previous : doc.mainDocumentPath;
   readXml();
 }
 
