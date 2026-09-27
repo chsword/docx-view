@@ -107,9 +107,15 @@ function replaceSpan(paragraph: Element, start: number, end: number, replacement
   for (const element of elements) {
     const oldText = elementText(element);
     const next = offset + oldText.length;
-    const insertHere = !inserted && start >= offset && start <= next;
+    const insertHere = !inserted && start >= offset && (start === end ? start <= next : start < next);
     const overlaps = offset < end && next > start;
     if (insertHere || overlaps) {
+      if (insertHere && !overlaps && element.localName !== 't') {
+        appendText(element.parentNode as Element, replacement, start === offset ? element : element.nextSibling);
+        inserted = true;
+        offset = next;
+        continue;
+      }
       const prefix = oldText.slice(0, Math.max(0, Math.min(oldText.length, start - offset)));
       const suffix = oldText.slice(Math.max(0, Math.min(oldText.length, end - offset)));
       const text = prefix + (insertHere ? replacement : '') + suffix;
@@ -275,7 +281,7 @@ export class DocxDocument {
     validatePath(path);
     const bytes = this.parts.get(path);
     if (!bytes) throw new Error(`Package part not found: ${path}`);
-    return bytes.slice();
+    return Uint8Array.from(bytes);
   }
 
   getPartXml(path: string): string { return decodeXml(this.getPartBytes(path)); }
@@ -300,7 +306,7 @@ export class DocxDocument {
     validatePath(path);
     if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
     const next = new Map(this.parts);
-    next.set(path, bytes.slice());
+    next.set(path, Uint8Array.from(bytes));
     this.commitParts(next);
   }
 
@@ -315,7 +321,7 @@ export class DocxDocument {
     types.documentElement!.appendChild(override);
     const next = new Map(this.parts);
     next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
-    next.set(path, bytes.slice());
+    next.set(path, Uint8Array.from(bytes));
     this.commitParts(next);
   }
 

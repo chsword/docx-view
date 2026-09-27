@@ -84,7 +84,9 @@ export class DocxEditor {
 
   private readText(element: HTMLElement): string {
     // Native editing can introduce line-break elements (e.g. via mobile keyboards).
-    return element.querySelector('br, div, p') ? element.innerText.replace(/\r\n?/g, '\n') : element.textContent ?? '';
+    if (!element.querySelector('br, div, p')) return element.textContent ?? '';
+    const text = element.innerText.replace(/\r\n?/g, '\n');
+    return text === '\n' && !element.textContent ? '' : text;
   }
 
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {

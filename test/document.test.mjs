@@ -64,6 +64,40 @@ test('replacement spans runs and repeated matches without losing non-text conten
   assert.throws(() => doc.replaceText('', 'x'), /empty/);
 });
 
+test('replacement uses the affected run formatting and preserves preceding page breaks', () => {
+  for (const edit of [
+    doc => doc.replaceText('world', 'Earth'),
+    doc => doc.setParagraphText(0, 'Hello Earth'),
+  ]) {
+    const doc = withBody('<w:p><w:r><w:t>Hello </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>world</w:t></w:r></w:p>');
+    edit(doc);
+    assert.equal(doc.getParagraphs()[0].runs[0].text, 'Hello ');
+    assert.equal(doc.getParagraphs()[0].runs[1].text, 'Earth');
+    assert.equal(doc.getParagraphs()[0].runs[1].bold, true);
+  }
+  const doc = withBody('<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:t>world</w:t></w:r></w:p>');
+  doc.replaceText('world', 'Earth');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:br w:type="page"\/>/);
+  doc.setParagraphText(0, '\nnew Earth');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:br w:type="page"\/>/);
+  assert.equal(doc.getParagraphs()[0].text, '\nnew Earth');
+});
+
+test('Node Buffer inputs and outputs cannot mutate internal parts without a revision', () => {
+  const doc = DocxDocument.create();
+  const input = Buffer.from([1, 2, 3]);
+  doc.addPart('custom.bin', input, 'application/octet-stream');
+  const revision = doc.revision;
+  input[0] = 99;
+  doc.getPartBytes('custom.bin')[1] = 99;
+  assert.deepEqual(doc.getPartBytes('custom.bin'), Uint8Array.from([1, 2, 3]));
+  assert.equal(doc.revision, revision);
+  const replacement = Buffer.from([4, 5, 6]);
+  doc.setPartBytes('custom.bin', replacement);
+  replacement[0] = 99;
+  assert.deepEqual(doc.getPartBytes('custom.bin'), Uint8Array.from([4, 5, 6]));
+});
+
 test('Unicode edits do not split surrogate pairs and invalid XML text is rejected', () => {
   const doc = DocxDocument.create();
   for (const text of ['😀', '😁', 'abc😁', 'abc😀', '😀😁', '😁', '', 'plain']) {
