@@ -650,6 +650,7 @@ export class DocxDocument {
         if (format.shading === null) removeChildren(props, 'shd');
         else writeShading(property(props, 'shd'), format.shading);
       }
+      if (!props.firstChild) element.removeChild(props);
     });
   }
 

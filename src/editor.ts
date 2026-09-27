@@ -134,7 +134,7 @@ export class DocxEditor {
         const width = `${Math.min(24, Math.max(0, side.size)) / 8}pt`;
         const color = side.color === 'AUTO' ? '#000' : `#${side.color}`;
         const style = this.borderStyle(side.style);
-        if (key === 'between') element.style.borderBottom = `${width} ${style} ${color}`;
+        if (key === 'between') continue;
         if (key === 'bar') element.style.borderLeft = `${width} ${style} ${color}`;
         if (key === 'top') element.style.borderTop = `${width} ${style} ${color}`;
         if (key === 'left') element.style.borderLeft = `${width} ${style} ${color}`;
@@ -264,7 +264,7 @@ export class DocxEditor {
     mark.className = 'docx-mark';
     mark.contentEditable = 'false';
     mark.setAttribute('data-docx-mark', '1');
-    mark.setAttribute('aria-label', label);
+    mark.title = label;
     mark.setAttribute('aria-hidden', 'true');
     mark.style.userSelect = 'none';
     mark.style.pointerEvents = 'none';
