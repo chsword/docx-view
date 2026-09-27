@@ -981,6 +981,32 @@ test('table style conditions apply first-row and horizontal band run formatting'
   assert.equal(paragraphs[2].runs[0].effective.color, 'AA5500');
 });
 
+test('table style firstRow/lastRow conditions stay aligned when last row is wrapped by w:sdt', () => {
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="TS"/><w:tblLook w:firstRow="1" w:lastRow="1" w:noHBand="1"/></w:tblPr>
+      <w:tr><w:tc><w:p><w:r><w:t>h1</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="TS"><w:name w:val="TS"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="FF0000"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="lastRow"><w:rPr><w:color w:val="0000FF"/></w:rPr></w:tblStylePr>
+      </w:style>
+    </w:styles>`,
+  );
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[2], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[2]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs[0].runs[0].effective.color, 'FF0000');
+  assert.equal(paragraphs[1].runs[0].effective.color, undefined);
+  assert.equal(paragraphs[2].runs[0].effective.color, '0000FF');
+});
+
 test('table style firstCol can be explicitly disabled by tblLook', () => {
   const doc = withStyles(
     `<w:tbl>
