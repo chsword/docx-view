@@ -67,8 +67,8 @@ console.log(reopened.getSnapshot());
 | `setParagraphText(index, text)` | 修改段落文字，支持制表符和换行 |
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
 | `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
-| `formatParagraph(index, format, options?)` | 设置段落直接格式；`options.validateStyle` 可在写入前校验样式 ID |
-| `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段 |
+| `formatParagraph(index, format, options?)` | 设置段落直接格式；`options.validateStyle` 可在写入前校验样式 ID；将某个字段设为 `null` 可清除该直接格式 |
+| `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段；将某个字段设为 `null` 可回退到继承样式 |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |

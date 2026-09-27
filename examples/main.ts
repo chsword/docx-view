@@ -99,8 +99,10 @@ function updateSelection(): void {
   const style = element<HTMLSelectElement>('paragraph-style');
   const alignment = element<HTMLSelectElement>('alignment');
   size.disabled = color.disabled = style.disabled = alignment.disabled = !paragraph;
-  size.value = paragraph?.runs[0]?.fontSize ? String(paragraph.runs[0].fontSize) : '';
-  const runColor = paragraph?.runs[0]?.color;
+  const firstRun = paragraph?.runs[0];
+  const effectiveRun = firstRun?.effective ?? firstRun;
+  size.value = effectiveRun?.fontSize ? String(effectiveRun.fontSize) : '';
+  const runColor = effectiveRun?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
   style.value = paragraph?.style ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';

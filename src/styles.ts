@@ -89,7 +89,7 @@ function mergeParagraphFormats(...formats: Array<ParagraphFormat | undefined>): 
   for (const format of formats) {
     if (!format) continue;
     for (const [key, value] of Object.entries(format) as Array<[keyof ParagraphFormat, ParagraphFormat[keyof ParagraphFormat]]>) {
-      if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+      if (value !== undefined && value !== null) (merged as Record<string, unknown>)[key] = value;
     }
   }
   return merged;
@@ -100,7 +100,7 @@ function mergeRunFormats(...formats: Array<RunFormat | undefined>): RunFormat {
   for (const format of formats) {
     if (!format) continue;
     for (const [key, value] of Object.entries(format) as Array<[keyof RunFormat, RunFormat[keyof RunFormat]]>) {
-      if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+      if (value !== undefined && value !== null) (merged as Record<string, unknown>)[key] = value;
     }
   }
   return merged;
@@ -146,7 +146,9 @@ function readFontFamily(theme: ThemeInfo, fonts: Element | undefined): { fontFam
   const ascii = wordAttr(fonts, 'ascii') ?? wordAttr(fonts, 'hAnsi');
   const eastAsia = wordAttr(fonts, 'eastAsia');
   const fontFamily = ascii
-    ?? resolveThemeFont(theme, wordAttr(fonts, 'asciiTheme') ?? wordAttr(fonts, 'hAnsiTheme'));
+    ?? resolveThemeFont(theme, wordAttr(fonts, 'asciiTheme') ?? wordAttr(fonts, 'hAnsiTheme'))
+    ?? resolveThemeFont(theme, wordAttr(fonts, 'eastAsiaTheme'))
+    ?? eastAsia;
   const fontFamilyEastAsia = eastAsia
     ?? resolveThemeFont(theme, wordAttr(fonts, 'eastAsiaTheme'), fontFamily);
   return { fontFamily, fontFamilyEastAsia };
@@ -350,8 +352,8 @@ function tableConditions(paragraph: Element): TableCondition[] {
   const conditions: TableCondition[] = [];
   if (rowIndex === 0 && enabled('firstRow')) conditions.push('firstRow');
   if (rowIndex === rows.length - 1 && enabled('lastRow')) conditions.push('lastRow');
-  if (cellIndex === 0 && enabled('firstColumn')) conditions.push('firstCol');
-  if (cellIndex === cells.length - 1 && enabled('lastColumn')) conditions.push('lastCol');
+  if (cellIndex === 0 && enabled('firstCol')) conditions.push('firstCol');
+  if (cellIndex === cells.length - 1 && enabled('lastCol')) conditions.push('lastCol');
   if (!enabled('noHBand', false)) conditions.push(((rowIndex + 1) % 2 === 1 ? 'band1Horz' : 'band2Horz'));
   return conditions;
 }
@@ -390,7 +392,7 @@ function tableRunFormats(context: StylesContext, paragraph: Element): RunFormat[
 
 export function computeEffectiveParagraphFormat(context: StylesContext, paragraph: Element): ParagraphFormat {
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
-  const paragraphStyles = resolveStyleChainOrDefault(context, direct.style, 'paragraph');
+  const paragraphStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'paragraph');
   return mergeParagraphFormats(
     context.docDefaults.paragraph,
     ...tableParagraphFormats(context, paragraph),
@@ -401,9 +403,9 @@ export function computeEffectiveParagraphFormat(context: StylesContext, paragrap
 
 export function computeEffectiveRunFormat(context: StylesContext, paragraph: Element, run: Element): RunFormat {
   const direct = readRunProperties(children(run, 'rPr')[0], context.theme);
-  const paragraphStyleId = readParagraphProperties(children(paragraph, 'pPr')[0]).style;
+  const paragraphStyleId = readParagraphProperties(children(paragraph, 'pPr')[0]).style ?? undefined;
   const paragraphStyles = resolveStyleChainOrDefault(context, paragraphStyleId, 'paragraph');
-  const characterStyles = resolveStyleChainOrDefault(context, direct.style, 'character');
+  const characterStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'character');
   return mergeRunFormats(
     context.docDefaults.run,
     ...tableRunFormats(context, paragraph),

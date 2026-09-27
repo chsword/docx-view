@@ -1,39 +1,39 @@
 export interface RunFormat {
-  style?: string;
-  bold?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-  underlineStyle?: string;
-  underlineColor?: string;
-  fontSize?: number;
-  fontFamily?: string;
-  fontFamilyEastAsia?: string;
-  color?: string;
-  strike?: boolean;
-  doubleStrike?: boolean;
-  verticalAlign?: 'baseline' | 'subscript' | 'superscript';
-  smallCaps?: boolean;
-  allCaps?: boolean;
-  highlight?: string;
-  characterSpacing?: number;
+  style?: string | null;
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  underlineStyle?: string | null;
+  underlineColor?: string | null;
+  fontSize?: number | null;
+  fontFamily?: string | null;
+  fontFamilyEastAsia?: string | null;
+  color?: string | null;
+  strike?: boolean | null;
+  doubleStrike?: boolean | null;
+  verticalAlign?: 'baseline' | 'subscript' | 'superscript' | null;
+  smallCaps?: boolean | null;
+  allCaps?: boolean | null;
+  highlight?: string | null;
+  characterSpacing?: number | null;
 }
 
 export interface ParagraphFormat {
-  alignment?: 'left' | 'center' | 'right' | 'both' | 'distribute';
-  style?: string;
-  indentLeft?: number;
-  indentRight?: number;
-  indentFirstLine?: number;
-  indentHanging?: number;
-  spacingBefore?: number;
-  spacingAfter?: number;
-  lineSpacing?: number;
-  lineSpacingRule?: 'auto' | 'atLeast' | 'exact';
-  keepNext?: boolean;
-  keepLines?: boolean;
-  pageBreakBefore?: boolean;
-  widowControl?: boolean;
-  outlineLevel?: number;
+  alignment?: 'left' | 'center' | 'right' | 'both' | 'distribute' | null;
+  style?: string | null;
+  indentLeft?: number | null;
+  indentRight?: number | null;
+  indentFirstLine?: number | null;
+  indentHanging?: number | null;
+  spacingBefore?: number | null;
+  spacingAfter?: number | null;
+  lineSpacing?: number | null;
+  lineSpacingRule?: 'auto' | 'atLeast' | 'exact' | null;
+  keepNext?: boolean | null;
+  keepLines?: boolean | null;
+  pageBreakBefore?: boolean | null;
+  widowControl?: boolean | null;
+  outlineLevel?: number | null;
 }
 
 export interface StyleInfo {

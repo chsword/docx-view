@@ -254,38 +254,94 @@ function removeProperty(parent: Element, name: string): void {
   for (const child of children(parent, name)) parent.removeChild(child);
 }
 
+function removeWordAttribute(element: Element, name: string): void {
+  element.removeAttributeNS(WORD_NS, name);
+  element.removeAttribute(`w:${name}`);
+}
+
+function removeWordAttributes(element: Element, ...names: string[]): void {
+  for (const name of names) removeWordAttribute(element, name);
+}
+
+function removeIfEmpty(element: Element | undefined): void {
+  if (!element) return;
+  if (!element.attributes.length && !element.firstChild) element.parentNode?.removeChild(element);
+}
+
 function setOnOff(parent: Element, name: string, value: boolean, onValue = '1', offValue = '0'): void {
   setWordValue(property(parent, name), value ? onValue : offValue);
 }
 
 function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
-  if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
-  if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
-  if ([format.keepNext, format.keepLines, format.pageBreakBefore, format.widowControl].some(value => value !== undefined)) {
-    if (format.keepNext !== undefined) setOnOff(props, 'keepNext', format.keepNext);
-    if (format.keepLines !== undefined) setOnOff(props, 'keepLines', format.keepLines);
-    if (format.pageBreakBefore !== undefined) setOnOff(props, 'pageBreakBefore', format.pageBreakBefore);
-    if (format.widowControl !== undefined) setOnOff(props, 'widowControl', format.widowControl);
+  if ('style' in format) {
+    if (format.style === null) removeProperty(props, 'pStyle');
+    else if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
   }
-  if ([format.indentLeft, format.indentRight, format.indentFirstLine, format.indentHanging].some(value => value !== undefined)) {
-    const indent = property(props, 'ind');
-    if (format.indentLeft !== undefined) indent.setAttributeNS(WORD_NS, 'w:left', String(format.indentLeft));
-    if (format.indentRight !== undefined) indent.setAttributeNS(WORD_NS, 'w:right', String(format.indentRight));
-    if (format.indentFirstLine !== undefined) indent.setAttributeNS(WORD_NS, 'w:firstLine', String(format.indentFirstLine));
-    if (format.indentHanging !== undefined) indent.setAttributeNS(WORD_NS, 'w:hanging', String(format.indentHanging));
+  if ('alignment' in format) {
+    if (format.alignment === null) removeProperty(props, 'jc');
+    else if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
   }
-  if ([format.spacingBefore, format.spacingAfter, format.lineSpacing, format.lineSpacingRule].some(value => value !== undefined)) {
-    const spacing = property(props, 'spacing');
-    if (format.spacingBefore !== undefined) spacing.setAttributeNS(WORD_NS, 'w:before', String(format.spacingBefore));
-    if (format.spacingAfter !== undefined) spacing.setAttributeNS(WORD_NS, 'w:after', String(format.spacingAfter));
-    if (format.lineSpacing !== undefined) spacing.setAttributeNS(WORD_NS, 'w:line', String(format.lineSpacing));
-    if (format.lineSpacingRule !== undefined) spacing.setAttributeNS(WORD_NS, 'w:lineRule', format.lineSpacingRule);
+  for (const [key, tag] of [
+    ['keepNext', 'keepNext'],
+    ['keepLines', 'keepLines'],
+    ['pageBreakBefore', 'pageBreakBefore'],
+    ['widowControl', 'widowControl'],
+  ] as const) {
+    if (!(key in format)) continue;
+    if (format[key] === null) removeProperty(props, tag);
+    else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
   }
-  if (format.outlineLevel !== undefined) setWordValue(property(props, 'outlineLvl'), String(format.outlineLevel));
+  if (['indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging'].some(key => key in format)) {
+    const indent = children(props, 'ind')[0] ?? property(props, 'ind');
+    if ('indentLeft' in format) {
+      if (format.indentLeft === null) removeWordAttributes(indent, 'left', 'start');
+      else if (format.indentLeft !== undefined) indent.setAttributeNS(WORD_NS, 'w:left', String(format.indentLeft));
+    }
+    if ('indentRight' in format) {
+      if (format.indentRight === null) removeWordAttributes(indent, 'right', 'end');
+      else if (format.indentRight !== undefined) indent.setAttributeNS(WORD_NS, 'w:right', String(format.indentRight));
+    }
+    if ('indentFirstLine' in format) {
+      if (format.indentFirstLine === null) removeWordAttribute(indent, 'firstLine');
+      else if (format.indentFirstLine !== undefined) indent.setAttributeNS(WORD_NS, 'w:firstLine', String(format.indentFirstLine));
+    }
+    if ('indentHanging' in format) {
+      if (format.indentHanging === null) removeWordAttribute(indent, 'hanging');
+      else if (format.indentHanging !== undefined) indent.setAttributeNS(WORD_NS, 'w:hanging', String(format.indentHanging));
+    }
+    removeIfEmpty(indent);
+  }
+  if (['spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule'].some(key => key in format)) {
+    const spacing = children(props, 'spacing')[0] ?? property(props, 'spacing');
+    if ('spacingBefore' in format) {
+      if (format.spacingBefore === null) removeWordAttribute(spacing, 'before');
+      else if (format.spacingBefore !== undefined) spacing.setAttributeNS(WORD_NS, 'w:before', String(format.spacingBefore));
+    }
+    if ('spacingAfter' in format) {
+      if (format.spacingAfter === null) removeWordAttribute(spacing, 'after');
+      else if (format.spacingAfter !== undefined) spacing.setAttributeNS(WORD_NS, 'w:after', String(format.spacingAfter));
+    }
+    if ('lineSpacing' in format) {
+      if (format.lineSpacing === null) removeWordAttribute(spacing, 'line');
+      else if (format.lineSpacing !== undefined) spacing.setAttributeNS(WORD_NS, 'w:line', String(format.lineSpacing));
+    }
+    if ('lineSpacingRule' in format) {
+      if (format.lineSpacingRule === null) removeWordAttribute(spacing, 'lineRule');
+      else if (format.lineSpacingRule !== undefined) spacing.setAttributeNS(WORD_NS, 'w:lineRule', format.lineSpacingRule);
+    }
+    removeIfEmpty(spacing);
+  }
+  if ('outlineLevel' in format) {
+    if (format.outlineLevel === null) removeProperty(props, 'outlineLvl');
+    else if (format.outlineLevel !== undefined) setWordValue(property(props, 'outlineLvl'), String(format.outlineLevel));
+  }
 }
 
 function applyRunFormatTo(props: Element, format: RunFormat): void {
-  if (format.style !== undefined) setWordValue(property(props, 'rStyle'), format.style);
+  if ('style' in format) {
+    if (format.style === null) removeProperty(props, 'rStyle');
+    else if (format.style !== undefined) setWordValue(property(props, 'rStyle'), format.style);
+  }
   for (const [key, tag] of [
     ['bold', 'b'],
     ['italic', 'i'],
@@ -294,35 +350,74 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     ['smallCaps', 'smallCaps'],
     ['allCaps', 'caps'],
   ] as const) {
-    if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
+    if (!(key in format)) continue;
+    if (format[key] === null) removeProperty(props, tag);
+    else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
   }
-  if (format.underline !== undefined || format.underlineStyle !== undefined || format.underlineColor !== undefined) {
-    const underline = property(props, 'u');
-    if (format.underlineColor !== undefined) underline.setAttributeNS(WORD_NS, 'w:color', format.underlineColor);
-    if (format.underline !== undefined || format.underlineStyle !== undefined) {
-      const value = format.underline === false ? 'none' : (format.underlineStyle ?? (format.underline ? 'single' : 'none'));
-      setWordValue(underline, value);
+  if ('underline' in format || 'underlineStyle' in format || 'underlineColor' in format) {
+    if (format.underline === null || (format.underlineStyle === null && format.underline === undefined)) {
+      removeProperty(props, 'u');
+    } else {
+      const underline = children(props, 'u')[0] ?? property(props, 'u');
+      if ('underlineColor' in format) {
+        if (format.underlineColor === null) removeWordAttribute(underline, 'color');
+        else if (format.underlineColor !== undefined) underline.setAttributeNS(WORD_NS, 'w:color', format.underlineColor);
+      }
+      if ('underlineStyle' in format && format.underlineStyle === null) removeWordAttribute(underline, 'val');
+      if (format.underline !== undefined || format.underlineStyle !== undefined) {
+        const value = format.underlineStyle ?? (format.underline ? 'single' : format.underline === false ? 'none' : undefined);
+        if (value !== undefined && value !== null) setWordValue(underline, value);
+      }
+      removeIfEmpty(underline);
     }
   }
-  if (format.fontSize !== undefined) {
-    setWordValue(property(props, 'sz'), String(format.fontSize * 2));
-    setWordValue(property(props, 'szCs'), String(format.fontSize * 2));
-  }
-  if (format.color !== undefined) setWordValue(property(props, 'color'), format.color);
-  if (format.fontFamily !== undefined || format.fontFamilyEastAsia !== undefined) {
-    const fonts = property(props, 'rFonts');
-    if (format.fontFamily !== undefined) {
-      for (const name of ['ascii', 'hAnsi', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
-      if (format.fontFamilyEastAsia === undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamily);
+  if ('fontSize' in format) {
+    if (format.fontSize === null) {
+      removeProperty(props, 'sz');
+      removeProperty(props, 'szCs');
+    } else if (format.fontSize !== undefined) {
+      setWordValue(property(props, 'sz'), String(format.fontSize * 2));
+      setWordValue(property(props, 'szCs'), String(format.fontSize * 2));
     }
-    if (format.fontFamilyEastAsia !== undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamilyEastAsia);
   }
-  if (format.verticalAlign !== undefined) {
-    if (format.verticalAlign === 'baseline') removeProperty(props, 'vertAlign');
-    else setWordValue(property(props, 'vertAlign'), format.verticalAlign);
+  if ('color' in format) {
+    if (format.color === null) removeProperty(props, 'color');
+    else if (format.color !== undefined) setWordValue(property(props, 'color'), format.color);
   }
-  if (format.highlight !== undefined) setWordValue(property(props, 'highlight'), format.highlight);
-  if (format.characterSpacing !== undefined) setWordValue(property(props, 'spacing'), String(format.characterSpacing));
+  if ('fontFamily' in format || 'fontFamilyEastAsia' in format) {
+    const fonts = children(props, 'rFonts')[0] ?? property(props, 'rFonts');
+    if ('fontFamily' in format) {
+      if (format.fontFamily === null) {
+        for (const name of ['ascii', 'hAnsi', 'cs', 'eastAsia']) removeWordAttribute(fonts, name);
+      } else if (format.fontFamily !== undefined) {
+        for (const name of ['ascii', 'hAnsi', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
+        if (format.fontFamilyEastAsia === undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamily);
+      }
+    }
+    if ('fontFamilyEastAsia' in format) {
+      if (format.fontFamilyEastAsia === null) removeWordAttribute(fonts, 'eastAsia');
+      else if (format.fontFamilyEastAsia !== undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamilyEastAsia);
+    }
+    removeIfEmpty(fonts);
+  }
+  if ('verticalAlign' in format) {
+    if (format.verticalAlign === null || format.verticalAlign === 'baseline') removeProperty(props, 'vertAlign');
+    else if (format.verticalAlign !== undefined) setWordValue(property(props, 'vertAlign'), format.verticalAlign);
+  }
+  if ('highlight' in format) {
+    if (format.highlight === null || format.highlight === 'none') removeProperty(props, 'highlight');
+    else if (format.highlight !== undefined) setWordValue(property(props, 'highlight'), format.highlight);
+  }
+  if ('characterSpacing' in format) {
+    if (format.characterSpacing === null) removeProperty(props, 'spacing');
+    else if (format.characterSpacing !== undefined) setWordValue(property(props, 'spacing'), String(format.characterSpacing));
+  }
+}
+
+function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: string): void {
+  for (const [key, value] of Object.entries(format)) {
+    if (value === null) throw new Error(`${label}.${key} cannot be null in defineStyle().`);
+  }
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -563,6 +658,7 @@ export class DocxDocument {
   }
 
   getEffectiveRunFormat(paragraph: number, run: number): RunFormat {
+    assertIndex(run);
     const document = this.getPartDocument(this.mainPath);
     const paragraphElement = paragraphAt(document, paragraph);
     const runElement = ownRuns(paragraphElement)[run];
@@ -623,7 +719,7 @@ export class DocxDocument {
 
   formatParagraph(index: number, format: ParagraphFormat, options: { validateStyle?: boolean } = {}): void {
     validateParagraphFormat(format);
-    if (options.validateStyle && format.style !== undefined && !this.getStyle(format.style)) {
+    if (options.validateStyle && typeof format.style === 'string' && !this.getStyle(format.style)) {
       throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
     }
     this.updatePartXml(this.mainPath, document => {
@@ -645,12 +741,19 @@ export class DocxDocument {
 
   defineStyle(style: StyleInfo): void {
     assertText(style.id, 'style.id');
-    assertText(style.name, 'style.name');
+    const styleName = style.name || style.id;
+    assertText(styleName, 'style.name');
     const type = style.type;
     if (!['paragraph', 'character', 'table', 'numbering'].includes(type)) throw new Error(`Unsupported style type: ${String(type)}`);
-    if (style.paragraph !== undefined) validateParagraphFormat(style.paragraph);
-    if (style.run !== undefined) validateRunFormat(style.run);
-    const draft = new DocxDocument(new Map(this.parts));
+    if (style.paragraph !== undefined) {
+      validateParagraphFormat(style.paragraph);
+      rejectNullFormatValues(style.paragraph, 'style.paragraph');
+    }
+    if (style.run !== undefined) {
+      validateRunFormat(style.run);
+      rejectNullFormatValues(style.run, 'style.run');
+    }
+    const draft = new DocxDocument(new Map([...this.parts].map(([path, bytes]) => [path, Uint8Array.from(bytes)])));
     const stylesPath = draft.getRelatedPartPath(STYLES_REL, 'word/styles.xml') ?? (() => {
       const path = `${dirname(draft.mainPath) ? `${dirname(draft.mainPath)}/` : ''}styles.xml`;
       const relsDocument = draft.parts.has(relsPath(draft.mainPath))
@@ -700,9 +803,10 @@ export class DocxDocument {
       }
       styleElement.setAttributeNS(WORD_NS, 'w:type', style.type);
       styleElement.setAttributeNS(WORD_NS, 'w:styleId', style.id);
-      if (style.isDefault !== undefined) styleElement.setAttributeNS(WORD_NS, 'w:default', style.isDefault ? '1' : '0');
+      removeWordAttribute(styleElement, 'default');
+      if (style.isDefault) styleElement.setAttributeNS(WORD_NS, 'w:default', '1');
       const name = styleChild(styleElement, 'name');
-      setWordValue(name, style.name);
+      setWordValue(name, styleName);
       if (style.basedOn) setWordValue(styleChild(styleElement, 'basedOn'), style.basedOn);
       if (style.next) setWordValue(styleChild(styleElement, 'next'), style.next);
       if (style.link) setWordValue(styleChild(styleElement, 'link'), style.link);

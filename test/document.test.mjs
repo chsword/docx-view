@@ -407,6 +407,74 @@ test('defineStyle creates styles.xml and styles can be read back after reload', 
   assert.match(reopened.getPartXml('word/styles.xml'), /MyHeading/);
 });
 
+test('format APIs can clear direct formatting with null to fall back to inherited values', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Styled"/></w:pPr><w:r><w:t>Clear</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Styled"><w:name w:val="Styled"/><w:pPr><w:spacing w:after="240"/></w:pPr><w:rPr><w:color w:val="336699"/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  doc.formatParagraph(0, { spacingAfter: 120 });
+  doc.formatRun(0, 0, { color: 'AA5500', highlight: 'yellow', fontFamily: 'Arial' });
+  doc.formatParagraph(0, { spacingAfter: null });
+  doc.formatRun(0, 0, { color: null, highlight: 'none', fontFamily: null });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /w:after="120"/);
+  assert.doesNotMatch(xml, /w:highlight/);
+  assert.doesNotMatch(xml, /w:rFonts/);
+  assert.equal(doc.getParagraphs()[0].effective.spacingAfter, 240);
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.color, '336699');
+});
+
+test('clearing paragraph indents removes imported start/end attributes too', () => {
+  const doc = withBody('<w:p><w:pPr><w:ind w:start="720" w:end="360"/></w:pPr><w:r><w:t>Indent</w:t></w:r></w:p>');
+  assert.equal(doc.getParagraphs()[0].indentLeft, 720);
+  assert.equal(doc.getParagraphs()[0].indentRight, 360);
+  doc.formatParagraph(0, { indentLeft: null, indentRight: null });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /w:start=/);
+  assert.doesNotMatch(xml, /w:end=/);
+  assert.equal(doc.getParagraphs()[0].indentLeft, undefined);
+  assert.equal(doc.getParagraphs()[0].indentRight, undefined);
+});
+
+test('eastAsia-only font families are surfaced in effective formatting', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:rFonts w:eastAsia="SimSun"/></w:rPr><w:t>字体</w:t></w:r></w:p>');
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.fontFamily, 'SimSun');
+  assert.equal(run.fontFamilyEastAsia, 'SimSun');
+});
+
+test('defineStyle updates existing styles without leaving stale metadata behind', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({
+    id: 'Mutable',
+    name: 'Mutable',
+    type: 'paragraph',
+    quickFormat: true,
+    isDefault: true,
+    paragraph: { spacingAfter: 240 },
+    run: { bold: true },
+  });
+  doc.defineStyle({ id: 'Mutable', name: 'Mutable 2', type: 'paragraph' });
+  const xml = doc.getPartXml('word/styles.xml');
+  assert.doesNotMatch(xml, /w:default=/);
+  assert.doesNotMatch(xml, /w:qFormat/);
+  assert.doesNotMatch(xml, /<w:pPr/);
+  assert.doesNotMatch(xml, /<w:rPr/);
+  assert.match(xml, /Mutable 2/);
+});
+
+test('defineStyle rejects null patch-style values', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.defineStyle({
+    id: 'Invalid',
+    name: 'Invalid',
+    type: 'paragraph',
+    run: { color: null },
+  }), /cannot be null/);
+});
+
 test('table style conditions apply first-row and horizontal band run formatting', () => {
   const doc = withStyles(
     `<w:tbl>
@@ -424,4 +492,19 @@ test('table style conditions apply first-row and horizontal band run formatting'
   const paragraphs = doc.getParagraphs();
   assert.equal(paragraphs[0].runs[0].effective.bold, true);
   assert.equal(paragraphs[1].runs[0].effective.color, 'AA5500');
+});
+
+test('table style firstCol can be explicitly disabled by tblLook', () => {
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="Cols"/><w:tblLook w:firstCol="0"/></w:tblPr>
+      <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="Cols"><w:name w:val="Cols"/>
+        <w:tblStylePr w:type="firstCol"><w:rPr><w:b/></w:rPr></w:tblStylePr>
+      </w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.bold, undefined);
 });

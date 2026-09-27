@@ -13,6 +13,10 @@ function keys(value: Record<string, unknown>, allowed: string[]): void {
   }
 }
 
+function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void): void {
+  if (value !== null && value !== undefined) validate(value);
+}
+
 export function assertIndex(value: unknown): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new Error('Index/revision must be a non-negative safe integer.');
@@ -27,25 +31,26 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
     'highlight', 'characterSpacing',
   ]);
   for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps']) {
-    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+    if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
-    if (key in value) assertText(value[key], key);
+    if (key in value) maybeNull(value[key] as string | null | undefined, (entry) => assertText(entry, key));
   }
   for (const key of ['color', 'underlineColor']) {
-    if (key in value && (typeof value[key] !== 'string' || !/^[a-f\d]{6}$/i.test(value[key] as string))) {
+    if (key in value && value[key] !== null && (typeof value[key] !== 'string' || !/^[a-f\d]{6}$/i.test(value[key] as string))) {
       throw new Error(`${key} must be six hexadecimal digits without #.`);
     }
   }
-  if ('fontSize' in value && (typeof value.fontSize !== 'number' ||
+  if ('fontSize' in value && value.fontSize !== null && (typeof value.fontSize !== 'number' ||
       !Number.isFinite(value.fontSize) || value.fontSize < 1 || value.fontSize > 400 ||
       !Number.isInteger(value.fontSize * 2))) {
     throw new Error('fontSize must be 1–400 points in half-point increments.');
   }
-  if ('verticalAlign' in value && !['baseline', 'subscript', 'superscript'].includes(String(value.verticalAlign))) {
+  if ('verticalAlign' in value && value.verticalAlign !== null && !['baseline', 'subscript', 'superscript'].includes(String(value.verticalAlign))) {
     throw new Error('verticalAlign must be baseline, subscript or superscript.');
   }
-  if ('characterSpacing' in value && (!Number.isSafeInteger(value.characterSpacing as number) || Math.abs(value.characterSpacing as number) > 31680)) {
+  if ('characterSpacing' in value && value.characterSpacing !== null &&
+      (!Number.isSafeInteger(value.characterSpacing as number) || Math.abs(value.characterSpacing as number) > 31680)) {
     throw new Error('characterSpacing must be a safe integer within OOXML spacing bounds.');
   }
 }
@@ -57,20 +62,20 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
     'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
     'widowControl', 'outlineLevel',
   ]);
-  if ('alignment' in value && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
+  if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
   }
-  if ('style' in value) assertText(value.style, 'style');
+  if ('style' in value) maybeNull(value.style as string | null | undefined, (entry) => assertText(entry, 'style'));
   for (const key of ['indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore', 'spacingAfter', 'lineSpacing', 'outlineLevel']) {
-    if (key in value && (!Number.isSafeInteger(value[key]) || Math.abs(value[key] as number) > 31680)) {
+    if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || Math.abs(value[key] as number) > 31680)) {
       throw new Error(`${key} must be a safe integer within OOXML bounds.`);
     }
   }
-  if ('lineSpacingRule' in value && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
+  if ('lineSpacingRule' in value && value.lineSpacingRule !== null && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
     throw new Error('Invalid lineSpacingRule.');
   }
   for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl']) {
-    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+    if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
 }
 
@@ -122,6 +127,7 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
 const text = { type: 'string', maxLength: 1_000_000 };
 const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const signedInteger = { type: 'integer', minimum: -31680, maximum: 31680 };
+const nullable = <T extends Record<string, unknown>>(schema: T) => ({ anyOf: [schema, { type: 'null' }] });
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
@@ -143,40 +149,40 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('insertParagraph', { text, before: index }, ['text']),
           operation('deleteParagraph', { index }),
           operation('formatParagraph', { index, format: shape({
-            alignment: { enum: ['left', 'center', 'right', 'both', 'distribute'] },
-            style: text,
-            indentLeft: signedInteger,
-            indentRight: signedInteger,
-            indentFirstLine: signedInteger,
-            indentHanging: signedInteger,
-            spacingBefore: signedInteger,
-            spacingAfter: signedInteger,
-            lineSpacing: signedInteger,
-            lineSpacingRule: { enum: ['auto', 'atLeast', 'exact'] },
-            keepNext: { type: 'boolean' },
-            keepLines: { type: 'boolean' },
-            pageBreakBefore: { type: 'boolean' },
-            widowControl: { type: 'boolean' },
-            outlineLevel: signedInteger,
+            alignment: nullable({ enum: ['left', 'center', 'right', 'both', 'distribute'] }),
+            style: nullable(text),
+            indentLeft: nullable(signedInteger),
+            indentRight: nullable(signedInteger),
+            indentFirstLine: nullable(signedInteger),
+            indentHanging: nullable(signedInteger),
+            spacingBefore: nullable(signedInteger),
+            spacingAfter: nullable(signedInteger),
+            lineSpacing: nullable(signedInteger),
+            lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
+            keepNext: nullable({ type: 'boolean' }),
+            keepLines: nullable({ type: 'boolean' }),
+            pageBreakBefore: nullable({ type: 'boolean' }),
+            widowControl: nullable({ type: 'boolean' }),
+            outlineLevel: nullable(signedInteger),
           }, []) }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
-            style: text,
-            bold: { type: 'boolean' },
-            italic: { type: 'boolean' },
-            underline: { type: 'boolean' },
-            underlineStyle: text,
-            underlineColor: { type: 'string', pattern: '^[a-fA-F0-9]{6}$' },
-            fontSize: { type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 },
-            fontFamily: text,
-            fontFamilyEastAsia: text,
-            color: { type: 'string', pattern: '^[a-fA-F0-9]{6}$' },
-            strike: { type: 'boolean' },
-            doubleStrike: { type: 'boolean' },
-            verticalAlign: { enum: ['baseline', 'subscript', 'superscript'] },
-            smallCaps: { type: 'boolean' },
-            allCaps: { type: 'boolean' },
-            highlight: text,
-            characterSpacing: signedInteger,
+            style: nullable(text),
+            bold: nullable({ type: 'boolean' }),
+            italic: nullable({ type: 'boolean' }),
+            underline: nullable({ type: 'boolean' }),
+            underlineStyle: nullable(text),
+            underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+            fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
+            fontFamily: nullable(text),
+            fontFamilyEastAsia: nullable(text),
+            color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+            strike: nullable({ type: 'boolean' }),
+            doubleStrike: nullable({ type: 'boolean' }),
+            verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
+            smallCaps: nullable({ type: 'boolean' }),
+            allCaps: nullable({ type: 'boolean' }),
+            highlight: nullable(text),
+            characterSpacing: nullable(signedInteger),
           }, []) }),
           operation('replaceText', { search: { ...text, minLength: 1 }, replacement: text }),
           operation('insertTable', { rows: {

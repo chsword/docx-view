@@ -1,8 +1,8 @@
 import { DocxDocument } from './document.js';
 import type { DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo } from './types.js';
 
-function twipsToPoints(value: number | undefined): string | undefined {
-  return value !== undefined ? `${value / 20}pt` : undefined;
+function twipsToPoints(value: number | null | undefined): string | undefined {
+  return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
 }
 
 function highlightColor(value: string): string {
@@ -19,18 +19,40 @@ function highlightColor(value: string): string {
   }[value] ?? value;
 }
 
+function underlineStyleToCss(value: string): string {
+  return {
+    single: 'solid',
+    words: 'solid',
+    thick: 'solid',
+    dotted: 'dotted',
+    dash: 'dashed',
+    dashed: 'dashed',
+    dashDotHeavy: 'dashed',
+    dashLong: 'dashed',
+    dashLongHeavy: 'dashed',
+    dotDash: 'dashed',
+    dotDotDash: 'dashed',
+    double: 'double',
+    doubleAccounting: 'double',
+    wave: 'wavy',
+    wavyDouble: 'wavy',
+    wavyHeavy: 'wavy',
+  }[value] ?? 'solid';
+}
+
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
-  if (effective.indentLeft !== undefined) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
-  if (effective.indentRight !== undefined) element.style.marginRight = twipsToPoints(effective.indentRight)!;
-  if (effective.spacingBefore !== undefined) element.style.marginTop = twipsToPoints(effective.spacingBefore)!;
-  if (effective.spacingAfter !== undefined) element.style.marginBottom = twipsToPoints(effective.spacingAfter)!;
-  if (effective.indentFirstLine !== undefined || effective.indentHanging !== undefined) {
+  if (effective.indentLeft !== undefined && effective.indentLeft !== null) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
+  if (effective.indentRight !== undefined && effective.indentRight !== null) element.style.marginRight = twipsToPoints(effective.indentRight)!;
+  if (effective.spacingBefore !== undefined && effective.spacingBefore !== null) element.style.marginTop = twipsToPoints(effective.spacingBefore)!;
+  if (effective.spacingAfter !== undefined && effective.spacingAfter !== null) element.style.marginBottom = twipsToPoints(effective.spacingAfter)!;
+  if ((effective.indentFirstLine !== undefined && effective.indentFirstLine !== null) ||
+      (effective.indentHanging !== undefined && effective.indentHanging !== null)) {
     const indent = (effective.indentFirstLine ?? 0) - (effective.indentHanging ?? 0);
     element.style.textIndent = twipsToPoints(indent)!;
   }
-  if (effective.lineSpacing !== undefined) {
+  if (effective.lineSpacing !== undefined && effective.lineSpacing !== null) {
     element.style.lineHeight = effective.lineSpacingRule === 'auto'
       ? String(effective.lineSpacing / 240)
       : `${effective.lineSpacing / 20}pt`;
@@ -47,7 +69,7 @@ function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
   ].filter(Boolean);
   if (textDecorations.length) span.style.textDecoration = textDecorations.join(' ');
   else if (effective.underline === false || effective.strike === false || effective.doubleStrike === false) span.style.textDecoration = 'none';
-  if (effective.underlineStyle) span.style.textDecorationStyle = effective.underlineStyle === 'words' ? 'solid' : effective.underlineStyle;
+  if (effective.underlineStyle) span.style.textDecorationStyle = underlineStyleToCss(effective.underlineStyle);
   if (effective.underlineColor && /^[0-9a-f]{6}$/i.test(effective.underlineColor)) span.style.textDecorationColor = `#${effective.underlineColor}`;
   if (effective.fontSize !== undefined) span.style.fontSize = `${effective.fontSize}pt`;
   if (effective.fontFamily || effective.fontFamilyEastAsia) span.style.fontFamily = effective.fontFamilyEastAsia ?? effective.fontFamily!;
@@ -56,7 +78,7 @@ function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
   if (effective.smallCaps || effective.allCaps) span.style.fontVariantCaps = effective.allCaps ? 'all-small-caps' : 'small-caps';
   if (effective.allCaps) span.style.textTransform = 'uppercase';
   if (effective.highlight && effective.highlight !== 'none') span.style.backgroundColor = highlightColor(effective.highlight);
-  if (effective.characterSpacing !== undefined) span.style.letterSpacing = `${effective.characterSpacing / 20}pt`;
+  if (effective.characterSpacing !== undefined && effective.characterSpacing !== null) span.style.letterSpacing = `${effective.characterSpacing / 20}pt`;
 }
 
 export interface DocxEditorOptions {
