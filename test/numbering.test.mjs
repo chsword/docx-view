@@ -83,6 +83,20 @@ test('paragraph styles with numPr contribute numbering', () => {
   assert.equal(doc.getParagraphs()[0].numbering.text, '1.');
 });
 
+test('numbered paragraphs keep style-derived effective formatting', () => {
+  const doc = withBody('<w:p><w:pPr><w:pStyle w:val="HeadingList"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  attachNumbering(
+    doc,
+    `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+    `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="HeadingList"><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr><w:spacing w:after="240"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style></w:styles>`,
+  );
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.numbering.text, '1.');
+  assert.equal(paragraph.effective.spacingAfter, 240);
+  assert.equal(paragraph.runs[0].effective.bold, true);
+  assert.equal(paragraph.runs[0].effective.fontSize, 16);
+});
+
 test('unknown numFmt falls back to decimal instead of throwing', () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
   attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="totallyUnknown"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);

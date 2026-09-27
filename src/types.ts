@@ -1,15 +1,53 @@
 export interface RunFormat {
-  bold?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-  fontSize?: number;
-  fontFamily?: string;
-  color?: string;
+  style?: string | null;
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  underlineStyle?: string | null;
+  underlineColor?: string | null;
+  fontSize?: number | null;
+  fontFamily?: string | null;
+  fontFamilyEastAsia?: string | null;
+  color?: string | null;
+  strike?: boolean | null;
+  doubleStrike?: boolean | null;
+  verticalAlign?: 'baseline' | 'subscript' | 'superscript' | null;
+  smallCaps?: boolean | null;
+  allCaps?: boolean | null;
+  highlight?: string | null;
+  characterSpacing?: number | null;
 }
 
 export interface ParagraphFormat {
-  alignment?: 'left' | 'center' | 'right' | 'both';
-  style?: string;
+  alignment?: 'left' | 'center' | 'right' | 'both' | 'distribute' | null;
+  style?: string | null;
+  indentLeft?: number | null;
+  indentRight?: number | null;
+  indentFirstLine?: number | null;
+  indentHanging?: number | null;
+  spacingBefore?: number | null;
+  spacingAfter?: number | null;
+  lineSpacing?: number | null;
+  lineSpacingRule?: 'auto' | 'atLeast' | 'exact' | null;
+  keepNext?: boolean | null;
+  keepLines?: boolean | null;
+  pageBreakBefore?: boolean | null;
+  widowControl?: boolean | null;
+  outlineLevel?: number | null;
+}
+
+export interface StyleInfo {
+  id: string;
+  name: string;
+  type: 'paragraph' | 'character' | 'table' | 'numbering';
+  basedOn?: string;
+  next?: string;
+  link?: string;
+  aliases?: string[];
+  isDefault?: boolean;
+  quickFormat?: boolean;
+  paragraph?: ParagraphFormat;
+  run?: RunFormat;
 }
 
 export interface NumberingLevelDefinition {
@@ -53,12 +91,14 @@ export interface NumberingInfo {
 export interface RunInfo extends RunFormat {
   index: number;
   text: string;
+  effective?: RunFormat;
 }
 
 export interface ParagraphInfo extends ParagraphFormat {
   index: number;
   text: string;
   runs: RunInfo[];
+  effective?: ParagraphFormat;
   numbering?: NumberingInfo;
 }
 
@@ -71,6 +111,7 @@ export interface DocumentSnapshot {
   paragraphs: ParagraphInfo[];
   blocks: DocumentBlock[];
   parts: string[];
+  styles: StyleInfo[];
 }
 
 export type AgentOperation =
