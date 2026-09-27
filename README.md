@@ -85,6 +85,7 @@ console.log(reopened.getSnapshot());
 | `setCellText()` | 修改可见单元格文字，同时保留段落结构与其他未改内容 |
 | `getImages()` / `getImageBytes()` / `getImageDataUrl()` | 读取主文档中的图片元数据、二进制内容和可直接渲染的 `data:` URL |
 | `insertImage()` / `replaceImageBytes()` / `resizeImage()` / `setImageAlt()` / `deleteImage()` | 插入、替换、调整尺寸、更新替代文本和删除图片 |
+| `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
@@ -109,7 +110,7 @@ editor.render();
 // editor.destroy();
 ```
 
-输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。
+输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号和脚注/尾注引用标记会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。
 
 组件还提供 `selectedParagraph`、`setDocument(doc)` 和 `destroy()`。`docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引。格式工具栏由宿主实现；演示工具栏作用于整段，而不是任意选中的字符范围。
 
@@ -175,7 +176,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

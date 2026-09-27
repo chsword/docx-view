@@ -382,6 +382,15 @@ export class DocxEditor {
         applyRunStyle(span, run);
         content.append(span);
       }
+      if (run.noteReference) {
+        const marker = this.root.ownerDocument.createElement('sup');
+        marker.className = 'docx-note-ref';
+        marker.dataset.docxMark = 'note-reference';
+        marker.contentEditable = 'false';
+        marker.textContent = run.noteReference.marker;
+        marker.setAttribute('aria-label', `${run.noteReference.kind} reference ${run.noteReference.marker}`);
+        content.append(marker);
+      }
       for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
     }
     if (!paragraph.runs.length) content.textContent = paragraph.text;

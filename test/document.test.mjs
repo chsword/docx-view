@@ -209,7 +209,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 27);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -470,7 +470,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 27);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -893,4 +893,114 @@ test('underline patches keep color when only the style is cleared', () => {
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.match(xml, /<w:u w:color="FF0000"\/>/);
   assert.equal(doc.getParagraphs()[0].runs[0].underlineColor, 'FF0000');
+});
+
+test('insertFootnote creates note part and marker without changing paragraph text', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'body');
+  doc.insertFootnote(0, 1, 'note');
+  assert.equal(doc.getParagraphs()[0].text, 'body');
+  assert.equal(doc.getParagraphs()[0].runs.at(-1).noteReference.marker, '1');
+  assert.match(doc.getPartXml('word/footnotes.xml'), /note/);
+});
+
+test('footnote numbering follows reference order, not id order', () => {
+  const doc = withBody('<w:p><w:r><w:footnoteReference w:id="9"/></w:r></w:p><w:p><w:r><w:footnoteReference w:id="3"/></w:r></w:p>');
+  doc.addPart('word/footnotes.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="3"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>a</w:t></w:r></w:p></w:footnote>
+    <w:footnote w:id="9"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>b</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  assert.deepEqual(doc.getFootnotes().map((item) => item.id), [9, 3]);
+  assert.deepEqual(doc.getFootnotes().map((item) => item.number), [1, 2]);
+});
+
+test('table-cell footnote references are recognized', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.addPart('word/footnotes.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>cell</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  assert.equal(doc.getFootnotes()[0].reference.paragraph, 0);
+});
+
+test('separator placeholders are excluded from visible footnotes', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'visible');
+  assert.equal(doc.getFootnotes().length, 1);
+});
+
+test('setNoteText replaces non-marker note body content', () => {
+  const doc = withBody('<w:p><w:r><w:footnoteReference w:id="1"/></w:r></w:p>');
+  doc.addPart('word/footnotes.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:t>Old note body</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.setNoteText('footnote', 1, 'NEW');
+  assert.match(doc.getPartXml('word/footnotes.xml'), /NEW/);
+  assert.doesNotMatch(doc.getPartXml('word/footnotes.xml'), /Old note body NEW/);
+});
+
+test('setNoteSettings writes correct settings content type', () => {
+  const doc = DocxDocument.create();
+  doc.setNoteSettings({ footnote: { numFmt: 'decimal' } });
+  assert.match(doc.getPartXml('[Content_Types].xml'), /wordprocessingml.settings\+xml/);
+  assert.doesNotMatch(doc.getPartXml('[Content_Types].xml'), /wordprocessingml.document.settings\+xml/);
+});
+
+test('section note settings are applied to the paragraph owning sectPr', () => {
+  const doc = withBody('<w:p><w:pPr><w:sectPr><w:footnotePr><w:numFmt w:val="lowerRoman"/></w:footnotePr></w:sectPr></w:pPr><w:r><w:footnoteReference w:id="1"/></w:r></w:p><w:p><w:r><w:footnoteReference w:id="2"/></w:r></w:p><w:sectPr><w:footnotePr><w:numFmt w:val="upperLetter"/></w:footnotePr></w:sectPr>');
+  doc.addPart('word/footnotes.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>x</w:t></w:r></w:p></w:footnote>
+    <w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>y</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  assert.deepEqual(doc.getFootnotes().map((item) => item.marker), ['i', 'B']);
+});
+
+test('non-standard footnotes target path is resolved without duplicate relationships', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'base');
+  doc.addPart('word/fn.xml', encoder.encode(doc.getPartXml('word/footnotes.xml')), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.setPartXml('word/_rels/document.xml.rels', doc.getPartXml('word/_rels/document.xml.rels').replace('footnotes.xml', 'fn.xml'));
+  doc.insertFootnote(0, 1, 'next');
+  assert.equal((doc.getPartXml('word/_rels/document.xml.rels').match(/relationships\/footnotes/g) ?? []).length, 1);
+});
+
+test('insertFootnote uses nested run parent as anchor', () => {
+  const doc = withBody('<w:p><w:hyperlink w:anchor="x"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:r><w:t>tail</w:t></w:r></w:p>');
+  assert.doesNotThrow(() => doc.insertFootnote(0, 0, 'note'));
+});
+
+test('failed direct note operations are atomic', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const revision = doc.revision;
+  const parts = doc.listParts();
+  assert.throws(() => doc.insertFootnote(0, 99, 'x'), /Run 99/);
+  assert.equal(doc.revision, revision);
+  assert.deepEqual(doc.listParts(), parts);
+});
+
+test('next note id also considers dangling references in body', () => {
+  const doc = withBody('<w:p><w:r><w:footnoteReference w:id="1"/></w:r></w:p><w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const note = doc.insertFootnote(1, 1, 'new');
+  assert.equal(note.id, 2);
+});
+
+test('note body paragraph indexes are local per note', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'one');
+  assert.equal(doc.getFootnotes()[0].blocks[0].paragraph.index, 0);
+});
+
+test('convertNote updates reference styles to target kind', () => {
+  const doc = DocxDocument.create();
+  const note = doc.insertFootnote(0, 1, 'convert me');
+  doc.convertNote('footnote', note.id);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /EndnoteReference/);
+  assert.match(doc.getPartXml('word/endnotes.xml'), /EndnoteReference/);
 });
