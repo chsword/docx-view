@@ -105,7 +105,10 @@ function selectedCell(): { table: number; row: number; col: number; rowSpan: num
   if (!cell) throw new Error('请先把光标放进一个表格单元格，再使用表格工具。');
   const tableElement = cell.closest('.docx-table');
   if (!tableElement) throw new Error('未找到当前表格。');
-  const table = Array.from(host.querySelectorAll('.docx-table')).indexOf(tableElement);
+  if (tableElement.parentElement?.closest('.docx-table')) {
+    throw new Error('当前演示的结构化表格工具仅支持正文顶层表格，不支持嵌套表格。');
+  }
+  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
   if (table < 0) throw new Error('未找到当前表格。');
   return {
     table,

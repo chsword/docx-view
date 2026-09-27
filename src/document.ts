@@ -151,15 +151,29 @@ const PROPERTY_ORDER = {
     'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
     'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
     'specVanish', 'oMath', 'rPrChange'],
+  tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+    'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
+    'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
+  trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight',
+    'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
+  tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
+    'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
+  tblBorders: ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'],
+  tcBorders: ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl'],
+  tblCellMar: ['top', 'left', 'bottom', 'right'],
+  tcMar: ['top', 'left', 'bottom', 'right'],
 };
 
 function property(parent: Element, name: string): Element {
   let result = children(parent, name)[0];
   if (!result) {
     result = wordElement(parent.ownerDocument!, name);
-    const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER];
+    const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER] ?? [];
     const position = order.indexOf(name);
-    const following = children(parent).find(child => order.indexOf(child.localName!) > position);
+    const following = position === -1 ? undefined : children(parent).find(child => {
+      const childPosition = order.indexOf(child.localName!);
+      return childPosition > position;
+    });
     parent.insertBefore(result, following ?? null);
   }
   return result;
@@ -222,7 +236,7 @@ function bodyBlockAt(document: Document, index: number): Element {
   return block;
 }
 
-function tableProperty(parent: Element, name: 'tblPr' | 'trPr' | 'tcPr' | 'tblGrid'): Element {
+function tableProperty(parent: Element, name: 'tblPr' | 'trPr' | 'tcPr'): Element {
   let result = children(parent, name)[0];
   if (!result) {
     result = wordElement(parent.ownerDocument!, name);
@@ -231,13 +245,17 @@ function tableProperty(parent: Element, name: 'tblPr' | 'trPr' | 'tcPr' | 'tblGr
   return result;
 }
 
-function tableChild(parent: Element, name: string): Element {
-  let result = children(parent, name)[0];
-  if (!result) {
-    result = wordElement(parent.ownerDocument!, name);
-    parent.appendChild(result);
+function ensureTableGrid(table: Element): Element {
+  let grid = children(table, 'tblGrid')[0];
+  if (!grid) {
+    grid = wordElement(table.ownerDocument!, 'tblGrid');
+    const tableProps = children(table, 'tblPr')[0];
+    table.insertBefore(grid, tableProps?.nextSibling ?? children(table, 'tr')[0] ?? null);
+    for (const width of tableGrid(table)) grid.appendChild(gridCol(table.ownerDocument!, width));
+  } else if (!children(grid, 'gridCol').length) {
+    for (const width of tableGrid(table)) grid.appendChild(gridCol(table.ownerDocument!, width));
   }
-  return result;
+  return grid;
 }
 
 function removeWordChildren(parent: Element | undefined, ...names: string[]): void {
@@ -266,78 +284,69 @@ function gridCol(document: Document, width = 2250): Element {
 function widthValue(parent: Element, name: string, value: { type: 'auto' | 'dxa' | 'pct'; value: number } | undefined): void {
   removeWordChildren(parent, name);
   if (!value) return;
-  const width = wordElement(parent.ownerDocument!, name);
+  const width = property(parent, name);
   width.setAttributeNS(WORD_NS, 'w:type', value.type);
   width.setAttributeNS(WORD_NS, 'w:w', String(value.value));
-  parent.appendChild(width);
 }
 
 function boolValue(parent: Element, name: string, value: boolean | undefined): void {
   removeWordChildren(parent, name);
   if (value === undefined) return;
-  const element = wordElement(parent.ownerDocument!, name);
+  const element = property(parent, name);
   if (!value) setWordValue(element, '0');
-  parent.appendChild(element);
 }
 
 function valueElement(parent: Element, name: string, value: string | undefined): void {
   removeWordChildren(parent, name);
   if (value === undefined) return;
-  const element = wordElement(parent.ownerDocument!, name);
+  const element = property(parent, name);
   setWordValue(element, value);
-  parent.appendChild(element);
 }
 
 function mergeElement(parent: Element, name: 'gridSpan' | 'vMerge' | 'hMerge', value: number | 'restart' | 'continue' | undefined): void {
   removeWordChildren(parent, name);
   if (value === undefined) return;
-  const element = wordElement(parent.ownerDocument!, name);
+  const element = property(parent, name);
   if (typeof value === 'number') setWordValue(element, String(value));
   else if (value === 'restart') setWordValue(element, value);
-  parent.appendChild(element);
 }
 
 function setBorders(parent: Element, name: 'tblBorders' | 'tcBorders', borders: TableFormat['borders'] | CellFormat['borders'] | undefined): void {
   removeWordChildren(parent, name);
   if (!borders) return;
-  const element = wordElement(parent.ownerDocument!, name);
-  for (const side of ['top', 'right', 'bottom', 'left', 'insideH', 'insideV'] as const) {
+  const element = property(parent, name);
+  for (const side of ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'] as const) {
     const border = borders[side];
     if (!border) continue;
-    const child = wordElement(parent.ownerDocument!, side);
+    const child = property(element, side);
     if (border.style) setWordValue(child, border.style);
     if (border.size !== undefined) child.setAttributeNS(WORD_NS, 'w:sz', String(border.size));
     if (border.space !== undefined) child.setAttributeNS(WORD_NS, 'w:space', String(border.space));
     if (border.color) child.setAttributeNS(WORD_NS, 'w:color', border.color);
     if (border.none && !border.style) setWordValue(child, 'nil');
-    element.appendChild(child);
   }
-  if (children(element).length) parent.appendChild(element);
 }
 
 function setShading(parent: Element, shading: TableFormat['shading'] | CellFormat['shading'] | undefined): void {
   removeWordChildren(parent, 'shd');
   if (!shading) return;
-  const element = wordElement(parent.ownerDocument!, 'shd');
+  const element = property(parent, 'shd');
   if (shading.fill) element.setAttributeNS(WORD_NS, 'w:fill', shading.fill);
   if (shading.color) element.setAttributeNS(WORD_NS, 'w:color', shading.color);
   if (shading.value) setWordValue(element, shading.value);
-  parent.appendChild(element);
 }
 
 function setMargins(parent: Element, name: 'tblCellMar' | 'tcMar', margin: TableFormat['cellMargin'] | CellFormat['margin'] | undefined): void {
   removeWordChildren(parent, name);
   if (!margin) return;
-  const element = wordElement(parent.ownerDocument!, name);
-  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+  const element = property(parent, name);
+  for (const side of ['top', 'left', 'bottom', 'right'] as const) {
     const value = margin[side];
     if (!value) continue;
-    const child = wordElement(parent.ownerDocument!, side);
+    const child = property(element, side);
     child.setAttributeNS(WORD_NS, 'w:type', value.type);
     child.setAttributeNS(WORD_NS, 'w:w', String(value.value));
-    element.appendChild(child);
   }
-  if (children(element).length) parent.appendChild(element);
 }
 
 function setTableFormat(tbl: Element, format: TableFormat): void {
@@ -346,10 +355,9 @@ function setTableFormat(tbl: Element, format: TableFormat): void {
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
   if (format.indent !== undefined) {
     removeWordChildren(props, 'tblInd');
-    const ind = wordElement(tbl.ownerDocument!, 'tblInd');
+    const ind = property(props, 'tblInd');
     ind.setAttributeNS(WORD_NS, 'w:w', String(format.indent));
     ind.setAttributeNS(WORD_NS, 'w:type', 'dxa');
-    props.appendChild(ind);
   }
   if (format.borders !== undefined) setBorders(props, 'tblBorders', format.borders);
   if (format.shading !== undefined) setShading(props, format.shading);
@@ -365,10 +373,9 @@ function setRowFormat(row: Element, format: RowFormat): void {
   const props = tableProperty(row, 'trPr');
   if (format.height !== undefined) {
     removeWordChildren(props, 'trHeight');
-    const height = wordElement(row.ownerDocument!, 'trHeight');
+    const height = property(props, 'trHeight');
     height.setAttributeNS(WORD_NS, 'w:val', String(format.height.value));
     if (format.height.rule) height.setAttributeNS(WORD_NS, 'w:hRule', format.height.rule);
-    props.appendChild(height);
   }
   if (format.cantSplit !== undefined) boolValue(props, 'cantSplit', format.cantSplit);
   if (format.header !== undefined) boolValue(props, 'tblHeader', format.header);
@@ -452,6 +459,27 @@ function clearCellContent(cell: Element): void {
 function appendCellContent(target: Element, source: Element): void {
   for (const child of children(source).filter(node => node.localName !== 'tcPr')) target.appendChild(child);
   ensureCellParagraph(target);
+}
+
+function buildTable(document: Document, rows: number, cols: number, format?: TableFormat, texts?: string[][]): Element {
+  const table = wordElement(document, 'tbl');
+  const grid = wordElement(document, 'tblGrid');
+  for (let i = 0; i < cols; i++) grid.appendChild(gridCol(document, Math.floor(9000 / cols)));
+  const tableProps = format ? wordElement(document, 'tblPr') : null;
+  if (tableProps) table.appendChild(tableProps);
+  table.appendChild(grid);
+  if (format) setTableFormat(table, format);
+  for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
+    const tr = wordElement(document, 'tr');
+    for (let colIndex = 0; colIndex < cols; colIndex++) {
+      const cell = blankCell(document);
+      const paragraph = children(cell, 'p')[0]!;
+      replaceSpan(paragraph, 0, 0, texts?.[rowIndex]?.[colIndex] ?? '');
+      tr.appendChild(cell);
+    }
+    table.appendChild(tr);
+  }
+  return table;
 }
 
 function repairVerticalMerges(table: Element): void {
@@ -754,31 +782,26 @@ export class DocxDocument {
 
   insertTable(rows: string[][]): void {
     validateRows(rows);
-    const index = children(bodyOf(this.getPartDocument(this.mainPath)), 'tbl').length;
-    this.insertTableAt(rows.length, Math.max(...rows.map(row => row.length)));
-    rows.forEach((row, rowIndex) => row.forEach((text, colIndex) => this.setCellText(index, rowIndex, colIndex, text)));
+    this.updatePartXml(this.mainPath, document => {
+      const body = bodyOf(document);
+      const section = children(body, 'sectPr')[0] ?? null;
+      const table = buildTable(document, rows.length, Math.max(...rows.map(row => row.length)), undefined, rows);
+      body.insertBefore(table, section);
+      body.insertBefore(newParagraph(document, ''), section);
+    });
   }
 
   insertTableAt(rows: number, cols: number, before?: number, format?: TableFormat): void {
     assertIndex(rows); assertIndex(cols);
     if (rows < 1 || cols < 1) throw new Error('Table must contain at least one row and one column.');
     this.updatePartXml(this.mainPath, document => {
-      const table = wordElement(document, 'tbl');
-      const grid = wordElement(document, 'tblGrid');
-      for (let i = 0; i < cols; i++) grid.appendChild(gridCol(document, Math.floor(9000 / cols)));
-      table.appendChild(grid);
-      for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
-        const tr = wordElement(document, 'tr');
-        for (let i = 0; i < cols; i++) tr.appendChild(blankCell(document));
-        table.appendChild(tr);
-      }
-      if (format) setTableFormat(table, format);
+      const table = buildTable(document, rows, cols, format);
       const body = bodyOf(document);
       const section = children(body, 'sectPr')[0] ?? null;
       if (before !== undefined) {
         const target = bodyBlockAt(document, before);
         const previous = target.previousSibling?.nodeType === 1 ? target.previousSibling as Element : null;
-        if (target.localName === 'tbl' && previous?.namespaceURI === WORD_NS && previous.localName === 'p') {
+        if (target.localName === 'tbl' && previous?.namespaceURI === WORD_NS && previous.localName === 'p' && textOf(previous) === '') {
           body.insertBefore(table, previous);
         } else {
           body.insertBefore(table, target);
@@ -806,6 +829,8 @@ export class DocxDocument {
   }
 
   insertTableRow(table: number, at: number): void {
+    assertIndex(table);
+    assertIndex(at);
     this.updatePartXml(this.mainPath, document => {
       const element = tableAt(document, table);
       const rows = children(element, 'tr');
@@ -842,9 +867,11 @@ export class DocxDocument {
   }
 
   insertTableColumn(table: number, at: number): void {
+    assertIndex(table);
+    assertIndex(at);
     this.updatePartXml(this.mainPath, document => {
       const element = tableAt(document, table);
-      const grid = tableProperty(element, 'tblGrid');
+      const grid = ensureTableGrid(element);
       const widths = tableGrid(element);
       if (at > widths.length) throw new Error(`Column ${at} does not exist.`);
       grid.insertBefore(gridCol(document, widths[Math.max(0, Math.min(at, widths.length - 1))] ?? 2250), children(grid, 'gridCol')[at] ?? null);
@@ -886,7 +913,7 @@ export class DocxDocument {
   deleteTableColumn(table: number, at: number): void {
     this.updatePartXml(this.mainPath, document => {
       const element = tableAt(document, table);
-      const grid = tableProperty(element, 'tblGrid');
+      const grid = ensureTableGrid(element);
       const columns = children(grid, 'gridCol');
       if (!columns[at]) throw new Error(`Column ${at} does not exist.`);
       if (columns.length <= 1) throw new Error('Cannot delete the only table column.');
@@ -948,12 +975,6 @@ export class DocxDocument {
             appendCellContent(master.cell, position.cell);
             model.rows[rowIndex]!.removeChild(position.cell);
           }
-          for (const position of rowCells(model.rows[rowIndex]!)) {
-            if (position.start > range.col && position.start < range.col + range.colSpan) {
-              appendCellContent(master.cell, position.cell);
-              model.rows[rowIndex]!.removeChild(position.cell);
-            }
-          }
         } else {
           const continuation = covered[0]!;
           appendCellContent(master.cell, continuation.cell);
@@ -992,13 +1013,13 @@ export class DocxDocument {
         const position = rowCells(rowElement).find(item => item.start === col);
         const cell = rowIndex === row ? master.cell : position?.cell;
         if (!cell) throw new Error('splitCell found an invalid merged-cell structure.');
+        const anchor = rowCells(rowElement).find(item => item.start >= col + cols)?.cell ?? null;
         const props = tableProperty(cell, 'tcPr');
         mergeElement(props, 'gridSpan', undefined);
         mergeElement(props, 'vMerge', undefined);
         if (rowIndex !== row) clearCellContent(cell);
-        const anchor: Node | null = rowCells(rowElement).find(item => item.start > col)?.cell ?? null;
-        const occupied = rowCells(rowElement).filter(item => item.start >= col && item.start < col + cols).length;
-        for (let i = occupied; i < cols; i++) {
+        const existingCells = rowIndex === row ? 1 : 1;
+        for (let i = existingCells; i < cols; i++) {
           const extra = blankCell(document);
           rowElement.insertBefore(extra, anchor);
         }
@@ -1027,7 +1048,7 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, document => {
       const cell = cellAt(tableAt(document, table), row, col).cell;
       ensureCellParagraph(cell);
-      const paragraph = descendants(cell, 'p')[0];
+      const paragraph = children(cell, 'p')[0];
       if (!paragraph) throw new Error('Cell paragraph does not exist.');
       const indices = new Map(descendants(bodyOf(document), 'p').map((item, index) => [item, index]));
       const index = indices.get(paragraph);

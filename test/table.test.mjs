@@ -93,6 +93,13 @@ test('insertTableAt inserts before a body block and applies format', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tblLayout w:val="fixed"/);
 });
 
+test('insertTable fills all cells atomically in one revision', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  assert.equal(doc.revision, 1);
+  assert.equal(doc.getTable(0).rows[1].cells[1].blocks[0].paragraph.text, 'D');
+});
+
 test('insertTableAt keeps a paragraph after a table inserted before another table', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A']]);
@@ -108,6 +115,12 @@ test('insertTableRow appends a blank row with the current grid width count', () 
   assert.equal(table.rows.length, 2);
   assert.equal(table.rows[1].cells.length, 2);
   assert.equal(table.rows[1].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('insertTableRow rejects negative positions', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  assert.throws(() => doc.insertTableRow(0, -1), /non-negative/);
 });
 
 test('deleteTableRow rejects deleting the only row', () => {
@@ -146,6 +159,12 @@ test('insertTableColumn updates tblGrid and can expand merged cells', () => {
   const table = doc.getTable(0);
   assert.equal(table.grid.length, 3);
   assert.equal(table.rows[0].cells[0].colSpan, 3);
+});
+
+test('insertTableColumn rejects negative positions', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  assert.throws(() => doc.insertTableColumn(0, -1), /non-negative/);
 });
 
 test('insertTableColumn preserves vertical merge geometry', () => {
@@ -198,6 +217,17 @@ test('mergeCells creates horizontal and vertical merge markup', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:vMerge w:val="restart"\/>/);
 });
 
+test('mergeCells does not absorb cells to the right of the merge range', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B', 'C', 'D']]);
+  doc.mergeCells(0, { row: 0, col: 1, rowSpan: 1, colSpan: 2 });
+  const table = doc.getTable(0);
+  assert.equal(table.rows[0].cells.length, 3);
+  assert.equal(table.rows[0].cells[1].blocks[0].paragraph.text, 'B');
+  assert.equal(table.rows[0].cells[2].blocks[0].paragraph.text, 'D');
+  assert.equal(table.rows[0].cells[1].colSpan, 2);
+});
+
 test('splitCell restores a merged 2x2 cell to the original grid', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A', 'B'], ['C', 'D']]);
@@ -209,12 +239,41 @@ test('splitCell restores a merged 2x2 cell to the original grid', () => {
   assert.equal(table.rows[1].cells.length, 2);
 });
 
+test('splitCell restores missing cells before trailing cells', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr>
+      <w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>M</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
+    </w:tr>
+  `));
+  doc.splitCell(0, 0, 0, 1, 2);
+  const table = doc.getTable(0);
+  assert.equal(table.rows[0].cells.length, 3);
+  assert.equal(table.rows[0].cells[2].blocks[0].paragraph.text, 'C');
+});
+
 test('setCellText updates the visible cell text without removing the cell paragraph', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A']]);
   doc.setCellText(0, 0, 0, 'updated');
   assert.equal(doc.getTable(0).rows[0].cells[0].blocks[0].paragraph.text, 'updated');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /updated/);
+});
+
+test('setCellText updates the outer cell paragraph instead of nested tables', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc>
+      <w:tbl><w:tblGrid><w:gridCol w:w="1200"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>INNER</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+      <w:p><w:r><w:t>OUTER</w:t></w:r></w:p>
+    </w:tc></w:tr>
+  `));
+  doc.setCellText(0, 0, 0, 'NEWTEXT');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /INNER/);
+  assert.match(xml, /NEWTEXT/);
+  assert.doesNotMatch(xml, /<w:t[^>]*>INNER<\/w:t>[\s\S]*<w:t[^>]*>OUTER<\/w:t>/);
 });
 
 test('formatTable writes layout and border properties', () => {
@@ -224,6 +283,39 @@ test('formatTable writes layout and border properties', () => {
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.match(xml, /w:tblLayout w:val="fixed"/);
   assert.match(xml, /w:top w:val="single" w:sz="8" w:color="112233"/);
+});
+
+test('formatTable and formatCell keep schema-valid property order', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.formatTable(0, {
+    style: 'TableGrid',
+    width: { type: 'dxa', value: 9000 },
+    layout: 'fixed',
+    cellMargin: { top: { type: 'dxa', value: 50 } },
+    look: '04A0',
+  });
+  doc.formatCell(0, 0, 0, {
+    width: { type: 'dxa', value: 3000 },
+    verticalAlign: 'center',
+    textDirection: 'tbRl',
+    noWrap: true,
+    hideMark: true,
+    vMerge: 'restart',
+  });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:tblPr><w:tblStyle[\s\S]*<w:tblW[\s\S]*<w:tblLayout[\s\S]*<w:tblCellMar[\s\S]*<w:tblLook/);
+  assert.match(xml, /<w:tcPr><w:tcW[\s\S]*<w:vMerge[\s\S]*<w:noWrap[\s\S]*<w:textDirection[\s\S]*<w:vAlign[\s\S]*<w:hideMark/);
+});
+
+test('column edits materialize missing tblGrid after tblPr', () => {
+  const doc = withBody(tableXml(`
+    <w:tblPr><w:tblW w:type="dxa" w:w="9000"/></w:tblPr>
+    <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+  `));
+  doc.insertTableColumn(0, 2);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:tbl><w:tblPr[\s\S]*<\/w:tblPr><w:tblGrid><w:gridCol[^>]*\/><w:gridCol[^>]*\/><w:gridCol[^>]*\/><\/w:tblGrid><w:tr>/);
 });
 
 test('formatTableRow writes row height and header properties', () => {

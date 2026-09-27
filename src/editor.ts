@@ -98,15 +98,16 @@ export class DocxEditor {
     return `${width} solid ${color}`;
   }
 
-  private cellBorder(side: 'top' | 'right' | 'bottom' | 'left', table: TableFormat | undefined, cell: CellFormat | undefined, row: number, col: number, rowCount: number, colCount: number): string | undefined {
+  private cellBorder(side: 'top' | 'right' | 'bottom' | 'left', table: TableFormat | undefined, cell: CellFormat | undefined,
+    row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): string | undefined {
     const explicit = cell?.borders?.[side];
     if (explicit) return this.borderCss(explicit);
     const borders = table?.borders;
     if (!borders) return undefined;
     if (side === 'top' && row > 0 && borders.insideH) return this.borderCss(borders.insideH);
-    if (side === 'bottom' && row < rowCount - 1 && borders.insideH) return this.borderCss(borders.insideH);
+    if (side === 'bottom' && row + rowSpan < rowCount && borders.insideH) return this.borderCss(borders.insideH);
     if (side === 'left' && col > 0 && borders.insideV) return this.borderCss(borders.insideV);
-    if (side === 'right' && col < colCount - 1 && borders.insideV) return this.borderCss(borders.insideV);
+    if (side === 'right' && col + colSpan < colCount && borders.insideV) return this.borderCss(borders.insideV);
     return this.borderCss(borders[side]);
   }
 
@@ -143,11 +144,12 @@ export class DocxEditor {
     if (row.format.header) tr.dataset.header = 'true';
   }
 
-  private applyCellStyle(td: HTMLTableCellElement, cell: CellFormat | undefined, table: TableFormat | undefined, row: number, col: number, rowCount: number, colCount: number): void {
-    td.style.borderTop = this.cellBorder('top', table, cell, row, col, rowCount, colCount) ?? td.style.borderTop;
-    td.style.borderRight = this.cellBorder('right', table, cell, row, col, rowCount, colCount) ?? td.style.borderRight;
-    td.style.borderBottom = this.cellBorder('bottom', table, cell, row, col, rowCount, colCount) ?? td.style.borderBottom;
-    td.style.borderLeft = this.cellBorder('left', table, cell, row, col, rowCount, colCount) ?? td.style.borderLeft;
+  private applyCellStyle(td: HTMLTableCellElement, cell: CellFormat | undefined, table: TableFormat | undefined,
+    row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): void {
+    td.style.borderTop = this.cellBorder('top', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderTop;
+    td.style.borderRight = this.cellBorder('right', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderRight;
+    td.style.borderBottom = this.cellBorder('bottom', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderBottom;
+    td.style.borderLeft = this.cellBorder('left', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderLeft;
     if (cell?.shading?.fill) td.style.backgroundColor = `#${cell.shading.fill}`;
     if (cell?.verticalAlign) td.style.verticalAlign = cell.verticalAlign;
     if (cell?.width) td.style.width = this.widthCss(cell.width) ?? '';
@@ -184,7 +186,7 @@ export class DocxEditor {
             td.dataset.rowEnd = String(rowIndex + Math.max(1, cell.rowSpan));
             td.colSpan = Math.max(1, cell.colSpan);
             if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
-            this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, block.rows.length, block.grid.length);
+            this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
             this.appendBlocks(td, cell.blocks);
           }
         }
@@ -261,12 +263,10 @@ export class DocxEditor {
         if (this.moveToAdjacentCell(element, 1)) event.preventDefault();
       }
       if (event.key === 'ArrowUp' && caret?.start === 0 && caret.end === 0) {
-        event.preventDefault();
-        this.moveVerticalCell(element, -1);
+        if (this.moveVerticalCell(element, -1)) event.preventDefault();
       }
       if (event.key === 'ArrowDown' && caret && caret.start === caret.end && caret.end === this.readText(element).length) {
-        event.preventDefault();
-        this.moveVerticalCell(element, 1);
+        if (this.moveVerticalCell(element, 1)) event.preventDefault();
       }
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
@@ -325,10 +325,10 @@ export class DocxEditor {
     return true;
   }
 
-  private moveVerticalCell(element: HTMLElement, delta: number): void {
+  private moveVerticalCell(element: HTMLElement, delta: number): boolean {
     const cell = element.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
     const table = cell?.closest('table');
-    if (!cell || !table) return;
+    if (!cell || !table) return false;
     const currentCol = Number(cell.dataset.gridStart ?? 0);
     const targetRow = delta < 0 ? Number(cell.dataset.rowStart ?? 0) - 1 : Number(cell.dataset.rowEnd ?? 0);
     const target = Array.from(table.querySelectorAll<HTMLTableCellElement>('td[data-table-cell="true"]')).find((candidate) => {
@@ -338,7 +338,9 @@ export class DocxEditor {
       const colEnd = Number(candidate.dataset.gridEnd ?? -1);
       return rowStart <= targetRow && rowEnd > targetRow && colStart <= currentCol && colEnd > currentCol;
     });
-    this.focusParagraphInCell(target ?? null);
+    if (!target) return false;
+    this.focusParagraphInCell(target);
+    return true;
   }
 
   private selectParagraph(index: number): void {
