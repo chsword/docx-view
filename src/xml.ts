@@ -11,7 +11,7 @@ export function parseXml(xml: string): Document {
     throw new Error('DTD and entity declarations are not supported.');
   }
   return new DOMParser({
-    onError: (level, message) => { throw new Error(`Invalid XML (${level}): ${message}`); },
+    onError: (level: string, message: string) => { throw new Error(`Invalid XML (${level}): ${message}`); },
   }).parseFromString(xml, 'application/xml');
 }
 

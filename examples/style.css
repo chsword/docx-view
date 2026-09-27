@@ -68,8 +68,9 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }
 .docx-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 21px 0 26px; font-size: 10pt; }
+.docx-table caption { caption-side: top; text-align: left; color: #7b879a; font-size: 10px; padding-bottom: 6px; }
 .docx-table td { border: 1px solid #dbe3ed; padding: 10px 11px; vertical-align: top; }
-.docx-table tr:first-child td { background: #f3f6fb; }
+.docx-table tr:first-child td, .docx-table tr[data-header="true"] td { background: #f3f6fb; }
 .docx-table .docx-paragraph { margin: 0; }
 .document-footer { display: flex; gap: 10px; justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); font-size: 10px; color: #8693a7; }
 .document-footer b { font-weight: 400; margin: 0 10px; color: #c7d0dd; }

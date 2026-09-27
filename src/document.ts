@@ -1,13 +1,14 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
+  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RowFormat, RunFormat, RunInfo, TableFormat, TableInfo,
 } from './types.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
+import { cellSpan, parseCellFormat, parseTableFormat, readTable, rowCells, tableGrid } from './table.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
 const MAX_PART = 16 * 1024 * 1024;
@@ -203,6 +204,254 @@ function readParagraph(paragraph: Element, index: number): ParagraphInfo {
   };
 }
 
+function bodyBlocks(body: Element): Element[] {
+  return children(body).filter(child => ['p', 'tbl'].includes(child.localName ?? ''));
+}
+
+function tableAt(document: Document, index: number): Element {
+  assertIndex(index);
+  const table = children(bodyOf(document), 'tbl')[index];
+  if (!table) throw new Error(`Table ${index} does not exist.`);
+  return table;
+}
+
+function bodyBlockAt(document: Document, index: number): Element {
+  assertIndex(index);
+  const block = bodyBlocks(bodyOf(document))[index];
+  if (!block) throw new Error(`Block ${index} does not exist.`);
+  return block;
+}
+
+function tableProperty(parent: Element, name: 'tblPr' | 'trPr' | 'tcPr' | 'tblGrid'): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    parent.insertBefore(result, parent.firstChild);
+  }
+  return result;
+}
+
+function tableChild(parent: Element, name: string): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    parent.appendChild(result);
+  }
+  return result;
+}
+
+function removeWordChildren(parent: Element | undefined, ...names: string[]): void {
+  if (!parent) return;
+  for (const child of children(parent)) {
+    if (names.includes(child.localName!)) parent.removeChild(child);
+  }
+}
+
+function ensureCellParagraph(cell: Element): void {
+  if (!children(cell).some(child => child.localName === 'p')) cell.appendChild(newParagraph(cell.ownerDocument!, ''));
+}
+
+function blankCell(document: Document): Element {
+  const cell = wordElement(document, 'tc');
+  cell.appendChild(newParagraph(document, ''));
+  return cell;
+}
+
+function gridCol(document: Document, width = 2250): Element {
+  const column = wordElement(document, 'gridCol');
+  column.setAttributeNS(WORD_NS, 'w:w', String(width));
+  return column;
+}
+
+function widthValue(parent: Element, name: string, value: { type: 'auto' | 'dxa' | 'pct'; value: number } | undefined): void {
+  removeWordChildren(parent, name);
+  if (!value) return;
+  const width = wordElement(parent.ownerDocument!, name);
+  width.setAttributeNS(WORD_NS, 'w:type', value.type);
+  width.setAttributeNS(WORD_NS, 'w:w', String(value.value));
+  parent.appendChild(width);
+}
+
+function boolValue(parent: Element, name: string, value: boolean | undefined): void {
+  removeWordChildren(parent, name);
+  if (value === undefined) return;
+  const element = wordElement(parent.ownerDocument!, name);
+  if (!value) setWordValue(element, '0');
+  parent.appendChild(element);
+}
+
+function valueElement(parent: Element, name: string, value: string | undefined): void {
+  removeWordChildren(parent, name);
+  if (value === undefined) return;
+  const element = wordElement(parent.ownerDocument!, name);
+  setWordValue(element, value);
+  parent.appendChild(element);
+}
+
+function mergeElement(parent: Element, name: 'gridSpan' | 'vMerge' | 'hMerge', value: number | 'restart' | 'continue' | undefined): void {
+  removeWordChildren(parent, name);
+  if (value === undefined) return;
+  const element = wordElement(parent.ownerDocument!, name);
+  if (typeof value === 'number') setWordValue(element, String(value));
+  else if (value === 'restart') setWordValue(element, value);
+  parent.appendChild(element);
+}
+
+function setBorders(parent: Element, name: 'tblBorders' | 'tcBorders', borders: TableFormat['borders'] | CellFormat['borders'] | undefined): void {
+  removeWordChildren(parent, name);
+  if (!borders) return;
+  const element = wordElement(parent.ownerDocument!, name);
+  for (const side of ['top', 'right', 'bottom', 'left', 'insideH', 'insideV'] as const) {
+    const border = borders[side];
+    if (!border) continue;
+    const child = wordElement(parent.ownerDocument!, side);
+    if (border.style) setWordValue(child, border.style);
+    if (border.size !== undefined) child.setAttributeNS(WORD_NS, 'w:sz', String(border.size));
+    if (border.space !== undefined) child.setAttributeNS(WORD_NS, 'w:space', String(border.space));
+    if (border.color) child.setAttributeNS(WORD_NS, 'w:color', border.color);
+    if (border.none && !border.style) setWordValue(child, 'nil');
+    element.appendChild(child);
+  }
+  if (children(element).length) parent.appendChild(element);
+}
+
+function setShading(parent: Element, shading: TableFormat['shading'] | CellFormat['shading'] | undefined): void {
+  removeWordChildren(parent, 'shd');
+  if (!shading) return;
+  const element = wordElement(parent.ownerDocument!, 'shd');
+  if (shading.fill) element.setAttributeNS(WORD_NS, 'w:fill', shading.fill);
+  if (shading.color) element.setAttributeNS(WORD_NS, 'w:color', shading.color);
+  if (shading.value) setWordValue(element, shading.value);
+  parent.appendChild(element);
+}
+
+function setMargins(parent: Element, name: 'tblCellMar' | 'tcMar', margin: TableFormat['cellMargin'] | CellFormat['margin'] | undefined): void {
+  removeWordChildren(parent, name);
+  if (!margin) return;
+  const element = wordElement(parent.ownerDocument!, name);
+  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+    const value = margin[side];
+    if (!value) continue;
+    const child = wordElement(parent.ownerDocument!, side);
+    child.setAttributeNS(WORD_NS, 'w:type', value.type);
+    child.setAttributeNS(WORD_NS, 'w:w', String(value.value));
+    element.appendChild(child);
+  }
+  if (children(element).length) parent.appendChild(element);
+}
+
+function setTableFormat(tbl: Element, format: TableFormat): void {
+  const props = tableProperty(tbl, 'tblPr');
+  if (format.width !== undefined) widthValue(props, 'tblW', format.width);
+  if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
+  if (format.indent !== undefined) {
+    removeWordChildren(props, 'tblInd');
+    const ind = wordElement(tbl.ownerDocument!, 'tblInd');
+    ind.setAttributeNS(WORD_NS, 'w:w', String(format.indent));
+    ind.setAttributeNS(WORD_NS, 'w:type', 'dxa');
+    props.appendChild(ind);
+  }
+  if (format.borders !== undefined) setBorders(props, 'tblBorders', format.borders);
+  if (format.shading !== undefined) setShading(props, format.shading);
+  if (format.cellMargin !== undefined) setMargins(props, 'tblCellMar', format.cellMargin);
+  if (format.layout !== undefined) valueElement(props, 'tblLayout', format.layout);
+  if (format.style !== undefined) valueElement(props, 'tblStyle', format.style);
+  if (format.look !== undefined) valueElement(props, 'tblLook', format.look);
+  if (format.caption !== undefined) valueElement(props, 'tblCaption', format.caption);
+  if (format.description !== undefined) valueElement(props, 'tblDescription', format.description);
+}
+
+function setRowFormat(row: Element, format: RowFormat): void {
+  const props = tableProperty(row, 'trPr');
+  if (format.height !== undefined) {
+    removeWordChildren(props, 'trHeight');
+    const height = wordElement(row.ownerDocument!, 'trHeight');
+    height.setAttributeNS(WORD_NS, 'w:val', String(format.height.value));
+    if (format.height.rule) height.setAttributeNS(WORD_NS, 'w:hRule', format.height.rule);
+    props.appendChild(height);
+  }
+  if (format.cantSplit !== undefined) boolValue(props, 'cantSplit', format.cantSplit);
+  if (format.header !== undefined) boolValue(props, 'tblHeader', format.header);
+  if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
+}
+
+function setCellFormat(cell: Element, format: CellFormat): void {
+  const props = tableProperty(cell, 'tcPr');
+  if (format.width !== undefined) widthValue(props, 'tcW', format.width);
+  if (format.borders !== undefined) setBorders(props, 'tcBorders', format.borders);
+  if (format.shading !== undefined) setShading(props, format.shading);
+  if (format.margin !== undefined) setMargins(props, 'tcMar', format.margin);
+  if (format.verticalAlign !== undefined) valueElement(props, 'vAlign', format.verticalAlign);
+  if (format.textDirection !== undefined) valueElement(props, 'textDirection', format.textDirection);
+  if (format.noWrap !== undefined) boolValue(props, 'noWrap', format.noWrap);
+  if (format.hideMark !== undefined) boolValue(props, 'hideMark', format.hideMark);
+  if (format.hMerge !== undefined) mergeElement(props, 'hMerge', format.hMerge);
+  if (format.vMerge !== undefined) mergeElement(props, 'vMerge', format.vMerge);
+}
+
+type XmlCellRef = { cell: Element; row: number; start: number; colSpan: number; rowSpan: number; isContinuation: boolean };
+
+function tableModel(table: Element): { rows: Element[]; grid: number[]; matrix: XmlCellRef[][]; refs: XmlCellRef[] } {
+  const rows = children(table, 'tr');
+  const grid = tableGrid(table);
+  const matrix: XmlCellRef[][] = Array.from({ length: rows.length }, () => []);
+  const refs: XmlCellRef[] = [];
+  const active = new Map<number, { end: number; master: XmlCellRef }>();
+  rows.forEach((row, rowIndex) => {
+    const nextActive = new Map<number, { end: number; master: XmlCellRef }>();
+    for (const position of rowCells(row)) {
+      const ref: XmlCellRef = {
+        cell: position.cell,
+        row: rowIndex,
+        start: position.start,
+        colSpan: position.span,
+        rowSpan: 1,
+        isContinuation: false,
+      };
+      const activeMerge = active.get(position.start);
+      const sameMerge = activeMerge && activeMerge.end === position.start + position.span;
+      if (position.vMerge === 'continue' && sameMerge) {
+        activeMerge.master.rowSpan += 1;
+        ref.rowSpan = 0;
+        ref.isContinuation = true;
+        nextActive.set(position.start, activeMerge);
+        for (let col = position.start; col < position.start + position.span; col++) matrix[rowIndex]![col] = activeMerge.master;
+      } else {
+        refs.push(ref);
+        if (position.vMerge === 'restart') nextActive.set(position.start, { end: position.start + position.span, master: ref });
+        for (let col = position.start; col < position.start + position.span; col++) matrix[rowIndex]![col] = ref;
+      }
+    }
+    active.clear();
+    for (const [start, merge] of nextActive) active.set(start, merge);
+  });
+  return { rows, grid, matrix, refs };
+}
+
+function cellAt(table: Element, row: number, col: number): XmlCellRef {
+  assertIndex(row); assertIndex(col);
+  const model = tableModel(table);
+  const cell = model.matrix[row]?.[col];
+  if (!cell) throw new Error(`Cell ${row},${col} does not exist.`);
+  return cell;
+}
+
+function clearCellContent(cell: Element): void {
+  for (let child = cell.firstChild; child;) {
+    const next = child.nextSibling;
+    if (!(child.nodeType === 1 && (child as Element).namespaceURI === WORD_NS && (child as Element).localName === 'tcPr')) {
+      cell.removeChild(child);
+    }
+    child = next;
+  }
+  ensureCellParagraph(cell);
+}
+
+function appendCellContent(target: Element, source: Element): void {
+  for (const child of children(source).filter(node => node.localName !== 'tcPr')) target.appendChild(child);
+  ensureCellParagraph(target);
+}
+
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -211,7 +460,7 @@ async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8
     const stream = (entry as JSZip.JSZipObject & {
       internalStream(type: 'uint8array'): JSZip.JSZipStreamHelper<Uint8Array>;
     }).internalStream('uint8array');
-    stream.on('data', chunk => {
+    stream.on('data', (chunk: Uint8Array) => {
       size += chunk.length;
       if (size > limit) {
         stream.pause();
@@ -255,7 +504,7 @@ export class DocxDocument {
     if (size > MAX_ARCHIVE) throw new Error('DOCX archive exceeds 50 MiB.');
     const bytes = input instanceof Blob ? await input.arrayBuffer() : input;
     const zip = await JSZip.loadAsync(bytes, { createFolders: false });
-    const entries = Object.values(zip.files);
+    const entries = Object.values(zip.files) as JSZip.JSZipObject[];
     if (entries.length > MAX_PARTS) throw new Error('DOCX contains too many ZIP entries.');
     const parts = new Map<string, Uint8Array>();
     let total = 0;
@@ -372,12 +621,7 @@ export class DocxDocument {
     const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
-      if (child.localName === 'tbl') return [{
-        type: 'table',
-        rows: children(child, 'tr').map(row => ({
-          cells: children(row, 'tc').map(cell => ({ blocks: walk(cell) })),
-        })),
-      }];
+      if (child.localName === 'tbl') return [readTable(child, walk)];
       if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
       return [];
     });
@@ -487,29 +731,254 @@ export class DocxDocument {
 
   insertTable(rows: string[][]): void {
     validateRows(rows);
+    this.insertTableAt(rows.length, Math.max(...rows.map(row => row.length)));
+    const index = this.getBlocks().filter((block): block is Extract<DocumentBlock, { type: 'table' }> => block.type === 'table').length - 1;
+    rows.forEach((row, rowIndex) => row.forEach((text, colIndex) => this.setCellText(index, rowIndex, colIndex, text)));
+  }
+
+  insertTableAt(rows: number, cols: number, before?: number, format?: TableFormat): void {
+    assertIndex(rows); assertIndex(cols);
+    if (rows < 1 || cols < 1) throw new Error('Table must contain at least one row and one column.');
     this.updatePartXml(this.mainPath, document => {
-      const body = bodyOf(document);
       const table = wordElement(document, 'tbl');
       const grid = wordElement(document, 'tblGrid');
-      const columns = Math.max(...rows.map(row => row.length));
-      for (let i = 0; i < columns; i++) {
-        const column = wordElement(document, 'gridCol');
-        column.setAttributeNS(WORD_NS, 'w:w', String(Math.floor(9000 / columns)));
-        grid.appendChild(column);
-      }
+      for (let i = 0; i < cols; i++) grid.appendChild(gridCol(document, Math.floor(9000 / cols)));
       table.appendChild(grid);
-      for (const row of rows) {
+      for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
         const tr = wordElement(document, 'tr');
-        for (let i = 0; i < columns; i++) {
-          const cell = wordElement(document, 'tc');
-          cell.appendChild(newParagraph(document, row[i] ?? ''));
-          tr.appendChild(cell);
-        }
+        for (let i = 0; i < cols; i++) tr.appendChild(blankCell(document));
         table.appendChild(tr);
       }
+      if (format) setTableFormat(table, format);
+      const body = bodyOf(document);
       const section = children(body, 'sectPr')[0] ?? null;
-      body.insertBefore(table, section);
-      body.insertBefore(newParagraph(document, ''), section);
+      if (before !== undefined) {
+        const target = bodyBlockAt(document, before);
+        body.insertBefore(table, target);
+      } else {
+        body.insertBefore(table, section);
+        body.insertBefore(newParagraph(document, ''), section);
+      }
+    });
+  }
+
+  getTable(index: number): TableInfo {
+    const document = this.getPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
+    const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
+      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
+      if (child.localName === 'tbl') return [readTable(child, walk)];
+      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
+      return [];
+    });
+    const table = readTable(tableAt(document, index), walk);
+    return { index, rows: table.rows, format: table.format, grid: table.grid };
+  }
+
+  insertTableRow(table: number, at: number): void {
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const rows = children(element, 'tr');
+      if (at > rows.length) throw new Error(`Row ${at} does not exist.`);
+      const tr = wordElement(document, 'tr');
+      for (let i = 0; i < tableGrid(element).length; i++) tr.appendChild(blankCell(document));
+      element.insertBefore(tr, rows[at] ?? null);
+    });
+  }
+
+  deleteTableRow(table: number, at: number): void {
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const rows = children(element, 'tr');
+      const row = rows[at];
+      if (!row) throw new Error(`Row ${at} does not exist.`);
+      if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
+      const next = rows[at + 1];
+      if (next) {
+        const nextPositions = new Map(rowCells(next).map(position => [position.start, position]));
+        for (const position of rowCells(row)) {
+          if (position.vMerge === 'restart') {
+            const continuation = nextPositions.get(position.start);
+            if (continuation?.vMerge === 'continue') {
+              const props = tableProperty(continuation.cell, 'tcPr');
+              mergeElement(props, 'vMerge', 'restart');
+            }
+          }
+        }
+      }
+      element.removeChild(row);
+    });
+  }
+
+  insertTableColumn(table: number, at: number): void {
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const grid = tableProperty(element, 'tblGrid');
+      const widths = tableGrid(element);
+      if (at > widths.length) throw new Error(`Column ${at} does not exist.`);
+      grid.insertBefore(gridCol(document, widths[Math.max(0, Math.min(at, widths.length - 1))] ?? 2250), children(grid, 'gridCol')[at] ?? null);
+      for (const row of children(element, 'tr')) {
+        const positions = rowCells(row);
+        let inserted = false;
+        for (const position of positions) {
+          if (at > position.start && at < position.start + position.span) {
+            const props = tableProperty(position.cell, 'tcPr');
+            mergeElement(props, 'gridSpan', position.span + 1 > 1 ? position.span + 1 : undefined);
+            inserted = true;
+            break;
+          }
+          if (at === position.start) {
+            row.insertBefore(blankCell(document), position.cell);
+            inserted = true;
+            break;
+          }
+        }
+        if (!inserted) row.appendChild(blankCell(document));
+      }
+    });
+  }
+
+  deleteTableColumn(table: number, at: number): void {
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const grid = tableProperty(element, 'tblGrid');
+      const columns = children(grid, 'gridCol');
+      if (!columns[at]) throw new Error(`Column ${at} does not exist.`);
+      if (columns.length <= 1) throw new Error('Cannot delete the only table column.');
+      grid.removeChild(columns[at]!);
+      for (const row of children(element, 'tr')) {
+        const position = rowCells(row).find(cell => at >= cell.start && at < cell.start + cell.span);
+        if (!position) throw new Error(`Column ${at} does not exist.`);
+        if (position.span > 1) {
+          const props = tableProperty(position.cell, 'tcPr');
+          mergeElement(props, 'gridSpan', position.span - 1 > 1 ? position.span - 1 : undefined);
+        } else {
+          row.removeChild(position.cell);
+        }
+      }
+    });
+  }
+
+  mergeCells(table: number, range: { row: number; col: number; rowSpan: number; colSpan: number }): void {
+    assertIndex(range.row); assertIndex(range.col); assertIndex(range.rowSpan); assertIndex(range.colSpan);
+    if (range.rowSpan < 1 || range.colSpan < 1) throw new Error('merge range must be at least 1 × 1.');
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const model = tableModel(element);
+      const master = model.matrix[range.row]?.[range.col];
+      if (!master || master.row !== range.row || master.start !== range.col) throw new Error('mergeCells must start at a visible top-left cell.');
+      if (range.row + range.rowSpan > model.rows.length || range.col + range.colSpan > model.grid.length) {
+        throw new Error('merge range exceeds table bounds.');
+      }
+      for (let rowIndex = range.row; rowIndex < range.row + range.rowSpan; rowIndex++) {
+        const positions = rowCells(model.rows[rowIndex]!);
+        const covered = positions.filter(position => position.start >= range.col && position.start + position.span <= range.col + range.colSpan);
+        if (!covered.length || covered[0]!.start !== range.col) throw new Error('mergeCells requires a rectangular, grid-aligned selection.');
+        for (const position of positions) {
+          const intersects = position.start < range.col + range.colSpan && position.start + position.span > range.col;
+          const contained = position.start >= range.col && position.start + position.span <= range.col + range.colSpan;
+          if (intersects && !contained) throw new Error('mergeCells cannot partially cover existing merged cells.');
+        }
+        if (rowIndex === range.row) {
+          for (const position of covered) {
+            if (position.cell === master.cell) continue;
+            appendCellContent(master.cell, position.cell);
+            model.rows[rowIndex]!.removeChild(position.cell);
+          }
+          for (const position of rowCells(model.rows[rowIndex]!)) {
+            if (position.start > range.col && position.start < range.col + range.colSpan) {
+              appendCellContent(master.cell, position.cell);
+              model.rows[rowIndex]!.removeChild(position.cell);
+            }
+          }
+        } else {
+          const continuation = covered[0]!;
+          appendCellContent(master.cell, continuation.cell);
+          for (const position of covered.slice(1)) {
+            appendCellContent(master.cell, position.cell);
+            model.rows[rowIndex]!.removeChild(position.cell);
+          }
+          clearCellContent(continuation.cell);
+          const props = tableProperty(continuation.cell, 'tcPr');
+          mergeElement(props, 'gridSpan', range.colSpan > 1 ? range.colSpan : undefined);
+          mergeElement(props, 'vMerge', 'continue');
+        }
+      }
+      const masterProps = tableProperty(master.cell, 'tcPr');
+      mergeElement(masterProps, 'gridSpan', range.colSpan > 1 ? range.colSpan : undefined);
+      mergeElement(masterProps, 'vMerge', range.rowSpan > 1 ? 'restart' : undefined);
+      ensureCellParagraph(master.cell);
+    });
+  }
+
+  splitCell(table: number, row: number, col: number, rows: number, cols: number): void {
+    assertIndex(row); assertIndex(col); assertIndex(rows); assertIndex(cols);
+    this.updatePartXml(this.mainPath, document => {
+      const element = tableAt(document, table);
+      const model = tableModel(element);
+      const master = model.matrix[row]?.[col];
+      if (!master || master.row !== row || master.start !== col) throw new Error('splitCell must target a visible top-left cell.');
+      if (rows !== master.rowSpan || cols !== master.colSpan) {
+        throw new Error('splitCell currently supports restoring a merged cell to its original grid span.');
+      }
+      const masterProps = tableProperty(master.cell, 'tcPr');
+      mergeElement(masterProps, 'gridSpan', undefined);
+      mergeElement(masterProps, 'vMerge', undefined);
+      for (let rowIndex = row; rowIndex < row + rows; rowIndex++) {
+        const rowElement = model.rows[rowIndex]!;
+        const position = rowCells(rowElement).find(item => item.start === col);
+        const cell = rowIndex === row ? master.cell : position?.cell;
+        if (!cell) throw new Error('splitCell found an invalid merged-cell structure.');
+        const props = tableProperty(cell, 'tcPr');
+        mergeElement(props, 'gridSpan', undefined);
+        mergeElement(props, 'vMerge', undefined);
+        if (rowIndex !== row) clearCellContent(cell);
+        const anchor: Node | null = rowCells(rowElement).find(item => item.start > col)?.cell ?? null;
+        for (let i = 1; i < cols; i++) {
+          const extra = blankCell(document);
+          rowElement.insertBefore(extra, anchor);
+        }
+      }
+    });
+  }
+
+  formatTable(table: number, format: TableFormat): void {
+    this.updatePartXml(this.mainPath, document => setTableFormat(tableAt(document, table), format));
+  }
+
+  formatTableRow(table: number, row: number, format: RowFormat): void {
+    this.updatePartXml(this.mainPath, document => {
+      const element = children(tableAt(document, table), 'tr')[row];
+      if (!element) throw new Error(`Row ${row} does not exist.`);
+      setRowFormat(element, format);
+    });
+  }
+
+  formatCell(table: number, row: number, col: number, format: CellFormat): void {
+    this.updatePartXml(this.mainPath, document => setCellFormat(cellAt(tableAt(document, table), row, col).cell, format));
+  }
+
+  setCellText(table: number, row: number, col: number, text: string): void {
+    assertText(text);
+    this.updatePartXml(this.mainPath, document => {
+      const cell = cellAt(tableAt(document, table), row, col).cell;
+      ensureCellParagraph(cell);
+      const paragraph = descendants(cell, 'p')[0];
+      if (!paragraph) throw new Error('Cell paragraph does not exist.');
+      const indices = new Map(descendants(bodyOf(document), 'p').map((item, index) => [item, index]));
+      const index = indices.get(paragraph);
+      if (index === undefined) throw new Error('Cell paragraph index does not exist.');
+      const old = textOf(paragraph);
+      let start = 0;
+      while (start < old.length && start < text.length && old[start] === text[start]) start++;
+      let end = old.length;
+      let replacementEnd = text.length;
+      while (end > start && replacementEnd > start && old[end - 1] === text[replacementEnd - 1]) { end--; replacementEnd--; }
+      if (start > 0 && /[\ud800-\udbff]/.test(old[start - 1]!)) start--;
+      if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
+      if (old !== text) replaceSpan(paragraph, start, end, text.slice(start, replacementEnd));
+      readParagraph(paragraph, index);
     });
   }
 
@@ -530,6 +999,17 @@ export class DocxDocument {
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;
+        case 'insertTableAt': draft.insertTableAt(operation.rows, operation.cols, operation.before, operation.format); break;
+        case 'insertTableRow': draft.insertTableRow(operation.table, operation.at); break;
+        case 'deleteTableRow': draft.deleteTableRow(operation.table, operation.at); break;
+        case 'insertTableColumn': draft.insertTableColumn(operation.table, operation.at); break;
+        case 'deleteTableColumn': draft.deleteTableColumn(operation.table, operation.at); break;
+        case 'mergeCells': draft.mergeCells(operation.table, operation.range); break;
+        case 'splitCell': draft.splitCell(operation.table, operation.row, operation.col, operation.rows, operation.cols); break;
+        case 'formatTable': draft.formatTable(operation.table, operation.format); break;
+        case 'formatTableRow': draft.formatTableRow(operation.table, operation.row, operation.format); break;
+        case 'formatCell': draft.formatCell(operation.table, operation.row, operation.col, operation.format); break;
+        case 'setCellText': draft.setCellText(operation.table, operation.row, operation.col, operation.text); break;
         case 'setPartXml': draft.setPartXml(operation.path, operation.xml); break;
       }
     }

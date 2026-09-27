@@ -1,4 +1,4 @@
-import type { AgentRequest, ParagraphFormat, RunFormat } from './types.js';
+import type { AgentRequest, CellFormat, ParagraphFormat, RowFormat, RunFormat, TableFormat } from './types.js';
 import { assertText } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
@@ -45,6 +45,106 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   if ('style' in value) assertText(value.style, 'style');
 }
 
+function validateWidth(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const width = value as Record<string, unknown>;
+  keys(width, ['type', 'value']);
+  if (!['auto', 'dxa', 'pct'].includes(String(width.type))) throw new Error(`${name}.type must be auto, dxa or pct.`);
+  if (!Number.isFinite(width.value) || typeof width.value !== 'number' || width.value < 0) {
+    throw new Error(`${name}.value must be a non-negative number.`);
+  }
+}
+
+function validateBorder(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const border = value as Record<string, unknown>;
+  keys(border, ['style', 'size', 'space', 'color', 'none']);
+  if ('style' in border && typeof border.style !== 'string') throw new Error(`${name}.style must be a string.`);
+  for (const key of ['size', 'space']) {
+    if (key in border && (typeof border[key] !== 'number' || !Number.isFinite(border[key]) || border[key] < 0)) {
+      throw new Error(`${name}.${key} must be a non-negative number.`);
+    }
+  }
+  if ('color' in border && (typeof border.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(border.color))) {
+    throw new Error(`${name}.color must be auto or six hexadecimal digits.`);
+  }
+  if ('none' in border && typeof border.none !== 'boolean') throw new Error(`${name}.none must be boolean.`);
+}
+
+function validateBorders(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const borders = value as Record<string, unknown>;
+  keys(borders, ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']);
+  for (const side of ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']) {
+    if (side in borders) validateBorder(borders[side], `${name}.${side}`);
+  }
+}
+
+function validateShading(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const shading = value as Record<string, unknown>;
+  keys(shading, ['fill', 'color', 'value']);
+  for (const key of ['fill', 'color']) {
+    if (key in shading && (typeof shading[key] !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(String(shading[key])))) {
+      throw new Error(`${name}.${key} must be auto or six hexadecimal digits.`);
+    }
+  }
+  if ('value' in shading && typeof shading.value !== 'string') throw new Error(`${name}.value must be a string.`);
+}
+
+function validateMargins(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const margin = value as Record<string, unknown>;
+  keys(margin, ['top', 'right', 'bottom', 'left']);
+  for (const side of ['top', 'right', 'bottom', 'left']) if (side in margin) validateWidth(margin[side], `${name}.${side}`);
+}
+
+export function validateTableFormat(value: unknown): asserts value is TableFormat {
+  object(value);
+  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look', 'caption', 'description']);
+  if ('width' in value) validateWidth(value.width, 'width');
+  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
+  if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
+  if ('borders' in value) validateBorders(value.borders, 'borders');
+  if ('shading' in value) validateShading(value.shading, 'shading');
+  if ('cellMargin' in value) validateMargins(value.cellMargin, 'cellMargin');
+  if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
+  for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
+}
+
+export function validateRowFormat(value: unknown): asserts value is RowFormat {
+  object(value);
+  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted']);
+  if ('height' in value) {
+    object(value.height);
+    const height = value.height as Record<string, unknown>;
+    keys(height, ['value', 'rule']);
+    if (typeof height.value !== 'number' || !Number.isFinite(height.value) || height.value < 0) throw new Error('height.value must be a non-negative number.');
+    if ('rule' in height && !['atLeast', 'exact'].includes(String(height.rule))) throw new Error('height.rule must be atLeast or exact.');
+  }
+  for (const key of ['cantSplit', 'header', 'deleted', 'inserted'] as const) {
+    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
+}
+
+export function validateCellFormat(value: unknown): asserts value is CellFormat {
+  object(value);
+  keys(value, ['width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'hideMark', 'hMerge', 'vMerge']);
+  if ('width' in value) validateWidth(value.width, 'width');
+  if ('borders' in value) validateBorders(value.borders, 'borders');
+  if ('shading' in value) validateShading(value.shading, 'shading');
+  if ('margin' in value) validateMargins(value.margin, 'margin');
+  if ('verticalAlign' in value && !['top', 'center', 'bottom'].includes(String(value.verticalAlign))) throw new Error('Invalid verticalAlign.');
+  if ('textDirection' in value) assertText(value.textDirection, 'textDirection');
+  for (const key of ['noWrap', 'hideMark'] as const) {
+    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  for (const key of ['hMerge', 'vMerge'] as const) {
+    if (key in value && !['restart', 'continue'].includes(String(value[key]))) throw new Error(`${key} must be restart or continue.`);
+  }
+}
+
 export function validateRows(rows: unknown): asserts rows is string[][] {
   if (!Array.isArray(rows) || rows.length === 0 || rows.length > 1000 ||
       rows.some(row => !Array.isArray(row) || row.length === 0 || row.length > 100) ||
@@ -83,6 +183,43 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         break;
       case 'insertTable':
         keys(op, ['type', 'rows']); validateRows(op.rows); break;
+      case 'insertTableAt':
+        keys(op, ['type', 'rows', 'cols', 'before', 'format']);
+        assertIndex(op.rows); assertIndex(op.cols);
+        if (op.rows < 1 || op.cols < 1) throw new Error('rows and cols must be positive.');
+        if ('before' in op) assertIndex(op.before);
+        if ('format' in op) validateTableFormat(op.format);
+        break;
+      case 'insertTableRow':
+      case 'deleteTableRow':
+      case 'insertTableColumn':
+      case 'deleteTableColumn':
+        keys(op, ['type', 'table', 'at']); assertIndex(op.table); assertIndex(op.at); break;
+      case 'mergeCells':
+        keys(op, ['type', 'table', 'range']); assertIndex(op.table); object(op.range);
+        {
+          const range = op.range as Record<string, unknown>;
+          keys(range, ['row', 'col', 'rowSpan', 'colSpan']);
+          for (const key of ['row', 'col', 'rowSpan', 'colSpan'] as const) assertIndex(range[key]);
+          if ((range.rowSpan as number) < 1 || (range.colSpan as number) < 1) throw new Error('merge range must be positive.');
+        }
+        break;
+      case 'splitCell':
+        keys(op, ['type', 'table', 'row', 'col', 'rows', 'cols']);
+        for (const key of ['table', 'row', 'col', 'rows', 'cols'] as const) assertIndex(op[key]);
+        if ((op.rows as number) < 1 || (op.cols as number) < 1) throw new Error('split rows/cols must be positive.');
+        break;
+      case 'formatTable':
+        keys(op, ['type', 'table', 'format']); assertIndex(op.table); validateTableFormat(op.format); break;
+      case 'formatTableRow':
+        keys(op, ['type', 'table', 'row', 'format']); assertIndex(op.table); assertIndex(op.row); validateRowFormat(op.format); break;
+      case 'formatCell':
+        keys(op, ['type', 'table', 'row', 'col', 'format']);
+        assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); validateCellFormat(op.format); break;
+      case 'setCellText':
+        keys(op, ['type', 'table', 'row', 'col', 'text']);
+        assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); assertText(op.text);
+        break;
       case 'setPartXml':
         keys(op, ['type', 'path', 'xml']); assertText(op.path, 'path'); assertText(op.xml, 'xml'); break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
@@ -97,6 +234,38 @@ const shape = (properties: Record<string, unknown>, required = Object.keys(prope
 });
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
+const width = shape({ type: { enum: ['auto', 'dxa', 'pct'] }, value: { type: 'number', minimum: 0 } });
+const border = shape({
+  style: text,
+  size: { type: 'number', minimum: 0 },
+  space: { type: 'number', minimum: 0 },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  none: { type: 'boolean' },
+}, []);
+const borders = shape({
+  top: border, right: border, bottom: border, left: border, insideH: border, insideV: border,
+}, []);
+const shading = shape({
+  fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  value: text,
+}, []);
+const margins = shape({ top: width, right: width, bottom: width, left: width }, []);
+const tableFormat = shape({
+  width, alignment: { enum: ['left', 'center', 'right'] }, indent: { type: 'number', minimum: 0 },
+  borders, shading, cellMargin: margins, layout: { enum: ['fixed', 'autofit'] },
+  style: text, look: text, caption: text, description: text,
+}, []);
+const rowFormat = shape({
+  height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
+  cantSplit: { type: 'boolean' }, header: { type: 'boolean' }, alignment: { enum: ['left', 'center', 'right'] },
+  deleted: { type: 'boolean' }, inserted: { type: 'boolean' },
+}, []);
+const cellFormat = shape({
+  width, borders, shading, margin: margins, verticalAlign: { enum: ['top', 'center', 'bottom'] },
+  textDirection: text, noWrap: { type: 'boolean' }, hideMark: { type: 'boolean' },
+  hMerge: { enum: ['restart', 'continue'] }, vMerge: { enum: ['restart', 'continue'] },
+}, []);
 
 /** JSON Schema for tool/function calling; requests are also validated at runtime. */
 export const AGENT_OPERATION_SCHEMA = {
@@ -125,6 +294,17 @@ export const AGENT_OPERATION_SCHEMA = {
             type: 'array', minItems: 1, maxItems: 1000,
             items: { type: 'array', minItems: 1, maxItems: 100, items: text },
           } }),
+          operation('insertTableAt', { rows: { ...index, minimum: 1 }, cols: { ...index, minimum: 1 }, before: index, format: tableFormat }, ['rows', 'cols']),
+          operation('insertTableRow', { table: index, at: index }),
+          operation('deleteTableRow', { table: index, at: index }),
+          operation('insertTableColumn', { table: index, at: index }),
+          operation('deleteTableColumn', { table: index, at: index }),
+          operation('mergeCells', { table: index, range: shape({ row: index, col: index, rowSpan: { ...index, minimum: 1 }, colSpan: { ...index, minimum: 1 } }) }),
+          operation('splitCell', { table: index, row: index, col: index, rows: { ...index, minimum: 1 }, cols: { ...index, minimum: 1 } }),
+          operation('formatTable', { table: index, format: tableFormat }),
+          operation('formatTableRow', { table: index, row: index, format: rowFormat }),
+          operation('formatCell', { table: index, row: index, col: index, format: cellFormat }),
+          operation('setCellText', { table: index, row: index, col: index, text }),
           operation('setPartXml', { path: text, xml: text }),
         ],
       },
