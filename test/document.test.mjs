@@ -251,7 +251,7 @@ test('deleteParagraph keeps wrapped table cells structurally valid', () => {
   const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
   doc.deleteParagraph(0);
   assert.equal(doc.getParagraphs().length, 1);
-  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p>/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p(?:>|\/>)/);
 
   const viaOps = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
   viaOps.applyOperations({ operations: [{ type: 'deleteParagraph', index: 0 }] });
@@ -291,7 +291,99 @@ test('insertions precede section properties and deletion protects section breaks
   assert.throws(() => sectionDoc.deleteParagraph(0), /section-break/);
   const emptyDoc = DocxDocument.create();
   emptyDoc.deleteParagraph(0);
-  assert.equal(emptyDoc.getParagraphs().length, 1);
+  assert.deepEqual(emptyDoc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside w:customXml', () => {
+  const doc = withBody('<w:customXml><w:p><w:r><w:t>x</w:t></w:r></w:p></w:customXml>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside nested w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt></w:sdtContent></w:sdt>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the trailing paragraph after final table in body', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B']]);
+  doc.deleteParagraph(3);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['', 'A', 'B', '']);
+});
+
+test('deleteParagraph allows deleting one of multiple paragraphs after a table', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.insertParagraph('tail-1');
+  doc.insertParagraph('tail-2');
+  doc.deleteParagraph(3);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['', 'A', '', 'tail-2']);
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:sdt', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:customXml', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:customXml><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:customXml></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph keeps normal body deletions working', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p><w:p><w:r><w:t>third</w:t></w:r></w:p>');
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['first', 'third']);
+});
+
+test('paragraph indexes stay table-interleaved and cell deletes use tc protection', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', 'cell', 'after']);
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', '', 'after']);
+});
+
+test('deleteParagraph keeps w:tcPr first when clearing required cell paragraph', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:tcPr><w:tcW w:w="100"/></w:tcPr><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc><w:tcPr>[\s\S]*?<\/w:tcPr><w:p(?:>|\/>)/);
+});
+
+test('deleteParagraph clears table separator paragraph between two body tables', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>sep</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getBlocks().map(block => block.type), ['table', 'paragraph', 'table', 'paragraph']);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['A', '', 'B', 'tail']);
+});
+
+test('deleteParagraph guard works with style+numbering and wrapped table row', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({ id: 'BodyCenter', type: 'paragraph', name: 'BodyCenter', paragraph: { alignment: 'center' } });
+  const numId = doc.createNumbering('bullet');
+  doc.setParagraphText(0, 'intro');
+  doc.formatParagraph(0, { style: 'BodyCenter' });
+  doc.setParagraphNumbering(0, numId);
+  doc.insertTable([['cell']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const row = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/)?.[0];
+  xml = xml.replace(row, `<w:sdt><w:sdtPr/><w:sdtContent>${row}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+  const cellIndex = doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.index;
+  doc.deleteParagraph(cellIndex);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+  const intro = doc.getParagraphs()[0];
+  assert.equal(intro.style, 'BodyCenter');
+  assert.equal(intro.numbering?.numId, numId);
 });
 
 test('format toggles explicitly disable formatting and retain OOXML property order', () => {
@@ -619,6 +711,103 @@ test('malformed XML, DTD, broken package targets and oversized parts are rejecte
   assert.throws(() => doc.setPartBytes('[Content_Types].xml', new TextEncoder().encode('<Types/>')));
   await assert.rejects(() => DocxDocument.load(new Uint8Array([1, 2, 3])));
   assert.equal(doc.revision, 0);
+});
+
+test('setPartXml rejects malformed external XML input', () => {
+  const doc = DocxDocument.create();
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.setPartXml(doc.mainDocumentPath, '<w:document>'));
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+  assert.equal(doc.revision, 0);
+});
+
+test('updatePartXml rejects malformed DOM output and rolls back atomically', () => {
+  const doc = DocxDocument.create();
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.updatePartXml(doc.mainDocumentPath, (document) => {
+    const body = document.getElementsByTagNameNS(WORD_NS, 'body')[0];
+    body.appendChild(document.createComment('a--b'));
+  }), /Invalid XML/);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+  assert.equal(doc.revision, 0);
+});
+
+test('nested setPartXml in updatePartXml keeps outer callback edits', () => {
+  const doc = DocxDocument.create();
+  const main = doc.mainDocumentPath;
+  doc.updatePartXml(main, (document) => {
+    const body = document.getElementsByTagNameNS(WORD_NS, 'body')[0];
+    const paragraph = document.createElementNS(WORD_NS, 'w:p');
+    const run = document.createElementNS(WORD_NS, 'w:r');
+    const text = document.createElementNS(WORD_NS, 'w:t');
+    text.appendChild(document.createTextNode('OUTER'));
+    run.appendChild(text);
+    paragraph.appendChild(run);
+    body.insertBefore(paragraph, body.getElementsByTagNameNS(WORD_NS, 'sectPr')[0] ?? null);
+    doc.setPartXml(main, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>NESTED</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  });
+  assert.equal(doc.revision, 2);
+  assert.ok(doc.getParagraphs().some((paragraph) => paragraph.text === 'OUTER'));
+  assert.doesNotMatch(doc.getPartXml(main), /NESTED/);
+});
+
+test('performance regression: single-op loops and batched ops stay within acceptance thresholds', () => {
+  const elapsed = (run) => {
+    const start = process.hrtime.bigint();
+    run();
+    return Number(process.hrtime.bigint() - start) / 1e6;
+  };
+  const single = DocxDocument.create();
+  const insertMs = elapsed(() => { for (let i = 0; i < 300; i++) single.insertParagraph(`段落内容 ${i}`); });
+  const setMs = elapsed(() => { for (let i = 0; i < 200; i++) single.setParagraphText(i, `改写 ${i}`); });
+  const batch = DocxDocument.create();
+  const batchMs = elapsed(() => batch.applyOperations({
+    operations: Array.from({ length: 300 }, (_, i) => ({ type: 'insertParagraph', text: `x${i}` })),
+  }));
+  assert.ok(insertMs < 1000, `300 insert took ${insertMs.toFixed(1)}ms`);
+  assert.ok(setMs < 1000, `200 set took ${setMs.toFixed(1)}ms`);
+  assert.ok(batchMs < 500, `batch 300 ops took ${batchMs.toFixed(1)}ms`);
+});
+
+test('performance regression: repeated single inserts should not grow quadratically', () => {
+  const measure = (count) => {
+    const doc = DocxDocument.create();
+    const start = process.hrtime.bigint();
+    for (let i = 0; i < count; i++) doc.insertParagraph(`p${i}`);
+    return Number(process.hrtime.bigint() - start) / 1e6;
+  };
+  const t600 = measure(600);
+  assert.ok(t600 < 1500, `insert performance regressed: 600=${t600.toFixed(1)}ms`);
+});
+
+test('performance regression: 1000 paragraph document handles 1000 operations quickly', () => {
+  const doc = DocxDocument.create();
+  doc.applyOperations({
+    operations: Array.from({ length: 999 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
+  });
+  const start = process.hrtime.bigint();
+  doc.applyOperations({
+    operations: Array.from({ length: 1000 }, (_, i) => ({ type: 'setParagraphText', index: i, text: `更新-${i}` })),
+  });
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(elapsedMs < 5000, `1000 ops took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test('integration: table cell paragraph supports style, numbering and image together', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({ id: 'CellStyle', type: 'paragraph', name: 'CellStyle', paragraph: { alignment: 'center' }, run: { bold: true } });
+  const numId = doc.createNumbering('decimal');
+  doc.insertTable([['cell']]);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const paragraphIndex = table.rows[0].cells[0].blocks[0].paragraph.index;
+  doc.formatParagraph(paragraphIndex, { style: 'CellStyle' });
+  doc.setParagraphNumbering(paragraphIndex, numId, 0);
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: paragraphIndex, alt: 'cell-image' });
+  const paragraph = doc.getParagraphs()[paragraphIndex];
+  assert.equal(paragraph.style, 'CellStyle');
+  assert.equal(paragraph.numbering?.numId, numId);
+  assert.ok(paragraph.images.length >= 1);
+  assert.equal(doc.getBlocks().find((block) => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.images.length >= 1, true);
 });
 
 test('ZIP traversal and decompression bombs are bounded', async () => {
@@ -1067,6 +1256,27 @@ test('insertHyperlink supports runs inside hyperlink containers', () => {
   const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
   assert.equal(link.text, 'linked');
   assert.equal(doc.getHyperlinks().some((item) => item.url === 'https://example.com' && item.text === 'linked'), true);
+});
+
+test('insertHyperlink full-cover inside existing hyperlink rewrites target without nesting hyperlinks', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
+  const links = doc.getHyperlinks();
+  assert.equal(links.length, 1);
+  assert.equal(links[0]?.url, 'https://example.com');
+  assert.equal(links[0]?.text, 'linked');
+  assert.equal(links.some((item) => item.url === link.url && item.text === link.text), true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:hyperlink[^>]*>\s*<w:hyperlink/);
+});
+
+test('insertHyperlink partial-cover inside existing hyperlink splits into sibling hyperlinks without nesting', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>linked text</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
+  const links = doc.getHyperlinks();
+  assert.equal(links.some((item) => item.url === 'https://example.com' && item.text === 'linked'), true);
+  assert.equal(links.some((item) => item.anchor === 'a' && item.text === ' text'), true);
+  assert.equal(links.some((item) => item.url === link.url && item.text === link.text), true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:hyperlink[^>]*>\s*<w:hyperlink/);
 });
 
 test('insertHyperlink keeps insertion inside w:sdtContent for sdt-wrapped runs', () => {

@@ -7,6 +7,8 @@ export const CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/
 export const OFFICE_DOCUMENT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
 const TRANSPARENT_WORD_WRAPPERS = new Set(['sdt', 'sdtContent', 'customXml']);
 export const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+export const MAX_XML_TEXT_LENGTH = 1_000_000;
+const INVALID_XML_TEXT_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/u;
 
 export function parseXml(xml: string): Document {
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
@@ -77,9 +79,43 @@ export function validatePath(path: string): void {
 }
 
 export function assertText(text: unknown, name = 'text'): asserts text is string {
-  if (typeof text !== 'string' || text.length > 1_000_000 ||
+  if (typeof text !== 'string' || text.length > MAX_XML_TEXT_LENGTH ||
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u.test(text) ||
       /[\ud800-\udfff]/u.test(text)) {
     throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
   }
+}
+
+export function sanitizeTextWithInfo(text: string): { text: string; truncated: boolean; truncatedAt?: number } {
+  if (!INVALID_XML_TEXT_RE.test(text)) {
+    if (text.length <= MAX_XML_TEXT_LENGTH) return { text, truncated: false };
+    let end = MAX_XML_TEXT_LENGTH;
+    const tail = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (tail >= 0xd800 && tail <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+    return { text: text.slice(0, end), truncated: true, truncatedAt: end };
+  }
+  let result = '';
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if ((code >= 0x0000 && code <= 0x0008) || code === 0x000b || code === 0x000c ||
+        (code >= 0x000e && code <= 0x001f) || code === 0xfffe || code === 0xffff) continue;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        if (result.length + 2 > MAX_XML_TEXT_LENGTH) return { text: result, truncated: true, truncatedAt: result.length };
+        result += text.slice(index, index + 2);
+        index++;
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) continue;
+    if (result.length + 1 > MAX_XML_TEXT_LENGTH) return { text: result, truncated: true, truncatedAt: result.length };
+    result += text.charAt(index);
+  }
+  return { text: result, truncated: false };
+}
+
+export function sanitizeText(text: string): string {
+  return sanitizeTextWithInfo(text).text;
 }
