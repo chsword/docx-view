@@ -217,7 +217,9 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
       tmpl: resolved.tmpl,
       styleLink: resolved.styleLink,
       numStyleLink: resolved.numStyleLink,
-      levels: new Map(resolved.levelMap),
+      levels: new Map([...resolved.levelMap.entries()]
+        .filter(([level]) => level >= reference.level)
+        .map(([level, definition]) => [level - reference.level, { ...definition, level: level - reference.level }])),
     };
   }
 
@@ -227,23 +229,21 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
     const raw = abstracts.get(abstractNumId);
     if (!raw) return undefined;
     seenAbstracts.add(abstractNumId);
-    const linked = raw.numStyleLink
-      ? resolveStyleLink(raw.numStyleLink, seenNums, seenAbstracts, seenStyles)
-      : raw.styleLink
-        ? resolveStyleLink(raw.styleLink, seenNums, seenAbstracts, seenStyles)
-        : undefined;
-    const levels = new Map<number, NumberingLevelDefinition>(linked?.levels ?? []);
+    const styleLinked = raw.styleLink ? resolveStyleLink(raw.styleLink, seenNums, seenAbstracts, seenStyles) : undefined;
+    const numStyleLinked = raw.numStyleLink ? resolveStyleLink(raw.numStyleLink, seenNums, seenAbstracts, seenStyles) : undefined;
+    const levels = new Map<number, NumberingLevelDefinition>(styleLinked?.levels ?? []);
+    for (const [level, definition] of numStyleLinked?.levels ?? []) levels.set(level, mergeLevel(levels.get(level), definition)!);
     for (const [level, definition] of raw.levels) {
       levels.set(level, mergeLevel(levels.get(level), definition)!);
     }
     seenAbstracts.delete(abstractNumId);
     const resolved: ResolvedAbstractNumbering = {
       abstractNumId,
-      multiLevelType: raw.multiLevelType ?? linked?.multiLevelType,
-      nsid: raw.nsid ?? linked?.nsid,
-      tmpl: raw.tmpl ?? linked?.tmpl,
-      styleLink: raw.styleLink ?? linked?.styleLink,
-      numStyleLink: raw.numStyleLink ?? linked?.numStyleLink,
+      multiLevelType: raw.multiLevelType ?? numStyleLinked?.multiLevelType ?? styleLinked?.multiLevelType,
+      nsid: raw.nsid ?? numStyleLinked?.nsid ?? styleLinked?.nsid,
+      tmpl: raw.tmpl ?? numStyleLinked?.tmpl ?? styleLinked?.tmpl,
+      styleLink: raw.styleLink ?? styleLinked?.styleLink ?? numStyleLinked?.styleLink,
+      numStyleLink: raw.numStyleLink ?? numStyleLinked?.numStyleLink ?? styleLinked?.numStyleLink,
       levels,
     };
     abstractMemo.set(abstractNumId, resolved);
@@ -459,6 +459,9 @@ export function computeParagraphNumbering(paragraphs: Element[], model: Numberin
     const levelDefinition = definition?.levelMap.get(level);
     if (!definition || !levelDefinition) continue;
     const counts = states.get(reference.numId) ?? Array(9).fill(0);
+    for (let ancestor = 0; ancestor < level; ancestor++) {
+      if (!counts[ancestor]) counts[ancestor] = definition.levelMap.get(ancestor)?.start ?? 1;
+    }
     counts[level] = counts[level] ? counts[level]! + 1 : (levelDefinition.start ?? 1);
     for (let deeper = level + 1; deeper < counts.length; deeper++) {
       if (shouldRestart(definition.levelMap.get(deeper), level, deeper)) counts[deeper] = 0;

@@ -131,7 +131,8 @@ export class DocxEditor {
       marker.className = 'docx-numbering';
       marker.contentEditable = 'false';
       marker.setAttribute('aria-hidden', 'true');
-      marker.textContent = `${paragraph.numbering.text}${paragraph.numbering.suffix === 'space' ? ' ' : paragraph.numbering.suffix === 'tab' ? '\t' : ''}`;
+      marker.textContent = paragraph.numbering.text;
+      marker.dataset.suffix = paragraph.numbering.suffix;
       if (paragraph.numbering.runFormat?.fontFamily) marker.style.fontFamily = paragraph.numbering.runFormat.fontFamily;
       if (paragraph.numbering.runFormat?.bold !== undefined) marker.style.fontWeight = paragraph.numbering.runFormat.bold ? '700' : '400';
       if (paragraph.numbering.runFormat?.italic !== undefined) marker.style.fontStyle = paragraph.numbering.runFormat.italic ? 'italic' : 'normal';
@@ -192,6 +193,8 @@ export class DocxEditor {
       if (event.key === 'Tab' && !event.isComposing && !this.composing && paragraph.numbering) {
         event.preventDefault();
         this.flush();
+        const current = this.document.getParagraphs().find((item) => item.index === paragraph.index);
+        if (!current?.numbering) return;
         this.document.setParagraphLevel(paragraph.index, event.shiftKey ? -1 : 1);
         this.render();
         this.options.onChange?.(this.document.getSnapshot());

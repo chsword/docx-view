@@ -555,19 +555,23 @@ export class DocxDocument {
   setParagraphNumbering(index: number, numId: number, level = 0): void {
     assertIndex(numId);
     assertIndex(level);
+    if (numId < 1) throw new Error('numId must be at least 1. Use clearParagraphNumbering() to remove numbering.');
+    if (level > 8) throw new Error('level must be between 0 and 8.');
     this.updatePartXml(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       const numPr = property(props, 'numPr');
-      setWordValue(numberingProperty(numPr, 'ilvl'), String(Math.min(8, level)));
+      setWordValue(numberingProperty(numPr, 'ilvl'), String(level));
       setWordValue(numberingProperty(numPr, 'numId'), String(numId));
     });
   }
 
   clearParagraphNumbering(index: number): void {
     this.updatePartXml(this.mainPath, document => {
-      const props = children(paragraphAt(document, index), 'pPr')[0];
-      const numPr = props ? children(props, 'numPr')[0] : undefined;
-      if (props && numPr) props.removeChild(numPr);
+      const props = properties(paragraphAt(document, index), 'pPr');
+      const numPr = property(props, 'numPr');
+      setWordValue(numberingProperty(numPr, 'numId'), '0');
+      const ilvl = children(numPr, 'ilvl')[0];
+      if (ilvl) numPr.removeChild(ilvl);
     });
   }
 
@@ -581,6 +585,15 @@ export class DocxDocument {
 
   createNumbering(kind: 'bullet' | 'decimal' | 'multilevel' | NumberingDefinition): number {
     const definition = typeof kind === 'string' ? defaultNumberingDefinition(kind) : kind;
+    const levels = [...(definition.levels.length ? definition.levels : defaultNumberingDefinition('decimal').levels)];
+    const seenLevels = new Set<number>();
+    for (const level of levels) {
+      if (!Number.isSafeInteger(level.level) || level.level < 0 || level.level > 8) {
+        throw new Error('Numbering levels must be integers between 0 and 8.');
+      }
+      if (seenLevels.has(level.level)) throw new Error('Numbering definition contains duplicate levels.');
+      seenLevels.add(level.level);
+    }
     const next = new Map(this.parts);
     const types = this.getPartDocument('[Content_Types].xml');
     const relsPath = relationshipsPath(this.mainPath);
@@ -619,8 +632,8 @@ export class DocxDocument {
     if (definition.tmpl) appendWordNode(abstract, 'tmpl', definition.tmpl);
     if (definition.styleLink) appendWordNode(abstract, 'styleLink', definition.styleLink);
     if (definition.numStyleLink) appendWordNode(abstract, 'numStyleLink', definition.numStyleLink);
-    for (const level of [...(definition.levels.length ? definition.levels : defaultNumberingDefinition('decimal').levels)].sort((a, b) => a.level - b.level)) {
-      abstract.appendChild(buildLevelElement(numberingDocument, { ...level, level: Math.max(0, Math.min(8, level.level)) }));
+    for (const level of levels.sort((a, b) => a.level - b.level)) {
+      abstract.appendChild(buildLevelElement(numberingDocument, level));
     }
     insertNumberingNode(numberingRoot, abstract);
     const num = wordElement(numberingDocument, 'num');

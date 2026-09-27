@@ -65,7 +65,9 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-paragraph:focus-within { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
 .docx-paragraph-content { display: inline; outline: 0; white-space: inherit; }
 .docx-paragraph-content:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
-.docx-numbering { display: inline-block; min-width: 1.4em; margin-right: .2em; user-select: none; pointer-events: none; white-space: pre; }
+.docx-numbering { display: inline-block; min-width: 1.4em; user-select: none; pointer-events: none; white-space: pre; }
+.docx-numbering[data-suffix="space"] { margin-right: .2em; }
+.docx-numbering[data-suffix="tab"] { margin-right: .75em; }
 .docx-paragraph[data-style="Title"] { font-size: 26pt; }
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }

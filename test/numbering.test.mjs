@@ -77,6 +77,18 @@ test('unknown numFmt falls back to decimal instead of throwing', () => {
   assert.equal(doc.getParagraphs()[0].numbering.text, '1.');
 });
 
+test('deeper first item initializes missing ancestor counters', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/><w:ilvl w:val="2"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl><w:lvl w:ilvl="2"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2.%3."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  assert.equal(doc.getParagraphs()[0].numbering.text, '1.1.1.');
+});
+
+test('additional numbering formats render supported text', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr><w:r><w:t>C</w:t></w:r></w:p>');
+  attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimalZero"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:numFmt w:val="ordinal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="3"><w:lvl w:ilvl="0"><w:numFmt w:val="decimalEnclosedCircle"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="3"/></w:num></w:numbering>`);
+  assert.deepEqual(doc.getParagraphs().map(paragraph => paragraph.numbering?.text), ['01.', '1st.', '①.']);
+});
+
 test('createNumbering creates package parts and survives export roundtrip', async () => {
   const doc = DocxDocument.create();
   const numId = doc.createNumbering('bullet');
@@ -95,6 +107,14 @@ test('setParagraphLevel clamps between 0 and 8 and clearParagraphNumbering remov
   doc.setParagraphNumbering(0, numId, 0);
   doc.setParagraphLevel(0, 99);
   assert.equal(doc.getParagraphs()[0].numbering.level, 8);
+  doc.clearParagraphNumbering(0);
+  assert.equal(doc.getParagraphs()[0].numbering, undefined);
+});
+
+test('clearParagraphNumbering suppresses style-derived numbering and invalid numId is rejected', () => {
+  const doc = withBody('<w:p><w:pPr><w:pStyle w:val="ListStyle"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num></w:numbering>`, `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="ListStyle"><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr></w:style></w:styles>`);
+  assert.throws(() => doc.setParagraphNumbering(0, 0), /numId/);
   doc.clearParagraphNumbering(0);
   assert.equal(doc.getParagraphs()[0].numbering, undefined);
 });
