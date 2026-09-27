@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { DocxEditor } from '../dist/editor.js';
+import { sanitizeTextWithInfo } from '../dist/xml.js';
 
 function makeFlushEditor({ text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);
@@ -9,7 +10,7 @@ function makeFlushEditor({ text, previous = '', options = {}, document = DocxDoc
   editor.document = document;
   editor.options = options;
   const element = { text };
-  editor.paragraphs = new Map([[0, { element, text: previous }]]);
+  editor.paragraphs = new Map([[0, { element, text: previous, failed: false }]]);
   editor.readText = (entry) => entry.text;
   return { editor, element, document };
 }
@@ -38,7 +39,7 @@ test('flush preserves tab and newline text', () => {
   assert.equal(document.getParagraphs()[0].text, 'a\tb\nc');
 });
 
-test('flush reports errors and advances tracked text for overlong input', () => {
+test('flush truncates overlong input, reports once, and commits legal text', () => {
   const calls = [];
   const overlong = `a${'x'.repeat(1_000_000)}`;
   const { editor, document } = makeFlushEditor({
@@ -48,11 +49,12 @@ test('flush reports errors and advances tracked text for overlong input', () => 
   assert.doesNotThrow(() => editor.flush());
   assert.equal(calls.length, 1);
   assert.equal(calls[0].context.paragraph, 0);
-  assert.equal(document.getParagraphs()[0].text, '');
-  assert.equal(editor.paragraphs.get(0).text, overlong);
+  assert.match(calls[0].error.message, /truncated at 1000000 characters/);
+  assert.equal(document.getParagraphs()[0].text.length, 1_000_000);
+  assert.equal(editor.paragraphs.get(0).text.length, 1_000_000);
 });
 
-test('flush does not repeatedly report unchanged overlong text', () => {
+test('flush does not repeatedly report unchanged overlong text after first truncation', () => {
   const calls = [];
   const overlong = `a${'x'.repeat(1_000_000)}`;
   const { editor } = makeFlushEditor({
@@ -83,23 +85,43 @@ test('flush still logs original error when onError throws', () => {
   const calls = [];
   console.error = (...args) => calls.push(args);
   try {
-    const overlong = `a${'x'.repeat(1_000_000)}`;
+    const document = DocxDocument.create();
+    document.setParagraphText = () => { throw new Error('commit failed'); };
     const { editor } = makeFlushEditor({
-      text: overlong,
+      text: 'changed',
+      previous: '',
+      document,
       options: { onError: () => { throw new Error('handler failed'); } },
     });
     assert.doesNotThrow(() => editor.flush());
     assert.equal(calls.length, 2);
-    assert.match(String(calls[0][0]), /valid XML text/);
+    assert.match(String(calls[0][0]), /commit failed/);
     assert.match(String(calls[1][0]), /handler failed/);
   } finally {
     console.error = original;
   }
 });
 
-test('render completes even when flush sees invalid uncommittable text', () => {
-  const overlong = `a${'x'.repeat(1_000_000)}`;
-  const { editor } = makeFlushEditor({ text: overlong, options: { onError: () => {} } });
+test('flush does not advance entry.text when commit fails', () => {
+  const calls = [];
+  const document = DocxDocument.create();
+  document.setParagraphText = () => { throw new Error('commit failed'); };
+  const { editor } = makeFlushEditor({
+    text: 'new text',
+    previous: 'old text',
+    document,
+    options: { onError: () => calls.push('error') },
+  });
+  assert.doesNotThrow(() => editor.flush());
+  assert.equal(editor.paragraphs.get(0).text, 'old text');
+  assert.equal(editor.paragraphs.get(0).failed, true);
+  assert.deepEqual(calls, ['error']);
+});
+
+test('render completes even when flush commit throws', () => {
+  const document = DocxDocument.create();
+  document.setParagraphText = () => { throw new Error('commit failed'); };
+  const { editor } = makeFlushEditor({ text: 'changed', previous: '', document, options: { onError: () => {} } });
   editor.composing = false;
   editor.renderAfterComposition = false;
   editor.selected = null;
@@ -116,9 +138,10 @@ test('render completes even when flush sees invalid uncommittable text', () => {
   assert.doesNotThrow(() => editor.render());
 });
 
-test('setDocument and destroy remain usable after flush failures', () => {
-  const overlong = `a${'x'.repeat(1_000_000)}`;
-  const { editor } = makeFlushEditor({ text: overlong, options: { onError: () => {} } });
+test('setDocument and destroy remain usable after flush commit failures', () => {
+  const document = DocxDocument.create();
+  document.setParagraphText = () => { throw new Error('commit failed'); };
+  const { editor } = makeFlushEditor({ text: 'changed', previous: '', document, options: { onError: () => {} } });
   let rendered = 0;
   editor.render = () => { rendered++; };
   const removed = [];
@@ -138,6 +161,15 @@ test('setDocument and destroy remain usable after flush failures', () => {
   assert.equal(rootRemoved, true);
   assert.equal(removed.length, 1);
   assert.equal(removed[0][0], 'selectionchange');
+});
+
+test('sanitizeTextWithInfo preserves surrogate pairs when truncating at max length', () => {
+  const input = `${'a'.repeat(999_999)}😀`;
+  const sanitized = sanitizeTextWithInfo(input);
+  assert.equal(sanitized.text.length, 999_999);
+  assert.equal(sanitized.text, 'a'.repeat(999_999));
+  assert.equal(sanitized.truncated, true);
+  assert.equal(sanitized.truncatedAt, 999_999);
 });
 
 test('insertText sanitizes invalid paste-like input before insertion', () => {

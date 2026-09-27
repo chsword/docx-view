@@ -1,6 +1,6 @@
 import { DocxDocument } from './document.js';
 import type { DocumentBlock, DocumentSnapshot, ParagraphInfo } from './types.js';
-import { sanitizeText } from './xml.js';
+import { sanitizeText, sanitizeTextWithInfo } from './xml.js';
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
@@ -12,7 +12,7 @@ export class DocxEditor {
   private document: DocxDocument;
   private readonly root: HTMLDivElement;
   private readonly options: DocxEditorOptions;
-  private readonly paragraphs = new Map<number, { element: HTMLParagraphElement; text: string }>();
+  private readonly paragraphs = new Map<number, { element: HTMLParagraphElement; text: string; failed: boolean }>();
   private selected: number | null = null;
   private composing = false;
   private renderAfterComposition = false;
@@ -38,15 +38,23 @@ export class DocxEditor {
     if (this.destroyed) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      const text = sanitizeText(this.readText(entry.element));
-      if (text !== entry.text) {
-        try {
-          this.document.setParagraphText(index, text);
-          changed = true;
-        } catch (error) {
-          this.reportError(error, index);
-        }
-        entry.text = text;
+      const raw = this.readText(entry.element);
+      const sanitized = sanitizeTextWithInfo(raw);
+      if (sanitized.text === entry.text) {
+        entry.failed = false;
+        continue;
+      }
+      if (sanitized.truncated && !entry.failed) {
+        this.reportError(new Error(`Paragraph text was truncated at ${sanitized.truncatedAt ?? sanitized.text.length} characters.`), index);
+      }
+      try {
+        this.document.setParagraphText(index, sanitized.text);
+        entry.text = sanitized.text;
+        entry.failed = false;
+        changed = true;
+      } catch (error) {
+        entry.failed = true;
+        this.reportError(error, index);
       }
     }
     if (changed) this.options.onChange?.(this.document.getSnapshot());
@@ -140,7 +148,7 @@ export class DocxEditor {
       element.append(span);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
-    this.paragraphs.set(paragraph.index, { element, text: this.readText(element) });
+    this.paragraphs.set(paragraph.index, { element, text: sanitizeText(this.readText(element)), failed: false });
     element.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     element.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     element.addEventListener('compositionstart', () => { this.composing = true; });
