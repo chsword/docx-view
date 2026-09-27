@@ -4,8 +4,8 @@ import type {
   AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
 import {
-  assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
-  serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
+  assertText, children, childrenThroughTransparent, CONTENT_TYPES_NS, descendants, isTransparentWordWrapper,
+  OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
 
@@ -374,11 +374,11 @@ export class DocxDocument {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
       if (child.localName === 'tbl') return [{
         type: 'table',
-        rows: children(child, 'tr').map(row => ({
-          cells: children(row, 'tc').map(cell => ({ blocks: walk(cell) })),
+        rows: childrenThroughTransparent(child, 'tr').map(row => ({
+          cells: childrenThroughTransparent(row, 'tc').map(cell => ({ blocks: walk(cell) })),
         })),
       }];
-      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
+      if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
     return walk(body);

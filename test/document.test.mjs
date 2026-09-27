@@ -11,6 +11,18 @@ function withBody(xml) {
   return doc;
 }
 
+function paragraphIndicesFromBlocks(blocks) {
+  const indices = [];
+  const walk = items => {
+    for (const block of items) {
+      if (block.type === 'paragraph') indices.push(block.paragraph.index);
+      else for (const row of block.rows) for (const cell of row.cells) walk(cell.blocks);
+    }
+  };
+  walk(blocks);
+  return indices;
+}
+
 test('create, edit, export and reopen a DOCX in Node without browser globals', async () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, '你好 DOCX & <world> 😀');
@@ -120,6 +132,91 @@ test('tables and cell editing retain a valid final paragraph', () => {
   doc.deleteParagraph(cellIndex);
   assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
   assert.throws(() => doc.insertTable([]), /Table/);
+});
+
+test('getBlocks reads table rows wrapped by w:sdt and preserves paragraph indexing', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const table = doc.getBlocks().find(block => block.type === 'table');
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[1].cells[0].blocks[0].paragraph.text, 'C');
+  assert.equal(table.rows[1].cells[1].blocks[0].paragraph.text, 'D');
+});
+
+test('setParagraphText can edit a row wrapped by w:sdt', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const cellParagraph = doc.getBlocks().find(block => block.type === 'table').rows[1].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(cellParagraph, 'C-updated');
+  assert.equal(doc.getParagraphs()[cellParagraph].text, 'C-updated');
+});
+
+test('getBlocks pierces w:sdt wrappers around table cells including nested wrappers', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const firstCell = xml.match(/<w:tc>[\s\S]*?<\/w:tc>/)?.[0];
+  xml = xml.replace(firstCell, `<w:sdt><w:sdtPr/><w:sdtContent><w:sdt><w:sdtPr/><w:sdtContent>${firstCell}</w:sdtContent></w:sdt></w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const table = doc.getBlocks().find(block => block.type === 'table');
+  assert.equal(table.rows[0].cells[0].blocks[0].paragraph.text, 'A');
+  const index = table.rows[0].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(index, 'A-updated');
+  assert.equal(doc.getParagraphs()[index].text, 'A-updated');
+});
+
+test('run-level w:sdt wrappers are included in ownRuns/getParagraphs', () => {
+  const doc = withBody('<w:p><w:r><w:t>head</w:t></w:r><w:sdt><w:sdtPr/><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>tail</w:t></w:r></w:sdtContent></w:sdt></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.deepEqual(paragraph.runs.map(run => run.text), ['head', 'tail']);
+  assert.equal(paragraph.runs[1].bold, true);
+});
+
+test('round-trip keeps w:sdt and w:sdtPr while editing wrapped content', async () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(
+    rows[1],
+    `<w:sdt w:id="9"><w:sdtPr><w:alias w:val="row-wrap"/><w:tag w:val="meta"/></w:sdtPr><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`,
+  );
+  doc.setPartXml(doc.mainDocumentPath, xml);
+  const idx = doc.getBlocks().find(block => block.type === 'table').rows[1].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(idx, 'C2');
+
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  const out = reopened.getPartXml(reopened.mainDocumentPath);
+  assert.match(out, /<w:sdt w:id="9">/);
+  assert.match(out, /<w:sdtPr><w:alias w:val="row-wrap"\/><w:tag w:val="meta"\/><\/w:sdtPr>/);
+  assert.equal(reopened.getParagraphs()[idx].text, 'C2');
+});
+
+test('getBlocks and getParagraphs contain the same paragraph set with wrapped table content', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  const cells = xml.match(/<w:tc>[\s\S]*?<\/w:tc>/g);
+  xml = xml
+    .replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent><w:customXml>${rows[1]}</w:customXml></w:sdtContent></w:sdt>`)
+    .replace(cells[0], `<w:sdt><w:sdtPr/><w:sdtContent>${cells[0]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const blockIndices = paragraphIndicesFromBlocks(doc.getBlocks()).sort((a, b) => a - b);
+  const paragraphIndices = doc.getParagraphs().map(paragraph => paragraph.index).sort((a, b) => a - b);
+  assert.deepEqual(blockIndices, paragraphIndices);
 });
 
 test('insertions precede section properties and deletion protects section breaks', () => {
