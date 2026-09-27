@@ -16,6 +16,7 @@ const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
 const encoder = new TextEncoder();
+const TRANSPARENT_WRAPPERS = new Set(['sdt', 'sdtContent', 'customXml']);
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -39,9 +40,41 @@ function bodyOf(document: Document): Element {
 
 function paragraphAt(document: Document, index: number): Element {
   assertIndex(index);
-  const paragraph = descendants(bodyOf(document), 'p')[index];
+  const paragraph = paragraphElements(bodyOf(document))[index];
   if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
   return paragraph;
+}
+
+function isTransparentWrapper(element: Element): boolean {
+  return element.namespaceURI === WORD_NS && TRANSPARENT_WRAPPERS.has(element.localName ?? '');
+}
+
+function blockElements(parent: Element): Element[] {
+  return children(parent).flatMap(child => {
+    if (isTransparentWrapper(child)) return blockElements(child);
+    return ['p', 'tbl'].includes(child.localName ?? '') ? [child] : [];
+  });
+}
+
+function paragraphElements(parent: Element): Element[] {
+  return blockElements(parent).flatMap(block => {
+    if (block.localName === 'p') return [block];
+    return children(block, 'tr').flatMap(row => children(row, 'tc').flatMap(paragraphElements));
+  });
+}
+
+function paragraphContainer(paragraph: Element): Element {
+  let parent = paragraph.parentNode;
+  while (parent && parent.nodeType === 1) {
+    const element = parent as Element;
+    if (element.namespaceURI === WORD_NS && ['body', 'tc'].includes(element.localName ?? '')) return element;
+    if (isTransparentWrapper(element)) {
+      parent = element.parentNode;
+      continue;
+    }
+    parent = element.parentNode;
+  }
+  throw new Error('Paragraph is not inside a body or table cell container.');
 }
 
 function textElements(element: Element): Element[] {
@@ -364,13 +397,13 @@ export class DocxDocument {
   }
 
   getParagraphs(): ParagraphInfo[] {
-    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p').map(readParagraph);
+    return paragraphElements(bodyOf(this.getPartDocument(this.mainPath))).map(readParagraph);
   }
 
   getBlocks(): DocumentBlock[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
-    const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
-    const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
+    const indices = new Map(paragraphElements(body).map((p, i) => [p, i]));
+    const walk = (parent: Element): DocumentBlock[] => blockElements(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
       if (child.localName === 'tbl') return [{
         type: 'table',
@@ -378,7 +411,6 @@ export class DocxDocument {
           cells: children(row, 'tc').map(cell => ({ blocks: walk(cell) })),
         })),
       }];
-      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
       return [];
     });
     return walk(body);
@@ -426,15 +458,21 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const parent = paragraph.parentNode as Element;
+      const container = paragraphContainer(paragraph);
       // A cell must end with a paragraph, and section properties must not be silently lost.
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
       parent.removeChild(paragraph);
-      const last = children(parent).filter(child => child.localName !== 'sectPr').at(-1);
-      if ((parent.localName === 'tc' && last?.localName !== 'p') ||
-          (parent.localName === 'body' && !children(parent, 'p').length)) {
-        parent.insertBefore(newParagraph(document, ''), children(parent, 'sectPr')[0] ?? null);
+      const last = blockElements(container).at(-1);
+      if (container.localName === 'tc' && last?.localName !== 'p') {
+        container.insertBefore(newParagraph(document, ''), null);
+      }
+      if (container.localName === 'body') {
+        if (!last) throw new Error('Cannot delete the last body paragraph; Word requires at least one body paragraph.');
+        if (last.localName === 'tbl') {
+          throw new Error('Cannot delete this paragraph; Word requires a body paragraph after the final table.');
+        }
       }
     });
   }

@@ -130,9 +130,57 @@ test('insertions precede section properties and deletion protects section breaks
   assert.match(doc.getPartXml(doc.mainDocumentPath), /last[\s\S]*<w:sectPr/);
   const sectionDoc = withBody('<w:p><w:pPr><w:sectPr/></w:pPr></w:p>');
   assert.throws(() => sectionDoc.deleteParagraph(0), /section-break/);
-  const emptyDoc = DocxDocument.create();
-  emptyDoc.deleteParagraph(0);
-  assert.equal(emptyDoc.getParagraphs().length, 1);
+  assert.throws(() => DocxDocument.create().deleteParagraph(0), /last body paragraph/);
+});
+
+test('deleteParagraph rejects deleting the only body paragraph inside w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt>');
+  assert.throws(() => doc.deleteParagraph(0), /last body paragraph/);
+  assert.equal(doc.getParagraphs().length, 1);
+});
+
+test('deleteParagraph rejects deleting the only body paragraph inside w:customXml', () => {
+  const doc = withBody('<w:customXml><w:p><w:r><w:t>x</w:t></w:r></w:p></w:customXml>');
+  assert.throws(() => doc.deleteParagraph(0), /last body paragraph/);
+  assert.equal(doc.getParagraphs().length, 1);
+});
+
+test('deleteParagraph rejects deleting the only body paragraph inside nested w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt></w:sdtContent></w:sdt>');
+  assert.throws(() => doc.deleteParagraph(0), /last body paragraph/);
+});
+
+test('deleteParagraph rejects deleting the trailing paragraph after final table in body', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B']]);
+  assert.throws(() => doc.deleteParagraph(3), /after the final table/);
+});
+
+test('deleteParagraph allows deleting one of multiple paragraphs after a table', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.insertParagraph('tail-1');
+  doc.insertParagraph('tail-2');
+  doc.deleteParagraph(3);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['', 'A', '', 'tail-2']);
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:sdt', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:customXml', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:customXml><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:customXml></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph keeps normal body deletions working', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p><w:p><w:r><w:t>third</w:t></w:r></w:p>');
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['first', 'third']);
 });
 
 test('format toggles explicitly disable formatting and retain OOXML property order', () => {
