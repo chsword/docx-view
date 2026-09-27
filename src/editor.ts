@@ -116,17 +116,29 @@ export class DocxEditor {
         marker.textContent = block.type === 'pageBreak'
           ? '—— 分页符 ——'
           : `—— 分节符（${block.breakType}）——`;
+        marker.setAttribute('role', 'note');
+        marker.setAttribute('aria-label', marker.textContent);
         parent.appendChild(marker);
       }
     }
   }
 
   private applyPageSetup(): void {
+    const paper = this.root.parentElement as HTMLElement | null;
+    this.root.style.columnCount = '';
+    this.root.style.columnGap = '';
+    if (paper) {
+      paper.style.maxWidth = '';
+      paper.style.paddingTop = '';
+      paper.style.paddingRight = '';
+      paper.style.paddingBottom = '';
+      paper.style.paddingLeft = '';
+      delete paper.dataset.orientation;
+    }
     let section: SectionInfo | undefined;
     try { section = this.document.getSection(0); } catch { section = undefined; }
     if (!section) return;
-    const paper = this.root.parentElement as HTMLElement | null;
-    const toPx = (twips: number) => `${Math.max(0, twips / 20)}px`;
+    const toPx = (twips: number) => `${Math.max(0, twips * 96 / 1440)}px`;
     if (paper) {
       paper.style.maxWidth = toPx(section.pageWidth);
       paper.style.paddingTop = toPx(section.margins.top);
@@ -140,25 +152,40 @@ export class DocxEditor {
   }
 
   private makeHeaderFooter(type: 'header' | 'footer'): HTMLElement {
-    const section = this.document.getSection(0);
     const kind = type === 'header' ? this.headerKind : this.footerKind;
+    let map: Partial<Record<'default' | 'first' | 'even', string>> = {};
+    try {
+      const section = this.document.getSection(0);
+      map = type === 'header' ? section.headers : section.footers;
+    } catch {
+      map = {};
+    }
+    const part = map[kind] ?? map.default;
     const blocks = type === 'header'
       ? this.document.getHeaderBlocks(0, kind)
       : this.document.getFooterBlocks(0, kind);
+    const partXml = part ? this.document.getPartXml(part) : '';
+    const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar)\b/.test(partXml);
     const area = this.root.ownerDocument.createElement('div');
     area.className = `docx-${type}`;
     const label = this.root.ownerDocument.createElement('div');
     label.className = 'docx-header-footer-label';
+    label.id = `docx-${type}-${kind}-label`;
     label.textContent = `${type === 'header' ? '页眉' : '页脚'}（${kind}）`;
     const editable = this.root.ownerDocument.createElement('div');
-    editable.contentEditable = 'true';
+    editable.contentEditable = plainEditable ? 'true' : 'false';
     editable.className = 'docx-header-footer-text';
+    editable.setAttribute('role', 'textbox');
+    editable.setAttribute('aria-multiline', 'true');
+    editable.setAttribute('aria-labelledby', label.id);
     editable.textContent = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
-    if (type === 'header' ? !section.headers[kind] : !section.footers[kind]) editable.textContent = '';
+    if (!plainEditable) editable.setAttribute('aria-readonly', 'true');
     editable.addEventListener('blur', () => {
+      if (!plainEditable) return;
       const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
       if (type === 'header') this.document.setHeaderText(0, text, kind);
       else this.document.setFooterText(0, text, kind);
+      this.render();
       this.options.onChange?.(this.document.getSnapshot());
     });
     area.append(label, editable);

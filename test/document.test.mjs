@@ -265,6 +265,14 @@ test('paragraph-scoped sectPr produces multiple sections with correct ranges', (
   assert.equal(sections[1].startParagraph, 1);
 });
 
+test('section ranges stay aligned when body contains table paragraphs', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>end</w:t></w:r></w:p><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const sections = doc.getSections();
+  assert.equal(doc.getParagraphs().length, 3);
+  assert.equal(sections[0].endParagraph, 1);
+  assert.equal(sections[1].startParagraph, 2);
+});
+
 test('setPageSetup updates known fields and keeps unknown sectPr children', () => {
   const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr><w:docGrid w:linePitch="360"/></w:sectPr>');
   doc.setPageSetup(0, { pageWidth: 20000, orientation: 'landscape', margins: { left: 700 }, columns: { count: 2, space: 360 } });
@@ -279,9 +287,16 @@ test('insertSectionBreak and deleteSectionBreak update section structure explici
   const doc = withBody('<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:r><w:t>two</w:t></w:r></w:p>');
   doc.insertSectionBreak(0, 'continuous');
   assert.equal(doc.getSections().length, 2);
-  assert.equal(doc.getSection(1).type, 'continuous');
+  assert.equal(doc.getSection(0).type, 'continuous');
   doc.deleteSectionBreak(0);
   assert.equal(doc.getSections().length, 1);
+});
+
+test('deleteSectionBreak keeps following section properties after merge', () => {
+  const doc = withBody('<w:p><w:pPr><w:sectPr><w:pgSz w:w="14000" w:h="10000"/></w:sectPr></w:pPr><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="18000" w:h="12000"/></w:sectPr>');
+  doc.deleteSectionBreak(0);
+  assert.equal(doc.getSections().length, 1);
+  assert.equal(doc.getSection(0).pageWidth, 18000);
 });
 
 test('deleteSectionBreak rejects final section and insertSectionBreak rejects duplicate break paragraph', () => {
@@ -385,4 +400,14 @@ test('setPageSetup can persist explicit column widths and numbering start', () =
   assert.match(xml, /<w:col w:w="3000"/);
   assert.match(xml, /<w:pgNumType[^>]*w:start="5"[^>]*w:fmt="decimal"/);
   assert.match(xml, /<w:titlePg\/>/);
+});
+
+test('setPageSetup can clear stale column widths and page numbering attributes', () => {
+  const doc = DocxDocument.create();
+  doc.setPageSetup(0, { columns: { count: 2, equalWidth: false, widths: [3000, 5000] }, pageNumbering: { start: 3, format: 'decimal' } });
+  doc.setPageSetup(0, { columns: { equalWidth: true, widths: [] }, pageNumbering: {} });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /<w:col /);
+  assert.doesNotMatch(xml, /w:start="/);
+  assert.doesNotMatch(xml, /w:fmt="/);
 });

@@ -42,14 +42,14 @@ export interface SectionInfo {
 }
 
 export interface PageSetup {
-  type: SectionType;
-  pageWidth: number;
-  pageHeight: number;
-  orientation: 'portrait' | 'landscape';
-  margins: Partial<SectionInfo['margins']>;
-  columns: Partial<SectionInfo['columns']>;
-  pageNumbering: SectionInfo['pageNumbering'];
-  titlePage: boolean;
+  type?: SectionType;
+  pageWidth?: number;
+  pageHeight?: number;
+  orientation?: 'portrait' | 'landscape';
+  margins?: Partial<SectionInfo['margins']>;
+  columns?: Partial<SectionInfo['columns']>;
+  pageNumbering?: SectionInfo['pageNumbering'];
+  titlePage?: boolean;
 }
 
 export type DocumentBlock =

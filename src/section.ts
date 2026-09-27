@@ -85,14 +85,39 @@ export interface SectionDescriptor {
 
 export function collectSections(mainDocument: Document): SectionDescriptor[] {
   const body = children(mainDocument.documentElement!, 'body')[0]!;
-  const paragraphs = Array.from(body.getElementsByTagNameNS(WORD_NS, 'p'));
+  const paragraphs: Element[] = [];
+  const boundaries: Array<{ index: number; paragraph: Element; sectPr: Element }> = [];
+  const walk = (parent: Element, sectionScope: boolean): void => {
+    for (const child of children(parent)) {
+      if (child.localName === 'p') {
+        const index = paragraphs.push(child) - 1;
+        if (sectionScope) {
+          const sectPr = children(children(child, 'pPr')[0] ?? child, 'sectPr')[0];
+          if (sectPr) boundaries.push({ index, paragraph: child, sectPr });
+        }
+        continue;
+      }
+      if (child.localName === 'tbl') {
+        for (const row of children(child, 'tr')) {
+          for (const cell of children(row, 'tc')) walk(cell, false);
+        }
+        continue;
+      }
+      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) walk(child, sectionScope);
+    }
+  };
+  walk(body, true);
   const sections: SectionDescriptor[] = [];
   let start = 0;
-  for (const [index, paragraph] of paragraphs.entries()) {
-    const sectPr = children(children(paragraph, 'pPr')[0] ?? paragraph, 'sectPr')[0];
-    if (!sectPr) continue;
-    sections.push({ startParagraph: start, endParagraph: index, sectPr, source: 'paragraph', paragraph });
-    start = index + 1;
+  for (const boundary of boundaries) {
+    sections.push({
+      startParagraph: start,
+      endParagraph: boundary.index,
+      sectPr: boundary.sectPr,
+      source: 'paragraph',
+      paragraph: boundary.paragraph,
+    });
+    start = boundary.index + 1;
   }
   const tail = children(body, 'sectPr')[0];
   if (tail) sections.push({ startParagraph: start, endParagraph: Math.max(start, paragraphs.length) - 1, sectPr: tail, source: 'body' });

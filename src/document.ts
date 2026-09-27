@@ -65,7 +65,13 @@ function normalizePath(path: string): string {
 }
 
 function resolvePartPath(basePart: string, target: string): string {
-  const decoded = decodeURIComponent(target).replace(/^\/+/, '');
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(target);
+  } catch {
+    return '';
+  }
+  decoded = decoded.replace(/^\/+/, '');
   return normalizePath(target.startsWith('/') ? decoded : `${partDirectory(basePart)}/${decoded}`);
 }
 
@@ -454,7 +460,8 @@ export class DocxDocument {
     const sectionByParagraph = new Map<number, SectionType>(sections
       .filter(section => section.source === 'paragraph')
       .map(section => [section.endParagraph, (children(section.sectPr, 'type')[0]?.getAttributeNS(WORD_NS, 'val') ?? 'nextPage') as SectionType]));
-    const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
+    const paragraphs = descendants(body, 'p');
+    const indices = new Map(paragraphs.map((p, i) => [p, i]));
     const hasPageBreak = (paragraph: Element) => descendants(paragraph, 'br')
       .some(node => (node.getAttributeNS(WORD_NS, 'type') ?? '') === 'page');
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
@@ -473,7 +480,7 @@ export class DocxDocument {
     for (const block of blocks) {
       result.push(block);
       if (block.type !== 'paragraph') continue;
-      const paragraph = descendants(body, 'p')[block.paragraph.index];
+      const paragraph = paragraphs[block.paragraph.index];
       if (paragraph && hasPageBreak(paragraph)) result.push({ type: 'pageBreak' });
       const breakType = sectionByParagraph.get(block.paragraph.index);
       if (breakType) result.push({ type: 'sectionBreak', section: result.filter(item => item.type === 'sectionBreak').length, breakType });
@@ -504,8 +511,10 @@ export class DocxDocument {
       if (relationship.getAttribute('TargetMode') === 'External') continue;
       const id = relationship.getAttribute('Id') ?? '';
       if (!id) continue;
+      const target = resolvePartPath(path, relationship.getAttribute('Target') ?? '');
+      if (!target) continue;
       entries.push([id, {
-        target: resolvePartPath(path, relationship.getAttribute('Target') ?? ''),
+        target,
         type: relationship.getAttribute('Type') ?? '',
       }]);
     }
@@ -575,7 +584,7 @@ export class DocxDocument {
         if (setup.columns.count !== undefined) columns.setAttributeNS(WORD_NS, 'w:num', String(Math.max(1, Math.trunc(setup.columns.count))));
         if (setup.columns.space !== undefined) columns.setAttributeNS(WORD_NS, 'w:space', String(Math.max(0, Math.trunc(setup.columns.space))));
         if (setup.columns.equalWidth !== undefined) columns.setAttributeNS(WORD_NS, 'w:equalWidth', setup.columns.equalWidth ? '1' : '0');
-        if (setup.columns.widths) {
+        if (setup.columns.widths !== undefined) {
           for (const column of children(columns, 'col')) columns.removeChild(column);
           for (const width of setup.columns.widths) {
             const column = wordElement(document, 'col');
@@ -585,9 +594,19 @@ export class DocxDocument {
         }
       }
       if (setup.pageNumbering !== undefined) {
-        const numbering = sectionProperty(sectPr, 'pgNumType');
-        if (setup.pageNumbering?.start !== undefined) numbering.setAttributeNS(WORD_NS, 'w:start', String(Math.max(0, Math.trunc(setup.pageNumbering.start))));
-        if (setup.pageNumbering?.format !== undefined) numbering.setAttributeNS(WORD_NS, 'w:fmt', setup.pageNumbering.format);
+        const existing = children(sectPr, 'pgNumType')[0];
+        if (!setup.pageNumbering) {
+          if (existing) sectPr.removeChild(existing);
+        } else if (setup.pageNumbering.start === undefined && setup.pageNumbering.format === undefined) {
+          if (existing) sectPr.removeChild(existing);
+        } else {
+          const numbering = existing ?? sectionProperty(sectPr, 'pgNumType');
+          if (setup.pageNumbering.start === undefined) numbering.removeAttributeNS(WORD_NS, 'start');
+          else numbering.setAttributeNS(WORD_NS, 'w:start', String(Math.max(0, Math.trunc(setup.pageNumbering.start))));
+          if (setup.pageNumbering.format === undefined) numbering.removeAttributeNS(WORD_NS, 'fmt');
+          else numbering.setAttributeNS(WORD_NS, 'w:fmt', setup.pageNumbering.format);
+          if (!numbering.getAttributeNS(WORD_NS, 'start') && !numbering.getAttributeNS(WORD_NS, 'fmt')) sectPr.removeChild(numbering);
+        }
       }
       if (setup.titlePage !== undefined) {
         const existing = children(sectPr, 'titlePg')[0];
@@ -612,9 +631,17 @@ export class DocxDocument {
       }
       const source = current.sectPr;
       const props = properties(target, 'pPr');
+      const sectionProps = children(props, 'sectPr')[0] ?? property(props, 'sectPr');
+      while (sectionProps.firstChild) sectionProps.removeChild(sectionProps.firstChild);
+      for (const attribute of [...Array.from(sectionProps.attributes)]) sectionProps.removeAttributeNode(attribute);
       const copy = source.cloneNode(true) as Element;
-      props.appendChild(copy);
-      setWordValue(sectionProperty(source, 'type'), type);
+      for (let child = copy.firstChild; child; child = child.nextSibling) {
+        sectionProps.appendChild(child.cloneNode(true));
+      }
+      for (const attribute of [...Array.from(copy.attributes)]) {
+        sectionProps.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+      }
+      setWordValue(sectionProperty(sectionProps, 'type'), type);
     });
   }
 
@@ -711,7 +738,7 @@ export class DocxDocument {
     const path = type === 'header' ? this.createHeader(section, kind) : this.createFooter(section, kind);
     this.updatePartXml(path, part => {
       const container = blockContainerOf(part);
-      for (const paragraph of children(container, 'p')) container.removeChild(paragraph);
+      while (container.firstChild) container.removeChild(container.firstChild);
       container.appendChild(newParagraph(part, text));
     });
   }

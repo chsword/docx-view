@@ -66,7 +66,7 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-footer { margin: 16px 0 0; }
 .docx-header-footer-label { color: #7890b2; font-size: 10px; margin-bottom: 5px; }
 .docx-header-footer-text { min-height: 1.6em; outline: none; white-space: pre-wrap; }
-.docx-header-footer-text:empty::before { content: "双击输入…"; color: #b2bfd2; }
+.docx-header-footer-text:empty::before { content: "输入…"; color: #b2bfd2; }
 .docx-paragraph { position: relative; margin: 0 0 16px; border-radius: 2px; outline: 0; tab-size: 4; }
 .docx-paragraph:focus { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
 .docx-paragraph:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }

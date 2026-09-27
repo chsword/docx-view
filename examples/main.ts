@@ -1,5 +1,5 @@
-import { DocxDocument, DocxEditor } from '../src/index.js';
-import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat, SectionType } from '../src/index.js';
+import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
+import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -197,11 +197,11 @@ element('insert-section-break').addEventListener('click', () => run(() => {
 element('insert-page-break').addEventListener('click', () => run(() => {
   const index = selectedIndex();
   doc.updatePartXml(doc.mainDocumentPath, xml => {
-    const paragraph = xml.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'p')[index];
+    const paragraph = xml.getElementsByTagNameNS(WORD_NS, 'p')[index];
     if (!paragraph) throw new Error('找不到目标段落。');
-    const run = xml.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
-    const br = xml.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:br');
-    br.setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:type', 'page');
+    const run = xml.createElementNS(WORD_NS, 'w:r');
+    const br = xml.createElementNS(WORD_NS, 'w:br');
+    br.setAttributeNS(WORD_NS, 'w:type', 'page');
     run.appendChild(br);
     paragraph.appendChild(run);
   });
