@@ -2,7 +2,7 @@ import type { Element } from '@xmldom/xmldom';
 import type {
   BorderFormat, BordersFormat, CellFormat, DocumentBlock, MarginFormat, RowFormat, TableCellInfo, TableFormat, WidthFormat,
 } from './types.js';
-import { children, WORD_NS, wordValue } from './xml.js';
+import { children, childrenThroughTransparent, WORD_NS, wordValue } from './xml.js';
 
 export const TWIPS_PER_INCH = 1440;
 export const EIGHTH_POINTS_PER_POINT = 8;
@@ -168,7 +168,8 @@ export function tableGrid(table: Element): number[] {
     number(column.getAttributeNS(WORD_NS, 'w') ?? column.getAttribute('w:w')) ?? DEFAULT_GRID_WIDTH
   ));
   if (grid.length) return grid;
-  const columns = children(table, 'tr').reduce((max, row) => Math.max(max, rowCells(row).reduce((count, cell) => count + cell.span, 0)), 0);
+  const columns = childrenThroughTransparent(table, 'tr')
+    .reduce((max, row) => Math.max(max, rowCells(row).reduce((count, cell) => count + cell.span, 0)), 0);
   return Array.from({ length: columns }, () => DEFAULT_GRID_WIDTH);
 }
 
@@ -179,7 +180,7 @@ export function cellSpan(cell: Element): number {
 
 export function rowCells(row: Element): TableCellPosition[] {
   let start = 0;
-  return children(row, 'tc').map((cell) => {
+  return childrenThroughTransparent(row, 'tc').map((cell) => {
     const tcPr = children(cell, 'tcPr')[0];
     const span = cellSpan(cell);
     const position: TableCellPosition = {
@@ -198,7 +199,7 @@ export function rowCells(row: Element): TableCellPosition[] {
 export function readTable(table: Element, walk: (parent: Element) => DocumentBlock[]): Extract<DocumentBlock, { type: 'table' }> {
   const grid = tableGrid(table);
   const active = new Map<number, { start: number; end: number; master: TableCellInfo }>();
-  const rows = children(table, 'tr').map((row) => {
+  const rows = childrenThroughTransparent(table, 'tr').map((row) => {
     const nextActive = new Map<number, { start: number; end: number; master: TableCellInfo }>();
     const cells = rowCells(row).map<TableCellInfo>((position) => {
       const colSpan = position.span;

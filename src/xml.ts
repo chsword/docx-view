@@ -5,6 +5,7 @@ export const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/
 export const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
 export const CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
 export const OFFICE_DOCUMENT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
+const TRANSPARENT_WORD_WRAPPERS = new Set(['sdt', 'sdtContent', 'customXml']);
 export const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 export function parseXml(xml: string): Document {
@@ -28,6 +29,25 @@ export function children(node: Node, localName?: string, namespace = WORD_NS): E
       if ((!localName || element.localName === localName) && element.namespaceURI === namespace) {
         result.push(element);
       }
+    }
+  }
+  return result;
+}
+
+export function isTransparentWordWrapper(element: Element): boolean {
+  return element.namespaceURI === WORD_NS && TRANSPARENT_WORD_WRAPPERS.has(element.localName ?? '');
+}
+
+export function childrenThroughTransparent(node: Node, localName: string, namespace = WORD_NS): Element[] {
+  const result: Element[] = [];
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    if (element.namespaceURI !== namespace) continue;
+    if (element.localName === localName) {
+      result.push(element);
+    } else if (isTransparentWordWrapper(element)) {
+      result.push(...childrenThroughTransparent(element, localName, namespace));
     }
   }
   return result;
