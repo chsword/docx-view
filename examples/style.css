@@ -61,6 +61,12 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .paper-stage { background: #f4f6f9; padding: 28px; min-height: 730px; max-height: 950px; overflow: auto; }
 .paper { min-height: 850px; padding: 53px 48px 65px; max-width: 795px; margin: 0 auto; background: #fff; box-shadow: 0 2px 8px #2939570b, 0 0 0 1px #e9edf3; }
 .docx-editor { font-size: 11pt; line-height: 1.9; overflow-wrap: anywhere; color: #394a61; }
+.paper[data-orientation="landscape"] { min-height: 620px; }
+.docx-header, .docx-footer { break-inside: avoid; margin: 0 0 14px; padding: 8px 10px; border: 1px dashed #cbd7eb; background: #f8fbff; }
+.docx-footer { margin: 16px 0 0; }
+.docx-header-footer-label { color: #7890b2; font-size: 10px; margin-bottom: 5px; }
+.docx-header-footer-text { min-height: 1.6em; outline: none; white-space: pre-wrap; }
+.docx-header-footer-text:empty::before { content: "双击输入…"; color: #b2bfd2; }
 .docx-paragraph { position: relative; margin: 0 0 16px; border-radius: 2px; outline: 0; tab-size: 4; }
 .docx-paragraph:focus { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
 .docx-paragraph:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
@@ -71,6 +77,7 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-table td { border: 1px solid #dbe3ed; padding: 10px 11px; vertical-align: top; }
 .docx-table tr:first-child td { background: #f3f6fb; }
 .docx-table .docx-paragraph { margin: 0; }
+.docx-break-marker { margin: 8px 0 14px; color: #8ea0ba; font-size: 10px; text-align: center; border-top: 1px dashed #ccd7ea; padding-top: 6px; }
 .document-footer { display: flex; gap: 10px; justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); font-size: 10px; color: #8693a7; }
 .document-footer b { font-weight: 400; margin: 0 10px; color: #c7d0dd; }
 .inspector { background: #fff; border: 1px solid #dee5ef; border-radius: 12px; overflow: hidden; box-shadow: 0 7px 24px #25334a04; }

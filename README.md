@@ -2,7 +2,7 @@
 
 一个面向浏览器和 AI Agent 的 TypeScript / JavaScript DOCX 编辑组件库，包含无需后端的静态 `examples`。
 
-**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式和基础表格的可视化编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。
+**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、基础表格、分节页面设置与页眉页脚编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。
 
 ## 运行
 
@@ -69,9 +69,15 @@ console.log(reopened.getSnapshot());
 | `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
+| `getSections()` / `getSection(index)` | 读取分节类型、纸张、页边距、分栏、页眉页脚引用 |
+| `setPageSetup(section, setup)` | 修改指定节的纸张方向、边距、分栏和页码起始等页面设置 |
+| `insertSectionBreak(paragraph, type)` / `deleteSectionBreak(section)` | 插入/删除分节符（删除为显式 API，保留原有段落删除保护） |
+| `getHeaderBlocks()` / `getFooterBlocks()` | 读取页眉页脚 block 结构（段落、表格等） |
+| `createHeader()` / `createFooter()` / `setHeaderText()` / `setFooterText()` | 创建并写入页眉页脚部件，自动维护 rels 与 content-types |
+| `insertPageNumberField(partPath, options)` | 在页眉/页脚部件写入 `PAGE` 或 `NUMPAGES` 域占位结构 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
-索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
+索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。`insertSectionBreak(paragraph)` 的 `paragraph` 表示“该段落结束处插入分节”；`deleteSectionBreak(section)` 删除第 `section` 节末尾的分节符并与下一节合并。高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`。
 
 ### 可视化组件
 
@@ -169,7 +175,7 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、显式 run 格式、段落对齐和基础表格；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
+当前可视化视图支持正文段落、显式 run 格式、段落对齐、基础表格、纸张宽度/边距近似、分栏近似与页眉页脚（默认/首页/偶数页切换）；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片像素级布局、合并单元格、复杂版式、脚注、修订及完整域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 

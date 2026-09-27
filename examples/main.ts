@@ -1,5 +1,5 @@
 import { DocxDocument, DocxEditor } from '../src/index.js';
-import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
+import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat, SectionType } from '../src/index.js';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -53,6 +53,9 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element('revision').textContent = String(snapshot.revision);
   element('paragraph-count').textContent = String(snapshot.paragraphs.length);
   element('snapshot-output').textContent = JSON.stringify(snapshot, null, 2);
+  const first = doc.getSection(0);
+  element<HTMLSelectElement>('page-orientation').value = first.orientation;
+  element<HTMLSelectElement>('page-size').value = first.pageWidth > 13000 ? 'Letter' : 'A4';
   updateSelection();
 }
 
@@ -175,6 +178,43 @@ element('add-table').addEventListener('click', () => run(() => {
   refresh();
   message('已在文档末尾添加 2 × 2 表格。');
 }));
+element('apply-page-setup').addEventListener('click', () => run(() => {
+  const size = element<HTMLSelectElement>('page-size').value;
+  const orientation = element<HTMLSelectElement>('page-orientation').value as 'portrait' | 'landscape';
+  const setup = size === 'Letter' ? { pageWidth: 12240, pageHeight: 15840 } : { pageWidth: 11906, pageHeight: 16838 };
+  doc.setPageSetup(0, { ...setup, orientation });
+  editor.render();
+  refresh();
+  message('已更新页面设置。');
+}));
+element('insert-section-break').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.insertSectionBreak(index, 'nextPage');
+  editor.render();
+  refresh();
+  message('已插入分节符。');
+}));
+element('insert-page-break').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.updatePartXml(doc.mainDocumentPath, xml => {
+    const paragraph = xml.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'p')[index];
+    if (!paragraph) throw new Error('找不到目标段落。');
+    const run = xml.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
+    const br = xml.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:br');
+    br.setAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:type', 'page');
+    run.appendChild(br);
+    paragraph.appendChild(run);
+  });
+  editor.render();
+  refresh();
+  message('已插入分页符。');
+}));
+element<HTMLSelectElement>('header-kind').addEventListener('change', (event) => {
+  editor.setHeaderKind((event.target as HTMLSelectElement).value as 'default' | 'first' | 'even');
+});
+element<HTMLSelectElement>('footer-kind').addEventListener('change', (event) => {
+  editor.setFooterKind((event.target as HTMLSelectElement).value as 'default' | 'first' | 'even');
+});
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;
   setDocument(DocxDocument.create(), '未命名.docx');

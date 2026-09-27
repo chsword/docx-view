@@ -1,5 +1,5 @@
 import { DocxDocument } from './document.js';
-import type { DocumentBlock, DocumentSnapshot, ParagraphInfo } from './types.js';
+import type { DocumentBlock, DocumentSnapshot, ParagraphInfo, SectionInfo } from './types.js';
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
@@ -11,6 +11,8 @@ export class DocxEditor {
   private readonly root: HTMLDivElement;
   private readonly options: DocxEditorOptions;
   private readonly paragraphs = new Map<number, { element: HTMLParagraphElement; text: string }>();
+  private headerKind: 'default' | 'first' | 'even' = 'default';
+  private footerKind: 'default' | 'first' | 'even' = 'default';
   private selected: number | null = null;
   private composing = false;
   private renderAfterComposition = false;
@@ -65,9 +67,12 @@ export class DocxEditor {
     }
     const caret = this.captureCaret();
     this.flush();
+    this.applyPageSetup();
     this.paragraphs.clear();
     const fragment = this.root.ownerDocument.createDocumentFragment();
+    fragment.append(this.makeHeaderFooter('header'));
     this.appendBlocks(fragment, this.document.getBlocks());
+    fragment.append(this.makeHeaderFooter('footer'));
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
     if (caret) this.restoreCaret(caret);
@@ -93,7 +98,7 @@ export class DocxEditor {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
         parent.appendChild(this.makeParagraph(block.paragraph));
-      } else {
+      } else if (block.type === 'table') {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
         const body = table.createTBody();
@@ -105,8 +110,69 @@ export class DocxEditor {
           }
         }
         parent.appendChild(table);
+      } else {
+        const marker = this.root.ownerDocument.createElement('div');
+        marker.className = 'docx-break-marker';
+        marker.textContent = block.type === 'pageBreak'
+          ? '—— 分页符 ——'
+          : `—— 分节符（${block.breakType}）——`;
+        parent.appendChild(marker);
       }
     }
+  }
+
+  private applyPageSetup(): void {
+    let section: SectionInfo | undefined;
+    try { section = this.document.getSection(0); } catch { section = undefined; }
+    if (!section) return;
+    const paper = this.root.parentElement as HTMLElement | null;
+    const toPx = (twips: number) => `${Math.max(0, twips / 20)}px`;
+    if (paper) {
+      paper.style.maxWidth = toPx(section.pageWidth);
+      paper.style.paddingTop = toPx(section.margins.top);
+      paper.style.paddingRight = toPx(section.margins.right);
+      paper.style.paddingBottom = toPx(section.margins.bottom);
+      paper.style.paddingLeft = toPx(section.margins.left);
+      paper.dataset.orientation = section.orientation;
+    }
+    this.root.style.columnCount = String(Math.max(1, section.columns.count));
+    this.root.style.columnGap = toPx(section.columns.space);
+  }
+
+  private makeHeaderFooter(type: 'header' | 'footer'): HTMLElement {
+    const section = this.document.getSection(0);
+    const kind = type === 'header' ? this.headerKind : this.footerKind;
+    const blocks = type === 'header'
+      ? this.document.getHeaderBlocks(0, kind)
+      : this.document.getFooterBlocks(0, kind);
+    const area = this.root.ownerDocument.createElement('div');
+    area.className = `docx-${type}`;
+    const label = this.root.ownerDocument.createElement('div');
+    label.className = 'docx-header-footer-label';
+    label.textContent = `${type === 'header' ? '页眉' : '页脚'}（${kind}）`;
+    const editable = this.root.ownerDocument.createElement('div');
+    editable.contentEditable = 'true';
+    editable.className = 'docx-header-footer-text';
+    editable.textContent = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
+    if (type === 'header' ? !section.headers[kind] : !section.footers[kind]) editable.textContent = '';
+    editable.addEventListener('blur', () => {
+      const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
+      if (type === 'header') this.document.setHeaderText(0, text, kind);
+      else this.document.setFooterText(0, text, kind);
+      this.options.onChange?.(this.document.getSnapshot());
+    });
+    area.append(label, editable);
+    return area;
+  }
+
+  setHeaderKind(kind: 'default' | 'first' | 'even'): void {
+    this.headerKind = kind;
+    this.render();
+  }
+
+  setFooterKind(kind: 'default' | 'first' | 'even'): void {
+    this.footerKind = kind;
+    this.render();
   }
 
   private makeParagraph(paragraph: ParagraphInfo): HTMLParagraphElement {
