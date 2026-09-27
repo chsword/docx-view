@@ -24,6 +24,18 @@ function withBody(xml) {
   return doc;
 }
 
+function paragraphIndicesFromBlocks(blocks) {
+  const indices = [];
+  const walk = items => {
+    for (const block of items) {
+      if (block.type === 'paragraph') indices.push(block.paragraph.index);
+      else for (const row of block.rows) for (const cell of row.cells) walk(cell.blocks);
+    }
+  };
+  walk(blocks);
+  return indices;
+}
+
 function withStyles(bodyXml, stylesXml, themeXml) {
   const doc = withBody(bodyXml);
   doc.addPart('word/styles.xml', new TextEncoder().encode(stylesXml), STYLES_TYPE);
@@ -148,6 +160,125 @@ test('tables and cell editing retain a valid final paragraph', () => {
   doc.deleteParagraph(cellIndex);
   assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
   assert.throws(() => doc.insertTable([]), /Table/);
+});
+
+test('getBlocks reads table rows wrapped by w:sdt and preserves paragraph indexing', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const table = doc.getBlocks().find(block => block.type === 'table');
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[1].cells[0].blocks[0].paragraph.text, 'C');
+  assert.equal(table.rows[1].cells[1].blocks[0].paragraph.text, 'D');
+});
+
+test('setParagraphText can edit a row wrapped by w:sdt', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const cellParagraph = doc.getBlocks().find(block => block.type === 'table').rows[1].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(cellParagraph, 'C-updated');
+  assert.equal(doc.getParagraphs()[cellParagraph].text, 'C-updated');
+});
+
+test('getBlocks pierces w:sdt wrappers around table cells including nested wrappers', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const firstCell = xml.match(/<w:tc>[\s\S]*?<\/w:tc>/)?.[0];
+  xml = xml.replace(firstCell, `<w:sdt><w:sdtPr/><w:sdtContent><w:sdt><w:sdtPr/><w:sdtContent>${firstCell}</w:sdtContent></w:sdt></w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const table = doc.getBlocks().find(block => block.type === 'table');
+  assert.equal(table.rows[0].cells[0].blocks[0].paragraph.text, 'A');
+  const index = table.rows[0].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(index, 'A-updated');
+  assert.equal(doc.getParagraphs()[index].text, 'A-updated');
+});
+
+test('run-level w:sdt wrappers are included in ownRuns/getParagraphs', () => {
+  const doc = withBody('<w:p><w:r><w:t>head</w:t></w:r><w:sdt><w:sdtPr/><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>tail</w:t></w:r></w:sdtContent></w:sdt></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.deepEqual(paragraph.runs.map(run => run.text), ['head', 'tail']);
+  assert.equal(paragraph.runs[1].bold, true);
+});
+
+test('round-trip keeps w:sdt and w:sdtPr while editing wrapped content', async () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(
+    rows[1],
+    `<w:sdt w:id="9"><w:sdtPr><w:alias w:val="row-wrap"/><w:tag w:val="meta"/></w:sdtPr><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`,
+  );
+  doc.setPartXml(doc.mainDocumentPath, xml);
+  const idx = doc.getBlocks().find(block => block.type === 'table').rows[1].cells[0].blocks[0].paragraph.index;
+  doc.setParagraphText(idx, 'C2');
+
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  const out = reopened.getPartXml(reopened.mainDocumentPath);
+  assert.match(out, /<w:sdt w:id="9">/);
+  assert.match(out, /<w:sdtPr><w:alias w:val="row-wrap"\/><w:tag w:val="meta"\/><\/w:sdtPr>/);
+  assert.equal(reopened.getParagraphs()[idx].text, 'C2');
+});
+
+test('getBlocks and getParagraphs contain the same paragraph set with wrapped table content', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  const cells = xml.match(/<w:tc>[\s\S]*?<\/w:tc>/g);
+  xml = xml
+    .replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent><w:customXml>${rows[1]}</w:customXml></w:sdtContent></w:sdt>`)
+    .replace(cells[0], `<w:sdt><w:sdtPr/><w:sdtContent>${cells[0]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const blockIndices = paragraphIndicesFromBlocks(doc.getBlocks()).sort((a, b) => a - b);
+  const paragraphIndices = doc.getParagraphs().map(paragraph => paragraph.index).sort((a, b) => a - b);
+  assert.deepEqual(blockIndices, paragraphIndices);
+});
+
+test('deleteParagraph keeps wrapped table cells structurally valid', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getParagraphs().length, 1);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p>/);
+
+  const viaOps = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  viaOps.applyOperations({ operations: [{ type: 'deleteParagraph', index: 0 }] });
+  assert.equal(viaOps.getParagraphs().length, 1);
+});
+
+test('deleteParagraph does not add blank paragraphs when wrapped cell content remains', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>B</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['B']);
+});
+
+test('wrapped table rows remain addressable after structural edits and cell text updates', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent><w:customXml>${rows[1]}</w:customXml></w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  doc.insertTableColumn(0, 1);
+  doc.setCellText(0, 1, 2, 'D2');
+
+  const table = doc.getTable(0);
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[1].cells.length, 3);
+  assert.equal(table.rows[1].cells[2].blocks[0].paragraph.text, 'D2');
 });
 
 test('insertions precede section properties and deletion protects section breaks', () => {
@@ -848,6 +979,32 @@ test('table style conditions apply first-row and horizontal band run formatting'
   assert.equal(paragraphs[0].runs[0].effective.bold, true);
   assert.equal(paragraphs[1].runs[0].effective.color, '008800');
   assert.equal(paragraphs[2].runs[0].effective.color, 'AA5500');
+});
+
+test('table style firstRow/lastRow conditions stay aligned when last row is wrapped by w:sdt', () => {
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="TS"/><w:tblLook w:firstRow="1" w:lastRow="1" w:noHBand="1"/></w:tblPr>
+      <w:tr><w:tc><w:p><w:r><w:t>h1</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="TS"><w:name w:val="TS"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="FF0000"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="lastRow"><w:rPr><w:color w:val="0000FF"/></w:rPr></w:tblStylePr>
+      </w:style>
+    </w:styles>`,
+  );
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  xml = xml.replace(rows[2], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[2]}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs[0].runs[0].effective.color, 'FF0000');
+  assert.equal(paragraphs[1].runs[0].effective.color, undefined);
+  assert.equal(paragraphs[2].runs[0].effective.color, '0000FF');
 });
 
 test('table style firstCol can be explicitly disabled by tblLook', () => {

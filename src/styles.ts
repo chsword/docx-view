@@ -1,6 +1,6 @@
 import type { Element } from '@xmldom/xmldom';
 import type { BorderSide, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop } from './types.js';
-import { WORD_NS, children, wordValue } from './xml.js';
+import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 
@@ -477,12 +477,12 @@ function tableMeta(context: StylesContext, table: Element): TableMeta {
   const cache = context._tableMeta ??= new WeakMap<Element, TableMeta>();
   const existing = cache.get(table);
   if (existing) return existing;
-  const rows = children(table, 'tr');
+  const rows = childrenThroughTransparent(table, 'tr');
   const rowIndex = new Map<Element, number>();
   const cellIndex = new WeakMap<Element, number>();
   rows.forEach((row, index) => {
     rowIndex.set(row, index);
-    children(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
+    childrenThroughTransparent(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
   });
   const tableProps = children(table, 'tblPr')[0];
   const rowBandSize = Math.max(1, readNumber(wordValue(children(tableProps ?? table, 'tblStyleRowBandSize')[0])) ?? 1);
@@ -519,7 +519,7 @@ function tableContext(context: StylesContext, paragraph: Element): TableContext 
   const lastColumn = readLookFlag(look, 'lastColumn', false);
   if (rowPosition === 0 && firstRow) conditions.push('firstRow');
   if (rowPosition === meta.rows.length - 1 && lastRow) conditions.push('lastRow');
-  const cellCount = children(row, 'tc').length;
+  const cellCount = childrenThroughTransparent(row, 'tc').length;
   if (cellPosition === 0 && firstColumn) conditions.push('firstCol');
   if (cellPosition === cellCount - 1 && lastColumn) conditions.push('lastCol');
   if (!readLookFlag(look, 'noHBand', false)) {
