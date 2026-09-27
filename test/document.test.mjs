@@ -251,7 +251,7 @@ test('deleteParagraph keeps wrapped table cells structurally valid', () => {
   const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
   doc.deleteParagraph(0);
   assert.equal(doc.getParagraphs().length, 1);
-  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p>/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p(?:>|\/>)/);
 
   const viaOps = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
   viaOps.applyOperations({ operations: [{ type: 'deleteParagraph', index: 0 }] });
@@ -291,7 +291,99 @@ test('insertions precede section properties and deletion protects section breaks
   assert.throws(() => sectionDoc.deleteParagraph(0), /section-break/);
   const emptyDoc = DocxDocument.create();
   emptyDoc.deleteParagraph(0);
-  assert.equal(emptyDoc.getParagraphs().length, 1);
+  assert.deepEqual(emptyDoc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside w:customXml', () => {
+  const doc = withBody('<w:customXml><w:p><w:r><w:t>x</w:t></w:r></w:p></w:customXml>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the only body paragraph inside nested w:sdt', () => {
+  const doc = withBody('<w:sdt><w:sdtPr/><w:sdtContent><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt></w:sdtContent></w:sdt>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['']);
+});
+
+test('deleteParagraph clears deleting the trailing paragraph after final table in body', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B']]);
+  doc.deleteParagraph(3);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['', 'A', 'B', '']);
+});
+
+test('deleteParagraph allows deleting one of multiple paragraphs after a table', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.insertParagraph('tail-1');
+  doc.insertParagraph('tail-2');
+  doc.deleteParagraph(3);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['', 'A', '', 'tail-2']);
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:sdt', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph protects unique table-cell paragraph wrapped by w:customXml', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:customXml><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:customXml></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('deleteParagraph keeps normal body deletions working', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p><w:p><w:r><w:t>third</w:t></w:r></w:p>');
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['first', 'third']);
+});
+
+test('paragraph indexes stay table-interleaved and cell deletes use tc protection', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', 'cell', 'after']);
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['before', '', 'after']);
+});
+
+test('deleteParagraph keeps w:tcPr first when clearing required cell paragraph', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:tcPr><w:tcW w:w="100"/></w:tcPr><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/>');
+  doc.deleteParagraph(0);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc><w:tcPr>[\s\S]*?<\/w:tcPr><w:p(?:>|\/>)/);
+});
+
+test('deleteParagraph clears table separator paragraph between two body tables', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>sep</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  doc.deleteParagraph(1);
+  assert.deepEqual(doc.getBlocks().map(block => block.type), ['table', 'paragraph', 'table', 'paragraph']);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['A', '', 'B', 'tail']);
+});
+
+test('deleteParagraph guard works with style+numbering and wrapped table row', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({ id: 'BodyCenter', type: 'paragraph', name: 'BodyCenter', paragraph: { alignment: 'center' } });
+  const numId = doc.createNumbering('bullet');
+  doc.setParagraphText(0, 'intro');
+  doc.formatParagraph(0, { style: 'BodyCenter' });
+  doc.setParagraphNumbering(0, numId);
+  doc.insertTable([['cell']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const row = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/)?.[0];
+  xml = xml.replace(row, `<w:sdt><w:sdtPr/><w:sdtContent>${row}</w:sdtContent></w:sdt>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+  const cellIndex = doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.index;
+  doc.deleteParagraph(cellIndex);
+  assert.equal(doc.getBlocks().find(block => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.text, '');
+  const intro = doc.getParagraphs()[0];
+  assert.equal(intro.style, 'BodyCenter');
+  assert.equal(intro.numbering?.numId, numId);
 });
 
 test('format toggles explicitly disable formatting and retain OOXML property order', () => {

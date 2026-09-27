@@ -139,6 +139,38 @@ function paragraphAt(document: Document, index: number): Element {
   return paragraph;
 }
 
+function isTransparentWrapper(element: Element): boolean {
+  return isTransparentWordWrapper(element);
+}
+
+function blockPositions(parent: Element): { block: Element; parent: Element }[] {
+  return children(parent).flatMap(child => {
+    if (isTransparentWrapper(child)) return blockPositions(child);
+    return ['p', 'tbl'].includes(child.localName ?? '') ? [{ block: child, parent }] : [];
+  });
+}
+
+function blockElements(parent: Element): Element[] {
+  return blockPositions(parent).map(position => position.block);
+}
+
+function paragraphContainer(paragraph: Element): Element {
+  let parent = paragraph.parentNode;
+  while (parent && parent.nodeType === 1) {
+    const element = parent as Element;
+    if (element.namespaceURI === WORD_NS && ['body', 'tc'].includes(element.localName ?? '')) return element;
+    if (!isTransparentWrapper(element)) break;
+    parent = element.parentNode;
+  }
+  throw new Error('Paragraph is not inside a body or table cell container.');
+}
+
+function clearParagraphContent(paragraph: Element): void {
+  for (const child of [...children(paragraph)]) {
+    if (child.localName !== 'pPr') paragraph.removeChild(child);
+  }
+}
+
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
   function walk(node: Node): void {
@@ -2110,17 +2142,32 @@ export class DocxDocument {
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const parent = paragraph.parentNode as Element;
-      const container = nearestNonTransparentAncestor(parent);
+      let container: Element | undefined;
+      try { container = paragraphContainer(paragraph); } catch {}
       // A cell must end with a paragraph, and section properties must not be silently lost.
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
-      parent.removeChild(paragraph);
-      const paragraphs = childrenThroughTransparent(container, 'p');
-      if ((container.localName === 'tc' && !paragraphs.length) ||
-          (container.localName === 'body' && !paragraphs.length)) {
-        container.insertBefore(newParagraph(document, ''), children(container, 'sectPr')[0] ?? null);
+      if (container) {
+        const blocks = blockElements(container);
+        const remaining = blocks.filter(block => block !== paragraph);
+        const indexInContainer = blocks.indexOf(paragraph);
+        const mustKeepParagraph =
+          (container.localName === 'body' && (
+            !remaining.length ||
+            remaining.at(-1)?.localName === 'tbl' ||
+            (indexInContainer > 0 &&
+             indexInContainer < blocks.length - 1 &&
+             blocks[indexInContainer - 1]?.localName === 'tbl' &&
+             blocks[indexInContainer + 1]?.localName === 'tbl')
+          )) ||
+          (container.localName === 'tc' && remaining.at(-1)?.localName !== 'p');
+        if (mustKeepParagraph) {
+          clearParagraphContent(paragraph);
+          return;
+        }
       }
+      parent.removeChild(paragraph);
     });
   }
 
