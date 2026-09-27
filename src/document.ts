@@ -373,6 +373,8 @@ function setRowFormat(row: Element, format: RowFormat): void {
   if (format.cantSplit !== undefined) boolValue(props, 'cantSplit', format.cantSplit);
   if (format.header !== undefined) boolValue(props, 'tblHeader', format.header);
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
+  if (format.deleted !== undefined) boolValue(props, 'del', format.deleted);
+  if (format.inserted !== undefined) boolValue(props, 'ins', format.inserted);
 }
 
 function setCellFormat(cell: Element, format: CellFormat): void {
@@ -450,6 +452,27 @@ function clearCellContent(cell: Element): void {
 function appendCellContent(target: Element, source: Element): void {
   for (const child of children(source).filter(node => node.localName !== 'tcPr')) target.appendChild(child);
   ensureCellParagraph(target);
+}
+
+function repairVerticalMerges(table: Element): void {
+  const active = new Map<number, { end: number }>();
+  for (const row of children(table, 'tr')) {
+    const nextActive = new Map<number, { end: number }>();
+    for (const position of rowCells(row)) {
+      const props = tableProperty(position.cell, 'tcPr');
+      const merge = children(props, 'vMerge')[0];
+      const continuing = merge && (wordValue(merge) ?? 'continue') === 'continue';
+      const sameMerge = active.get(position.start)?.end === position.start + position.span;
+      if (continuing && !sameMerge) {
+        mergeElement(props, 'vMerge', 'restart');
+        nextActive.set(position.start, { end: position.start + position.span });
+      } else if (merge && (wordValue(merge) === 'restart' || (continuing && sameMerge))) {
+        nextActive.set(position.start, { end: position.start + position.span });
+      }
+    }
+    active.clear();
+    for (const [start, merge] of nextActive) active.set(start, merge);
+  }
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -731,8 +754,8 @@ export class DocxDocument {
 
   insertTable(rows: string[][]): void {
     validateRows(rows);
+    const index = children(bodyOf(this.getPartDocument(this.mainPath)), 'tbl').length;
     this.insertTableAt(rows.length, Math.max(...rows.map(row => row.length)));
-    const index = this.getBlocks().filter((block): block is Extract<DocumentBlock, { type: 'table' }> => block.type === 'table').length - 1;
     rows.forEach((row, rowIndex) => row.forEach((text, colIndex) => this.setCellText(index, rowIndex, colIndex, text)));
   }
 
@@ -754,7 +777,13 @@ export class DocxDocument {
       const section = children(body, 'sectPr')[0] ?? null;
       if (before !== undefined) {
         const target = bodyBlockAt(document, before);
-        body.insertBefore(table, target);
+        const previous = target.previousSibling?.nodeType === 1 ? target.previousSibling as Element : null;
+        if (target.localName === 'tbl' && previous?.namespaceURI === WORD_NS && previous.localName === 'p') {
+          body.insertBefore(table, previous);
+        } else {
+          body.insertBefore(table, target);
+          if (target.localName !== 'p') body.insertBefore(newParagraph(document, ''), target);
+        }
       } else {
         body.insertBefore(table, section);
         body.insertBefore(newParagraph(document, ''), section);
@@ -808,6 +837,7 @@ export class DocxDocument {
         }
       }
       element.removeChild(row);
+      repairVerticalMerges(element);
     });
   }
 
@@ -818,7 +848,21 @@ export class DocxDocument {
       const widths = tableGrid(element);
       if (at > widths.length) throw new Error(`Column ${at} does not exist.`);
       grid.insertBefore(gridCol(document, widths[Math.max(0, Math.min(at, widths.length - 1))] ?? 2250), children(grid, 'gridCol')[at] ?? null);
-      for (const row of children(element, 'tr')) {
+      const model = tableModel(element);
+      const handled = new Set<Element>();
+      for (const [rowIndex, row] of children(element, 'tr').entries()) {
+        const covering = at < widths.length ? model.matrix[rowIndex]?.[at] : undefined;
+        if (covering && covering.rowSpan > 1) {
+          if (handled.has(covering.cell)) continue;
+          handled.add(covering.cell);
+          for (let index = covering.row; index < covering.row + covering.rowSpan; index++) {
+            const chain = rowCells(model.rows[index]!).find(position => position.start === covering.start);
+            if (!chain) continue;
+            const props = tableProperty(chain.cell, 'tcPr');
+            mergeElement(props, 'gridSpan', chain.span + 1 > 1 ? chain.span + 1 : undefined);
+          }
+          continue;
+        }
         const positions = rowCells(row);
         let inserted = false;
         for (const position of positions) {
@@ -846,8 +890,26 @@ export class DocxDocument {
       const columns = children(grid, 'gridCol');
       if (!columns[at]) throw new Error(`Column ${at} does not exist.`);
       if (columns.length <= 1) throw new Error('Cannot delete the only table column.');
+      const model = tableModel(element);
       grid.removeChild(columns[at]!);
-      for (const row of children(element, 'tr')) {
+      const handled = new Set<Element>();
+      for (const [rowIndex, row] of children(element, 'tr').entries()) {
+        const covering = model.matrix[rowIndex]?.[at];
+        if (covering && covering.rowSpan > 1) {
+          if (handled.has(covering.cell)) continue;
+          handled.add(covering.cell);
+          for (let index = covering.row; index < covering.row + covering.rowSpan; index++) {
+            const chain = rowCells(model.rows[index]!).find(position => position.start === covering.start);
+            if (!chain) continue;
+            if (chain.span > 1) {
+              const props = tableProperty(chain.cell, 'tcPr');
+              mergeElement(props, 'gridSpan', chain.span - 1 > 1 ? chain.span - 1 : undefined);
+            } else {
+              model.rows[index]!.removeChild(chain.cell);
+            }
+          }
+          continue;
+        }
         const position = rowCells(row).find(cell => at >= cell.start && at < cell.start + cell.span);
         if (!position) throw new Error(`Column ${at} does not exist.`);
         if (position.span > 1) {
@@ -935,7 +997,8 @@ export class DocxDocument {
         mergeElement(props, 'vMerge', undefined);
         if (rowIndex !== row) clearCellContent(cell);
         const anchor: Node | null = rowCells(rowElement).find(item => item.start > col)?.cell ?? null;
-        for (let i = 1; i < cols; i++) {
+        const occupied = rowCells(rowElement).filter(item => item.start >= col && item.start < col + cols).length;
+        for (let i = occupied; i < cols; i++) {
           const extra = blankCell(document);
           rowElement.insertBefore(extra, anchor);
         }
@@ -976,7 +1039,9 @@ export class DocxDocument {
       let replacementEnd = text.length;
       while (end > start && replacementEnd > start && old[end - 1] === text[replacementEnd - 1]) { end--; replacementEnd--; }
       if (start > 0 && /[\ud800-\udbff]/.test(old[start - 1]!)) start--;
+      if (start > 0 && /[\ud800-\udbff]/.test(text[start - 1]!)) start--;
       if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
+      if (replacementEnd < text.length && /[\udc00-\udfff]/.test(text[replacementEnd]!)) replacementEnd++;
       if (old !== text) replaceSpan(paragraph, start, end, text.slice(start, replacementEnd));
       readParagraph(paragraph, index);
     });

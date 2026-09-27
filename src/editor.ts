@@ -129,13 +129,12 @@ export class DocxEditor {
     if (format.alignment === 'center') table.style.marginInline = 'auto';
     if (format.alignment === 'right') { table.style.marginLeft = 'auto'; table.style.marginRight = '0'; }
     if (format.alignment === 'left') { table.style.marginLeft = '0'; table.style.marginRight = 'auto'; }
-    if (format.indent !== undefined) table.style.marginLeft = `${twipsToPx(format.indent)}px`;
+    if (format.indent !== undefined && (!format.alignment || format.alignment === 'left')) table.style.marginLeft = `${twipsToPx(format.indent)}px`;
     if (format.shading?.fill) table.style.backgroundColor = `#${format.shading.fill}`;
     if (format.caption) {
       const caption = table.createCaption();
       caption.textContent = format.caption;
     }
-    if (format.description) table.setAttribute('aria-label', format.description);
   }
 
   private applyRowStyle(tr: HTMLTableRowElement, row: TableRowInfo): void {
@@ -190,6 +189,14 @@ export class DocxEditor {
           }
         }
         parent.appendChild(table);
+        if (block.format?.description) {
+          const description = this.root.ownerDocument.createElement('div');
+          description.className = 'sr-only';
+          description.id = `docx-table-desc-${Math.random().toString(36).slice(2)}`;
+          description.textContent = block.format.description;
+          table.setAttribute('aria-describedby', description.id);
+          parent.appendChild(description);
+        }
       }
     }
   }
@@ -244,23 +251,20 @@ export class DocxEditor {
         this.insertText(element, '\n');
       }
       if (event.key === 'Tab') {
-        event.preventDefault();
-        this.moveToAdjacentCell(element, event.shiftKey ? -1 : 1);
+        if (this.moveToAdjacentCell(element, event.shiftKey ? -1 : 1)) event.preventDefault();
       }
       const caret = this.caretIn(element);
       if (event.key === 'ArrowLeft' && caret?.start === 0 && caret.end === 0) {
-        event.preventDefault();
-        this.moveToAdjacentCell(element, -1);
+        if (this.moveToAdjacentCell(element, -1)) event.preventDefault();
       }
       if (event.key === 'ArrowRight' && caret && caret.start === caret.end && caret.end === this.readText(element).length) {
-        event.preventDefault();
-        this.moveToAdjacentCell(element, 1);
+        if (this.moveToAdjacentCell(element, 1)) event.preventDefault();
       }
-      if (event.key === 'ArrowUp') {
+      if (event.key === 'ArrowUp' && caret?.start === 0 && caret.end === 0) {
         event.preventDefault();
         this.moveVerticalCell(element, -1);
       }
-      if (event.key === 'ArrowDown') {
+      if (event.key === 'ArrowDown' && caret && caret.start === caret.end && caret.end === this.readText(element).length) {
         event.preventDefault();
         this.moveVerticalCell(element, 1);
       }
@@ -309,13 +313,16 @@ export class DocxEditor {
     paragraph?.focus();
   }
 
-  private moveToAdjacentCell(element: HTMLElement, delta: number): void {
+  private moveToAdjacentCell(element: HTMLElement, delta: number): boolean {
     const cell = element.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
     const table = cell?.closest('table');
-    if (!cell || !table) return;
+    if (!cell || !table) return false;
     const cells = Array.from(table.querySelectorAll<HTMLTableCellElement>('td[data-table-cell="true"]'));
     const index = cells.indexOf(cell);
-    this.focusParagraphInCell(cells[index + delta] ?? null);
+    const target = cells[index + delta] ?? null;
+    if (!target) return false;
+    this.focusParagraphInCell(target);
+    return true;
   }
 
   private moveVerticalCell(element: HTMLElement, delta: number): void {

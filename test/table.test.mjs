@@ -93,6 +93,13 @@ test('insertTableAt inserts before a body block and applies format', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tblLayout w:val="fixed"/);
 });
 
+test('insertTableAt keeps a paragraph after a table inserted before another table', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.insertTableAt(1, 1, 1);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tbl>[\s\S]*?<\/w:tbl><w:p>/);
+});
+
 test('insertTableRow appends a blank row with the current grid width count', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A', 'B']]);
@@ -119,6 +126,17 @@ test('deleteTableRow promotes the next vertical merge continuation to restart', 
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:vMerge w:val="restart"\/>/);
 });
 
+test('deleteTableRow repairs vertical merge chains after removing a middle continuation row', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr>
+    <w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+    <w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc></w:tr>
+  `));
+  doc.deleteTableRow(0, 1);
+  assert.equal(doc.getTable(0).rows[0].cells[0].rowSpan, 2);
+});
+
 test('insertTableColumn updates tblGrid and can expand merged cells', () => {
   const doc = withBody(tableXml(`
     <w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>
@@ -128,6 +146,19 @@ test('insertTableColumn updates tblGrid and can expand merged cells', () => {
   const table = doc.getTable(0);
   assert.equal(table.grid.length, 3);
   assert.equal(table.rows[0].cells[0].colSpan, 3);
+});
+
+test('insertTableColumn preserves vertical merge geometry', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+    <w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc></w:tr>
+  `));
+  doc.insertTableColumn(0, 0);
+  const table = doc.getTable(0);
+  assert.equal(table.grid.length, 3);
+  assert.equal(table.rows[0].cells[0].colSpan, 2);
+  assert.equal(table.rows[0].cells[0].rowSpan, 2);
 });
 
 test('deleteTableColumn shrinks grid spans and rejects deleting the only column', () => {
@@ -141,6 +172,19 @@ test('deleteTableColumn shrinks grid spans and rejects deleting the only column'
   const single = DocxDocument.create();
   single.insertTable([['A']]);
   assert.throws(() => single.deleteTableColumn(0, 0), /only table column/);
+});
+
+test('deleteTableColumn preserves vertical merge geometry', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+    <w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc></w:tr>
+  `));
+  doc.deleteTableColumn(0, 0);
+  const table = doc.getTable(0);
+  assert.equal(table.grid.length, 2);
+  assert.equal(table.rows[0].cells[0].colSpan, 1);
+  assert.equal(table.rows[0].cells[0].rowSpan, 2);
 });
 
 test('mergeCells creates horizontal and vertical merge markup', () => {
