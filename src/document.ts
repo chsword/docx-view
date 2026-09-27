@@ -164,6 +164,14 @@ function property(parent: Element, name: string): Element {
   return result;
 }
 
+function nearestNonTransparentAncestor(element: Element): Element {
+  let result = element;
+  while (isTransparentWordWrapper(result) && result.parentNode?.nodeType === 1) {
+    result = result.parentNode as Element;
+  }
+  return result;
+}
+
 function ownRuns(paragraph: Element): Element[] {
   return descendants(paragraph, 'r').filter(run => {
     let parent = run.parentNode;
@@ -426,15 +434,16 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const parent = paragraph.parentNode as Element;
+      const container = nearestNonTransparentAncestor(parent);
       // A cell must end with a paragraph, and section properties must not be silently lost.
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
       parent.removeChild(paragraph);
-      const last = children(parent).filter(child => child.localName !== 'sectPr').at(-1);
-      if ((parent.localName === 'tc' && last?.localName !== 'p') ||
-          (parent.localName === 'body' && !children(parent, 'p').length)) {
-        parent.insertBefore(newParagraph(document, ''), children(parent, 'sectPr')[0] ?? null);
+      const paragraphs = childrenThroughTransparent(container, 'p');
+      if ((container.localName === 'tc' && !paragraphs.length) ||
+          (container.localName === 'body' && !paragraphs.length)) {
+        container.insertBefore(newParagraph(document, ''), children(container, 'sectPr')[0] ?? null);
       }
     });
   }

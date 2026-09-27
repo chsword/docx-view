@@ -219,6 +219,23 @@ test('getBlocks and getParagraphs contain the same paragraph set with wrapped ta
   assert.deepEqual(blockIndices, paragraphIndices);
 });
 
+test('deleteParagraph keeps wrapped table cells structurally valid', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getParagraphs().length, 1);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tc>[\s\S]*<w:p>/);
+
+  const viaOps = withBody('<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>cellp</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  viaOps.applyOperations({ operations: [{ type: 'deleteParagraph', index: 0 }] });
+  assert.equal(viaOps.getParagraphs().length, 1);
+});
+
+test('deleteParagraph does not add blank paragraphs when wrapped cell content remains', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>B</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
+  doc.deleteParagraph(0);
+  assert.deepEqual(doc.getParagraphs().map(p => p.text), ['B']);
+});
+
 test('insertions precede section properties and deletion protects section breaks', () => {
   const doc = DocxDocument.create();
   doc.insertParagraph('first', 0);
