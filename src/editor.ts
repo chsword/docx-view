@@ -1,8 +1,9 @@
 import { DocxDocument } from './document.js';
-import type { DocumentBlock, DocumentSnapshot, ParagraphInfo } from './types.js';
+import type { DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo, TabStop } from './types.js';
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
+  showFormattingMarks?: boolean;
 }
 
 /** A browser-only, editable view of the supported DOCX paragraph/run/table subset. */
@@ -15,6 +16,7 @@ export class DocxEditor {
   private composing = false;
   private renderAfterComposition = false;
   private destroyed = false;
+  private readonly metrics: CanvasRenderingContext2D | null;
 
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
@@ -23,6 +25,7 @@ export class DocxEditor {
     this.root.className = 'docx-editor';
     this.root.setAttribute('aria-label', '文档编辑区域');
     container.append(this.root);
+    this.metrics = this.root.ownerDocument.createElement('canvas').getContext('2d');
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.render();
   }
@@ -83,10 +86,12 @@ export class DocxEditor {
   }
 
   private readText(element: HTMLElement): string {
+    const clone = element.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('[data-docx-mark]').forEach((mark) => mark.remove());
     // Native editing can introduce line-break elements (e.g. via mobile keyboards).
-    if (!element.querySelector('br, div, p')) return element.textContent ?? '';
-    const text = element.innerText.replace(/\r\n?/g, '\n');
-    return text === '\n' && !element.textContent ? '' : text;
+    if (!clone.querySelector('br, div, p')) return clone.textContent ?? '';
+    const text = clone.innerText.replace(/\r\n?/g, '\n');
+    return text === '\n' && !clone.textContent ? '' : text;
   }
 
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
@@ -122,18 +127,26 @@ export class DocxEditor {
     element.style.minHeight = '1.5em';
     if (paragraph.alignment) element.style.textAlign = paragraph.alignment === 'both' ? 'justify' : paragraph.alignment;
     if (paragraph.style) element.dataset.style = paragraph.style;
+    if (paragraph.shading?.fill && paragraph.shading.fill !== 'AUTO') element.style.backgroundColor = `#${paragraph.shading.fill}`;
+    if (paragraph.borders) {
+      for (const [key, side] of Object.entries(paragraph.borders)) {
+        if (!side || ['none', 'nil'].includes(side.style)) continue;
+        const width = `${Math.min(24, Math.max(0, side.size)) / 8}pt`;
+        const color = side.color === 'AUTO' ? '#000' : `#${side.color}`;
+        const style = this.borderStyle(side.style);
+        if (key === 'between') element.style.borderBottom = `${width} ${style} ${color}`;
+        if (key === 'bar') element.style.borderLeft = `${width} ${style} ${color}`;
+        if (key === 'top') element.style.borderTop = `${width} ${style} ${color}`;
+        if (key === 'left') element.style.borderLeft = `${width} ${style} ${color}`;
+        if (key === 'right') element.style.borderRight = `${width} ${style} ${color}`;
+        if (key === 'bottom') element.style.borderBottom = `${width} ${style} ${color}`;
+      }
+    }
     for (const run of paragraph.runs) {
-      const span = this.root.ownerDocument.createElement('span');
-      span.textContent = run.text;
-      if (run.bold !== undefined) span.style.fontWeight = run.bold ? '700' : '400';
-      if (run.italic !== undefined) span.style.fontStyle = run.italic ? 'italic' : 'normal';
-      if (run.underline !== undefined) span.style.textDecoration = run.underline ? 'underline' : 'none';
-      if (run.fontSize !== undefined) span.style.fontSize = `${run.fontSize}pt`;
-      if (run.fontFamily) span.style.fontFamily = run.fontFamily;
-      if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
-      element.append(span);
+      this.appendRun(element, paragraph, run);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
+    if (this.options.showFormattingMarks) element.append(this.makeMark('¶', '段落标记'));
     this.paragraphs.set(paragraph.index, { element, text: this.readText(element) });
     element.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     element.addEventListener('blur', () => { if (!this.composing) this.flush(); });
@@ -170,6 +183,129 @@ export class DocxEditor {
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
     return element;
+  }
+
+  private appendRun(paragraphElement: HTMLElement, paragraph: ParagraphInfo, run: RunInfo): void {
+    const runSpan = this.root.ownerDocument.createElement('span');
+    this.applyRunStyle(runSpan, run);
+    const segments = run.text.split(/(\t|\n)/);
+    let current = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i]!;
+      if (!segment) continue;
+      if (segment === '\n') {
+        runSpan.append(this.root.ownerDocument.createElement('br'));
+        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('↵', '换行符'));
+        current = 0;
+        continue;
+      }
+      if (segment === '\t') {
+        const nextText = segments.slice(i + 1).find((part) => part !== '\t' && part !== '\n') ?? '';
+        const tab = this.makeTabSpan(paragraph, runSpan, current, nextText);
+        runSpan.append(tab);
+        current += Number.parseFloat(tab.style.width || '0');
+        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('→', '制表符'));
+        continue;
+      }
+      runSpan.append(this.root.ownerDocument.createTextNode(segment));
+      current += this.measure(segment, runSpan);
+    }
+    paragraphElement.append(runSpan);
+  }
+
+  private makeTabSpan(paragraph: ParagraphInfo, sample: HTMLElement, currentPx: number, following: string): HTMLSpanElement {
+    const span = this.root.ownerDocument.createElement('span');
+    span.className = 'docx-tab';
+    span.contentEditable = 'false';
+    span.setAttribute('data-docx-mark', '1');
+    span.setAttribute('aria-hidden', 'true');
+    const stop = this.nextTabStop(paragraph.tabs ?? [], currentPx);
+    const defaultTab = this.document.getSettings().defaultTabStop * 96 / 1440;
+    const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
+    const nextWidth = this.measure(following, sample);
+    const decimalLeft = following.includes('.') ? this.measure(following.split('.')[0]!, sample) : nextWidth;
+    const alignment = stop?.alignment ?? 'left';
+    const width = Math.max(8, alignment === 'center' ? target - currentPx - nextWidth / 2
+      : alignment === 'right' ? target - currentPx - nextWidth
+        : alignment === 'decimal' ? target - currentPx - decimalLeft : target - currentPx);
+    span.style.display = 'inline-block';
+    span.style.width = `${Math.max(0, width)}px`;
+    if (alignment === 'bar') span.style.borderLeft = '1px solid currentColor';
+    const leader = this.leader(stop?.leader);
+    if (leader) {
+      span.textContent = leader.repeat(Math.max(1, Math.floor(width / Math.max(2, this.measure(leader, sample)))));
+      span.style.overflow = 'hidden';
+      span.style.verticalAlign = 'baseline';
+    }
+    return span;
+  }
+
+  private nextTabStop(tabs: TabStop[], currentPx: number): TabStop | undefined {
+    const currentTwips = currentPx * 1440 / 96;
+    return [...tabs].filter((tab) => Number.isFinite(tab.position))
+      .sort((a, b) => a.position - b.position)
+      .find((tab) => tab.position > currentTwips);
+  }
+
+  private leader(value: string | undefined): string {
+    switch (value) {
+      case 'dot': return '.';
+      case 'hyphen': return '-';
+      case 'underscore': return '_';
+      case 'heavy': return '━';
+      case 'middleDot': return '·';
+      default: return '';
+    }
+  }
+
+  private makeMark(text: string, label: string): HTMLElement {
+    const mark = this.root.ownerDocument.createElement('span');
+    mark.textContent = text;
+    mark.className = 'docx-mark';
+    mark.contentEditable = 'false';
+    mark.setAttribute('data-docx-mark', '1');
+    mark.setAttribute('aria-label', label);
+    mark.setAttribute('aria-hidden', 'true');
+    mark.style.userSelect = 'none';
+    mark.style.pointerEvents = 'none';
+    mark.style.opacity = '0.55';
+    return mark;
+  }
+
+  private applyRunStyle(span: HTMLElement, run: RunInfo): void {
+    if (run.bold !== undefined) span.style.fontWeight = run.bold ? '700' : '400';
+    if (run.italic !== undefined) span.style.fontStyle = run.italic ? 'italic' : 'normal';
+    if (run.underline !== undefined) span.style.textDecoration = run.underline ? 'underline' : 'none';
+    if (run.fontSize !== undefined) span.style.fontSize = `${run.fontSize}pt`;
+    if (run.fontFamily) span.style.fontFamily = run.fontFamily;
+    if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
+    if (run.shading?.fill && run.shading.fill !== 'AUTO') span.style.backgroundColor = `#${run.shading.fill}`;
+    if (run.border && !['none', 'nil'].includes(run.border.style)) {
+      span.style.border = `${Math.max(0.5, run.border.size / 8)}pt ${this.borderStyle(run.border.style)} ${run.border.color === 'AUTO' ? '#000' : `#${run.border.color}`}`;
+      span.style.padding = '0 0.05em';
+    }
+  }
+
+  private borderStyle(style: string): string {
+    switch (style) {
+      case 'double': return 'double';
+      case 'thick': return 'solid';
+      case 'dashed': return 'dashed';
+      case 'dotted': return 'dotted';
+      case 'wave': return 'wavy';
+      case 'none':
+      case 'nil':
+        return 'none';
+      default:
+        return 'solid';
+    }
+  }
+
+  private measure(text: string, sample: HTMLElement): number {
+    if (!this.metrics || !text) return 0;
+    const style = this.root.ownerDocument.defaultView?.getComputedStyle(sample);
+    this.metrics.font = style ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '16px sans-serif';
+    return this.metrics.measureText(text).width;
   }
 
   private insertText(element: HTMLElement, text: string): void {

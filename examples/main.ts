@@ -11,12 +11,13 @@ function element<T extends HTMLElement>(id: string): T {
 let doc = createSample();
 let filename = '产品计划.docx';
 let xmlRevision = -1;
+let showFormattingMarks = false;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
 const xmlInput = element<HTMLTextAreaElement>('xml-input');
 const xmlPart = element<HTMLSelectElement>('xml-part');
-const editor = new DocxEditor(host, doc, { onChange: refresh });
+let editor = new DocxEditor(host, doc, { onChange: refresh, showFormattingMarks });
 
 function createSample(): DocxDocument {
   const sample = DocxDocument.create();
@@ -30,11 +31,21 @@ function createSample(): DocxDocument {
   sample.insertParagraph('点击任意段落开始编辑，也可以在右侧运行一组 Agent 指令。所有处理都发生在你的浏览器里，文件不会上传。');
   sample.insertParagraph('02  从一个小计划开始');
   sample.formatRun(5, 0, { bold: true, fontSize: 16, color: '3567D6' });
+  sample.insertParagraph('目录示例\t第一章\t1.1');
+  sample.setParagraphTabs(6, [
+    { position: 2200, alignment: 'left', leader: 'dot' },
+    { position: 6200, alignment: 'right' },
+  ]);
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
   sample.formatRun(last.index, 0, { italic: true, fontSize: 11, color: '788597' });
   return sample;
+}
+
+function rebuildEditor(): void {
+  editor.destroy();
+  editor = new DocxEditor(host, doc, { onChange: refresh, showFormattingMarks });
 }
 
 function message(text: string, error = false): void {
@@ -127,9 +138,9 @@ function resetAgent(): void {
 
 function setDocument(next: DocxDocument, name: string): void {
   editor.flush();
-  editor.setDocument(next);
   doc = next;
   filename = name;
+  rebuildEditor();
   element('document-name').textContent = filename;
   refresh();
   loadXmlParts();
@@ -174,6 +185,52 @@ element('add-table').addEventListener('click', () => run(() => {
   editor.render();
   refresh();
   message('已在文档末尾添加 2 × 2 表格。');
+}));
+element('set-tabs').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.setParagraphTabs(index, [
+    { position: 2200, alignment: 'left', leader: 'dot' },
+    { position: 6200, alignment: 'right' },
+  ]);
+  editor.render();
+  refresh();
+  message('已设置段落制表位。');
+}));
+element('clear-tabs').addEventListener('click', () => run(() => {
+  doc.formatParagraph(selectedIndex(), { tabs: [] });
+  editor.render();
+  refresh();
+  message('已清除段落制表位。');
+}));
+element('set-border-shading').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.setParagraphBorders(index, {
+    top: { style: 'single', size: 8, space: 2, color: '3567D6' },
+    bottom: { style: 'single', size: 8, space: 2, color: '3567D6' },
+  });
+  doc.setParagraphShading(index, { pattern: 'clear', fill: 'EEF3FF' });
+  editor.render();
+  refresh();
+  message('已设置段落边框和底纹。');
+}));
+element('insert-page-break').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.insertBreak(index, 0, 'page');
+  editor.render();
+  refresh();
+  message('已插入分页符。');
+}));
+element('insert-symbol').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.insertSymbol(index, 0, 'Wingdings', 0xF0FC);
+  editor.render();
+  refresh();
+  message('已插入符号字符。');
+}));
+element<HTMLInputElement>('show-marks').addEventListener('change', (event) => run(() => {
+  showFormattingMarks = (event.target as HTMLInputElement).checked;
+  rebuildEditor();
+  refresh();
 }));
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;

@@ -181,7 +181,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 8);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -243,4 +243,137 @@ test('UTF-16 XML input is decoded and edited output declares UTF-8', async () =>
   doc.setParagraphText(0, '编码');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /encoding="UTF-8"/);
   assert.equal((await DocxDocument.load(await doc.toUint8Array())).getParagraphs()[0].text, '编码');
+});
+
+test('reads paragraph tabs including leader and alignment', () => {
+  const doc = withBody('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720" w:leader="dot"/><w:tab w:val="right" w:pos="1440"/></w:tabs></w:pPr><w:r><w:t>a</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getParagraphs()[0].tabs, [
+    { position: 720, alignment: 'left', leader: 'dot' },
+    { position: 1440, alignment: 'right', leader: undefined },
+  ]);
+});
+
+test('setParagraphTabs writes tabs in property order', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphTabs(0, [{ position: 2000, alignment: 'decimal', leader: 'dot' }]);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:tabs><w:tab w:val="decimal" w:pos="2000" w:leader="dot"\/><\/w:tabs>/);
+});
+
+test('setParagraphBorders writes supported border sides', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphBorders(0, {
+    top: { style: 'single', size: 8, space: 0, color: 'FF0000' },
+    between: { style: 'dotted', size: 4, space: 2, color: '00FF00', shadow: true },
+  });
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.borders?.top?.style, 'single');
+  assert.equal(paragraph.borders?.between?.shadow, true);
+});
+
+test('setParagraphShading reads and writes fill values', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphShading(0, { pattern: 'clear', fill: 'AABBCC', color: 'auto' });
+  assert.equal(doc.getParagraphs()[0].shading?.fill, 'AABBCC');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:shd w:val="clear" w:fill="AABBCC" w:color="auto"\/>/);
+});
+
+test('formatParagraph stores keep and suppression booleans', () => {
+  const doc = DocxDocument.create();
+  doc.formatParagraph(0, {
+    keepNext: true,
+    keepLines: true,
+    pageBreakBefore: true,
+    widowControl: false,
+    suppressLineNumbers: true,
+    suppressAutoHyphens: true,
+  });
+  const p = doc.getParagraphs()[0];
+  assert.equal(p.keepNext, true);
+  assert.equal(p.pageBreakBefore, true);
+  assert.equal(p.widowControl, false);
+});
+
+test('run border and shading are parsed from rPr', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:bdr w:val="single" w:sz="8" w:space="1" w:color="ABCDEF"/><w:shd w:val="clear" w:fill="DDDDDD"/></w:rPr><w:t>x</w:t></w:r></w:p>');
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.border?.style, 'single');
+  assert.equal(run.shading?.fill, 'DDDDDD');
+});
+
+test('insertBreak supports text/page/column types', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'a');
+  doc.insertBreak(0, 0, 'textWrapping');
+  doc.insertBreak(0, 0, 'page');
+  doc.insertBreak(0, 0, 'column');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /w:type="textWrapping"/);
+  assert.match(xml, /w:type="page"/);
+  assert.match(xml, /w:type="column"/);
+});
+
+test('insertSymbol writes w:sym and contributes to text', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'a');
+  doc.insertSymbol(0, 0, 'Wingdings', 0xF04A);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:sym w:font="Wingdings" w:char="F04A"\/>/);
+  assert.equal(doc.getParagraphs()[0].text, `a${String.fromCharCode(0xF04A)}`);
+});
+
+test('tab/noBreakHyphen/softHyphen and breaks map to paragraph text', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t><w:tab/><w:noBreakHyphen/><w:softHyphen/><w:br/><w:cr/></w:r></w:p>');
+  assert.equal(doc.getParagraphs()[0].text, 'A\t\u2011\u00ad\n\n');
+});
+
+test('getSettings exposes defaultTabStop and evenAndOddHeaders', () => {
+  const doc = DocxDocument.create();
+  doc.addPart('word/settings.xml', new TextEncoder().encode(`<w:settings xmlns:w="${WORD_NS}"><w:defaultTabStop w:val="960"/><w:evenAndOddHeaders/></w:settings>`), 'application/xml');
+  assert.deepEqual(doc.getSettings(), { defaultTabStop: 960, evenAndOddHeaders: true });
+});
+
+test('getSettings falls back when settings part is absent', () => {
+  const doc = DocxDocument.create();
+  assert.deepEqual(doc.getSettings(), { defaultTabStop: 720, evenAndOddHeaders: false });
+});
+
+test('invalid tab positions and unknown border styles do not crash parsing', () => {
+  const doc = withBody('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="-10"/><w:tab w:val="weird" w:pos="abc"/></w:tabs><w:pBdr><w:top w:val="mystery" w:sz="9999" w:color="bad"/></w:pBdr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.tabs?.length, 2);
+  assert.equal(paragraph.borders?.top?.style, 'mystery');
+});
+
+test('agent validation accepts new tab and break operations', () => {
+  const doc = DocxDocument.create();
+  const snapshot = doc.applyOperations({
+    operations: [
+      { type: 'setParagraphTabs', index: 0, tabs: [{ position: 2000, alignment: 'left' }] },
+      { type: 'insertBreak', paragraph: 0, run: 0, breakType: 'page' },
+    ],
+  });
+  assert.equal(snapshot.paragraphs[0].tabs?.[0]?.position, 2000);
+});
+
+test('agent validation accepts border/shading/symbol operations', () => {
+  const doc = DocxDocument.create();
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphBorders', index: 0, borders: { top: { style: 'single', size: 8, space: 0, color: 'FF0000' } } },
+      { type: 'setParagraphShading', index: 0, shading: { pattern: 'clear', fill: 'EEEEEE' } },
+      { type: 'insertSymbol', paragraph: 0, run: 0, font: 'Wingdings', charCode: 61514 },
+    ],
+  });
+  assert.equal(doc.getParagraphs()[0].shading?.fill, 'EEEEEE');
+});
+
+test('formatRun can write and clear run border/shading', () => {
+  const doc = DocxDocument.create();
+  doc.formatRun(0, 0, {
+    border: { style: 'single', size: 8, space: 0, color: '112233' },
+    shading: { pattern: 'clear', fill: 'EEEEEE' },
+  });
+  assert.equal(doc.getParagraphs()[0].runs[0].border?.color, '112233');
+  doc.formatRun(0, 0, { border: null, shading: null });
+  assert.equal(doc.getParagraphs()[0].runs[0].border, undefined);
 });

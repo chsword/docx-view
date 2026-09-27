@@ -1,13 +1,22 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
+  AgentRequest, BorderSide, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo, Shading, TabStop,
 } from './types.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
-import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
+import {
+  assertIndex,
+  validateBorders,
+  validateParagraphFormat,
+  validateRequest,
+  validateRows,
+  validateRunFormat,
+  validateShading,
+  validateTabs,
+} from './operations.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
 const MAX_PART = 16 * 1024 * 1024;
@@ -52,7 +61,7 @@ function textElements(element: Element): Element[] {
       const element = child as Element;
       if (element.namespaceURI === WORD_NS) {
         if (element.localName === 'p') continue;
-        if (['t', 'tab', 'br', 'cr'].includes(element.localName ?? '')) {
+        if (['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? '')) {
           result.push(element);
           continue;
         }
@@ -65,7 +74,21 @@ function textElements(element: Element): Element[] {
 }
 
 function elementText(element: Element): string {
-  return element.localName === 't' ? element.textContent ?? '' : element.localName === 'tab' ? '\t' : '\n';
+  if (element.localName === 't') return element.textContent ?? '';
+  if (element.localName === 'tab') return '\t';
+  if (element.localName === 'noBreakHyphen') return '\u2011';
+  if (element.localName === 'softHyphen') return '\u00ad';
+  if (element.localName === 'sym') {
+    const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
+    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
+    const code = Number.parseInt(value, 16);
+    return Number.isFinite(code) ? String.fromCharCode(code) : '';
+  }
+  if (element.localName === 'br') {
+    const type = element.getAttributeNS(WORD_NS, 'type') ?? wordValue(element);
+    return type === 'textWrapping' || !type ? '\n' : '\n';
+  }
+  return '\n';
 }
 
 function textOf(element: Element): string {
@@ -164,6 +187,79 @@ function property(parent: Element, name: string): Element {
   return result;
 }
 
+function readOnOff(value: Element | undefined): boolean | undefined {
+  if (!value) return undefined;
+  return !['0', 'false', 'off'].includes(wordValue(value) ?? '');
+}
+
+function readShading(element: Element | undefined): Shading | undefined {
+  if (!element) return undefined;
+  const fill = element.getAttributeNS(WORD_NS, 'fill');
+  const color = element.getAttributeNS(WORD_NS, 'color');
+  return {
+    pattern: wordValue(element) ?? 'clear',
+    fill: fill && /^(auto|[a-f\d]{6})$/i.test(fill) ? fill.toUpperCase() : 'AUTO',
+    color: color && /^(auto|[a-f\d]{6})$/i.test(color) ? color.toUpperCase() : undefined,
+  };
+}
+
+function readBorderSide(element: Element | undefined): BorderSide | undefined {
+  if (!element) return undefined;
+  const style = wordValue(element) ?? 'none';
+  const size = Number(element.getAttributeNS(WORD_NS, 'sz') ?? 0);
+  const space = Number(element.getAttributeNS(WORD_NS, 'space') ?? 0);
+  const color = element.getAttributeNS(WORD_NS, 'color') ?? 'auto';
+  const shadow = element.getAttributeNS(WORD_NS, 'shadow');
+  return {
+    style,
+    size: Number.isFinite(size) && size >= 0 ? size : 0,
+    space: Number.isFinite(space) && space >= 0 ? space : 0,
+    color: /^(auto|[a-f\d]{6})$/i.test(color) ? color.toUpperCase() : 'AUTO',
+    shadow: shadow === null ? undefined : !['0', 'false', 'off'].includes(shadow.toLowerCase()),
+  };
+}
+
+function normalizeTabStop(tab: TabStop): TabStop {
+  return {
+    position: Number.isFinite(tab.position) ? tab.position : 0,
+    alignment: tab.alignment,
+    leader: tab.leader,
+  };
+}
+
+function readTabs(props: Element | undefined): TabStop[] | undefined {
+  const tabsNode = props ? children(props, 'tabs')[0] : undefined;
+  const tabs = tabsNode ? children(tabsNode, 'tab') : [];
+  if (!tabs.length) return undefined;
+  return tabs.map((tab): TabStop => normalizeTabStop({
+    position: Number(tab.getAttributeNS(WORD_NS, 'pos') ?? 0),
+    alignment: (wordValue(tab) ?? 'left') as TabStop['alignment'],
+    leader: tab.getAttributeNS(WORD_NS, 'leader') ?? undefined,
+  }));
+}
+
+function setOnOff(parent: Element, name: string, value: boolean): void {
+  setWordValue(property(parent, name), value ? '1' : '0');
+}
+
+function removeChildren(parent: Element, name: string): void {
+  for (const child of children(parent, name)) parent.removeChild(child);
+}
+
+function writeBorderSide(element: Element, border: BorderSide): void {
+  setWordValue(element, border.style);
+  element.setAttributeNS(WORD_NS, 'w:sz', String(Math.max(0, Math.min(border.size, 2048))));
+  element.setAttributeNS(WORD_NS, 'w:space', String(Math.max(0, border.space)));
+  element.setAttributeNS(WORD_NS, 'w:color', border.color);
+  if (border.shadow !== undefined) element.setAttributeNS(WORD_NS, 'w:shadow', border.shadow ? '1' : '0');
+}
+
+function writeShading(element: Element, shading: Shading): void {
+  setWordValue(element, shading.pattern);
+  element.setAttributeNS(WORD_NS, 'w:fill', shading.fill);
+  if (shading.color !== undefined) element.setAttributeNS(WORD_NS, 'w:color', shading.color);
+}
+
 function ownRuns(paragraph: Element): Element[] {
   return descendants(paragraph, 'r').filter(run => {
     let parent = run.parentNode;
@@ -179,7 +275,7 @@ function ownRuns(paragraph: Element): Element[] {
 function readRun(run: Element, index: number): RunInfo {
   const props = children(run, 'rPr')[0];
   const get = (name: string) => props ? children(props, name)[0] : undefined;
-  const toggle = (name: string) => get(name) ? !['0', 'false', 'off'].includes(wordValue(get(name)) ?? '') : undefined;
+  const toggle = (name: string) => readOnOff(get(name));
   const size = wordValue(get('sz'));
   const underline = get('u');
   const color = wordValue(get('color'));
@@ -189,17 +285,36 @@ function readRun(run: Element, index: number): RunInfo {
     fontSize: size && Number.isFinite(Number(size)) ? Number(size) / 2 : undefined,
     fontFamily: get('rFonts')?.getAttributeNS(WORD_NS, 'ascii') ?? undefined,
     color: color && /^[a-f\d]{6}$/i.test(color) ? color : undefined,
+    border: readBorderSide(get('bdr')),
+    shading: readShading(get('shd')),
   };
 }
 
 function readParagraph(paragraph: Element, index: number): ParagraphInfo {
   const props = children(paragraph, 'pPr')[0];
   const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
+  const pBdr = props ? children(props, 'pBdr')[0] : undefined;
   return {
     index, text: textOf(paragraph), runs: ownRuns(paragraph).map(readRun),
     style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
     alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
+    tabs: readTabs(props),
+    borders: pBdr ? {
+      top: readBorderSide(children(pBdr, 'top')[0]),
+      left: readBorderSide(children(pBdr, 'left')[0]),
+      bottom: readBorderSide(children(pBdr, 'bottom')[0]),
+      right: readBorderSide(children(pBdr, 'right')[0]),
+      between: readBorderSide(children(pBdr, 'between')[0]),
+      bar: readBorderSide(children(pBdr, 'bar')[0]),
+    } : undefined,
+    shading: readShading(props ? children(props, 'shd')[0] : undefined),
+    keepNext: props ? readOnOff(children(props, 'keepNext')[0]) : undefined,
+    keepLines: props ? readOnOff(children(props, 'keepLines')[0]) : undefined,
+    pageBreakBefore: props ? readOnOff(children(props, 'pageBreakBefore')[0]) : undefined,
+    widowControl: props ? readOnOff(children(props, 'widowControl')[0]) : undefined,
+    suppressLineNumbers: props ? readOnOff(children(props, 'suppressLineNumbers')[0]) : undefined,
+    suppressAutoHyphens: props ? readOnOff(children(props, 'suppressAutoHyphens')[0]) : undefined,
   };
 }
 
@@ -388,6 +503,19 @@ export class DocxDocument {
     return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts() };
   }
 
+  getSettings(): { defaultTabStop: number; evenAndOddHeaders: boolean; [k: string]: unknown } {
+    const defaults = { defaultTabStop: 720, evenAndOddHeaders: false };
+    if (!this.parts.has('word/settings.xml')) return defaults;
+    const root = this.getPartDocument('word/settings.xml').documentElement;
+    if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') return defaults;
+    const defaultTabStop = Number(children(root, 'defaultTabStop')[0]?.getAttributeNS(WORD_NS, 'val') ?? 720);
+    return {
+      ...defaults,
+      defaultTabStop: Number.isFinite(defaultTabStop) && defaultTabStop > 0 ? defaultTabStop : 720,
+      evenAndOddHeaders: readOnOff(children(root, 'evenAndOddHeaders')[0]) ?? false,
+    };
+  }
+
   setParagraphText(index: number, text: string): void {
     assertText(text);
     const normalized = text.replace(/\r\n?/g, '\n');
@@ -445,6 +573,51 @@ export class DocxDocument {
       const props = properties(paragraphAt(document, index), 'pPr');
       if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
       if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
+      if (format.tabs !== undefined) {
+        if (format.tabs === null) {
+          removeChildren(props, 'tabs');
+        } else {
+          const tabs = property(props, 'tabs');
+          while (tabs.firstChild) tabs.removeChild(tabs.firstChild);
+          format.tabs.forEach((tab) => {
+            const element = wordElement(document, 'tab');
+            setWordValue(element, tab.alignment);
+            element.setAttributeNS(WORD_NS, 'w:pos', String(Math.floor(tab.position)));
+            if (tab.leader) element.setAttributeNS(WORD_NS, 'w:leader', tab.leader);
+            tabs.appendChild(element);
+          });
+        }
+      }
+      if (format.borders !== undefined) {
+        if (format.borders === null) {
+          removeChildren(props, 'pBdr');
+        } else {
+          const pBdr = property(props, 'pBdr');
+          for (const key of ['top', 'left', 'bottom', 'right', 'between', 'bar'] as const) {
+            removeChildren(pBdr, key);
+            const border = format.borders[key];
+            if (border) {
+              const side = wordElement(document, key);
+              writeBorderSide(side, border);
+              pBdr.appendChild(side);
+            }
+          }
+        }
+      }
+      if (format.shading !== undefined) {
+        if (format.shading === null) removeChildren(props, 'shd');
+        else writeShading(property(props, 'shd'), format.shading);
+      }
+      for (const [key, value] of [
+        ['keepNext', format.keepNext],
+        ['keepLines', format.keepLines],
+        ['pageBreakBefore', format.pageBreakBefore],
+        ['widowControl', format.widowControl],
+        ['suppressLineNumbers', format.suppressLineNumbers],
+        ['suppressAutoHyphens', format.suppressAutoHyphens],
+      ] as const) {
+        if (value !== undefined) setOnOff(props, key, value);
+      }
     });
   }
 
@@ -469,6 +642,58 @@ export class DocxDocument {
         const fonts = property(props, 'rFonts');
         for (const name of ['ascii', 'hAnsi', 'eastAsia', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
       }
+      if (format.border !== undefined) {
+        if (format.border === null) removeChildren(props, 'bdr');
+        else writeBorderSide(property(props, 'bdr'), format.border);
+      }
+      if (format.shading !== undefined) {
+        if (format.shading === null) removeChildren(props, 'shd');
+        else writeShading(property(props, 'shd'), format.shading);
+      }
+    });
+  }
+
+  setParagraphTabs(index: number, tabs: TabStop[]): void {
+    validateTabs(tabs);
+    this.formatParagraph(index, { tabs });
+  }
+
+  setParagraphBorders(index: number, borders: ParagraphFormat['borders']): void {
+    if (!borders) throw new Error('borders is required.');
+    validateBorders(borders);
+    this.formatParagraph(index, { borders });
+  }
+
+  setParagraphShading(index: number, shading: Shading): void {
+    validateShading(shading);
+    this.formatParagraph(index, { shading });
+  }
+
+  insertBreak(paragraph: number, run: number, type: 'textWrapping' | 'page' | 'column'): void {
+    assertIndex(run);
+    if (!['textWrapping', 'page', 'column'].includes(type)) throw new Error('Invalid break type.');
+    this.updatePartXml(this.mainPath, document => {
+      const target = ownRuns(paragraphAt(document, paragraph))[run];
+      if (!target) throw new Error(`Run ${run} does not exist.`);
+      const br = wordElement(document, 'br');
+      br.setAttributeNS(WORD_NS, 'w:type', type);
+      target.appendChild(br);
+    });
+  }
+
+  insertSymbol(paragraph: number, run: number, font: string, charCode: number): void {
+    assertIndex(run);
+    assertText(font, 'font');
+    if (!Number.isSafeInteger(charCode) || charCode < 0 || charCode > 0xffff) {
+      throw new Error('charCode must be an integer in [0, 65535].');
+    }
+    this.updatePartXml(this.mainPath, document => {
+      const target = ownRuns(paragraphAt(document, paragraph))[run];
+      if (!target) throw new Error(`Run ${run} does not exist.`);
+      const symbol = wordElement(document, 'sym');
+      symbol.setAttributeNS(WORD_NS, 'w:font', font);
+      symbol.setAttributeNS(WORD_NS, 'w:char', charCode.toString(16).toUpperCase().padStart(4, '0'));
+      target.appendChild(symbol);
     });
   }
 
@@ -528,6 +753,11 @@ export class DocxDocument {
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
         case 'formatParagraph': draft.formatParagraph(operation.index, operation.format); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
+        case 'setParagraphTabs': draft.setParagraphTabs(operation.index, operation.tabs); break;
+        case 'setParagraphBorders': draft.setParagraphBorders(operation.index, operation.borders); break;
+        case 'setParagraphShading': draft.setParagraphShading(operation.index, operation.shading); break;
+        case 'insertBreak': draft.insertBreak(operation.paragraph, operation.run, operation.breakType); break;
+        case 'insertSymbol': draft.insertSymbol(operation.paragraph, operation.run, operation.font, operation.charCode); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;
         case 'setPartXml': draft.setPartXml(operation.path, operation.xml); break;

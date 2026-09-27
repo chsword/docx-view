@@ -64,6 +64,8 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-paragraph { position: relative; margin: 0 0 16px; border-radius: 2px; outline: 0; tab-size: 4; }
 .docx-paragraph:focus { box-shadow: -3px 0 #80a3ed; background: #f9fbff; }
 .docx-paragraph:empty::before { content: "点击输入文字…"; color: #b0bac8; pointer-events: none; }
+.docx-tab { white-space: nowrap; }
+.docx-mark { color: #9ba7b8; font-size: .92em; }
 .docx-paragraph[data-style="Title"] { font-size: 26pt; }
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }

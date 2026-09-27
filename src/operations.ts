@@ -1,4 +1,4 @@
-import type { AgentRequest, ParagraphFormat, RunFormat } from './types.js';
+import type { AgentRequest, BorderSide, ParagraphFormat, RunFormat, Shading, TabStop } from './types.js';
 import { assertText } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
@@ -21,7 +21,7 @@ export function assertIndex(value: unknown): asserts value is number {
 
 export function validateRunFormat(value: unknown): asserts value is RunFormat {
   object(value);
-  keys(value, ['bold', 'italic', 'underline', 'fontSize', 'fontFamily', 'color']);
+  keys(value, ['bold', 'italic', 'underline', 'fontSize', 'fontFamily', 'color', 'border', 'shading']);
   for (const key of ['bold', 'italic', 'underline']) {
     if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
@@ -34,15 +34,70 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   if ('color' in value && (typeof value.color !== 'string' || !/^[a-f\d]{6}$/i.test(value.color))) {
     throw new Error('color must be six hexadecimal digits without #.');
   }
+  if ('border' in value && value.border !== null) validateBorderSide(value.border);
+  if ('shading' in value && value.shading !== null) validateShading(value.shading);
 }
 
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {
   object(value);
-  keys(value, ['alignment', 'style']);
+  keys(value, ['alignment', 'style', 'tabs', 'borders', 'shading',
+    'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens']);
   if ('alignment' in value && !['left', 'center', 'right', 'both'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
   }
   if ('style' in value) assertText(value.style, 'style');
+  if ('tabs' in value && value.tabs !== null) validateTabs(value.tabs);
+  if ('borders' in value && value.borders !== null) validateBorders(value.borders);
+  if ('shading' in value && value.shading !== null) validateShading(value.shading);
+  for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens']) {
+    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+}
+
+export function validateTabStop(value: unknown): asserts value is TabStop {
+  object(value);
+  keys(value, ['position', 'alignment', 'leader']);
+  if (typeof value.position !== 'number' || !Number.isFinite(value.position)) throw new Error('tab.position must be a finite number.');
+  if (!['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'].includes(String(value.alignment))) {
+    throw new Error('tab.alignment is invalid.');
+  }
+  if ('leader' in value && (typeof value.leader !== 'string' || !['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'].includes(value.leader))) {
+    throw new Error('tab.leader is invalid.');
+  }
+}
+
+export function validateTabs(value: unknown): asserts value is TabStop[] {
+  if (!Array.isArray(value)) throw new Error('tabs must be an array.');
+  if (value.length > 200) throw new Error('tabs must contain at most 200 items.');
+  value.forEach(validateTabStop);
+}
+
+export function validateBorderSide(value: unknown): asserts value is BorderSide {
+  object(value);
+  keys(value, ['style', 'size', 'space', 'color', 'shadow']);
+  assertText(value.style, 'border.style');
+  if (typeof value.size !== 'number' || !Number.isFinite(value.size) || value.size < 0) throw new Error('border.size must be a non-negative number.');
+  if (typeof value.space !== 'number' || !Number.isFinite(value.space) || value.space < 0) throw new Error('border.space must be a non-negative number.');
+  if (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color)) throw new Error('border.color must be auto or six hexadecimal digits.');
+  if ('shadow' in value && typeof value.shadow !== 'boolean') throw new Error('border.shadow must be boolean.');
+}
+
+export function validateBorders(value: unknown): asserts value is ParagraphFormat['borders'] {
+  object(value);
+  keys(value, ['top', 'left', 'bottom', 'right', 'between', 'bar']);
+  for (const key of ['top', 'left', 'bottom', 'right', 'between', 'bar'] as const) {
+    if (key in value && value[key]) validateBorderSide(value[key]);
+  }
+}
+
+export function validateShading(value: unknown): asserts value is Shading {
+  object(value);
+  keys(value, ['pattern', 'fill', 'color']);
+  assertText(value.pattern, 'shading.pattern');
+  if (typeof value.fill !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.fill)) throw new Error('shading.fill must be auto or six hexadecimal digits.');
+  if ('color' in value && (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color))) {
+    throw new Error('shading.color must be auto or six hexadecimal digits.');
+  }
 }
 
 export function validateRows(rows: unknown): asserts rows is string[][] {
@@ -81,6 +136,24 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'search', 'replacement']); assertText(op.search); assertText(op.replacement);
         if (!op.search) throw new Error('search must not be empty.');
         break;
+      case 'setParagraphTabs':
+        keys(op, ['type', 'index', 'tabs']); assertIndex(op.index); validateTabs(op.tabs); break;
+      case 'setParagraphBorders':
+        keys(op, ['type', 'index', 'borders']); assertIndex(op.index); validateBorders(op.borders); break;
+      case 'setParagraphShading':
+        keys(op, ['type', 'index', 'shading']); assertIndex(op.index); validateShading(op.shading); break;
+      case 'insertBreak':
+        keys(op, ['type', 'paragraph', 'run', 'breakType']);
+        assertIndex(op.paragraph); assertIndex(op.run);
+        if (!['textWrapping', 'page', 'column'].includes(String(op.breakType))) throw new Error('Invalid break type.');
+        break;
+      case 'insertSymbol':
+        keys(op, ['type', 'paragraph', 'run', 'font', 'charCode']);
+        assertIndex(op.paragraph); assertIndex(op.run); assertText(op.font, 'font');
+        if (typeof op.charCode !== 'number' || !Number.isSafeInteger(op.charCode) || op.charCode < 0 || op.charCode > 0xffff) {
+          throw new Error('charCode must be an integer in [0, 65535].');
+        }
+        break;
       case 'insertTable':
         keys(op, ['type', 'rows']); validateRows(op.rows); break;
       case 'setPartXml':
@@ -114,12 +187,59 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('deleteParagraph', { index }),
           operation('formatParagraph', { index, format: shape({
             alignment: { enum: ['left', 'center', 'right', 'both'] }, style: text,
+            tabs: {
+              type: 'array', maxItems: 200, items: shape({
+                position: { type: 'number' },
+                alignment: { enum: ['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'] },
+                leader: { enum: ['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'] },
+              }, ['position', 'alignment']),
+            },
+            borders: shape({
+              top: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              left: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              bottom: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              right: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              between: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+              bar: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            }, []),
+            shading: shape({
+              pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+            }, ['pattern', 'fill']),
+            keepNext: { type: 'boolean' }, keepLines: { type: 'boolean' }, pageBreakBefore: { type: 'boolean' },
+            widowControl: { type: 'boolean' }, suppressLineNumbers: { type: 'boolean' }, suppressAutoHyphens: { type: 'boolean' },
           }, []) }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
             bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
             fontSize: { type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 },
             fontFamily: text, color: { type: 'string', pattern: '^[a-fA-F0-9]{6}$' },
+            border: shape({
+              style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 },
+              color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' },
+            }),
+            shading: shape({
+              pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+            }, ['pattern', 'fill']),
           }, []) }),
+          operation('setParagraphTabs', { index, tabs: {
+            type: 'array', maxItems: 200, items: shape({
+              position: { type: 'number' },
+              alignment: { enum: ['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'] },
+              leader: { enum: ['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'] },
+            }, ['position', 'alignment']),
+          } }),
+          operation('setParagraphBorders', { index, borders: shape({
+            top: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            left: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            bottom: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            right: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            between: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+            bar: shape({ style: text, size: { type: 'number', minimum: 0 }, space: { type: 'number', minimum: 0 }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, shadow: { type: 'boolean' } }, []),
+          }, []) }),
+          operation('setParagraphShading', { index, shading: shape({
+            pattern: text, fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' }, color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+          }, ['pattern', 'fill']) }),
+          operation('insertBreak', { paragraph: index, run: index, breakType: { enum: ['textWrapping', 'page', 'column'] } }),
+          operation('insertSymbol', { paragraph: index, run: index, font: text, charCode: { type: 'integer', minimum: 0, maximum: 65535 } }),
           operation('replaceText', { search: { ...text, minLength: 1 }, replacement: text }),
           operation('insertTable', { rows: {
             type: 'array', minItems: 1, maxItems: 1000,

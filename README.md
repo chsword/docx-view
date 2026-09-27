@@ -65,8 +65,12 @@ console.log(reopened.getSnapshot());
 | `setParagraphText(index, text)` | 修改段落文字，支持制表符和换行 |
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
 | `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
-| `formatParagraph(index, format)` | 对齐方式和样式 ID；不会自动创建样式定义 |
-| `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
+| `formatParagraph(index, format)` | 对齐、样式、制表位、段落边框/底纹、keep/break 相关布尔属性 |
+| `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、颜色、文字边框/底纹 |
+| `setParagraphTabs / setParagraphBorders / setParagraphShading` | 便捷设置段落制表位、边框和底纹 |
+| `insertBreak(paragraph, run, type)` | 在指定 run 插入换行/分页/分栏符 |
+| `insertSymbol(paragraph, run, font, charCode)` | 插入 `w:sym` 符号字符 |
+| `getSettings()` | 读取 `word/settings.xml` 中的 `defaultTabStop`、`evenAndOddHeaders` |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
@@ -159,7 +163,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`setParagraphTabs`、`setParagraphBorders`、`setParagraphShading`、`insertBreak`、`insertSymbol`、`replaceText`、`insertTable`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。
@@ -169,7 +173,7 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、显式 run 格式、段落对齐和基础表格；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
+当前可视化视图支持正文段落、显式 run 格式、段落对齐、基础表格、制表位、边框/底纹与可选编辑标记显示；**不承诺与 Word 像素级一致或精确分页**。`keepNext`/`keepLines`/`pageBreakBefore` 等分页控制会解析和保存，但目前不驱动真实分页引擎。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
