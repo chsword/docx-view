@@ -220,10 +220,12 @@ export class DocxEditor {
     span.setAttribute('aria-hidden', 'true');
     span.textContent = '\t';
     const stop = this.nextTabStop(paragraph.tabs ?? [], currentPx);
-    const defaultTab = this.document.getSettings().defaultTabStop * 96 / 1440;
+    const defaultTabStop = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+    const defaultTab = defaultTabStop * 96 / 1440;
     const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
     const nextWidth = this.measure(following, sample);
-    const decimalLeft = following.includes('.') ? this.measure(following.split('.')[0]!, sample) : nextWidth;
+    const decimalMatch = /[.,，．]/.exec(following);
+    const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), sample) : nextWidth;
     const alignment = stop?.alignment ?? 'left';
     const width = Math.max(8, alignment === 'center' ? target - currentPx - nextWidth / 2
       : alignment === 'right' ? target - currentPx - nextWidth
