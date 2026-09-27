@@ -62,3 +62,24 @@ export function assertText(text: unknown, name = 'text'): asserts text is string
     throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
   }
 }
+
+export function sanitizeText(text: string): string {
+  const filtered = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/gu, '');
+  let result = '';
+  for (let index = 0; index < filtered.length; index++) {
+    const code = filtered.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = filtered.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += filtered.slice(index, index + 2);
+        index++;
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      continue;
+    }
+    result += filtered.charAt(index);
+  }
+  return result;
+}
