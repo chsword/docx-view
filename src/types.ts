@@ -15,6 +15,7 @@ export interface ParagraphFormat {
 export interface RunInfo extends RunFormat {
   index: number;
   text: string;
+  noteReference?: { kind: 'footnote' | 'endnote'; id: number; number: number; marker: string };
 }
 
 export interface ParagraphInfo extends ParagraphFormat {
@@ -31,7 +32,31 @@ export interface DocumentSnapshot {
   revision: number;
   paragraphs: ParagraphInfo[];
   blocks: DocumentBlock[];
+  footnotes: NoteInfo[];
+  endnotes: NoteInfo[];
   parts: string[];
+}
+
+export interface NoteSettingsValue {
+  pos?: 'pageBottom' | 'beneathText' | 'sectEnd' | 'docEnd';
+  numFmt?: string;
+  numStart?: number;
+  numRestart?: 'continuous' | 'eachSect';
+}
+
+export interface NoteSettings {
+  footnote: NoteSettingsValue;
+  endnote: NoteSettingsValue;
+}
+
+export interface NoteInfo {
+  id: number;
+  kind: 'footnote' | 'endnote';
+  number: number;
+  marker: string;
+  customMark?: string;
+  blocks: DocumentBlock[];
+  reference: { paragraph: number; run: number };
 }
 
 export type AgentOperation =
@@ -42,7 +67,12 @@ export type AgentOperation =
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
   | { type: 'replaceText'; search: string; replacement: string }
   | { type: 'insertTable'; rows: string[][] }
-  | { type: 'setPartXml'; path: string; xml: string };
+  | { type: 'setPartXml'; path: string; xml: string }
+  | { type: 'insertFootnote'; paragraph: number; run: number; text: string; customMark?: string }
+  | { type: 'insertEndnote'; paragraph: number; run: number; text: string; customMark?: string }
+  | { type: 'setNoteText'; kind: 'footnote' | 'endnote'; id: number; text: string }
+  | { type: 'deleteNote'; kind: 'footnote' | 'endnote'; id: number }
+  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number };
 
 export interface AgentRequest {
   expectedRevision?: number;

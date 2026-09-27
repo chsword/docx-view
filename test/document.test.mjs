@@ -181,7 +181,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 8);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -243,4 +243,138 @@ test('UTF-16 XML input is decoded and edited output declares UTF-8', async () =>
   doc.setParagraphText(0, '编码');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /encoding="UTF-8"/);
   assert.equal((await DocxDocument.load(await doc.toUint8Array())).getParagraphs()[0].text, '编码');
+});
+
+test('insertFootnote creates note part, reference run and visible marker data', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, '正文');
+  const note = doc.insertFootnote(0, 1, '脚注内容');
+  assert.equal(note.kind, 'footnote');
+  assert.equal(note.number, 1);
+  assert.equal(doc.getParagraphs()[0].text, '正文');
+  assert.equal(doc.getParagraphs()[0].runs.at(-1).noteReference.marker, '1');
+  assert.match(doc.getPartXml('word/footnotes.xml'), /脚注内容/);
+  assert.match(doc.getPartXml('word/_rels\/document.xml.rels'), /footnotes/);
+});
+
+test('insertEndnote supports custom marker and keeps custom mark text', () => {
+  const doc = DocxDocument.create();
+  const note = doc.insertEndnote(0, 1, '尾注内容', { customMark: '*' });
+  assert.equal(note.marker, '*');
+  assert.match(doc.getPartXml('word/endnotes.xml'), /\*/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /customMarkFollows/);
+});
+
+test('footnote numbering follows reference order rather than id order', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body>
+    <w:p><w:r><w:t>A</w:t></w:r><w:r><w:footnoteReference w:id="9"/></w:r></w:p>
+    <w:p><w:r><w:t>B</w:t></w:r><w:r><w:footnoteReference w:id="3"/></w:r></w:p>
+    <w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/footnotes.xml', new TextEncoder().encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="3"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>三</w:t></w:r></w:p></w:footnote>
+    <w:footnote w:id="9"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>九</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.addPart('word/settings.xml', new TextEncoder().encode(`<w:settings xmlns:w="${WORD_NS}"><w:footnotePr><w:numFmt w:val="lowerRoman"/></w:footnotePr></w:settings>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml');
+  const notes = doc.getFootnotes();
+  assert.deepEqual(notes.map(item => item.id), [9, 3]);
+  assert.deepEqual(notes.map(item => item.marker), ['i', 'ii']);
+});
+
+test('footnote references inside table cells are recognized', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.addPart('word/footnotes.xml', new TextEncoder().encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>cell</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  const note = doc.getFootnotes()[0];
+  assert.equal(note.reference.paragraph, 0);
+  assert.equal(note.blocks[0].paragraph.text.trim(), 'cell');
+});
+
+test('separator and continuationSeparator are hidden from getFootnotes results', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'visible');
+  const xml = doc.getPartXml('word/footnotes.xml');
+  assert.match(xml, /w:type="separator"/);
+  assert.match(xml, /w:type="continuationSeparator"/);
+  assert.equal(doc.getFootnotes().length, 1);
+});
+
+test('deleteNote removes both document reference runs and note entries', () => {
+  const doc = DocxDocument.create();
+  const note = doc.insertFootnote(0, 1, 'to delete');
+  doc.deleteNote('footnote', note.id);
+  assert.equal(doc.getFootnotes().length, 0);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /footnoteReference/);
+  assert.doesNotMatch(doc.getPartXml('word/footnotes.xml'), /to delete/);
+});
+
+test('setNoteText rewrites note body and keeps reference marker run', () => {
+  const doc = DocxDocument.create();
+  const note = doc.insertFootnote(0, 1, 'old');
+  doc.setNoteText('footnote', note.id, 'new text');
+  assert.match(doc.getPartXml('word/footnotes.xml'), /new text/);
+  assert.match(doc.getPartXml('word/footnotes.xml'), /footnoteRef/);
+});
+
+test('convertNote moves a footnote to endnotes and rewrites references', () => {
+  const doc = DocxDocument.create();
+  const note = doc.insertFootnote(0, 1, 'convert me');
+  doc.insertEndnote(0, 1, 'existing');
+  doc.convertNote('footnote', note.id);
+  assert.equal(doc.getFootnotes().length, 0);
+  assert.equal(doc.getEndnotes().length, 2);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /footnoteReference/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /endnoteReference/);
+  assert.match(doc.getPartXml('word/endnotes.xml'), /endnoteRef/);
+  assert.doesNotMatch(doc.getPartXml('word/endnotes.xml'), /footnoteRef/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:id="2"/);
+});
+
+test('dangling note reference does not crash and yields empty blocks', () => {
+  const doc = withBody('<w:p><w:r><w:footnoteReference w:id="99"/></w:r></w:p>');
+  assert.doesNotThrow(() => doc.getFootnotes());
+  const note = doc.getFootnotes()[0];
+  assert.equal(note.id, 99);
+  assert.deepEqual(note.blocks, []);
+});
+
+test('insertFootnote creates missing footnotes.xml automatically', () => {
+  const doc = DocxDocument.create();
+  assert.equal(doc.listParts().includes('word/footnotes.xml'), false);
+  doc.insertFootnote(0, 1, 'created');
+  assert.equal(doc.listParts().includes('word/footnotes.xml'), true);
+});
+
+test('note settings read and write through settings.xml', () => {
+  const doc = DocxDocument.create();
+  doc.setNoteSettings({
+    footnote: { numFmt: 'lowerRoman', numStart: 3, numRestart: 'eachSect' },
+    endnote: { numFmt: 'upperRoman', numStart: 5, numRestart: 'continuous' },
+  });
+  const settings = doc.getNoteSettings();
+  assert.equal(settings.footnote.numFmt, 'lowerRoman');
+  assert.equal(settings.footnote.numStart, 3);
+  assert.equal(settings.footnote.numRestart, 'eachSect');
+  assert.equal(settings.endnote.numFmt, 'upperRoman');
+  assert.equal(settings.endnote.numStart, 5);
+  assert.equal(settings.endnote.numRestart, 'continuous');
+  assert.match(doc.getPartXml('word/settings.xml'), /footnotePr/);
+  assert.match(doc.getPartXml('word/settings.xml'), /endnotePr/);
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /relationships\/settings/);
+});
+
+test('agent note operations validate and run in transactions', () => {
+  const doc = DocxDocument.create();
+  const result = doc.applyOperations({ operations: [
+    { type: 'insertFootnote', paragraph: 0, run: 1, text: 'x' },
+    { type: 'setNoteText', kind: 'footnote', id: 1, text: 'y' },
+    { type: 'convertNote', kind: 'footnote', id: 1 },
+  ] });
+  assert.equal(result.endnotes[0].marker, '1');
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'deleteNote', kind: 'bad', id: 1 }] }), /Invalid note kind/);
 });

@@ -132,6 +132,15 @@ export class DocxEditor {
       if (run.fontFamily) span.style.fontFamily = run.fontFamily;
       if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
       element.append(span);
+      if (run.noteReference) {
+        const marker = this.root.ownerDocument.createElement('sup');
+        marker.className = 'docx-note-ref';
+        marker.contentEditable = 'false';
+        marker.textContent = run.noteReference.marker;
+        marker.title = `${run.noteReference.kind} ${run.noteReference.marker}`;
+        marker.setAttribute('aria-label', `${run.noteReference.kind} reference ${run.noteReference.marker}`);
+        element.append(marker);
+      }
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
     this.paragraphs.set(paragraph.index, { element, text: this.readText(element) });
