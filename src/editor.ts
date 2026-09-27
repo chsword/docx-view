@@ -135,8 +135,9 @@ export class DocxEditor {
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
         marker.className = 'docx-note-ref';
+        marker.dataset.noteMarker = run.noteReference.marker;
         marker.contentEditable = 'false';
-        marker.textContent = run.noteReference.marker;
+        marker.textContent = '';
         marker.title = `${run.noteReference.kind} ${run.noteReference.marker}`;
         marker.setAttribute('aria-label', `${run.noteReference.kind} reference ${run.noteReference.marker}`);
         element.append(marker);

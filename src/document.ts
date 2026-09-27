@@ -9,7 +9,7 @@ import {
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
 import {
-  defaultNotePartXml, formatNoteMarker, noteContentType, notePartPath, noteRefName, noteReferenceName,
+  defaultNotePartXml, formatNoteMarker, noteContentType, notePartPath as conventionalNotePartPath, noteRefName, noteReferenceName,
   noteReferenceStyle, noteRelationshipType, parseCustomMark, parseDocumentNoteSettings, parseNoteEntries,
   parseSectionNoteSettings, setNoteSettingsOn,
 } from './notes.js';
@@ -243,6 +243,13 @@ interface NoteReferenceRecord {
   section: number;
 }
 
+interface NoteState {
+  byKind: Record<'footnote' | 'endnote', Map<number, { number: number; marker: string }>>;
+  refs: NoteReferenceRecord[];
+  entries: Record<'footnote' | 'endnote', Map<number, ReturnType<typeof parseNoteEntries>[number]>>;
+  notePaths: Record<'footnote' | 'endnote', string | null>;
+}
+
 function bodyChildren(parent: Element): Element[] {
   return children(parent).flatMap(child => ['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '') ? bodyChildren(child) : [child]);
 }
@@ -273,6 +280,23 @@ function relativePath(base: string, target: string): string {
   return `${'../'.repeat(from.length)}${to.join('/')}`;
 }
 
+function resolvePartPath(base: string, target: string): string {
+  const resolved = decodeURIComponent(target).replace(/^\//, '');
+  const stack = base.split('/').slice(0, -1);
+  for (const segment of resolved.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!stack.length) throw new Error(`Invalid relationship target: ${target}`);
+      stack.pop();
+      continue;
+    }
+    stack.push(segment);
+  }
+  const result = stack.join('/');
+  validatePath(result);
+  return result;
+}
+
 function relsPath(partPath: string): string {
   const segments = partPath.split('/');
   const file = segments.pop()!;
@@ -299,11 +323,15 @@ function sectionSettings(body: Element, base: NoteSettings): Map<number, NoteSet
     const sectPr = children(children(item, 'pPr')[0] ?? item, 'sectPr')[0];
     if (!sectPr) continue;
     current = parseSectionNoteSettings(sectPr, current);
+    result.set(section, current);
     section++;
     result.set(section, current);
   }
   const bodySectPr = children(body, 'sectPr')[0];
-  if (bodySectPr) result.set(section, parseSectionNoteSettings(bodySectPr, current));
+  if (bodySectPr) {
+    current = parseSectionNoteSettings(bodySectPr, current);
+    result.set(section, current);
+  }
   return result;
 }
 
@@ -482,8 +510,45 @@ export class DocxDocument {
     this.commitParts(next);
   }
 
+  private withDraft<T>(action: (draft: DocxDocument) => T): T {
+    const draft = new DocxDocument(new Map(this.parts));
+    const result = action(draft);
+    this.parts = draft.parts;
+    this.mainPath = draft.mainPath;
+    this.currentRevision++;
+    return result;
+  }
+
+  private mainRelationshipsPath(): string {
+    return relsPath(this.mainPath);
+  }
+
+  private mainRelationshipsDocument(): Document | null {
+    const path = this.mainRelationshipsPath();
+    return this.parts.has(path) ? this.getPartDocument(path) : null;
+  }
+
+  private relationshipTargets(type: string): string[] {
+    const rels = this.mainRelationshipsDocument()?.documentElement;
+    if (!rels || rels.namespaceURI !== REL_NS || rels.localName !== 'Relationships') return [];
+    return children(rels, 'Relationship', REL_NS)
+      .filter(item => item.getAttribute('Type') === type && item.getAttribute('TargetMode') !== 'External')
+      .map(item => resolvePartPath(this.mainPath, item.getAttribute('Target') ?? ''))
+      .filter((path, index, list) => list.indexOf(path) === index);
+  }
+
+  private firstRelationshipTarget(type: string): string | null {
+    return this.relationshipTargets(type)[0] ?? null;
+  }
+
+  private defaultSiblingPath(filename: string): string {
+    const segments = this.mainPath.split('/');
+    segments.pop();
+    return `${segments.length ? `${segments.join('/')}/` : ''}${filename}`;
+  }
+
   private ensureMainRelationship(name: string, type: string, target: string): void {
-    const path = relsPath(this.mainPath);
+    const path = this.mainRelationshipsPath();
     if (!this.parts.has(path)) {
       this.addPart(path, encodeXml(`<Relationships xmlns="${REL_NS}"/>`), 'application/vnd.openxmlformats-package.relationships+xml');
     }
@@ -539,23 +604,37 @@ export class DocxDocument {
     return path;
   }
 
-  private noteDocument(kind: 'footnote' | 'endnote'): Document | null {
-    const path = notePartPath(kind);
-    return this.parts.has(path) ? this.getPartDocument(path) : null;
+  private notePartPath(kind: 'footnote' | 'endnote'): string | null {
+    const fromRelationship = this.firstRelationshipTarget(noteRelationshipType(kind));
+    if (fromRelationship) return fromRelationship;
+    const conventional = conventionalNotePartPath(kind);
+    return this.parts.has(conventional) ? conventional : null;
   }
 
-  private collectNoteState(): {
-    byKind: Record<'footnote' | 'endnote', Map<number, { number: number; marker: string }>>;
-    refs: NoteReferenceRecord[];
-    entries: Record<'footnote' | 'endnote', Map<number, ReturnType<typeof parseNoteEntries>[number]>>;
-  } {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
+  private noteDocument(kind: 'footnote' | 'endnote'): Document | null {
+    const path = this.notePartPath(kind);
+    return path ? this.getPartDocument(path) : null;
+  }
+
+  private settingsPartPath(): string | null {
+    const fromRelationship = this.firstRelationshipTarget('http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings');
+    if (fromRelationship) return fromRelationship;
+    const conventional = this.defaultSiblingPath('settings.xml');
+    return this.parts.has(conventional) ? conventional : null;
+  }
+
+  private collectNoteState(body: Element): NoteState {
     const refs = referenceRecords(body);
-    const entries = {
-      footnote: new Map(parseNoteEntries(this.noteDocument('footnote'), 'footnote').map(entry => [entry.id, entry])),
-      endnote: new Map(parseNoteEntries(this.noteDocument('endnote'), 'endnote').map(entry => [entry.id, entry])),
+    const notePaths = {
+      footnote: this.notePartPath('footnote'),
+      endnote: this.notePartPath('endnote'),
     };
-    const settingsPart = this.parts.has('word/settings.xml') ? this.getPartDocument('word/settings.xml') : null;
+    const entries = {
+      footnote: new Map(parseNoteEntries(notePaths.footnote && this.parts.has(notePaths.footnote) ? this.getPartDocument(notePaths.footnote) : null, 'footnote').map(entry => [entry.id, entry])),
+      endnote: new Map(parseNoteEntries(notePaths.endnote && this.parts.has(notePaths.endnote) ? this.getPartDocument(notePaths.endnote) : null, 'endnote').map(entry => [entry.id, entry])),
+    };
+    const settingsPath = this.settingsPartPath();
+    const settingsPart = settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null;
     const baseSettings = parseDocumentNoteSettings(settingsPart);
     const perSection = sectionSettings(body, baseSettings);
     const byKind = {
@@ -577,19 +656,21 @@ export class DocxDocument {
         byKind[kind].set(reference.id, { number, marker: customMark ?? formatNoteMarker(number, settings.numFmt ?? 'decimal') });
       }
     }
-    return { byKind, refs, entries };
+    return { byKind, refs, entries, notePaths };
+  }
+
+  private getParagraphsWith(body: Element, state: NoteState): ParagraphInfo[] {
+    const numberOf = (kind: 'footnote' | 'endnote', id: number) => state.byKind[kind].get(id) ?? null;
+    return descendants(body, 'p').map((paragraph, index) => readParagraph(paragraph, index, numberOf));
   }
 
   getParagraphs(): ParagraphInfo[] {
-    const state = this.collectNoteState();
-    const numberOf = (kind: 'footnote' | 'endnote', id: number) => state.byKind[kind].get(id) ?? null;
-    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p').map((paragraph, index) => readParagraph(paragraph, index, numberOf));
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    return this.getParagraphsWith(body, this.collectNoteState(body));
   }
 
-  getBlocks(): DocumentBlock[] {
-    const state = this.collectNoteState();
+  private getBlocksWith(body: Element, state: NoteState): DocumentBlock[] {
     const numberOf = (kind: 'footnote' | 'endnote', id: number) => state.byKind[kind].get(id) ?? null;
-    const body = bodyOf(this.getPartDocument(this.mainPath));
     const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!, numberOf) }];
@@ -605,21 +686,24 @@ export class DocxDocument {
     return walk(body);
   }
 
+  getBlocks(): DocumentBlock[] {
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    return this.getBlocksWith(body, this.collectNoteState(body));
+  }
+
   getFootnotes(): NoteInfo[] {
-    return this.getNotes('footnote');
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    return this.getNotesWith('footnote', this.collectNoteState(body));
   }
 
   getEndnotes(): NoteInfo[] {
-    return this.getNotes('endnote');
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    return this.getNotesWith('endnote', this.collectNoteState(body));
   }
 
-  private getNotes(kind: 'footnote' | 'endnote'): NoteInfo[] {
-    const state = this.collectNoteState();
+  private getNotesWith(kind: 'footnote' | 'endnote', state: NoteState): NoteInfo[] {
     const numberOf = (noteKind: 'footnote' | 'endnote', id: number) => state.byKind[noteKind].get(id) ?? null;
     const entries = state.entries[kind];
-    const indexMap = new Map<Element, number>();
-    let nextParagraph = 0;
-    for (const entry of entries.values()) for (const paragraph of noteParagraphOrder(entry.element)) indexMap.set(paragraph, nextParagraph++);
     const results: NoteInfo[] = [];
     const seen = new Set<number>();
     for (const reference of state.refs.filter(item => item.kind === kind)) {
@@ -634,7 +718,7 @@ export class DocxDocument {
         number: numbering.number,
         marker: numbering.marker,
         customMark: reference.customMarkFollows && entry ? parseCustomMark(entry.element) : undefined,
-        blocks: entry ? noteBodyBlocks(entry.element, indexMap, numberOf) : [],
+        blocks: entry ? noteBodyBlocks(entry.element, new Map(noteParagraphOrder(entry.element).map((paragraph, index) => [paragraph, index])), numberOf) : [],
         reference: { paragraph: reference.paragraph, run: reference.run },
       });
     }
@@ -642,32 +726,44 @@ export class DocxDocument {
   }
 
   getNoteSettings(): NoteSettings {
-    return parseDocumentNoteSettings(this.parts.has('word/settings.xml') ? this.getPartDocument('word/settings.xml') : null);
+    const settingsPath = this.settingsPartPath();
+    return parseDocumentNoteSettings(settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null);
   }
 
   setNoteSettings(settings: Partial<NoteSettings>): void {
     const safe = settings ?? {};
     if (!safe.footnote && !safe.endnote) return;
-    if (!this.parts.has('word/settings.xml')) {
-      this.addPart('word/settings.xml', encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), `${DOCX_TYPE}.settings+xml`);
-      this.ensureMainRelationship('settings', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings', relativePath(this.mainPath, 'word/settings.xml'));
+    this.withDraft(draft => {
+      draft.setNoteSettingsDirect(safe);
+    });
+  }
+
+  private setNoteSettingsDirect(settings: Partial<NoteSettings>): void {
+    let path = this.settingsPartPath();
+    if (!path) path = this.defaultSiblingPath('settings.xml');
+    if (!this.parts.has(path)) {
+      this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml');
     }
-    this.updatePartXml('word/settings.xml', document => setNoteSettingsOn(document, safe));
+    this.ensureMainRelationship('settings', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings', relativePath(this.mainPath, path));
+    this.updatePartXml(path, document => setNoteSettingsOn(document, settings));
   }
 
   getSnapshot(): DocumentSnapshot {
+    const mainDocument = this.getPartDocument(this.mainPath);
+    const body = bodyOf(mainDocument);
+    const state = this.collectNoteState(body);
     return {
       revision: this.revision,
-      paragraphs: this.getParagraphs(),
-      blocks: this.getBlocks(),
-      footnotes: this.getFootnotes(),
-      endnotes: this.getEndnotes(),
+      paragraphs: this.getParagraphsWith(body, state),
+      blocks: this.getBlocksWith(body, state),
+      footnotes: this.getNotesWith('footnote', state),
+      endnotes: this.getNotesWith('endnote', state),
       parts: this.listParts(),
     };
   }
 
   private ensureNotePart(kind: 'footnote' | 'endnote'): void {
-    const path = notePartPath(kind);
+    const path = this.notePartPath(kind) ?? this.defaultSiblingPath(`${kind}s.xml`);
     if (!this.parts.has(path)) {
       this.addPart(path, encodeXml(defaultNotePartXml(kind)), noteContentType(kind));
       this.ensureMainRelationship(kind, noteRelationshipType(kind), relativePath(this.mainPath, path));
@@ -676,20 +772,24 @@ export class DocxDocument {
 
   private nextNoteId(kind: 'footnote' | 'endnote'): number {
     const used = new Set(parseNoteEntries(this.noteDocument(kind), kind).map(entry => entry.id).filter(id => id >= 1));
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    for (const reference of referenceRecords(body)) {
+      if (reference.kind === kind && reference.id >= 1) used.add(reference.id);
+    }
     let id = 1;
     while (used.has(id)) id++;
     return id;
   }
 
   insertFootnote(paragraph: number, run: number, text: string, options: { customMark?: string } = {}): NoteInfo {
-    return this.insertNote('footnote', paragraph, run, text, options);
+    return this.withDraft(draft => draft.insertNoteDirect('footnote', paragraph, run, text, options));
   }
 
   insertEndnote(paragraph: number, run: number, text: string, options: { customMark?: string } = {}): NoteInfo {
-    return this.insertNote('endnote', paragraph, run, text, options);
+    return this.withDraft(draft => draft.insertNoteDirect('endnote', paragraph, run, text, options));
   }
 
-  private insertNote(
+  private insertNoteDirect(
     kind: 'footnote' | 'endnote',
     paragraph: number,
     run: number,
@@ -700,12 +800,17 @@ export class DocxDocument {
     assertIndex(run);
     assertText(text);
     if (options.customMark !== undefined) assertText(options.customMark, 'customMark');
-    this.ensureNotePart(kind);
-    const id = this.nextNoteId(kind);
     this.updatePartXml(this.mainPath, document => {
       const paragraphElement = paragraphAt(document, paragraph);
       const runs = ownRuns(paragraphElement);
       if (run > runs.length) throw new Error(`Run ${run} does not exist.`);
+    });
+    this.ensureNotePart(kind);
+    const notePath = this.notePartPath(kind)!;
+    const id = this.nextNoteId(kind);
+    this.updatePartXml(this.mainPath, document => {
+      const paragraphElement = paragraphAt(document, paragraph);
+      const runs = ownRuns(paragraphElement);
       const referenceRun = wordElement(document, 'r');
       const props = wordElement(document, 'rPr');
       const style = wordElement(document, 'rStyle');
@@ -719,9 +824,14 @@ export class DocxDocument {
       reference.setAttributeNS(WORD_NS, 'w:id', String(id));
       if (options.customMark) reference.setAttributeNS(WORD_NS, 'w:customMarkFollows', '1');
       referenceRun.appendChild(reference);
-      paragraphElement.insertBefore(referenceRun, runs[run] ?? null);
+      const anchor = runs[run];
+      if (anchor?.parentNode) {
+        anchor.parentNode.insertBefore(referenceRun, anchor);
+      } else {
+        paragraphElement.insertBefore(referenceRun, null);
+      }
     });
-    this.updatePartXml(notePartPath(kind), document => {
+    this.updatePartXml(notePath, document => {
       const root = document.documentElement!;
       const note = wordElement(document, kind);
       note.setAttributeNS(WORD_NS, 'w:id', String(id));
@@ -747,14 +857,20 @@ export class DocxDocument {
       note.appendChild(paragraphElement);
       root.appendChild(note);
     });
-    return this.getNotes(kind).find(item => item.id === id)!;
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    return this.getNotesWith(kind, this.collectNoteState(body)).find(item => item.id === id)!;
   }
 
   setNoteText(kind: 'footnote' | 'endnote', id: number, text: string): void {
+    this.withDraft(draft => draft.setNoteTextDirect(kind, id, text));
+  }
+
+  private setNoteTextDirect(kind: 'footnote' | 'endnote', id: number, text: string): void {
     assertIndex(id);
     assertText(text);
-    this.ensureNotePart(kind);
-    this.updatePartXml(notePartPath(kind), document => {
+    const path = this.notePartPath(kind);
+    if (!path) throw new Error(`${kind} ${id} does not exist.`);
+    this.updatePartXml(path, document => {
       const note = parseNoteEntries(document, kind).find(item => item.id === id && item.type === 'normal');
       if (!note) throw new Error(`${kind} ${id} does not exist.`);
       const customMark = parseCustomMark(note.element);
@@ -783,9 +899,14 @@ export class DocxDocument {
   }
 
   deleteNote(kind: 'footnote' | 'endnote', id: number): void {
+    this.withDraft(draft => draft.deleteNoteDirect(kind, id));
+  }
+
+  private deleteNoteDirect(kind: 'footnote' | 'endnote', id: number): void {
     assertIndex(id);
-    if (this.parts.has(notePartPath(kind))) {
-      this.updatePartXml(notePartPath(kind), document => {
+    const path = this.notePartPath(kind);
+    if (path && this.parts.has(path)) {
+      this.updatePartXml(path, document => {
         const entry = parseNoteEntries(document, kind).find(item => item.id === id);
         if (entry) entry.element.parentNode?.removeChild(entry.element);
       });
@@ -805,6 +926,10 @@ export class DocxDocument {
   }
 
   convertNote(kind: 'footnote' | 'endnote', id: number): void {
+    this.withDraft(draft => draft.convertNoteDirect(kind, id));
+  }
+
+  private convertNoteDirect(kind: 'footnote' | 'endnote', id: number): void {
     assertIndex(id);
     const targetKind = kind === 'footnote' ? 'endnote' : 'footnote';
     const sourceDocument = this.noteDocument(kind);
@@ -812,7 +937,8 @@ export class DocxDocument {
     if (!source) throw new Error(`${kind} ${id} does not exist.`);
     this.ensureNotePart(targetKind);
     const targetId = this.nextNoteId(targetKind);
-    const targetDocument = this.getPartDocument(notePartPath(targetKind));
+    const targetPath = this.notePartPath(targetKind)!;
+    const targetDocument = this.getPartDocument(targetPath);
     const clone = wordElement(targetDocument, targetKind);
     for (let i = 0; i < source.element.attributes.length; i++) {
       const attribute = source.element.attributes.item(i);
@@ -825,12 +951,15 @@ export class DocxDocument {
     for (const marker of descendants(clone, noteRefName(kind))) {
       const replacement = wordElement(targetDocument, noteRefName(targetKind));
       marker.parentNode?.replaceChild(replacement, marker);
+      const markerRun = replacement.parentNode as Element | null;
+      const markerProps = markerRun ? children(markerRun, 'rPr')[0] : null;
+      if (markerProps) setWordValue(property(markerProps, 'rStyle'), noteReferenceStyle(targetKind));
     }
     clone.setAttributeNS(WORD_NS, 'w:id', String(targetId));
     source.element.parentNode?.removeChild(source.element);
     targetDocument.documentElement!.appendChild(clone);
-    this.setPartXml(notePartPath(kind), serializeXml(sourceDocument!));
-    this.setPartXml(notePartPath(targetKind), serializeXml(targetDocument));
+    this.setPartXml(this.notePartPath(kind)!, serializeXml(sourceDocument!));
+    this.setPartXml(targetPath, serializeXml(targetDocument));
     this.updatePartXml(this.mainPath, document => {
       for (const paragraph of descendants(bodyOf(document), 'p')) {
         for (const runElement of ownRuns(paragraph)) {
@@ -842,6 +971,8 @@ export class DocxDocument {
             to.setAttributeNS(WORD_NS, 'w:customMarkFollows', from.getAttributeNS(WORD_NS, 'customMarkFollows')!);
           }
           runElement.replaceChild(to, from);
+          const runProps = children(runElement, 'rPr')[0];
+          if (runProps) setWordValue(property(runProps, 'rStyle'), noteReferenceStyle(targetKind));
         }
       }
     });
@@ -990,11 +1121,11 @@ export class DocxDocument {
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;
         case 'setPartXml': draft.setPartXml(operation.path, operation.xml); break;
-        case 'insertFootnote': draft.insertFootnote(operation.paragraph, operation.run, operation.text, { customMark: operation.customMark }); break;
-        case 'insertEndnote': draft.insertEndnote(operation.paragraph, operation.run, operation.text, { customMark: operation.customMark }); break;
-        case 'setNoteText': draft.setNoteText(operation.kind, operation.id, operation.text); break;
-        case 'deleteNote': draft.deleteNote(operation.kind, operation.id); break;
-        case 'convertNote': draft.convertNote(operation.kind, operation.id); break;
+        case 'insertFootnote': draft.insertNoteDirect('footnote', operation.paragraph, operation.run, operation.text, { customMark: operation.customMark }); break;
+        case 'insertEndnote': draft.insertNoteDirect('endnote', operation.paragraph, operation.run, operation.text, { customMark: operation.customMark }); break;
+        case 'setNoteText': draft.setNoteTextDirect(operation.kind, operation.id, operation.text); break;
+        case 'deleteNote': draft.deleteNoteDirect(operation.kind, operation.id); break;
+        case 'convertNote': draft.convertNoteDirect(operation.kind, operation.id); break;
       }
     }
     const snapshot = draft.getSnapshot();

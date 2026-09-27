@@ -321,6 +321,19 @@ test('setNoteText rewrites note body and keeps reference marker run', () => {
   assert.match(doc.getPartXml('word/footnotes.xml'), /footnoteRef/);
 });
 
+test('setNoteText replaces non-marker note body instead of preserving old text as custom mark', () => {
+  const doc = withBody('<w:p><w:r><w:footnoteReference w:id="1"/></w:r></w:p>');
+  doc.addPart('word/footnotes.xml', new TextEncoder().encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:t>Old note body</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.setNoteText('footnote', 1, 'NEW');
+  const xml = doc.getPartXml('word/footnotes.xml');
+  assert.match(xml, /NEW/);
+  assert.doesNotMatch(xml, /Old note body NEW/);
+});
+
 test('convertNote moves a footnote to endnotes and rewrites references', () => {
   const doc = DocxDocument.create();
   const note = doc.insertFootnote(0, 1, 'convert me');
@@ -332,6 +345,10 @@ test('convertNote moves a footnote to endnotes and rewrites references', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /endnoteReference/);
   assert.match(doc.getPartXml('word/endnotes.xml'), /endnoteRef/);
   assert.doesNotMatch(doc.getPartXml('word/endnotes.xml'), /footnoteRef/);
+  assert.doesNotMatch(doc.getPartXml('word/endnotes.xml'), /FootnoteReference/);
+  assert.match(doc.getPartXml('word/endnotes.xml'), /EndnoteReference/);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /FootnoteReference/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /EndnoteReference/);
   assert.match(doc.getPartXml(doc.mainDocumentPath), /w:id="2"/);
 });
 
@@ -350,6 +367,24 @@ test('insertFootnote creates missing footnotes.xml automatically', () => {
   assert.equal(doc.listParts().includes('word/footnotes.xml'), true);
 });
 
+test('failed direct note operations do not mutate parts or revision', () => {
+  const doc = withBody('<w:p><w:hyperlink w:anchor="x"><w:r><w:t>link</w:t></w:r></w:hyperlink></w:p>');
+  const revision = doc.revision;
+  const parts = doc.listParts();
+  assert.throws(() => doc.insertFootnote(0, 99, 'x'), /Run 99/);
+  assert.equal(doc.revision, revision);
+  assert.deepEqual(doc.listParts(), parts);
+  assert.throws(() => doc.setNoteText('endnote', 5, 'x'), /does not exist/);
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.listParts().includes('word/endnotes.xml'), false);
+});
+
+test('insertFootnote at nested hyperlink run uses nested parent anchor', () => {
+  const doc = withBody('<w:p><w:hyperlink w:anchor="x"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:r><w:t>tail</w:t></w:r></w:p>');
+  assert.doesNotThrow(() => doc.insertFootnote(0, 0, 'note'));
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:hyperlink[\s\S]*<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/);
+});
+
 test('note settings read and write through settings.xml', () => {
   const doc = DocxDocument.create();
   doc.setNoteSettings({
@@ -366,6 +401,55 @@ test('note settings read and write through settings.xml', () => {
   assert.match(doc.getPartXml('word/settings.xml'), /footnotePr/);
   assert.match(doc.getPartXml('word/settings.xml'), /endnotePr/);
   assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /relationships\/settings/);
+  assert.match(doc.getPartXml('[Content_Types].xml'), /application\/vnd.openxmlformats-officedocument.wordprocessingml.settings\+xml/);
+});
+
+test('setNoteSettings preserves schema order for settings and note properties', () => {
+  const doc = DocxDocument.create();
+  doc.addPart('word/settings.xml', new TextEncoder().encode(`<w:settings xmlns:w="${WORD_NS}"><w:compat/><w:rsids/></w:settings>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml');
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`), 'application/vnd.openxmlformats-package.relationships+xml');
+  doc.setNoteSettings({ footnote: { numFmt: 'decimal', pos: 'docEnd' } });
+  const xml = doc.getPartXml('word/settings.xml');
+  assert.match(xml, /<w:footnotePr>[\s\S]*<w:pos[\s\S]*<w:numFmt/);
+  assert.match(xml, /<w:footnotePr[\s\S]*<\/w:footnotePr><w:compat/);
+});
+
+test('section note settings apply to section that owns pPr/sectPr', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body>
+    <w:p><w:pPr><w:sectPr><w:footnotePr><w:numFmt w:val="lowerRoman"/></w:footnotePr></w:sectPr></w:pPr><w:r><w:t>a</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>
+    <w:p><w:r><w:t>b</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>
+    <w:sectPr><w:footnotePr><w:numFmt w:val="upperLetter"/></w:footnotePr></w:sectPr>
+  </w:body></w:document>`);
+  doc.addPart('word/footnotes.xml', new TextEncoder().encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+    <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    <w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>x</w:t></w:r></w:p></w:footnote>
+    <w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>y</w:t></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  const markers = doc.getFootnotes().map(item => item.marker);
+  assert.deepEqual(markers, ['i', 'B']);
+});
+
+test('note body paragraph indexes are scoped within each note', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'one');
+  doc.insertParagraph('body p1');
+  doc.insertParagraph('body p2');
+  const note = doc.getFootnotes()[0];
+  assert.equal(note.blocks[0].paragraph.index, 0);
+});
+
+test('relationship-target note parts are used and no duplicate note relationship is added', () => {
+  const doc = DocxDocument.create();
+  doc.insertFootnote(0, 1, 'base');
+  const rels = doc.getPartXml('word/_rels/document.xml.rels').replace('footnotes.xml', 'fn.xml');
+  doc.addPart('word/fn.xml', new TextEncoder().encode(doc.getPartXml('word/footnotes.xml').replace('base', 'from-fn')), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.setPartXml('word/_rels/document.xml.rels', rels);
+  assert.equal(doc.getFootnotes()[0].blocks[0].paragraph.text.includes('from-fn'), true);
+  doc.insertFootnote(0, 1, 'another');
+  const relTypes = (doc.getPartXml('word/_rels/document.xml.rels').match(/relationships\/footnotes/g) ?? []).length;
+  assert.equal(relTypes, 1);
 });
 
 test('agent note operations validate and run in transactions', () => {

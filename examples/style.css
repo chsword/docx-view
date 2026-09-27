@@ -67,7 +67,8 @@ select { border: 1px solid var(--border); border-radius: 5px; color: #536077; ba
 .docx-paragraph[data-style="Title"] { font-size: 26pt; }
 .docx-paragraph[data-style="Heading1"] { font-size: 20pt; font-weight: 700; }
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }
-.docx-note-ref { font-size: 0.75em; vertical-align: super; user-select: none; color: #4b5f82; }
+.docx-note-ref { font-size: 0.75em; vertical-align: super; user-select: none; pointer-events: none; color: #4b5f82; }
+.docx-note-ref::before { content: attr(data-note-marker); }
 .docx-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 21px 0 26px; font-size: 10pt; }
 .docx-table td { border: 1px solid #dbe3ed; padding: 10px 11px; vertical-align: top; }
 .docx-table tr:first-child td { background: #f3f6fb; }

@@ -18,6 +18,39 @@ export function notePartPath(kind: NoteKind): string {
   return `word/${kind}s.xml`;
 }
 
+const SETTINGS_ORDER = [
+  'writeProtection', 'view', 'zoom', 'removePersonalInformation', 'removeDateAndTime', 'doNotDisplayPageBoundaries',
+  'displayBackgroundShape', 'printPostScriptOverText', 'printFractionalCharacterWidth', 'printFormsData',
+  'embedTrueTypeFonts', 'embedSystemFonts', 'saveSubsetFonts', 'saveFormsData', 'mirrorMargins', 'alignBordersAndEdges',
+  'bordersDoNotSurroundHeader', 'bordersDoNotSurroundFooter', 'gutterAtTop', 'hideSpellingErrors',
+  'hideGrammaticalErrors', 'activeWritingStyle', 'proofState', 'formsDesign', 'attachedTemplate', 'linkStyles',
+  'stylePaneFormatFilter', 'stylePaneSortMethod', 'documentType', 'mailMerge', 'revisionView', 'trackRevisions',
+  'doNotTrackMoves', 'doNotTrackFormatting', 'documentProtection', 'autoFormatOverride', 'styleLockTheme',
+  'styleLockQFSet', 'defaultTabStop', 'autoHyphenation', 'consecutiveHyphenLimit', 'hyphenationZone',
+  'doNotHyphenateCaps', 'showEnvelope', 'summaryLength', 'clickAndTypeStyle', 'defaultTableStyle', 'evenAndOddHeaders',
+  'bookFoldRevPrinting', 'bookFoldPrinting', 'bookFoldPrintingSheets', 'drawingGridHorizontalSpacing',
+  'drawingGridVerticalSpacing', 'displayHorizontalDrawingGridEvery', 'displayVerticalDrawingGridEvery',
+  'doNotUseMarginsForDrawingGridOrigin', 'drawingGridHorizontalOrigin', 'drawingGridVerticalOrigin', 'doNotShadeFormData',
+  'noPunctuationKerning', 'characterSpacingControl', 'printTwoOnOne', 'strictFirstAndLastChars', 'noLineBreaksAfter',
+  'noLineBreaksBefore', 'savePreviewPicture', 'doNotValidateAgainstSchema', 'saveInvalidXml', 'ignoreMixedContent',
+  'alwaysShowPlaceholderText', 'doNotDemarcateInvalidXml', 'saveXmlDataOnly', 'useXSLTWhenSaving', 'saveThroughXslt',
+  'showXMLTags', 'alwaysMergeEmptyNamespace', 'updateFields', 'hdrShapeDefaults', 'footnotePr', 'endnotePr',
+  'compat', 'docVars', 'rsids', 'mathPr',
+];
+
+const NOTE_PR_ORDER = ['pos', 'numFmt', 'numStart', 'numRestart', 'numId', 'suppressRef'];
+
+function orderedProperty(parent: Element, name: string, order: string[]): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    const position = order.indexOf(name);
+    const following = children(parent).find(child => order.indexOf(child.localName!) > position);
+    parent.insertBefore(result, following ?? null);
+  }
+  return result;
+}
+
 export function noteRelationshipType(kind: NoteKind): string {
   return REL_TYPE[kind];
 }
@@ -101,15 +134,11 @@ export function setNoteSettingsOn(settingsDocument: Document, update: Partial<No
     const patch = update[kind];
     if (!patch) continue;
     const tag = kind === 'footnote' ? 'footnotePr' : 'endnotePr';
-    const pr = children(root, tag)[0] ?? (() => {
-      const created = wordElement(settingsDocument, tag);
-      root.appendChild(created);
-      return created;
-    })();
-    if (patch.pos !== undefined) setWordValue(children(pr, 'pos')[0] ?? pr.appendChild(wordElement(settingsDocument, 'pos')) as Element, patch.pos);
-    if (patch.numFmt !== undefined) setWordValue(children(pr, 'numFmt')[0] ?? pr.appendChild(wordElement(settingsDocument, 'numFmt')) as Element, patch.numFmt);
-    if (patch.numStart !== undefined) setWordValue(children(pr, 'numStart')[0] ?? pr.appendChild(wordElement(settingsDocument, 'numStart')) as Element, String(patch.numStart));
-    if (patch.numRestart !== undefined) setWordValue(children(pr, 'numRestart')[0] ?? pr.appendChild(wordElement(settingsDocument, 'numRestart')) as Element, patch.numRestart);
+    const pr = orderedProperty(root, tag, SETTINGS_ORDER);
+    if (patch.pos !== undefined) setWordValue(orderedProperty(pr, 'pos', NOTE_PR_ORDER), patch.pos);
+    if (patch.numFmt !== undefined) setWordValue(orderedProperty(pr, 'numFmt', NOTE_PR_ORDER), patch.numFmt);
+    if (patch.numStart !== undefined) setWordValue(orderedProperty(pr, 'numStart', NOTE_PR_ORDER), String(patch.numStart));
+    if (patch.numRestart !== undefined) setWordValue(orderedProperty(pr, 'numRestart', NOTE_PR_ORDER), patch.numRestart);
   }
 }
 
@@ -135,11 +164,15 @@ export function parseCustomMark(note: Element): string | undefined {
   const firstParagraph = descendants(note, 'p')[0];
   if (!firstParagraph) return undefined;
   let marker = '';
+  let foundRef = false;
   for (const run of children(firstParagraph, 'r')) {
-    if (children(run, 'footnoteRef').length || children(run, 'endnoteRef').length) break;
+    if (children(run, 'footnoteRef').length || children(run, 'endnoteRef').length) {
+      foundRef = true;
+      break;
+    }
     marker += descendants(run, 't').map(item => item.textContent ?? '').join('');
   }
-  return marker || undefined;
+  return foundRef ? marker || undefined : undefined;
 }
 
 function roman(value: number): string {
