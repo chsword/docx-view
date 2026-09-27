@@ -14,6 +14,19 @@ function keys(value: Record<string, unknown>, allowed: string[]): void {
   }
 }
 
+function validateHyperlinkReference(value: unknown): void {
+  object(value);
+  const reference = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(reference.paragraph) || (reference.paragraph as number) < 0) {
+    throw new Error('hyperlink.paragraph must be a non-negative safe integer.');
+  }
+  if (typeof reference.text !== 'string') throw new Error('hyperlink.text must be a string.');
+  if (!Array.isArray(reference.runs) || !reference.runs.length ||
+      reference.runs.some(run => !Number.isSafeInteger(run) || run < 0)) {
+    throw new Error('hyperlink.runs must be a non-empty array of non-negative safe integers.');
+  }
+}
+
 export function assertIndex(value: unknown): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new Error('Index/revision must be a non-negative safe integer.');
@@ -94,13 +107,13 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'updateHyperlink':
         keys(op, ['type', 'hyperlink', 'link']);
         if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
-        else if (typeof op.hyperlink !== 'object' || !op.hyperlink) throw new Error('hyperlink must be number or object.');
+        else validateHyperlinkReference(op.hyperlink);
         assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
         break;
       case 'removeHyperlink':
         keys(op, ['type', 'hyperlink', 'options']);
         if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
-        else if (typeof op.hyperlink !== 'object' || !op.hyperlink) throw new Error('hyperlink must be number or object.');
+        else validateHyperlinkReference(op.hyperlink);
         if ('options' in op) {
           object(op.options);
           keys(op.options, ['keepText']);

@@ -29,6 +29,14 @@ export class DocxEditor {
     }));
   }
 
+  private linkTargetFromSelection(): HTMLElement | null {
+    const node = this.root.ownerDocument.getSelection()?.anchorNode;
+    if (!node || !this.root.contains(node)) return null;
+    const element = node.nodeType === 1 ? node as Element : node.parentElement;
+    const target = element?.closest<HTMLElement>('[data-docx-link="1"]');
+    return target && this.root.contains(target) ? target : null;
+  }
+
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
     this.options = options;
@@ -187,7 +195,7 @@ export class DocxEditor {
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     element.addEventListener('drop', (event) => { event.preventDefault(); });
     element.addEventListener('keydown', (event) => {
-      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      const target = this.linkTargetFromSelection();
       if (target && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         return;
@@ -210,7 +218,7 @@ export class DocxEditor {
     element.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
       if (!(event.ctrlKey || event.metaKey)) return;
-      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      const target = this.linkTargetFromSelection();
       if (!target) return;
       event.preventDefault();
       this.dispatchLinkClick(target);

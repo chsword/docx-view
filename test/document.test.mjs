@@ -261,6 +261,14 @@ test('marks javascript and data hyperlinks as unsafe', () => {
   assert.equal(doc.getParagraphs()[0].runs[0].hyperlink?.unsafe, true);
 });
 
+test('marks external javascript hyperlink unsafe even when anchor is present', () => {
+  const doc = withBody('<w:p><w:hyperlink r:id="rId7" w:anchor="top" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:t>x</w:t></w:r></w:hyperlink></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/></Relationships>'), 'application/vnd.openxmlformats-package.relationships+xml');
+  const link = doc.getHyperlinks()[0];
+  assert.equal(link.anchor, 'top');
+  assert.equal(link.unsafe, true);
+});
+
 test('reads anchor hyperlinks and tooltip', () => {
   const doc = withBody('<w:p><w:hyperlink w:anchor="chapter1" w:tooltip="跳转" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>目录</w:t></w:r></w:hyperlink></w:p>');
   const link = doc.getHyperlinks()[0];
@@ -284,6 +292,15 @@ test('bookmarks are listed and internal entries hidden by default', () => {
   assert.equal(visible[0].name, 'user');
   assert.equal(visible[0].endParagraph, 1);
   assert.equal(all.length, 2);
+});
+
+test('getBookmarks includes body-level bookmarks and duplicate check rejects their names', () => {
+  const doc = withBody('<w:bookmarkStart w:id="5" w:name="tbl"/><w:p><w:r><w:t>row</w:t></w:r></w:p><w:bookmarkEnd w:id="5"/>');
+  const all = doc.getBookmarks({ includeInternal: true });
+  assert.equal(all[0].name, 'tbl');
+  assert.equal(all[0].startParagraph, 0);
+  assert.equal(all[0].endParagraph, 0);
+  assert.throws(() => doc.insertBookmark('tbl', { startParagraph: 0 }), /already exists/);
 });
 
 test('insertBookmark and deleteBookmark maintain ids and boundaries', () => {
@@ -311,6 +328,23 @@ test('insertHyperlink wraps selected text and creates external relationship', ()
   assert.equal(link.url, 'https://example.com');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /w:hyperlink/);
   assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /Target="https:\/\/example.com"/);
+});
+
+test('insertHyperlink handles runs inside wrappers and returns inserted hyperlink', () => {
+  const doc = withBody('<w:p><w:hyperlink w:anchor="later"><w:r><w:t>later link</w:t></w:r></w:hyperlink></w:p><w:p><w:ins><w:r><w:t>linked text</w:t></w:r></w:ins></w:p>');
+  const link = doc.insertHyperlink({ paragraph: 1, start: 0, end: 6 }, { url: 'https://example.com' });
+  assert.equal(link.paragraph, 1);
+  assert.equal(link.text, 'linked');
+  assert.equal(link.url, 'https://example.com');
+});
+
+test('insertHyperlink failures do not create orphan rels or increment revision', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const revision = doc.revision;
+  assert.throws(() => doc.insertHyperlink({ paragraph: 0, start: 0, end: 99 }, { url: 'https://orphan.example' }), /out of bounds/);
+  assert.equal(doc.revision, revision);
+  assert.throws(() => doc.getPartXml('word/_rels/document.xml.rels'), /Package part not found/);
 });
 
 test('insertHyperlink rejects non-whitelisted schemes', () => {
@@ -365,6 +399,10 @@ test('updateHyperlink supports fldSimple links', () => {
   assert.equal(doc.getHyperlinks()[0].url, 'https://new.example?q=""');
   assert.equal(doc.getHyperlinks()[0].anchor, 'a"b');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tooltip="tip"/);
+  const fld = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'fldSimple')[0];
+  const instruction = fld?.getAttributeNS(WORD_NS, 'instr') ?? '';
+  assert.match(instruction, /\?q=\\\"\\\"/);
+  assert.match(instruction, /\\l "a\\\"b"/);
 });
 
 test('updateHyperlink does not retarget other links sharing a relationship id', () => {
@@ -393,6 +431,12 @@ test('updateHyperlink can convert external link to anchor-only link', () => {
 test('agent operations validate hyperlink and bookmark commands', () => {
   const doc = DocxDocument.create();
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'insertHyperlink', target: { paragraph: 0, start: 0, end: 0 }, link: { url: 'javascript:1' } }] }), /http, https or mailto/);
+  assert.throws(() => doc.applyOperations({ operations: [{
+    type: 'insertHyperlink',
+    target: { paragraph: 0, start: 0, end: 0 },
+    link: { url: 'https://ok.example', tooltip: 'a\u0000b' },
+  }] }), /valid XML/);
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'removeHyperlink', hyperlink: { paragraph: 0 } }] }), /hyperlink\.(text|runs)/);
   const snapshot = doc.applyOperations({ operations: [{ type: 'insertBookmark', name: 'b1', range: { startParagraph: 0 } }] });
   assert.equal(snapshot.bookmarks[0].name, 'b1');
   doc.applyOperations({ operations: [{ type: 'deleteBookmark', name: 'b1' }] });

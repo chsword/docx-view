@@ -262,10 +262,25 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 }
 
 function fieldInstruction(link: { url?: string; anchor?: string }): string {
+  const escapeFieldText = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const chunks = ['HYPERLINK'];
-  if (link.url) chunks.push(`"${link.url.replace(/"/g, '""')}"`);
-  if (link.anchor) chunks.push(`\\l "${link.anchor.replace(/"/g, '""')}"`);
+  if (link.url) chunks.push(`"${escapeFieldText(link.url)}"`);
+  if (link.anchor) chunks.push(`\\l "${escapeFieldText(link.anchor)}"`);
   return chunks.join(' ');
+}
+
+function preOrderElements(root: Element): Element[] {
+  const result: Element[] = [];
+  const walk = (node: Node): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      result.push(element);
+      walk(element);
+    }
+  };
+  walk(root);
+  return result;
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -403,6 +418,15 @@ export class DocxDocument {
     this.parts = draft.parts;
     this.mainPath = draft.mainPath;
     this.currentRevision++;
+  }
+
+  private withDraft<T>(update: (draft: DocxDocument) => T): T {
+    const draft = new DocxDocument(new Map(this.parts));
+    const result = update(draft);
+    this.parts = draft.parts;
+    this.mainPath = draft.mainPath;
+    this.currentRevision++;
+    return result;
   }
 
   private validatePackage(): string {
@@ -553,20 +577,34 @@ export class DocxDocument {
     const body = bodyOf(this.getPartDocument(this.mainPath));
     const paragraphs = descendants(body, 'p');
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    const order = preOrderElements(body);
+    const paragraphFromNode = (node: Element): number | undefined => {
+      const paragraph = nearestParagraph(node);
+      if (paragraph) return paragraphIndex.get(paragraph);
+      const offset = order.indexOf(node);
+      if (offset === -1) return undefined;
+      for (let index = offset + 1; index < order.length; index++) {
+        const candidate = order[index];
+        if (candidate?.localName === 'p' && candidate.namespaceURI === WORD_NS) {
+          return paragraphIndex.get(candidate);
+        }
+      }
+      return paragraphs.length ? paragraphs.length - 1 : 0;
+    };
     const starts = new Map<number, { name: string; paragraph: number }>();
     const ends = new Map<number, number>();
     for (const start of descendants(body, 'bookmarkStart')) {
       const id = Number(start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
       const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name') ?? '';
-      const paragraph = nearestParagraph(start);
-      if (!Number.isSafeInteger(id) || !paragraph || !name) continue;
-      starts.set(id, { name, paragraph: paragraphIndex.get(paragraph)! });
+      const startParagraph = paragraphFromNode(start);
+      if (!Number.isSafeInteger(id) || startParagraph === undefined || !name) continue;
+      starts.set(id, { name, paragraph: startParagraph });
     }
     for (const end of descendants(body, 'bookmarkEnd')) {
       const id = Number(end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id'));
-      const paragraph = nearestParagraph(end);
-      if (!Number.isSafeInteger(id) || !paragraph) continue;
-      ends.set(id, paragraphIndex.get(paragraph)!);
+      const endParagraph = paragraphFromNode(end);
+      if (!Number.isSafeInteger(id) || endParagraph === undefined) continue;
+      ends.set(id, endParagraph);
     }
     return [...starts.entries()]
       .map(([id, start]) => ({
@@ -599,6 +637,11 @@ export class DocxDocument {
       const hyperlink = hyperlinks[reference];
       if (!hyperlink) throw new Error('Hyperlink does not exist.');
       return hyperlink;
+    }
+    if (!reference || typeof reference !== 'object' || !Number.isSafeInteger(reference.paragraph) ||
+        !Array.isArray(reference.runs) || !reference.runs.every(run => Number.isSafeInteger(run) && run >= 0) ||
+        typeof reference.text !== 'string') {
+      throw new Error('hyperlink must be a hyperlink index or object with paragraph, runs and text.');
     }
     const hyperlink = hyperlinks.find(item => item.paragraph === reference.paragraph &&
       item.runs[0] === reference.runs[0] && item.text === reference.text);
@@ -638,46 +681,60 @@ export class DocxDocument {
     assertIndex(target.start);
     assertIndex(target.end);
     assertHyperlinkInput(link);
-    let createdId: string | undefined;
-    this.ensureMainRelationshipsPart();
-    if (link.url) {
-      this.updatePartXml(this.mainRelationshipsPath(), rels => {
-        const relationship = rels.createElementNS(REL_NS, 'Relationship');
-        createdId = this.nextRelationshipId(rels);
-        relationship.setAttribute('Id', createdId);
-        relationship.setAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink');
-        relationship.setAttribute('Target', link.url!);
-        relationship.setAttribute('TargetMode', 'External');
-        rels.documentElement!.appendChild(relationship);
-      });
-    }
-    this.updatePartXml(this.mainPath, document => {
-      const paragraph = paragraphAt(document, target.paragraph);
-      textRangeLength(paragraph, target.start, target.end);
-      this.splitRunAtOffset(paragraph, target.end);
-      this.splitRunAtOffset(paragraph, target.start);
-      const runs = ownRuns(paragraph);
-      let cursor = 0;
-      const selected: Element[] = [];
-      for (const run of runs) {
-        const text = textOf(run);
-        const next = cursor + text.length;
-        if (target.start < next && target.end > cursor) selected.push(run);
-        cursor = next;
+    return this.withDraft(draft => {
+      let createdId: string | undefined;
+      let createdMarker: { paragraph: number; run: number; text: string } | undefined;
+      if (link.url) {
+        draft.ensureMainRelationshipsPart();
+        draft.updatePartXml(draft.mainRelationshipsPath(), rels => {
+          const relationship = rels.createElementNS(REL_NS, 'Relationship');
+          createdId = draft.nextRelationshipId(rels);
+          relationship.setAttribute('Id', createdId);
+          relationship.setAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink');
+          relationship.setAttribute('Target', link.url!);
+          relationship.setAttribute('TargetMode', 'External');
+          rels.documentElement!.appendChild(relationship);
+        });
       }
-      if (!selected.length) throw new Error('Hyperlink range must include text.');
-      const hyperlink = wordElement(document, 'hyperlink');
-      if (createdId) hyperlink.setAttributeNS(DOC_REL_NS, 'r:id', createdId);
-      if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
-      if (link.tooltip) hyperlink.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
-      paragraph.insertBefore(hyperlink, selected[0]!);
-      for (const run of selected) hyperlink.appendChild(run);
-      const props = properties(selected[0]!, 'rPr');
-      if (!children(props, 'rStyle').length) setWordValue(property(props, 'rStyle'), 'Hyperlink');
-      if (!children(props, 'color').length) setWordValue(property(props, 'color'), '0563C1');
-      if (!children(props, 'u').length) setWordValue(property(props, 'u'), 'single');
+      draft.updatePartXml(draft.mainPath, document => {
+        const paragraph = paragraphAt(document, target.paragraph);
+        textRangeLength(paragraph, target.start, target.end);
+        draft.splitRunAtOffset(paragraph, target.end);
+        draft.splitRunAtOffset(paragraph, target.start);
+        const runs = ownRuns(paragraph);
+        let cursor = 0;
+        const selected: Element[] = [];
+        for (const run of runs) {
+          const text = textOf(run);
+          const next = cursor + text.length;
+          if (target.start < next && target.end > cursor) selected.push(run);
+          cursor = next;
+        }
+        if (!selected.length) throw new Error('Hyperlink range must include text.');
+        const firstParent = selected[0]!.parentNode as Element;
+        if (selected.some(run => run.parentNode !== firstParent)) {
+          throw new Error('Hyperlink range cannot cross different run containers.');
+        }
+        const hyperlink = wordElement(document, 'hyperlink');
+        if (createdId) hyperlink.setAttributeNS(DOC_REL_NS, 'r:id', createdId);
+        if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+        if (link.tooltip) hyperlink.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+        firstParent.insertBefore(hyperlink, selected[0]!);
+        for (const run of selected) hyperlink.appendChild(run);
+        const props = properties(selected[0]!, 'rPr');
+        if (!children(props, 'rStyle').length) setWordValue(property(props, 'rStyle'), 'Hyperlink');
+        if (!children(props, 'color').length) setWordValue(property(props, 'color'), '0563C1');
+        if (!children(props, 'u').length) setWordValue(property(props, 'u'), 'single');
+        const firstRun = ownRuns(paragraph).findIndex(run => run === selected[0]);
+        if (firstRun < 0) throw new Error('Inserted hyperlink run index could not be resolved.');
+        createdMarker = { paragraph: target.paragraph, run: firstRun, text: textOf(hyperlink) };
+      });
+      const created = draft.getHyperlinks().find(item => item.paragraph === createdMarker?.paragraph &&
+        item.runs[0] === createdMarker?.run && item.text === createdMarker?.text &&
+        item.url === link.url && item.anchor === link.anchor);
+      if (!created) throw new Error('Inserted hyperlink could not be resolved.');
+      return created;
     });
-    return this.getHyperlinks().at(-1)!;
   }
 
   updateHyperlink(

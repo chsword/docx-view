@@ -1,7 +1,10 @@
 import type { Element } from '@xmldom/xmldom';
 import { REL_NS } from './xml.js';
+import { assertText } from './xml.js';
 
 const MAX_LINK_LENGTH = 8_192;
+const MAX_ANCHOR_LENGTH = 256;
+const MAX_TOOLTIP_LENGTH = 2_048;
 const ALLOWED_URL_SCHEMES = new Set(['http', 'https', 'mailto']);
 const BLOCKED_URL_SCHEMES = new Set(['javascript', 'data', 'vbscript', 'file']);
 
@@ -40,10 +43,8 @@ export function isUnsafeHyperlinkUrl(url: string): boolean {
 }
 
 export function isUnsafeHyperlink(link: { url?: string; anchor?: string }): boolean {
-  if (link.anchor) return false;
   if (!link.url) return false;
-  const scheme = urlScheme(link.url);
-  return scheme === null ? true : !ALLOWED_URL_SCHEMES.has(scheme);
+  return !isSafeHyperlinkUrl(link.url);
 }
 
 export function assertHyperlinkInput(link: HyperlinkTarget): void {
@@ -54,8 +55,17 @@ export function assertHyperlinkInput(link: HyperlinkTarget): void {
   if (tooltip !== undefined && typeof tooltip !== 'string') throw new Error('link.tooltip must be a string.');
   if (!url && !anchor) throw new Error('link.url or link.anchor is required.');
   if (url) {
+    assertText(url, 'link.url');
     if (url.length > MAX_LINK_LENGTH) throw new Error(`link.url must be at most ${MAX_LINK_LENGTH} characters.`);
     if (!isSafeHyperlinkUrl(url)) throw new Error('link.url must use http, https or mailto.');
+  }
+  if (anchor) {
+    assertText(anchor, 'link.anchor');
+    if (anchor.length > MAX_ANCHOR_LENGTH) throw new Error(`link.anchor must be at most ${MAX_ANCHOR_LENGTH} characters.`);
+  }
+  if (tooltip) {
+    assertText(tooltip, 'link.tooltip');
+    if (tooltip.length > MAX_TOOLTIP_LENGTH) throw new Error(`link.tooltip must be at most ${MAX_TOOLTIP_LENGTH} characters.`);
   }
 }
 
@@ -64,10 +74,10 @@ export function parseFldSimpleHyperlink(instruction: string): HyperlinkTarget | 
   if (!/^HYPERLINK\b/i.test(normalized)) return null;
   const parseQuoted = (pattern: RegExp): string | undefined => {
     const value = normalized.match(pattern)?.[1];
-    return value ? value.replace(/""/g, '"') : undefined;
+    return value ? value.replace(/\\(["\\])/g, '$1') : undefined;
   };
-  const url = parseQuoted(/HYPERLINK\s+"((?:[^"]|"")+)"/i);
-  const anchor = parseQuoted(/\\l\s+"((?:[^"]|"")+)"/i);
+  const url = parseQuoted(/HYPERLINK\s+"((?:\\.|[^"\\])+)"/i);
+  const anchor = parseQuoted(/\\l\s+"((?:\\.|[^"\\])+)"/i);
   if (!url && !anchor) return null;
   return { url: url ?? undefined, anchor: anchor ?? undefined };
 }
