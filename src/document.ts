@@ -16,6 +16,7 @@ const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
 const encoder = new TextEncoder();
+const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -235,6 +236,14 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private transaction: {
+    parts: Map<string, Uint8Array>;
+    documents: Map<string, Document>;
+    dirtyXml: Set<string>;
+    touched: boolean;
+    structureChanged: boolean;
+    mainChanged: boolean;
+  } | null = null;
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -290,46 +299,48 @@ export class DocxDocument {
   getPartDocument(path: string): Document { return parseXml(this.getPartXml(path)); }
 
   updatePartXml(path: string, update: (document: Document) => void): void {
-    const document = this.getPartDocument(path);
-    update(document);
-    this.setPartXml(path, serializeXml(document));
+    this.withTransaction(() => {
+      const document = this.mutablePartDocument(path);
+      update(document);
+      const transaction = this.transaction!;
+      transaction.dirtyXml.add(path);
+      transaction.touched = true;
+      transaction.structureChanged ||= STRUCTURE_PARTS.has(path);
+      transaction.mainChanged ||= path === this.mainPath;
+    });
   }
 
   setPartXml(path: string, xml: string): void {
-    if (typeof xml !== 'string' || xml.length > MAX_PART) throw new Error('XML part exceeds size limit.');
-    parseXml(xml);
-    this.setPartBytes(path, encodeXml(xml));
+    this.withTransaction(() => this.replacePartXml(path, xml));
   }
 
   /** Replaces an existing part. Relationships/content types remain under caller control. */
   setPartBytes(path: string, bytes: Uint8Array): void {
-    validatePath(path);
-    if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
-    const next = new Map(this.parts);
-    next.set(path, Uint8Array.from(bytes));
-    this.commitParts(next);
+    this.withTransaction(() => {
+      this.replacePartBytes(path, bytes);
+      const transaction = this.transaction!;
+      transaction.touched = true;
+      transaction.structureChanged ||= STRUCTURE_PARTS.has(path);
+      transaction.mainChanged ||= path === this.mainPath;
+    });
   }
 
   addPart(path: string, bytes: Uint8Array, contentType: string): void {
-    validatePath(path);
-    assertText(contentType, 'contentType');
-    if (!contentType || this.parts.has(path)) throw new Error('New part requires a unique path and content type.');
-    const types = this.getPartDocument('[Content_Types].xml');
-    const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
-    override.setAttribute('PartName', `/${path}`);
-    override.setAttribute('ContentType', contentType);
-    types.documentElement!.appendChild(override);
-    const next = new Map(this.parts);
-    next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
-    next.set(path, Uint8Array.from(bytes));
-    this.commitParts(next);
-  }
-
-  private commitParts(parts: Map<string, Uint8Array>): void {
-    const draft = new DocxDocument(parts);
-    this.parts = draft.parts;
-    this.mainPath = draft.mainPath;
-    this.currentRevision++;
+    this.withTransaction(() => {
+      validatePath(path);
+      assertText(contentType, 'contentType');
+      const transaction = this.transaction!;
+      if (!contentType || transaction.parts.has(path)) throw new Error('New part requires a unique path and content type.');
+      const types = this.mutablePartDocument('[Content_Types].xml');
+      const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+      override.setAttribute('PartName', `/${path}`);
+      override.setAttribute('ContentType', contentType);
+      types.documentElement!.appendChild(override);
+      transaction.dirtyXml.add('[Content_Types].xml');
+      transaction.parts.set(path, Uint8Array.from(bytes));
+      transaction.touched = true;
+      transaction.structureChanged = true;
+    });
   }
 
   private validatePackage(): string {
@@ -520,24 +531,108 @@ export class DocxDocument {
       throw new Error(`Revision conflict: expected ${request.expectedRevision}, current ${this.revision}.`);
     }
     if (!request.operations.length) return this.getSnapshot();
-    const draft = new DocxDocument(new Map(this.parts));
-    for (const operation of request.operations) {
-      switch (operation.type) {
-        case 'setParagraphText': draft.setParagraphText(operation.index, operation.text); break;
-        case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
-        case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
-        case 'formatParagraph': draft.formatParagraph(operation.index, operation.format); break;
-        case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
-        case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
-        case 'insertTable': draft.insertTable(operation.rows); break;
-        case 'setPartXml': draft.setPartXml(operation.path, operation.xml); break;
+    this.withTransaction(() => {
+      for (const operation of request.operations) {
+        switch (operation.type) {
+          case 'setParagraphText': this.setParagraphText(operation.index, operation.text); break;
+          case 'insertParagraph': this.insertParagraph(operation.text, operation.before); break;
+          case 'deleteParagraph': this.deleteParagraph(operation.index); break;
+          case 'formatParagraph': this.formatParagraph(operation.index, operation.format); break;
+          case 'formatRun': this.formatRun(operation.paragraph, operation.run, operation.format); break;
+          case 'replaceText': this.replaceText(operation.search, operation.replacement); break;
+          case 'insertTable': this.insertTable(operation.rows); break;
+          case 'setPartXml': this.setPartXml(operation.path, operation.xml); break;
+        }
       }
+    });
+    return this.getSnapshot();
+  }
+
+  private withTransaction(action: () => void): void {
+    if (this.transaction) { action(); return; }
+    const previousMainPath = this.mainPath;
+    this.transaction = {
+      parts: new Map(this.parts),
+      documents: new Map(),
+      dirtyXml: new Set(),
+      touched: false,
+      structureChanged: false,
+      mainChanged: false,
+    };
+    try {
+      action();
+      this.commitTransaction(previousMainPath);
+    } finally {
+      this.transaction = null;
     }
-    const snapshot = draft.getSnapshot();
-    this.parts = draft.parts;
-    this.mainPath = draft.mainPath;
+  }
+
+  private mutablePartDocument(path: string): Document {
+    validatePath(path);
+    const transaction = this.transaction;
+    if (!transaction) return this.getPartDocument(path);
+    const bytes = transaction.parts.get(path);
+    if (!bytes) throw new Error(`Package part not found: ${path}`);
+    let document = transaction.documents.get(path);
+    if (!document) {
+      document = parseXml(decodeXml(bytes));
+      transaction.documents.set(path, document);
+    }
+    return document;
+  }
+
+  private replacePartXml(path: string, xml: string): void {
+    if (typeof xml !== 'string' || xml.length > MAX_PART) throw new Error('XML part exceeds size limit.');
+    const document = parseXml(xml);
+    this.replacePartBytes(path, encodeXml(xml));
+    const transaction = this.transaction;
+    if (!transaction) return;
+    transaction.documents.set(path, document);
+    transaction.dirtyXml.delete(path);
+    transaction.touched = true;
+    transaction.structureChanged ||= STRUCTURE_PARTS.has(path);
+    transaction.mainChanged ||= path === this.mainPath;
+  }
+
+  private replacePartBytes(path: string, bytes: Uint8Array): void {
+    validatePath(path);
+    const transaction = this.transaction;
+    const parts = transaction?.parts ?? this.parts;
+    if (!parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
+    parts.set(path, Uint8Array.from(bytes));
+    if (transaction) {
+      transaction.documents.delete(path);
+      transaction.dirtyXml.delete(path);
+    }
+  }
+
+  private commitTransaction(previousMainPath: string): void {
+    const transaction = this.transaction;
+    if (!transaction?.touched) return;
+    for (const path of transaction.dirtyXml) {
+      const document = transaction.documents.get(path);
+      if (document) transaction.parts.set(path, encodeXml(serializeXml(document)));
+    }
+    this.assertPackageLimits(transaction.parts);
+    if (transaction.structureChanged) {
+      const draft = new DocxDocument(transaction.parts);
+      this.parts = draft.parts;
+      this.mainPath = draft.mainPath;
+    } else {
+      if (transaction.mainChanged) bodyOf(this.mutablePartDocument(previousMainPath));
+      this.parts = transaction.parts;
+    }
     this.currentRevision++;
-    return { ...snapshot, revision: this.revision };
+  }
+
+  private assertPackageLimits(parts: Map<string, Uint8Array>): void {
+    if (parts.size > MAX_PARTS) throw new Error('Too many package parts.');
+    let total = 0;
+    for (const [path, bytes] of parts) {
+      validatePath(path);
+      total += bytes.byteLength;
+      if (bytes.byteLength > MAX_PART || total > MAX_TOTAL) throw new Error('Package exceeds size limits.');
+    }
   }
 
   async toUint8Array(): Promise<Uint8Array> {

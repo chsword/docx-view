@@ -212,6 +212,27 @@ test('malformed XML, DTD, broken package targets and oversized parts are rejecte
   assert.equal(doc.revision, 0);
 });
 
+test('setPartXml rejects malformed external XML input', () => {
+  const doc = DocxDocument.create();
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.setPartXml(doc.mainDocumentPath, '<w:document>'));
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+  assert.equal(doc.revision, 0);
+});
+
+test('performance regression: 1000 paragraph document handles 1000 operations quickly', () => {
+  const doc = DocxDocument.create();
+  doc.applyOperations({
+    operations: Array.from({ length: 999 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
+  });
+  const start = process.hrtime.bigint();
+  doc.applyOperations({
+    operations: Array.from({ length: 1000 }, (_, i) => ({ type: 'setParagraphText', index: i, text: `更新-${i}` })),
+  });
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(elapsedMs < 5000, `1000 ops took ${elapsedMs.toFixed(1)}ms`);
+});
+
 test('ZIP traversal and decompression bombs are bounded', async () => {
   const base = await DocxDocument.create().toUint8Array();
   const zip = await JSZip.loadAsync(base);
