@@ -498,6 +498,66 @@ test('setPartXml rejects malformed external XML input', () => {
   assert.equal(doc.revision, 0);
 });
 
+test('updatePartXml rejects malformed DOM output and rolls back atomically', () => {
+  const doc = DocxDocument.create();
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.updatePartXml(doc.mainDocumentPath, (document) => {
+    const body = document.getElementsByTagNameNS(WORD_NS, 'body')[0];
+    body.appendChild(document.createComment('a--b'));
+  }), /Invalid XML/);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+  assert.equal(doc.revision, 0);
+});
+
+test('nested setPartXml in updatePartXml keeps outer callback edits', () => {
+  const doc = DocxDocument.create();
+  const main = doc.mainDocumentPath;
+  doc.updatePartXml(main, (document) => {
+    const body = document.getElementsByTagNameNS(WORD_NS, 'body')[0];
+    const paragraph = document.createElementNS(WORD_NS, 'w:p');
+    const run = document.createElementNS(WORD_NS, 'w:r');
+    const text = document.createElementNS(WORD_NS, 'w:t');
+    text.appendChild(document.createTextNode('OUTER'));
+    run.appendChild(text);
+    paragraph.appendChild(run);
+    body.insertBefore(paragraph, body.getElementsByTagNameNS(WORD_NS, 'sectPr')[0] ?? null);
+    doc.setPartXml(main, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>NESTED</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  });
+  assert.equal(doc.revision, 2);
+  assert.ok(doc.getParagraphs().some((paragraph) => paragraph.text === 'OUTER'));
+  assert.doesNotMatch(doc.getPartXml(main), /NESTED/);
+});
+
+test('performance regression: single-op loops and batched ops stay within acceptance thresholds', () => {
+  const elapsed = (run) => {
+    const start = process.hrtime.bigint();
+    run();
+    return Number(process.hrtime.bigint() - start) / 1e6;
+  };
+  const single = DocxDocument.create();
+  const insertMs = elapsed(() => { for (let i = 0; i < 300; i++) single.insertParagraph(`段落内容 ${i}`); });
+  const setMs = elapsed(() => { for (let i = 0; i < 200; i++) single.setParagraphText(i, `改写 ${i}`); });
+  const batch = DocxDocument.create();
+  const batchMs = elapsed(() => batch.applyOperations({
+    operations: Array.from({ length: 300 }, (_, i) => ({ type: 'insertParagraph', text: `x${i}` })),
+  }));
+  assert.ok(insertMs < 1000, `300 insert took ${insertMs.toFixed(1)}ms`);
+  assert.ok(setMs < 1000, `200 set took ${setMs.toFixed(1)}ms`);
+  assert.ok(batchMs < 500, `batch 300 ops took ${batchMs.toFixed(1)}ms`);
+});
+
+test('performance regression: repeated single inserts should not grow quadratically', () => {
+  const measure = (count) => {
+    const doc = DocxDocument.create();
+    const start = process.hrtime.bigint();
+    for (let i = 0; i < count; i++) doc.insertParagraph(`p${i}`);
+    return Number(process.hrtime.bigint() - start) / 1e6;
+  };
+  const t300 = measure(300);
+  const t600 = measure(600);
+  assert.ok(t600 / t300 < 3.5, `insert slope regressed: 300=${t300.toFixed(1)}ms, 600=${t600.toFixed(1)}ms`);
+});
+
 test('performance regression: 1000 paragraph document handles 1000 operations quickly', () => {
   const doc = DocxDocument.create();
   doc.applyOperations({
@@ -509,6 +569,23 @@ test('performance regression: 1000 paragraph document handles 1000 operations qu
   });
   const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
   assert.ok(elapsedMs < 5000, `1000 ops took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test('integration: table cell paragraph supports style, numbering and image together', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({ id: 'CellStyle', type: 'paragraph', name: 'CellStyle', paragraph: { alignment: 'center' }, run: { bold: true } });
+  const numId = doc.createNumbering('decimal');
+  doc.insertTable([['cell']]);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const paragraphIndex = table.rows[0].cells[0].blocks[0].paragraph.index;
+  doc.formatParagraph(paragraphIndex, { style: 'CellStyle' });
+  doc.setParagraphNumbering(paragraphIndex, numId, 0);
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: paragraphIndex, alt: 'cell-image' });
+  const paragraph = doc.getParagraphs()[paragraphIndex];
+  assert.equal(paragraph.style, 'CellStyle');
+  assert.equal(paragraph.numbering?.numId, numId);
+  assert.ok(paragraph.images.length >= 1);
+  assert.equal(doc.getBlocks().find((block) => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.images.length >= 1, true);
 });
 
 test('ZIP traversal and decompression bombs are bounded', async () => {
