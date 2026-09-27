@@ -76,7 +76,12 @@ console.log(reopened.getSnapshot());
 | `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段；将某个字段设为 `null` 可回退到继承样式 |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
-| `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
+| `insertTable(rows)` / `insertTableAt(rows, cols, before?, format?)` | 在正文中插入表格；支持空白表格、基础表格格式和正文块级定位 |
+| `getTable(index)` | 读取正文中第 N 个表格的 grid、跨度和表格/行/单元格格式信息 |
+| `insertTableRow()` / `deleteTableRow()` / `insertTableColumn()` / `deleteTableColumn()` | 行列编辑；同步维护 `w:tblGrid`，拒绝删成 0 行或 0 列 |
+| `mergeCells()` / `splitCell()` | 基于逻辑网格合并/拆分单元格，读写 `w:gridSpan` / `w:vMerge` |
+| `formatTable()` / `formatTableRow()` / `formatCell()` | 设置表格宽度、布局、边框、底纹、行高、标题行、单元格对齐和边距等显式属性 |
+| `setCellText()` | 修改可见单元格文字，同时保留段落结构与其他未改内容 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
@@ -167,7 +172,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。
@@ -177,10 +182,10 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基础表格，以及基于 `numbering.xml` 的项目符号 / 编号列表；**不承诺与 Word 像素级一致或精确分页**。列表计数目前只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。表格样式当前只参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，未实现边框 / 底纹渲染与其余条件样式。
+当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表，以及带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格；**不承诺与 Word 像素级一致或精确分页**。列表计数只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。表格样式参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，其余条件样式尚未实现。图片显示、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
 XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点渲染，不将文档 XML 当作 HTML；粘贴仅接受纯文本，不主动加载外部关系目标。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
-测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、表格与分节、格式顺序、编号解析与创建、多级编号、style `numPr`、legal numbering、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。
+测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、样式链与主题解析、编号解析与创建、多级编号、style `numPr`、legal numbering、表格跨度解析、行列编辑、单元格合并 / 拆分、显式表格格式、分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。

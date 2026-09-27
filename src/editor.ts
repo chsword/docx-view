@@ -1,5 +1,6 @@
 import { DocxDocument } from './document.js';
-import type { DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo } from './types.js';
+import type { BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo, TableFormat, TableRowInfo, WidthFormat } from './types.js';
+import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -192,6 +193,77 @@ export class DocxEditor {
     selection.addRange(range);
   }
 
+  private borderCss(border: BorderFormat | undefined): string | undefined {
+    if (!border) return undefined;
+    if (border.none || ['nil', 'none'].includes(border.style ?? '')) return 'none';
+    const width = border.size !== undefined ? `${Math.max(1, eighthPointsToPx(border.size))}px` : '1px';
+    const color = border.color && /^[0-9a-f]{6}$/i.test(border.color) ? `#${border.color}` : '#dbe3ed';
+    return `${width} solid ${color}`;
+  }
+
+  private cellBorder(side: 'top' | 'right' | 'bottom' | 'left', table: TableFormat | undefined, cell: CellFormat | undefined,
+    row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): string | undefined {
+    const explicit = cell?.borders?.[side];
+    if (explicit) return this.borderCss(explicit);
+    const borders = table?.borders;
+    if (!borders) return undefined;
+    if (side === 'top' && row > 0 && borders.insideH) return this.borderCss(borders.insideH);
+    if (side === 'bottom' && row + rowSpan < rowCount && borders.insideH) return this.borderCss(borders.insideH);
+    if (side === 'left' && col > 0 && borders.insideV) return this.borderCss(borders.insideV);
+    if (side === 'right' && col + colSpan < colCount && borders.insideV) return this.borderCss(borders.insideV);
+    return this.borderCss(borders[side]);
+  }
+
+  private widthCss(width: WidthFormat | undefined): string | undefined {
+    return normalizeWidth(width);
+  }
+
+  private paddingCss(width: WidthFormat | undefined): string | undefined {
+    if (!width) return undefined;
+    if (width.type === 'pct') return `${width.value / 50}%`;
+    if (width.type === 'dxa') return `${twipsToPx(width.value)}px`;
+    return undefined;
+  }
+
+  private applyTableStyle(table: HTMLTableElement, format: TableFormat | undefined): void {
+    if (!format) return;
+    table.style.tableLayout = format.layout === 'fixed' ? 'fixed' : 'auto';
+    const width = this.widthCss(format.width);
+    if (width) table.style.width = width;
+    if (format.alignment === 'center') table.style.marginInline = 'auto';
+    if (format.alignment === 'right') { table.style.marginLeft = 'auto'; table.style.marginRight = '0'; }
+    if (format.alignment === 'left') { table.style.marginLeft = '0'; table.style.marginRight = 'auto'; }
+    if (format.indent !== undefined && (!format.alignment || format.alignment === 'left')) table.style.marginLeft = `${twipsToPx(format.indent)}px`;
+    if (format.shading?.fill) table.style.backgroundColor = `#${format.shading.fill}`;
+    if (format.caption) {
+      const caption = table.createCaption();
+      caption.textContent = format.caption;
+    }
+  }
+
+  private applyRowStyle(tr: HTMLTableRowElement, row: TableRowInfo): void {
+    if (!row.format) return;
+    if (row.format.height) tr.style.height = `${twipsToPx(row.format.height.value)}px`;
+    if (row.format.header) tr.dataset.header = 'true';
+  }
+
+  private applyCellStyle(td: HTMLTableCellElement, cell: CellFormat | undefined, table: TableFormat | undefined,
+    row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): void {
+    td.style.borderTop = this.cellBorder('top', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderTop;
+    td.style.borderRight = this.cellBorder('right', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderRight;
+    td.style.borderBottom = this.cellBorder('bottom', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderBottom;
+    td.style.borderLeft = this.cellBorder('left', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderLeft;
+    if (cell?.shading?.fill) td.style.backgroundColor = `#${cell.shading.fill}`;
+    if (cell?.verticalAlign) td.style.verticalAlign = cell.verticalAlign;
+    if (cell?.width) td.style.width = this.widthCss(cell.width) ?? '';
+    if (cell?.margin?.top) td.style.paddingTop = this.paddingCss(cell.margin.top) ?? '';
+    if (cell?.margin?.right) td.style.paddingRight = this.paddingCss(cell.margin.right) ?? '';
+    if (cell?.margin?.bottom) td.style.paddingBottom = this.paddingCss(cell.margin.bottom) ?? '';
+    if (cell?.margin?.left) td.style.paddingLeft = this.paddingCss(cell.margin.left) ?? '';
+    if (cell?.noWrap) td.style.whiteSpace = 'nowrap';
+    if (cell?.textDirection?.toLowerCase().includes('tb') || cell?.textDirection?.toLowerCase().includes('bt')) td.style.writingMode = 'vertical-rl';
+  }
+
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
@@ -199,15 +271,37 @@ export class DocxEditor {
       } else {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
+        this.applyTableStyle(table, block.format);
         const body = table.createTBody();
-        for (const row of block.rows) {
+        for (const [rowIndex, row] of block.rows.entries()) {
           const tr = body.insertRow();
+          this.applyRowStyle(tr, row);
+          let colIndex = 0;
           for (const cell of row.cells) {
+            const logicalStart = colIndex;
+            colIndex += Math.max(1, cell.colSpan);
+            if (cell.isMergeContinuation) continue;
             const td = tr.insertCell();
+            td.dataset.tableCell = 'true';
+            td.dataset.gridStart = String(logicalStart);
+            td.dataset.gridEnd = String(logicalStart + Math.max(1, cell.colSpan));
+            td.dataset.rowStart = String(rowIndex);
+            td.dataset.rowEnd = String(rowIndex + Math.max(1, cell.rowSpan));
+            td.colSpan = Math.max(1, cell.colSpan);
+            if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+            this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
             this.appendBlocks(td, cell.blocks);
           }
         }
         parent.appendChild(table);
+        if (block.format?.description) {
+          const description = this.root.ownerDocument.createElement('div');
+          description.className = 'sr-only';
+          description.id = `docx-table-desc-${Math.random().toString(36).slice(2)}`;
+          description.textContent = block.format.description;
+          table.setAttribute('aria-describedby', description.id);
+          parent.appendChild(description);
+        }
       }
     }
   }
@@ -298,6 +392,22 @@ export class DocxEditor {
         this.render();
         this.options.onChange?.(this.document.getSnapshot());
       }
+      if (event.key === 'Tab') {
+        if (this.moveToAdjacentCell(element, event.shiftKey ? -1 : 1)) event.preventDefault();
+      }
+      const caret = this.caretIn(element);
+      if (event.key === 'ArrowLeft' && caret?.start === 0 && caret.end === 0) {
+        if (this.moveToAdjacentCell(element, -1)) event.preventDefault();
+      }
+      if (event.key === 'ArrowRight' && caret && caret.start === caret.end && caret.end === this.readText(element).length) {
+        if (this.moveToAdjacentCell(element, 1)) event.preventDefault();
+      }
+      if (event.key === 'ArrowUp' && caret?.start === 0 && caret.end === 0) {
+        if (this.moveVerticalCell(element, -1)) event.preventDefault();
+      }
+      if (event.key === 'ArrowDown' && caret && caret.start === caret.end && caret.end === this.readText(element).length) {
+        if (this.moveVerticalCell(element, 1)) event.preventDefault();
+      }
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
       }
@@ -324,6 +434,53 @@ export class DocxEditor {
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+  }
+
+  private caretIn(element: HTMLElement): { start: number; end: number } | null {
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return null;
+    const prefix = range.cloneRange();
+    prefix.selectNodeContents(element);
+    prefix.setEnd(range.startContainer, range.startOffset);
+    const start = prefix.toString().length;
+    return { start, end: start + range.toString().length };
+  }
+
+  private focusParagraphInCell(cell: HTMLTableCellElement | null): void {
+    const paragraph = cell?.querySelector<HTMLElement>('[data-paragraph]');
+    paragraph?.focus();
+  }
+
+  private moveToAdjacentCell(element: HTMLElement, delta: number): boolean {
+    const cell = element.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+    const table = cell?.closest('table');
+    if (!cell || !table) return false;
+    const cells = Array.from(table.querySelectorAll<HTMLTableCellElement>('td[data-table-cell="true"]'));
+    const index = cells.indexOf(cell);
+    const target = cells[index + delta] ?? null;
+    if (!target) return false;
+    this.focusParagraphInCell(target);
+    return true;
+  }
+
+  private moveVerticalCell(element: HTMLElement, delta: number): boolean {
+    const cell = element.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+    const table = cell?.closest('table');
+    if (!cell || !table) return false;
+    const currentCol = Number(cell.dataset.gridStart ?? 0);
+    const targetRow = delta < 0 ? Number(cell.dataset.rowStart ?? 0) - 1 : Number(cell.dataset.rowEnd ?? 0);
+    const target = Array.from(table.querySelectorAll<HTMLTableCellElement>('td[data-table-cell="true"]')).find((candidate) => {
+      const rowStart = Number(candidate.dataset.rowStart ?? -1);
+      const rowEnd = Number(candidate.dataset.rowEnd ?? -1);
+      const colStart = Number(candidate.dataset.gridStart ?? -1);
+      const colEnd = Number(candidate.dataset.gridEnd ?? -1);
+      return rowStart <= targetRow && rowEnd > targetRow && colStart <= currentCol && colEnd > currentCol;
+    });
+    if (!target) return false;
+    this.focusParagraphInCell(target);
+    return true;
   }
 
   private selectParagraph(index: number): void {

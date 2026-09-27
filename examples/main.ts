@@ -69,6 +69,20 @@ function createSample(): DocxDocument {
   sample.insertParagraph('解析 numbering.xml 与多级编号');
   sample.setParagraphNumbering(9, decimal, 1);
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
+  sample.formatTable(0, {
+    layout: 'fixed',
+    width: { type: 'pct', value: 5000 },
+    borders: {
+      top: { style: 'single', size: 8, color: '9AA8BA' },
+      right: { style: 'single', size: 8, color: '9AA8BA' },
+      bottom: { style: 'single', size: 8, color: '9AA8BA' },
+      left: { style: 'single', size: 8, color: '9AA8BA' },
+      insideH: { style: 'single', size: 8, color: 'D7DFEA' },
+      insideV: { style: 'single', size: 8, color: 'D7DFEA' },
+    },
+  });
+  sample.formatTableRow(0, 0, { header: true, height: { value: 520, rule: 'atLeast' } });
+  sample.formatCell(0, 0, 0, { shading: { fill: 'EEF3FF' }, verticalAlign: 'center' });
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
   sample.formatParagraph(last.index, { style: 'Quote' }, { validateStyle: true });
@@ -157,6 +171,27 @@ function selectedIndex(): number {
     throw new Error('请先点击正文中的一个段落，再使用格式工具。');
   }
   return index;
+}
+
+function selectedCell(): { table: number; row: number; col: number; rowSpan: number; colSpan: number } {
+  editor.flush();
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+  if (!cell) throw new Error('请先把光标放进一个表格单元格，再使用表格工具。');
+  const tableElement = cell.closest('.docx-table');
+  if (!tableElement) throw new Error('未找到当前表格。');
+  if (tableElement.parentElement?.closest('.docx-table')) {
+    throw new Error('当前演示的结构化表格工具仅支持正文顶层表格，不支持嵌套表格。');
+  }
+  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
+  if (table < 0) throw new Error('未找到当前表格。');
+  return {
+    table,
+    row: Number(cell.dataset.rowStart ?? 0),
+    col: Number(cell.dataset.gridStart ?? 0),
+    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
+    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
+  };
 }
 
 function formatRuns(format: RunFormat): void {
@@ -264,10 +299,74 @@ element('add-paragraph').addEventListener('click', () => run(() => {
 }));
 element('add-table').addEventListener('click', () => run(() => {
   editor.flush();
-  doc.insertTable([['项目', '说明'], ['新项目', '点击单元格中的文字即可编辑']]);
+  const rows = Number(element<HTMLSelectElement>('table-rows').value);
+  const cols = Number(element<HTMLSelectElement>('table-cols').value);
+  doc.insertTableAt(rows, cols, undefined, { layout: 'fixed' });
+  doc.setCellText(doc.getBlocks().filter((block) => block.type === 'table').length - 1, 0, 0, '项目');
+  if (cols > 1) doc.setCellText(doc.getBlocks().filter((block) => block.type === 'table').length - 1, 0, 1, '说明');
+  if (rows > 1) doc.setCellText(doc.getBlocks().filter((block) => block.type === 'table').length - 1, 1, 0, '新项目');
+  if (rows > 1 && cols > 1) doc.setCellText(doc.getBlocks().filter((block) => block.type === 'table').length - 1, 1, 1, '点击单元格中的文字即可编辑');
   editor.render();
   refresh();
-  message('已在文档末尾添加 2 × 2 表格。');
+  message(`已在文档末尾添加 ${rows} × ${cols} 表格。`);
+}));
+element('insert-row').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.insertTableRow(cell.table, cell.row + 1);
+  editor.render();
+  refresh();
+  message('已在当前单元格下方插入一行。');
+}));
+element('delete-row').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.deleteTableRow(cell.table, cell.row);
+  editor.render();
+  refresh();
+  message('已删除当前行。');
+}));
+element('insert-col').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.insertTableColumn(cell.table, cell.col + cell.colSpan);
+  editor.render();
+  refresh();
+  message('已在当前单元格右侧插入一列。');
+}));
+element('delete-col').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.deleteTableColumn(cell.table, cell.col);
+  editor.render();
+  refresh();
+  message('已删除当前列。');
+}));
+element('merge-cells').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.mergeCells(cell.table, { row: cell.row, col: cell.col, rowSpan: 2, colSpan: 2 });
+  editor.render();
+  refresh();
+  message('已尝试从当前单元格开始合并 2 × 2 区域。');
+}));
+element('split-cell').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  doc.splitCell(cell.table, cell.row, cell.col, cell.rowSpan, cell.colSpan);
+  editor.render();
+  refresh();
+  message('已按当前跨度拆分单元格。');
+}));
+element('apply-cell-style').addEventListener('click', () => run(() => {
+  const cell = selectedCell();
+  const fill = element<HTMLInputElement>('cell-fill').value.slice(1).toUpperCase();
+  doc.formatCell(cell.table, cell.row, cell.col, {
+    shading: { fill },
+    borders: {
+      top: { style: 'single', size: 8, color: '7A8AA0' },
+      right: { style: 'single', size: 8, color: '7A8AA0' },
+      bottom: { style: 'single', size: 8, color: '7A8AA0' },
+      left: { style: 'single', size: 8, color: '7A8AA0' },
+    },
+  });
+  editor.render();
+  refresh();
+  message('已应用当前单元格边框与底纹。');
 }));
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;

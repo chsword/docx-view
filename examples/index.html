@@ -44,7 +44,25 @@
                 <button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button>
                 <button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button>
               </div>
-              <div class="tool-group insert-tools"><button id="add-paragraph" class="tool wide">＋ 段落</button><button id="add-table" class="tool wide">⊞ 表格</button></div>
+              <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option></select></div>
+              <div class="tool-group insert-tools">
+                <button id="add-paragraph" class="tool wide">＋ 段落</button>
+                <select id="table-rows" aria-label="表格行数"><option value="2">2 行</option><option value="3">3 行</option><option value="4">4 行</option></select>
+                <select id="table-cols" aria-label="表格列数"><option value="2">2 列</option><option value="3">3 列</option><option value="4">4 列</option></select>
+                <button id="add-table" class="tool wide">⊞ 插入表格</button>
+              </div>
+              <div class="tool-group">
+                <button id="insert-row" class="tool wide">＋ 行</button>
+                <button id="delete-row" class="tool wide">－ 行</button>
+                <button id="insert-col" class="tool wide">＋ 列</button>
+                <button id="delete-col" class="tool wide">－ 列</button>
+              </div>
+              <div class="tool-group">
+                <button id="merge-cells" class="tool wide">合并 2×2</button>
+                <button id="split-cell" class="tool wide">拆分</button>
+                <label class="color-control" title="单元格底纹"><span class="sr-only">单元格底纹</span><input type="color" id="cell-fill" value="#f3f6fb" /><span>▧</span></label>
+                <button id="apply-cell-style" class="tool wide">边框/底纹</button>
+              </div>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>
             <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>

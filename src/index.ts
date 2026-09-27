@@ -4,6 +4,8 @@ export type { DocxEditorOptions } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL } from './xml.js';
 export type {
-  AgentOperation, AgentRequest, DocumentBlock, DocumentSnapshot, NumberingDefinition, NumberingInfo,
-  NumberingLevelDefinition, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo, StyleInfo,
+  AgentOperation, AgentRequest, BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot,
+  MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
+  RowFormat, RunFormat, RunInfo, ShadingFormat, StyleInfo, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
+  WidthFormat,
 } from './types.js';
