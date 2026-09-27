@@ -133,6 +133,7 @@ export function setNoteSettingsOn(settingsDocument: Document, update: Partial<No
   for (const kind of ['footnote', 'endnote'] as const) {
     const patch = update[kind];
     if (!patch) continue;
+    if (!['pos', 'numFmt', 'numStart', 'numRestart'].some((key) => (patch as Record<string, unknown>)[key] !== undefined)) continue;
     const tag = kind === 'footnote' ? 'footnotePr' : 'endnotePr';
     const pr = orderedProperty(root, tag, SETTINGS_ORDER);
     if (patch.pos !== undefined) setWordValue(orderedProperty(pr, 'pos', NOTE_PR_ORDER), patch.pos);

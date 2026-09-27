@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, NoteInfo, NoteSettings, NumberingDefinition,
+  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, ParagraphFormat, ParagraphInfo, RowFormat, RunFormat, RunInfo, StyleInfo, TableFormat, TableInfo,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
@@ -337,6 +337,30 @@ interface NoteState {
   entries: Record<NoteKind, Map<number, ReturnType<typeof parseNoteEntries>[number]>>;
 }
 
+function normalizedNoteSettingsPatch(input: Partial<NoteSettings>): Partial<NoteSettings> {
+  const result: Partial<NoteSettings> = {};
+  for (const kind of ['footnote', 'endnote'] as const) {
+    if (!(kind in input)) continue;
+    const value = input[kind];
+    if (value === undefined) continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${kind} settings must be an object.`);
+    const known = new Set(['pos', 'numFmt', 'numStart', 'numRestart']);
+    for (const key of Object.keys(value)) {
+      if (!known.has(key)) throw new Error(`Unknown note setting property: ${kind}.${key}`);
+    }
+    const patch: NoteSettingsValue = {};
+    if ('pos' in value && value.pos !== undefined) patch.pos = value.pos;
+    if ('numFmt' in value && value.numFmt !== undefined) patch.numFmt = value.numFmt;
+    if ('numStart' in value && value.numStart !== undefined) patch.numStart = value.numStart;
+    if ('numRestart' in value && value.numRestart !== undefined) patch.numRestart = value.numRestart;
+    if (Object.keys(patch).length) result[kind] = patch;
+  }
+  for (const key of Object.keys(input)) {
+    if (!['footnote', 'endnote'].includes(key)) throw new Error(`Unknown note settings key: ${key}`);
+  }
+  return result;
+}
+
 function bodyChildren(parent: Element): Element[] {
   return children(parent).flatMap((child) => ['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '') ? bodyChildren(child) : [child]);
 }
@@ -398,23 +422,6 @@ function referenceRecords(body: Element): NoteReferenceRecord[] {
     }
   }
   return records;
-}
-
-function noteParagraphOrder(note: Element): Element[] {
-  const result: Element[] = [];
-  const walk = (parent: Element): void => {
-    for (const child of bodyChildren(parent)) {
-      if (child.localName === 'p') {
-        result.push(child);
-        continue;
-      }
-      if (child.localName === 'tbl') {
-        for (const row of children(child, 'tr')) for (const cell of children(row, 'tc')) walk(cell);
-      }
-    }
-  };
-  walk(note);
-  return result;
 }
 
 interface ImageReadContext {
@@ -1605,8 +1612,6 @@ export class DocxDocument {
     noteNumber: (kind: NoteKind, id: number) => { number: number; marker: string } | null,
     sourcePartPath: string,
   ): DocumentBlock[] {
-    const paragraphOrder = noteParagraphOrder(root);
-    const indices = new Map(paragraphOrder.map((paragraph, index) => [paragraph, index]));
     const imageContext: ImageReadContext = {
       relationships: this.relationshipsFor(sourcePartPath),
       getContentType: this.createContentTypeResolver(),
@@ -1614,7 +1619,7 @@ export class DocxDocument {
     };
     const walk = (parent: Element): DocumentBlock[] => bodyChildren(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') {
-        return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child) ?? 0, styles, undefined, imageContext, noteNumber) }];
+        return [{ type: 'paragraph', paragraph: readParagraph(child, -1, styles, undefined, imageContext, noteNumber) }];
       }
       if (child.localName === 'tbl') return [readTable(child, walk)];
       return [];
@@ -2653,7 +2658,7 @@ export class DocxDocument {
   }
 
   setNoteSettings(settings: Partial<NoteSettings>): void {
-    const safe = settings ?? {};
+    const safe = normalizedNoteSettingsPatch(settings ?? {});
     if (!safe.footnote && !safe.endnote) return;
     this.withDraft((draft) => draft.setNoteSettingsDirect(safe));
   }

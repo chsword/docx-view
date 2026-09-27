@@ -1148,10 +1148,12 @@ test('next note id also considers dangling references in body', () => {
   assert.equal(note.id, 2);
 });
 
-test('note body paragraph indexes are local per note', () => {
+test('note body paragraph indexes are sentinel values outside main namespace', () => {
   const doc = DocxDocument.create();
   doc.insertFootnote(0, 1, 'one');
-  assert.equal(doc.getFootnotes()[0].blocks[0].paragraph.index, 0);
+  const noteParagraphIndex = doc.getFootnotes()[0].blocks[0].paragraph.index;
+  assert.equal(noteParagraphIndex, -1);
+  assert.throws(() => doc.setParagraphText(noteParagraphIndex, 'x'), /non-negative/);
 });
 
 test('convertNote updates reference styles to target kind', () => {
@@ -1160,4 +1162,15 @@ test('convertNote updates reference styles to target kind', () => {
   doc.convertNote('footnote', note.id);
   assert.match(doc.getPartXml(doc.mainDocumentPath), /EndnoteReference/);
   assert.match(doc.getPartXml('word/endnotes.xml'), /EndnoteReference/);
+});
+
+test('setNoteSettings rejects unknown fields and does not bump revision on no-op', () => {
+  const doc = DocxDocument.create();
+  const baseRevision = doc.revision;
+  assert.throws(() => doc.setNoteSettings({ footnote: { bogusKey: 1 } }), /Unknown note setting property/);
+  assert.equal(doc.revision, baseRevision);
+  doc.setNoteSettings({ footnote: {} });
+  assert.equal(doc.revision, baseRevision);
+  doc.setNoteSettings({});
+  assert.equal(doc.revision, baseRevision);
 });
