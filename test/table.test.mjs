@@ -98,6 +98,7 @@ test('insertTable fills all cells atomically in one revision', () => {
   doc.insertTable([['A', 'B'], ['C', 'D']]);
   assert.equal(doc.revision, 1);
   assert.equal(doc.getTable(0).rows[1].cells[1].blocks[0].paragraph.text, 'D');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tbl><w:tblPr\/><w:tblGrid>/);
 });
 
 test('insertTableAt keeps a paragraph after a table inserted before another table', () => {

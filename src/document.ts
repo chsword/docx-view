@@ -463,10 +463,10 @@ function appendCellContent(target: Element, source: Element): void {
 
 function buildTable(document: Document, rows: number, cols: number, format?: TableFormat, texts?: string[][]): Element {
   const table = wordElement(document, 'tbl');
+  const tableProps = wordElement(document, 'tblPr');
   const grid = wordElement(document, 'tblGrid');
   for (let i = 0; i < cols; i++) grid.appendChild(gridCol(document, Math.floor(9000 / cols)));
-  const tableProps = format ? wordElement(document, 'tblPr') : null;
-  if (tableProps) table.appendChild(tableProps);
+  table.appendChild(tableProps);
   table.appendChild(grid);
   if (format) setTableFormat(table, format);
   for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
