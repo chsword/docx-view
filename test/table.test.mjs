@@ -315,7 +315,7 @@ test('column edits materialize missing tblGrid after tblPr', () => {
   `));
   doc.insertTableColumn(0, 2);
   const xml = doc.getPartXml(doc.mainDocumentPath);
-  assert.match(xml, /<w:tbl><w:tblPr[\s\S]*<\/w:tblPr><w:tblGrid><w:gridCol[^>]*\/><w:gridCol[^>]*\/><w:gridCol[^>]*\/><\/w:tblGrid><w:tr>/);
+  assert.match(xml, /<w:tbl>[\s\S]*<w:tblPr[\s\S]*<\/w:tblPr>\s*<w:tblGrid><w:gridCol[^>]*\/><w:gridCol[^>]*\/><w:gridCol[^>]*\/><\/w:tblGrid>\s*<w:tr>/);
 });
 
 test('formatTableRow writes row height and header properties', () => {

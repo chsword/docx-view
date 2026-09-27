@@ -1005,9 +1005,6 @@ export class DocxDocument {
       if (rows !== master.rowSpan || cols !== master.colSpan) {
         throw new Error('splitCell currently supports restoring a merged cell to its original grid span.');
       }
-      const masterProps = tableProperty(master.cell, 'tcPr');
-      mergeElement(masterProps, 'gridSpan', undefined);
-      mergeElement(masterProps, 'vMerge', undefined);
       for (let rowIndex = row; rowIndex < row + rows; rowIndex++) {
         const rowElement = model.rows[rowIndex]!;
         const position = rowCells(rowElement).find(item => item.start === col);
