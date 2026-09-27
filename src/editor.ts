@@ -249,7 +249,19 @@ export class DocxEditor {
         this.document.deleteImage(image);
         this.render();
         this.options.onChange?.(this.document.getSnapshot());
+        return;
       }
+      if (!keyEvent.altKey || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(keyEvent.key)) return;
+      keyEvent.preventDefault();
+      const step = keyEvent.shiftKey ? 16 : 8;
+      const delta = keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp' ? -step : step;
+      if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowRight') {
+        this.document.resizeImage(image, { widthEmu: pxToEmu(Math.max(1, (image.widthPx || 1) + delta)), keepAspect: keyEvent.shiftKey });
+      } else {
+        this.document.resizeImage(image, { heightEmu: pxToEmu(Math.max(1, (image.heightPx || 1) + delta)), keepAspect: keyEvent.shiftKey });
+      }
+      this.render();
+      this.options.onChange?.(this.document.getSnapshot());
     });
     return wrapper;
   }
@@ -328,6 +340,9 @@ export class DocxEditor {
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {
     if (!this.selectedImageInfo || !['Delete', 'Backspace'].includes(event.key)) return;
+    const active = this.root.ownerDocument.activeElement as HTMLElement | null;
+    const image = active?.closest('[data-image]') as HTMLElement | null;
+    if (!image || image.dataset.image !== this.selectedImageInfo.relationshipId) return;
     event.preventDefault();
     this.document.deleteImage(this.selectedImageInfo);
     this.render();

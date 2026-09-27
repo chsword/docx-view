@@ -354,6 +354,19 @@ test('deleteImage keeps the media part when another relationship still targets i
   assert.equal(doc.getImages().length, 1);
 });
 
+test('images sharing a relationship within one run remain individually addressable', () => {
+  const drawing = `<w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="one"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="one"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const doc = withImageDoc(
+    `<w:p><w:r>${drawing}${drawing}</w:r></w:p>`,
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>`,
+  );
+  const [first, second] = doc.getImages();
+  assert.notEqual(first.ordinal, second.ordinal);
+  doc.deleteImage(second);
+  assert.equal(doc.getImages().length, 1);
+  assert.equal((doc.getPartXml(doc.mainDocumentPath).match(/<w:drawing>/g) ?? []).length, 1);
+});
+
 test('broken relationships, missing media parts and invalid extents do not crash image reads', () => {
   const doc = withImageDoc(
     `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="-1" cy="0"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="broken"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="broken"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rMissing"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="-1" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,

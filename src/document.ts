@@ -240,13 +240,14 @@ function readParagraph(
 ): ParagraphInfo {
   const props = children(paragraph, 'pPr')[0];
   const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
-  const runs = ownRuns(paragraph).map((run, runIndex) => readRun(run, runIndex, index, relationships, getContentType));
+  const runElements = ownRuns(paragraph);
+  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, index, relationships, getContentType));
   return {
     index, text: textOf(paragraph), runs,
     style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
     alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
-    images: runs.flatMap((run) => run.image ? [run.image] : []),
+    images: runElements.flatMap((run, runIndex) => readRunImages(run, index, runIndex, relationships, getContentType)),
   };
 }
 
@@ -255,18 +256,21 @@ function setOptionalAttribute(element: Element, name: string, value: string | un
   else element.setAttribute(name, value);
 }
 
-function imageElementForRun(run: Element, relationshipId: string): Element | undefined {
+function imageElementForRun(run: Element, relationshipId: string, ordinal = 0): Element | undefined {
+  let index = 0;
   for (const drawing of elementChildren(run, WORD_NS, 'drawing')) {
     const blips = Array.from(drawing.getElementsByTagNameNS(A_NS, 'blip'));
     if (blips.some((blip) => [blip.getAttributeNS(OFFICE_REL_NS, 'embed'), blip.getAttributeNS(OFFICE_REL_NS, 'link'),
       blip.getAttribute('r:embed'), blip.getAttribute('r:link')].includes(relationshipId))) {
-      return drawing;
+      if (index === ordinal) return drawing;
+      index++;
     }
   }
   for (const pict of elementChildren(run, WORD_NS, 'pict')) {
     const imageData = Array.from(pict.getElementsByTagNameNS(V_NS, 'imagedata'));
     if (imageData.some((node) => [node.getAttributeNS(OFFICE_REL_NS, 'id'), node.getAttribute('r:id')].includes(relationshipId))) {
-      return pict;
+      if (index === ordinal) return pict;
+      index++;
     }
   }
   return undefined;
@@ -639,7 +643,8 @@ export class DocxDocument {
   private resolveImage(image: ImageInfo | string): ImageInfo {
     const matches = this.getImages().filter((item) => typeof image === 'string'
       ? item.relationshipId === image
-      : item.relationshipId === image.relationshipId && item.paragraph === image.paragraph && item.run === image.run);
+      : item.relationshipId === image.relationshipId && item.paragraph === image.paragraph &&
+        item.run === image.run && item.ordinal === image.ordinal);
     if (!matches.length) throw new Error(`Image ${image} does not exist.`);
     if (matches.length > 1) throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo instead.`);
     return matches[0]!;
@@ -857,7 +862,7 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
-      const imageElement = imageElementForRun(run, info.relationshipId);
+      const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
       if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
       for (const extent of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'extent'))) {
         extent.setAttribute('cx', String(Math.max(1, Math.round(nextWidth))));
@@ -877,7 +882,7 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
-      const imageElement = imageElementForRun(run, info.relationshipId);
+      const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
       if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
       for (const docPr of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'docPr'))) {
         docPr.setAttribute('descr', alt);
@@ -895,7 +900,7 @@ export class DocxDocument {
     const main = this.getPartDocument(this.mainPath);
     const run = ownRuns(paragraphAt(main, info.paragraph))[info.run];
     if (!run) throw new Error(`Run ${info.run} does not exist.`);
-    const imageElement = imageElementForRun(run, info.relationshipId);
+    const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
     if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
     run.removeChild(imageElement);
     const next = new Map(this.parts);
@@ -904,7 +909,9 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(this.mainPath);
     if (this.hasPart(relPath)) {
       const rels = this.getPartDocument(relPath);
-      if (!documentUsesRelationship(main, info.relationshipId)) {
+      const sourcePart = sourcePartFromRelationshipsPath(relPath) ?? this.mainPath;
+      const sourceDocument = sourcePart === this.mainPath ? main : this.getPartDocument(sourcePart);
+      if (!documentUsesRelationship(sourceDocument, info.relationshipId)) {
         const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
           .find((rel) => rel.getAttribute('Id') === info.relationshipId);
         relationship?.parentNode?.removeChild(relationship);

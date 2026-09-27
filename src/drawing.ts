@@ -292,7 +292,7 @@ export function readRunImages(
       images.push(...readVmlImage(element, paragraph, run, relationships, getContentType));
     }
   }
-  return images;
+  return images.map((image, ordinal) => ({ ...image, ordinal }));
 }
 
 export function detectImageSize(bytes: Uint8Array, contentType?: string): { width: number; height: number } | null {
