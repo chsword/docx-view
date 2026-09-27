@@ -25,6 +25,18 @@ npm pack              # 打包库，供其他项目安装
 
 将 `examples-dist/` 部署到任意静态 HTTP 服务即可；资源使用相对路径，支持子目录部署。不要直接用 `file://` 打开源码 HTML。
 
+### GitHub Pages 演示站
+
+部署成功后的地址：**https://chsword.github.io/docx-view/**
+
+首次部署：
+
+1. 在仓库 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**。
+2. 将部署工作流合并到 `main`，推送后会自动执行类型检查、测试、静态构建及部署。
+3. 在 **Actions → Deploy examples to GitHub Pages** 查看结果；也可以通过 **Run workflow** 选择 `main` 手动部署。
+
+工作流只允许从 `main` 发布，构建产物来自 `examples-dist/`，不需要额外的访问令牌或 `gh-pages` 分支。如果为 `github-pages` 环境配置了审批规则，需要批准后才能发布。上述链接在首次部署成功后才可访问。
+
 ## 库 API
 
 以下示例供安装本项目打包产物的应用使用；库的核心 API 同时支持 Node.js 和浏览器，不依赖浏览器全局 `document`。
