@@ -3,7 +3,8 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, DocumentBlock, DocumentSnapshot, NumberingDefinition, NumberingInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
-import { computeParagraphNumbering, parseNumberingModel, parseStyleNumberingReferences } from './numbering.js';
+import type { NumberingModel } from './numbering.js';
+import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
@@ -20,6 +21,14 @@ const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordproces
 const NUMBERING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering';
 const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
 const encoder = new TextEncoder();
+
+interface NumberingContext {
+  revision: number;
+  mainPath: string;
+  numberingPath?: string;
+  stylesPath?: string;
+  model: NumberingModel;
+}
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -279,10 +288,16 @@ function defaultNumberingDefinition(kind: 'bullet' | 'decimal' | 'multilevel'): 
     runFormat: fontFamily ? { fontFamily } : undefined,
   });
   if (kind === 'bullet') {
-    return { multiLevelType: 'hybridMultilevel', levels: [makeLevel(0, 'bullet', '•', 'Symbol')] };
+    return {
+      multiLevelType: 'hybridMultilevel',
+      levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'bullet', level === 0 ? '•' : level % 2 ? '◦' : '▪', 'Symbol')),
+    };
   }
   if (kind === 'decimal') {
-    return { multiLevelType: 'singleLevel', levels: [makeLevel(0, 'decimal', '%1.')] };
+    return {
+      multiLevelType: 'multilevel',
+      levels: Array.from({ length: 9 }, (_, level) => makeLevel(level, 'decimal', `%${level + 1}.`)),
+    };
   }
   return {
     multiLevelType: 'multilevel',
@@ -377,6 +392,7 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private numberingContextCache?: NumberingContext;
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -513,7 +529,12 @@ export class DocxDocument {
     const relationship = children(rels, 'Relationship', REL_NS).find(rel =>
       rel.getAttribute('Type') === type && rel.getAttribute('TargetMode') !== 'External');
     const target = relationship?.getAttribute('Target');
-    return target ? resolveTarget(this.mainPath, decodeURIComponent(target)) : undefined;
+    if (!target) return undefined;
+    try {
+      return resolveTarget(this.mainPath, decodeURIComponent(target));
+    } catch {
+      return undefined;
+    }
   }
 
   private getNumberingPath(): string | undefined {
@@ -527,19 +548,28 @@ export class DocxDocument {
         : this.parts.has('word/styles.xml') ? 'word/styles.xml' : undefined);
   }
 
-  private getNumberingDocuments(): { numbering?: Document; styles?: Document } {
+  private getNumberingContext(): NumberingContext {
+    if (this.numberingContextCache?.revision === this.revision && this.numberingContextCache.mainPath === this.mainPath) {
+      return this.numberingContextCache;
+    }
     const numberingPath = this.getNumberingPath();
     const stylesPath = this.getStylesPath();
-    return {
-      numbering: numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined,
-      styles: stylesPath && this.parts.has(stylesPath) ? this.getPartDocument(stylesPath) : undefined,
+    const numbering = numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined;
+    const styles = stylesPath && this.parts.has(stylesPath) ? this.getPartDocument(stylesPath) : undefined;
+    const context = {
+      revision: this.revision,
+      mainPath: this.mainPath,
+      numberingPath,
+      stylesPath,
+      model: parseNumberingModel(numbering, styles),
     };
+    this.numberingContextCache = context;
+    return context;
   }
 
   private readParagraphs(document = this.getPartDocument(this.mainPath)): { paragraphs: ParagraphInfo[]; infoByElement: Map<Element, ParagraphInfo> } {
     const paragraphElements = descendants(bodyOf(document), 'p');
-    const { numbering, styles } = this.getNumberingDocuments();
-    const numberingByParagraph = computeParagraphNumbering(paragraphElements, parseNumberingModel(numbering, styles));
+    const numberingByParagraph = computeParagraphNumbering(paragraphElements, this.getNumberingContext().model);
     const paragraphs = paragraphElements.map((paragraph, index) => readParagraph(paragraph, index, numberingByParagraph.get(paragraph)));
     return { paragraphs, infoByElement: new Map(paragraphElements.map((paragraph, index) => [paragraph, paragraphs[index]!])) };
   }
@@ -567,12 +597,25 @@ export class DocxDocument {
   }
 
   getSnapshot(): DocumentSnapshot {
-    return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts() };
+    const document = this.getPartDocument(this.mainPath);
+    const { paragraphs, infoByElement } = this.readParagraphs(document);
+    const body = bodyOf(document);
+    const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
+      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: infoByElement.get(child)! }];
+      if (child.localName === 'tbl') return [{
+        type: 'table',
+        rows: children(child, 'tr').map(row => ({
+          cells: children(row, 'tc').map(cell => ({ blocks: walk(cell) })),
+        })),
+      }];
+      if (['sdt', 'sdtContent', 'customXml'].includes(child.localName ?? '')) return walk(child);
+      return [];
+    });
+    return { revision: this.revision, paragraphs, blocks: walk(body), parts: this.listParts() };
   }
 
   getNumberingDefinitions(): NumberingDefinition[] {
-    const { numbering, styles } = this.getNumberingDocuments();
-    return parseNumberingModel(numbering, styles).definitions;
+    return this.getNumberingContext().model.definitions;
   }
 
   setParagraphNumbering(index: number, numId: number, level = 0): void {
@@ -591,8 +634,7 @@ export class DocxDocument {
   clearParagraphNumbering(index: number): void {
     const paragraph = this.getParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
-    const { styles } = this.getNumberingDocuments();
-    const styleHasNumbering = paragraph.style ? parseStyleNumberingReferences(styles).has(paragraph.style) : false;
+    const styleHasNumbering = paragraph.style ? this.getNumberingContext().model.paragraphStyles.has(paragraph.style) : false;
     this.updatePartXml(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       const existing = children(props, 'numPr')[0];

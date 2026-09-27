@@ -81,6 +81,7 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'setParagraphNumbering':
         keys(op, ['type', 'index', 'numId', 'level']);
         assertIndex(op.index); assertIndex(op.numId);
+        if (op.numId < 1) throw new Error('numId must be at least 1.');
         if ('level' in op) {
           assertIndex(op.level);
           if (op.level > 8) throw new Error('level must be between 0 and 8.');
@@ -132,7 +133,7 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('formatParagraph', { index, format: shape({
             alignment: { enum: ['left', 'center', 'right', 'both'] }, style: text,
           }, []) }),
-          operation('setParagraphNumbering', { index, numId: index, level: { ...index, maximum: 8 } }, ['index', 'numId']),
+          operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
           operation('clearParagraphNumbering', { index }),
           operation('setParagraphLevel', { index, delta: integer }),
           operation('formatRun', { paragraph: index, run: index, format: shape({

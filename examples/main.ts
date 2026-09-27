@@ -1,5 +1,6 @@
 import { DocxDocument, DocxEditor } from '../src/index.js';
 import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
+import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -8,11 +9,14 @@ function element<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
+const recentNumbering = new Map<'bullet' | 'decimal', number>();
+
 function applyNumbering(kind: 'bullet' | 'decimal'): void {
   const index = selectedIndex();
   const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
-  const numId = doc.createNumbering(kind);
+  const numId = findReusableNumberingId(doc.getParagraphs(), doc.getNumberingDefinitions(), kind, index, recentNumbering.get(kind)) ?? doc.createNumbering(kind);
   doc.setParagraphNumbering(index, numId, paragraph.numbering?.level ?? 0);
+  recentNumbering.set(kind, numId);
   editor.render();
   refresh();
   message(kind === 'bullet' ? '已应用项目符号列表。' : '已应用编号列表。');
@@ -102,7 +106,8 @@ function updateSelection(): void {
   const outdent = element<HTMLButtonElement>('list-outdent');
   size.disabled = color.disabled = alignment.disabled = !paragraph;
   bullet.disabled = decimal.disabled = !paragraph;
-  indent.disabled = outdent.disabled = !paragraph?.numbering;
+  indent.disabled = !paragraph?.numbering || paragraph.numbering.level >= 8;
+  outdent.disabled = !paragraph?.numbering || paragraph.numbering.level <= 0;
   bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
   decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
   size.value = paragraph?.runs[0]?.fontSize ? String(paragraph.runs[0].fontSize) : '';
@@ -165,6 +170,7 @@ function setDocument(next: DocxDocument, name: string): void {
   editor.flush();
   editor.setDocument(next);
   doc = next;
+  recentNumbering.clear();
   filename = name;
   element('document-name').textContent = filename;
   refresh();

@@ -1,10 +1,15 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { NumberingDefinition, NumberingInfo, NumberingLevelDefinition, RunFormat } from './types.js';
+import type { NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphInfo, RunFormat } from './types.js';
 import { children, wordValue, WORD_NS } from './xml.js';
 
 interface StyleNumberingReference {
   numId: number;
   level: number;
+}
+
+interface ParsedStyleNumberingReferences {
+  paragraph: Map<string, StyleNumberingReference>;
+  numbering: Map<string, StyleNumberingReference>;
 }
 
 interface RawAbstractNumbering {
@@ -38,8 +43,28 @@ interface ResolvedNumberingInstance extends NumberingDefinition {
 
 export interface NumberingModel {
   definitions: NumberingDefinition[];
-  styles: Map<string, StyleNumberingReference>;
+  paragraphStyles: Map<string, StyleNumberingReference>;
+  numberingStyles: Map<string, StyleNumberingReference>;
   resolveNumbering(numId: number): NumberingDefinition | undefined;
+}
+
+export function findReusableNumberingId(
+  paragraphs: ParagraphInfo[],
+  definitions: NumberingDefinition[],
+  kind: 'bullet' | 'decimal',
+  index: number,
+  remembered?: number,
+): number | undefined {
+  const definitionKind = (numId: number): 'bullet' | 'decimal' | undefined => {
+    const definition = definitions.find((item) => item.numId === numId);
+    const first = definition?.levels[0];
+    return first?.format === 'bullet' ? 'bullet' : first ? 'decimal' : undefined;
+  };
+  for (const offset of [-1, 1]) {
+    const candidate = paragraphs.find((item) => item.index === index + offset);
+    if (candidate?.numbering && definitionKind(candidate.numbering.numId) === kind) return candidate.numbering.numId;
+  }
+  return remembered && definitionKind(remembered) === kind ? remembered : undefined;
 }
 
 function parseInteger(value: string | null | undefined): number | undefined {
@@ -109,24 +134,27 @@ function parseLevel(level: Element, explicitLevel?: number): NumberingLevelDefin
   };
 }
 
-export function parseStyleNumberingReferences(stylesDocument?: Document): Map<string, StyleNumberingReference> {
-  const result = new Map<string, StyleNumberingReference>();
+export function parseStyleNumberingReferences(stylesDocument?: Document): ParsedStyleNumberingReferences {
+  const paragraph = new Map<string, StyleNumberingReference>();
+  const numbering = new Map<string, StyleNumberingReference>();
   const root = stylesDocument?.documentElement;
-  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'styles') return result;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'styles') return { paragraph, numbering };
   for (const style of children(root, 'style')) {
-    if (style.getAttributeNS(WORD_NS, 'type') !== 'paragraph') continue;
+    const type = style.getAttributeNS(WORD_NS, 'type');
+    if (!['paragraph', 'numbering'].includes(type ?? '')) continue;
     const styleId = style.getAttributeNS(WORD_NS, 'styleId');
     if (!styleId) continue;
     const numPr = children(children(style, 'pPr')[0] ?? style, 'numPr')[0];
     if (!numPr) continue;
     const numId = parseInteger(wordValue(children(numPr, 'numId')[0]));
     if (numId === undefined || numId < 1) continue;
-    result.set(styleId, {
+    const target = {
       numId,
       level: parseInteger(wordValue(children(numPr, 'ilvl')[0])) ?? 0,
-    });
+    };
+    (type === 'numbering' ? numbering : paragraph).set(styleId, target);
   }
-  return result;
+  return { paragraph, numbering };
 }
 
 function parseAbstracts(numberingDocument?: Document): Map<number, RawAbstractNumbering> {
@@ -204,7 +232,7 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
 
   function resolveStyleLink(styleId: string, seenNums: Set<number>, seenAbstracts: Set<number>, seenStyles: Set<string>): ResolvedAbstractNumbering | undefined {
     if (seenStyles.has(styleId)) return undefined;
-    const reference = styles.get(styleId);
+    const reference = styles.numbering.get(styleId);
     if (!reference) return undefined;
     seenStyles.add(styleId);
     const resolved = resolveNumbering(reference.numId, seenNums, seenAbstracts, seenStyles);
@@ -229,21 +257,19 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
     const raw = abstracts.get(abstractNumId);
     if (!raw) return undefined;
     seenAbstracts.add(abstractNumId);
-    const styleLinked = raw.styleLink ? resolveStyleLink(raw.styleLink, seenNums, seenAbstracts, seenStyles) : undefined;
     const numStyleLinked = raw.numStyleLink ? resolveStyleLink(raw.numStyleLink, seenNums, seenAbstracts, seenStyles) : undefined;
-    const levels = new Map<number, NumberingLevelDefinition>(styleLinked?.levels ?? []);
-    for (const [level, definition] of numStyleLinked?.levels ?? []) levels.set(level, mergeLevel(levels.get(level), definition)!);
+    const levels = new Map<number, NumberingLevelDefinition>(numStyleLinked?.levels ?? []);
     for (const [level, definition] of raw.levels) {
       levels.set(level, mergeLevel(levels.get(level), definition)!);
     }
     seenAbstracts.delete(abstractNumId);
     const resolved: ResolvedAbstractNumbering = {
       abstractNumId,
-      multiLevelType: raw.multiLevelType ?? numStyleLinked?.multiLevelType ?? styleLinked?.multiLevelType,
-      nsid: raw.nsid ?? numStyleLinked?.nsid ?? styleLinked?.nsid,
-      tmpl: raw.tmpl ?? numStyleLinked?.tmpl ?? styleLinked?.tmpl,
-      styleLink: raw.styleLink ?? styleLinked?.styleLink ?? numStyleLinked?.styleLink,
-      numStyleLink: raw.numStyleLink ?? numStyleLinked?.numStyleLink ?? styleLinked?.numStyleLink,
+      multiLevelType: raw.multiLevelType ?? numStyleLinked?.multiLevelType,
+      nsid: raw.nsid ?? numStyleLinked?.nsid,
+      tmpl: raw.tmpl ?? numStyleLinked?.tmpl,
+      styleLink: raw.styleLink,
+      numStyleLink: raw.numStyleLink ?? numStyleLinked?.numStyleLink,
       levels,
     };
     abstractMemo.set(abstractNumId, resolved);
@@ -290,7 +316,8 @@ export function parseNumberingModel(numberingDocument?: Document, stylesDocument
 
   return {
     definitions,
-    styles,
+    paragraphStyles: styles.paragraph,
+    numberingStyles: styles.numbering,
     resolveNumbering(numId: number) {
       const resolved = resolveNumbering(numId);
       if (!resolved) return undefined;
@@ -440,7 +467,7 @@ function shouldRestart(definition: NumberingLevelDefinition | undefined, changed
 
 export function computeParagraphNumbering(paragraphs: Element[], model: NumberingModel): Map<Element, NumberingInfo> {
   const resolved = new Map<number, ResolvedNumberingInstance>();
-  const states = new Map<number, number[]>();
+  const states = new Map<number, { counts: number[]; seeded: boolean[] }>();
   const result = new Map<Element, NumberingInfo>();
 
   const resolveConcrete = (numId: number): ResolvedNumberingInstance | undefined => {
@@ -453,21 +480,36 @@ export function computeParagraphNumbering(paragraphs: Element[], model: Numberin
   };
 
   for (const paragraph of paragraphs) {
-    const reference = effectiveParagraphNumbering(paragraph, model.styles);
+    const reference = effectiveParagraphNumbering(paragraph, model.paragraphStyles);
     if (!reference) continue;
     const definition = resolveConcrete(reference.numId);
     const level = Math.max(0, Math.min(8, reference.level ?? 0));
     const levelDefinition = definition?.levelMap.get(level);
     if (!definition || !levelDefinition) continue;
-    const counts = states.get(reference.numId) ?? Array(9).fill(0);
+    const state = states.get(reference.numId) ?? { counts: Array(9).fill(0), seeded: Array(9).fill(false) };
+    const { counts, seeded } = state;
     for (let ancestor = 0; ancestor < level; ancestor++) {
-      if (!counts[ancestor]) counts[ancestor] = definition.levelMap.get(ancestor)?.start ?? 1;
+      if (!counts[ancestor]) {
+        counts[ancestor] = definition.levelMap.get(ancestor)?.start ?? 1;
+        seeded[ancestor] = true;
+      }
     }
-    counts[level] = counts[level] ? counts[level]! + 1 : (levelDefinition.start ?? 1);
+    let advanced = false;
+    if (counts[level] && !seeded[level]) {
+      counts[level] = counts[level]! + 1;
+      advanced = true;
+    } else if (!counts[level]) {
+      counts[level] = levelDefinition.start ?? 1;
+      advanced = true;
+    }
+    seeded[level] = false;
     for (let deeper = level + 1; deeper < counts.length; deeper++) {
-      if (shouldRestart(definition.levelMap.get(deeper), level, deeper)) counts[deeper] = 0;
+      if (advanced && shouldRestart(definition.levelMap.get(deeper), level, deeper)) {
+        counts[deeper] = 0;
+        seeded[deeper] = false;
+      }
     }
-    states.set(reference.numId, counts);
+    states.set(reference.numId, state);
     const legal = Boolean(levelDefinition.isLegal);
     const text = levelDefinition.format === 'bullet'
       ? normalizeBullet(levelDefinition.text, levelDefinition.runFormat)

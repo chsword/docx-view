@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
+import { findReusableNumberingId } from '../dist/numbering.js';
 import { REL_NS, WORD_NS } from '../dist/xml.js';
 import { AGENT_OPERATION_SCHEMA } from '../dist/operations.js';
 
@@ -29,6 +30,17 @@ test('dangling numId degrades without throwing', () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="99"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
   attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"></w:numbering>`);
   assert.equal(doc.getParagraphs()[0].numbering, undefined);
+});
+
+test('malformed numbering relationship targets degrade without throwing', () => {
+  for (const target of ['..', 'sub\numbering.xml', 'num%bering.xml']) {
+    const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+    doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="${target}"/></Relationships>`), RELS_TYPE);
+    assert.doesNotThrow(() => doc.getParagraphs());
+    assert.equal(doc.getParagraphs()[0].numbering, undefined);
+    assert.doesNotThrow(() => doc.getBlocks());
+    assert.doesNotThrow(() => doc.getSnapshot());
+  }
 });
 
 test('bullet numbering parses marker font and visible bullet text', () => {
@@ -83,6 +95,12 @@ test('deeper first item initializes missing ancestor counters', () => {
   assert.equal(doc.getParagraphs()[0].numbering.text, '1.1.1.');
 });
 
+test('seeded ancestor counters do not consume their start values', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/><w:ilvl w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/><w:ilvl w:val="1"/></w:numPr></w:pPr><w:r><w:t>C</w:t></w:r></w:p>');
+  attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  assert.deepEqual(doc.getParagraphs().map(paragraph => paragraph.numbering?.text), ['1.1.', '1.', '1.2.']);
+});
+
 test('additional numbering formats render supported text', () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr><w:r><w:t>C</w:t></w:r></w:p>');
   attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimalZero"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:lvl w:ilvl="0"><w:numFmt w:val="ordinal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="3"><w:lvl w:ilvl="0"><w:numFmt w:val="decimalEnclosedCircle"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num><w:num w:numId="3"><w:abstractNumId w:val="3"/></w:num></w:numbering>`);
@@ -91,14 +109,17 @@ test('additional numbering formats render supported text', () => {
 
 test('createNumbering creates package parts and survives export roundtrip', async () => {
   const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'Item');
   const numId = doc.createNumbering('bullet');
-  doc.setParagraphNumbering(0, numId);
+  doc.setParagraphNumbering(0, numId, 1);
   const xml = doc.getPartXml('word/numbering.xml');
   assert.match(xml, /<w:abstractNum[\s\S]*<w:num /);
   assert.ok(doc.listParts().includes('word/numbering.xml'));
   assert.ok(doc.listParts().includes('word/_rels/document.xml.rels'));
   const reopened = await DocxDocument.load(await doc.toUint8Array());
   assert.equal(reopened.getParagraphs()[0].numbering.isBullet, true);
+  assert.equal(reopened.getParagraphs()[0].numbering.level, 1);
+  assert.equal(reopened.getParagraphs()[0].text, 'Item');
 });
 
 test('createNumbering works when the main document is stored at a custom package path', async () => {
@@ -158,6 +179,23 @@ test('clearParagraphNumbering suppresses style-derived numbering and invalid num
   assert.equal(doc.getParagraphs()[0].numbering, undefined);
 });
 
+test('numStyleLink resolves numbering styles and styleLink does not override local levels', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p>');
+  attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:numStyleLink w:val="MyList"/></w:abstractNum><w:abstractNum w:abstractNumId="2"><w:styleLink w:val="MyList"/><w:lvl w:ilvl="0"><w:numFmt w:val="upperLetter"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="3"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="10"><w:abstractNumId w:val="3"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num></w:numbering>`, `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="numbering" w:styleId="MyList"><w:pPr><w:numPr><w:numId w:val="10"/></w:numPr></w:pPr></w:style></w:styles>`);
+  assert.equal(doc.getParagraphs()[0].numbering.text, '1.');
+  assert.equal(doc.getParagraphs()[1].numbering.text, 'A.');
+});
+
+test('findReusableNumberingId reuses adjacent or remembered list definitions', () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('B');
+  doc.insertParagraph('C');
+  const bullet = doc.createNumbering('bullet');
+  doc.setParagraphNumbering(0, bullet);
+  assert.equal(findReusableNumberingId(doc.getParagraphs(), doc.getNumberingDefinitions(), 'bullet', 1), bullet);
+  assert.equal(findReusableNumberingId(doc.getParagraphs(), doc.getNumberingDefinitions(), 'bullet', 2, bullet), bullet);
+});
+
 test('agent operations support numbering mutations atomically', () => {
   const doc = DocxDocument.create();
   const numId = doc.createNumbering('decimal');
@@ -168,6 +206,7 @@ test('agent operations support numbering mutations atomically', () => {
   ] });
   assert.equal(snapshot.paragraphs[0].numbering, undefined);
   assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 11);
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'setParagraphNumbering', index: 0, numId: 0 }] }), /numId/);
 });
 
 test('cyclic numStyleLink does not throw', () => {

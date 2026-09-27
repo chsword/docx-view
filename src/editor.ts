@@ -97,6 +97,17 @@ export class DocxEditor {
     return value === undefined ? undefined : value / 15;
   }
 
+  private focusContent(element: HTMLElement): void {
+    element.focus({ preventScroll: true });
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection) return;
+    const range = this.root.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
@@ -154,6 +165,12 @@ export class DocxEditor {
     content.setAttribute('aria-multiline', 'true');
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    element.addEventListener('mousedown', (event) => {
+      const target = event.target as Node | null;
+      if (target && content.contains(target)) return;
+      event.preventDefault();
+      this.focusContent(content);
+    });
     for (const run of paragraph.runs) {
       const span = this.root.ownerDocument.createElement('span');
       span.textContent = run.text;
@@ -192,10 +209,12 @@ export class DocxEditor {
         this.insertText(content, '\n');
       }
       if (event.key === 'Tab' && !event.isComposing && !this.composing && paragraph.numbering) {
-        event.preventDefault();
         this.flush();
         const current = this.document.getParagraphs().find((item) => item.index === paragraph.index);
         if (!current?.numbering) return;
+        const nextLevel = current.numbering.level + (event.shiftKey ? -1 : 1);
+        if (nextLevel < 0 || nextLevel > 8) return;
+        event.preventDefault();
         this.document.setParagraphLevel(paragraph.index, event.shiftKey ? -1 : 1);
         this.render();
         this.options.onChange?.(this.document.getSnapshot());
