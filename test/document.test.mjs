@@ -269,6 +269,8 @@ test('setParagraphBorders writes supported border sides', () => {
   const paragraph = doc.getParagraphs()[0];
   assert.equal(paragraph.borders?.top?.style, 'single');
   assert.equal(paragraph.borders?.between?.shadow, true);
+  doc.setParagraphBorders(0, { between: { style: 'dotted', size: 4, space: 2, color: '00FF00' } });
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:shadow=/);
 });
 
 test('setParagraphShading reads and writes fill values', () => {
@@ -276,6 +278,8 @@ test('setParagraphShading reads and writes fill values', () => {
   doc.setParagraphShading(0, { pattern: 'clear', fill: 'AABBCC', color: 'auto' });
   assert.equal(doc.getParagraphs()[0].shading?.fill, 'AABBCC');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:shd w:val="clear" w:fill="AABBCC" w:color="auto"\/>/);
+  doc.setParagraphShading(0, { pattern: 'clear', fill: 'AABBCC' });
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:color="auto"/);
 });
 
 test('formatParagraph stores keep and suppression booleans', () => {

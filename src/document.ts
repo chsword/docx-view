@@ -252,12 +252,14 @@ function writeBorderSide(element: Element, border: BorderSide): void {
   element.setAttributeNS(WORD_NS, 'w:space', String(Math.max(0, border.space)));
   element.setAttributeNS(WORD_NS, 'w:color', border.color);
   if (border.shadow !== undefined) element.setAttributeNS(WORD_NS, 'w:shadow', border.shadow ? '1' : '0');
+  else element.removeAttributeNS(WORD_NS, 'shadow');
 }
 
 function writeShading(element: Element, shading: Shading): void {
   setWordValue(element, shading.pattern);
   element.setAttributeNS(WORD_NS, 'w:fill', shading.fill);
   if (shading.color !== undefined) element.setAttributeNS(WORD_NS, 'w:color', shading.color);
+  else element.removeAttributeNS(WORD_NS, 'color');
 }
 
 function ownRuns(paragraph: Element): Element[] {

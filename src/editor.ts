@@ -217,8 +217,8 @@ export class DocxEditor {
     const span = this.root.ownerDocument.createElement('span');
     span.className = 'docx-tab';
     span.contentEditable = 'false';
-    span.setAttribute('data-docx-mark', '1');
     span.setAttribute('aria-hidden', 'true');
+    span.textContent = '\t';
     const stop = this.nextTabStop(paragraph.tabs ?? [], currentPx);
     const defaultTab = this.document.getSettings().defaultTabStop * 96 / 1440;
     const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
@@ -249,6 +249,7 @@ export class DocxEditor {
 
   private leader(value: string | undefined): string {
     switch (value) {
+      case 'none': return '';
       case 'dot': return '.';
       case 'hyphen': return '-';
       case 'underscore': return '_';
