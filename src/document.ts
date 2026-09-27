@@ -162,25 +162,22 @@ const PROPERTY_ORDER = {
     'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
     'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
     'specVanish', 'oMath', 'rPrChange'],
+  style: ['name', 'aliases', 'basedOn', 'next', 'link', 'autoRedefine', 'hidden', 'uiPriority',
+    'semiHidden', 'unhideWhenUsed', 'qFormat', 'locked', 'personal', 'personalCompose',
+    'personalReply', 'rsid', 'pPr', 'rPr', 'tblPr', 'trPr', 'tcPr', 'tblStylePr', 'extLst'],
 };
 
 function property(parent: Element, name: string): Element {
   let result = children(parent, name)[0];
   if (!result) {
     result = wordElement(parent.ownerDocument!, name);
-    const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER];
+    const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER] ?? [];
     const position = order.indexOf(name);
-    const following = children(parent).find(child => order.indexOf(child.localName!) > position);
+    const following = children(parent).find(child => {
+      const childPosition = order.indexOf(child.localName!);
+      return childPosition !== -1 && childPosition > position;
+    });
     parent.insertBefore(result, following ?? null);
-  }
-  return result;
-}
-
-function styleChild(parent: Element, name: string): Element {
-  let result = children(parent, name)[0];
-  if (!result) {
-    result = wordElement(parent.ownerDocument!, name);
-    parent.appendChild(result);
   }
   return result;
 }
@@ -209,6 +206,13 @@ function basename(path: string): string {
 function relsPath(path: string): string {
   const dir = dirname(path);
   return `${dir ? `${dir}/` : ''}_rels/${basename(path)}.rels`;
+}
+
+function nextRelationshipId(root: Element): string {
+  const used = new Set(children(root, 'Relationship', REL_NS).map((relation) => relation.getAttribute('Id')).filter(Boolean));
+  let index = 1;
+  while (used.has(`rId${index}`)) index++;
+  return `rId${index}`;
 }
 
 function resolveTarget(sourcePart: string, target: string): string {
@@ -295,11 +299,17 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     const indent = children(props, 'ind')[0] ?? property(props, 'ind');
     if ('indentLeft' in format) {
       if (format.indentLeft === null) removeWordAttributes(indent, 'left', 'start');
-      else if (format.indentLeft !== undefined) indent.setAttributeNS(WORD_NS, 'w:left', String(format.indentLeft));
+      else if (format.indentLeft !== undefined) {
+        removeWordAttribute(indent, 'start');
+        indent.setAttributeNS(WORD_NS, 'w:left', String(format.indentLeft));
+      }
     }
     if ('indentRight' in format) {
       if (format.indentRight === null) removeWordAttributes(indent, 'right', 'end');
-      else if (format.indentRight !== undefined) indent.setAttributeNS(WORD_NS, 'w:right', String(format.indentRight));
+      else if (format.indentRight !== undefined) {
+        removeWordAttribute(indent, 'end');
+        indent.setAttributeNS(WORD_NS, 'w:right', String(format.indentRight));
+      }
     }
     if ('indentFirstLine' in format) {
       if (format.indentFirstLine === null) removeWordAttribute(indent, 'firstLine');
@@ -355,7 +365,8 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
   }
   if ('underline' in format || 'underlineStyle' in format || 'underlineColor' in format) {
-    if (format.underline === null || (format.underlineStyle === null && format.underline === undefined)) {
+    if (format.underline === null || (format.underlineStyle === null &&
+        format.underline === undefined && format.underlineColor === undefined)) {
       removeProperty(props, 'u');
     } else {
       const underline = children(props, 'u')[0] ?? property(props, 'u');
@@ -452,6 +463,7 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private stylesCache?: { revision: number; context: StylesContext };
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -600,28 +612,24 @@ export class DocxDocument {
   }
 
   private getStylesContext(): StylesContext {
+    if (this.stylesCache?.revision === this.revision) return this.stylesCache.context;
     const stylesPath = this.getRelatedPartPath(STYLES_REL, 'word/styles.xml');
     const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
     let stylesRoot: Element | undefined;
     let themeRoot: Element | undefined;
     try { stylesRoot = stylesPath ? this.getPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
     try { themeRoot = themePath ? this.getPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
-    return parseStyles(stylesRoot, themeRoot);
+    const context = parseStyles(stylesRoot, themeRoot);
+    this.stylesCache = { revision: this.revision, context };
+    return context;
   }
 
   private buildParagraphs(document = this.getPartDocument(this.mainPath), styles = this.getStylesContext()): ParagraphInfo[] {
     return descendants(bodyOf(document), 'p').map((paragraph, index) => readParagraph(paragraph, index, styles));
   }
 
-  getParagraphs(): ParagraphInfo[] {
-    return this.buildParagraphs();
-  }
-
-  getBlocks(): DocumentBlock[] {
-    const document = this.getPartDocument(this.mainPath);
-    const styles = this.getStylesContext();
+  private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
     const body = bodyOf(document);
-    const paragraphs = this.buildParagraphs(document, styles);
     const indices = new Map(descendants(body, 'p').map((paragraph, index) => [paragraph, paragraphs[index]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
@@ -637,9 +645,28 @@ export class DocxDocument {
     return walk(body);
   }
 
+  getParagraphs(): ParagraphInfo[] {
+    return this.buildParagraphs();
+  }
+
+  getBlocks(): DocumentBlock[] {
+    const document = this.getPartDocument(this.mainPath);
+    const styles = this.getStylesContext();
+    const paragraphs = this.buildParagraphs(document, styles);
+    return this.buildBlocksFrom(document, paragraphs);
+  }
+
   getSnapshot(): DocumentSnapshot {
-    const styles = this.getStyles();
-    return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts(), styles };
+    const document = this.getPartDocument(this.mainPath);
+    const stylesContext = this.getStylesContext();
+    const paragraphs = this.buildParagraphs(document, stylesContext);
+    return {
+      revision: this.revision,
+      paragraphs,
+      blocks: this.buildBlocksFrom(document, paragraphs),
+      parts: this.listParts(),
+      styles: stylesContext.styles.map(cloneStyleInfo),
+    };
   }
 
   getStyles(): StyleInfo[] {
@@ -764,7 +791,7 @@ export class DocxDocument {
         .some(relation => relation.getAttribute('Type') === STYLES_REL);
       if (!exists) {
         const relation = relsDocument.createElementNS(REL_NS, 'Relationship');
-        relation.setAttribute('Id', `rId${children(relsRoot, 'Relationship', REL_NS).length + 1}`);
+        relation.setAttribute('Id', nextRelationshipId(relsRoot));
         relation.setAttribute('Type', STYLES_REL);
         relation.setAttribute('Target', basename(path));
         relsRoot.appendChild(relation);
@@ -805,15 +832,15 @@ export class DocxDocument {
       styleElement.setAttributeNS(WORD_NS, 'w:styleId', style.id);
       removeWordAttribute(styleElement, 'default');
       if (style.isDefault) styleElement.setAttributeNS(WORD_NS, 'w:default', '1');
-      const name = styleChild(styleElement, 'name');
+      const name = property(styleElement, 'name');
       setWordValue(name, styleName);
-      if (style.basedOn) setWordValue(styleChild(styleElement, 'basedOn'), style.basedOn);
-      if (style.next) setWordValue(styleChild(styleElement, 'next'), style.next);
-      if (style.link) setWordValue(styleChild(styleElement, 'link'), style.link);
-      if (style.aliases?.length) setWordValue(styleChild(styleElement, 'aliases'), style.aliases.join(', '));
-      if (style.quickFormat) styleChild(styleElement, 'qFormat');
-      if (style.paragraph) applyParagraphFormatTo(styleChild(styleElement, 'pPr'), style.paragraph);
-      if (style.run) applyRunFormatTo(styleChild(styleElement, 'rPr'), style.run);
+      if (style.aliases?.length) setWordValue(property(styleElement, 'aliases'), style.aliases.join(', '));
+      if (style.basedOn) setWordValue(property(styleElement, 'basedOn'), style.basedOn);
+      if (style.next) setWordValue(property(styleElement, 'next'), style.next);
+      if (style.link) setWordValue(property(styleElement, 'link'), style.link);
+      if (style.quickFormat) property(styleElement, 'qFormat');
+      if (style.paragraph) applyParagraphFormatTo(property(styleElement, 'pPr'), style.paragraph);
+      if (style.run) applyRunFormatTo(property(styleElement, 'rPr'), style.run);
     });
     this.parts = draft.parts;
     this.mainPath = draft.mainPath;

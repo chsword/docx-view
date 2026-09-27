@@ -53,7 +53,7 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): vo
     element.style.textIndent = twipsToPoints(indent)!;
   }
   if (effective.lineSpacing !== undefined && effective.lineSpacing !== null) {
-    element.style.lineHeight = effective.lineSpacingRule === 'auto'
+    element.style.lineHeight = (effective.lineSpacingRule ?? 'auto') === 'auto'
       ? String(effective.lineSpacing / 240)
       : `${effective.lineSpacing / 20}pt`;
   }
@@ -72,7 +72,11 @@ function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
   if (effective.underlineStyle) span.style.textDecorationStyle = underlineStyleToCss(effective.underlineStyle);
   if (effective.underlineColor && /^[0-9a-f]{6}$/i.test(effective.underlineColor)) span.style.textDecorationColor = `#${effective.underlineColor}`;
   if (effective.fontSize !== undefined) span.style.fontSize = `${effective.fontSize}pt`;
-  if (effective.fontFamily || effective.fontFamilyEastAsia) span.style.fontFamily = effective.fontFamilyEastAsia ?? effective.fontFamily!;
+  if (effective.fontFamily || effective.fontFamilyEastAsia) {
+    span.style.fontFamily = [effective.fontFamily, effective.fontFamilyEastAsia]
+      .filter((name, index, all): name is string => Boolean(name) && all.indexOf(name) === index)
+      .map((name) => `"${name}"`).join(', ');
+  }
   if (effective.color && /^[0-9a-f]{6}$/i.test(effective.color)) span.style.color = `#${effective.color}`;
   if (effective.verticalAlign === 'subscript' || effective.verticalAlign === 'superscript') span.style.verticalAlign = effective.verticalAlign;
   if (effective.smallCaps || effective.allCaps) span.style.fontVariantCaps = effective.allCaps ? 'all-small-caps' : 'small-caps';

@@ -66,10 +66,19 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
     throw new Error('Invalid paragraph alignment.');
   }
   if ('style' in value) maybeNull(value.style as string | null | undefined, (entry) => assertText(entry, 'style'));
-  for (const key of ['indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore', 'spacingAfter', 'lineSpacing', 'outlineLevel']) {
+  for (const key of ['indentLeft', 'indentRight', 'lineSpacing']) {
     if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || Math.abs(value[key] as number) > 31680)) {
       throw new Error(`${key} must be a safe integer within OOXML bounds.`);
     }
+  }
+  for (const key of ['indentFirstLine', 'indentHanging', 'spacingBefore', 'spacingAfter']) {
+    if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0 || (value[key] as number) > 31680)) {
+      throw new Error(`${key} must be an unsigned twips value within OOXML bounds.`);
+    }
+  }
+  if ('outlineLevel' in value && value.outlineLevel !== null &&
+      (!Number.isSafeInteger(value.outlineLevel as number) || (value.outlineLevel as number) < 0 || (value.outlineLevel as number) > 9)) {
+    throw new Error('outlineLevel must be an integer from 0 to 9.');
   }
   if ('lineSpacingRule' in value && value.lineSpacingRule !== null && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
     throw new Error('Invalid lineSpacingRule.');
@@ -127,6 +136,8 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
 const text = { type: 'string', maxLength: 1_000_000 };
 const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const signedInteger = { type: 'integer', minimum: -31680, maximum: 31680 };
+const unsignedTwips = { type: 'integer', minimum: 0, maximum: 31680 };
+const outlineLevel = { type: 'integer', minimum: 0, maximum: 9 };
 const nullable = <T extends Record<string, unknown>>(schema: T) => ({ anyOf: [schema, { type: 'null' }] });
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
@@ -153,17 +164,17 @@ export const AGENT_OPERATION_SCHEMA = {
             style: nullable(text),
             indentLeft: nullable(signedInteger),
             indentRight: nullable(signedInteger),
-            indentFirstLine: nullable(signedInteger),
-            indentHanging: nullable(signedInteger),
-            spacingBefore: nullable(signedInteger),
-            spacingAfter: nullable(signedInteger),
+            indentFirstLine: nullable(unsignedTwips),
+            indentHanging: nullable(unsignedTwips),
+            spacingBefore: nullable(unsignedTwips),
+            spacingAfter: nullable(unsignedTwips),
             lineSpacing: nullable(signedInteger),
             lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
             keepNext: nullable({ type: 'boolean' }),
             keepLines: nullable({ type: 'boolean' }),
             pageBreakBefore: nullable({ type: 'boolean' }),
             widowControl: nullable({ type: 'boolean' }),
-            outlineLevel: nullable(signedInteger),
+            outlineLevel: nullable(outlineLevel),
           }, []) }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
             style: nullable(text),

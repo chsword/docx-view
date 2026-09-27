@@ -43,6 +43,27 @@ interface TableStyleLayer {
   run?: RunFormat;
 }
 
+interface TableMeta {
+  rows: Element[];
+  rowIndex: Map<Element, number>;
+  cellIndex: WeakMap<Element, number>;
+  look?: Element;
+  rowBandSize: number;
+}
+
+interface TableContext {
+  conditions: TableCondition[];
+  chain: ParsedStyle[];
+}
+
+interface ParagraphContext {
+  direct: ParagraphFormat;
+  paragraphStyles: ParsedStyle[];
+  tableParagraph: ParagraphFormat[];
+  tableRun: RunFormat[];
+  effectiveParagraph: ParagraphFormat;
+}
+
 interface ParsedStyle extends StyleInfo {
   conditions?: Partial<Record<TableCondition, TableStyleLayer>>;
 }
@@ -56,6 +77,9 @@ export interface StylesContext {
   byId: Map<string, ParsedStyle>;
   defaults: Partial<Record<StyleType, string>>;
   theme: ThemeInfo;
+  _tableMeta?: WeakMap<Element, TableMeta>;
+  _tableContext?: WeakMap<Element, TableContext>;
+  _paragraphContext?: WeakMap<Element, ParagraphContext>;
 }
 
 function wordAttr(element: Element | undefined, name: string): string | undefined {
@@ -106,18 +130,59 @@ function mergeRunFormats(...formats: Array<RunFormat | undefined>): RunFormat {
   return merged;
 }
 
+function rgbToHsl(red: number, green: number, blue: number): [number, number, number] {
+  const r = red / 255;
+  const g = green / 255;
+  const b = blue / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return [0, 0, lightness];
+  const delta = max - min;
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  const hue = (
+    max === r ? (g - b) / delta + (g < b ? 6 : 0)
+      : max === g ? (b - r) / delta + 2
+        : (r - g) / delta + 4
+  ) / 6;
+  return [hue, saturation, lightness];
+}
+
+function hueToRgb(low: number, high: number, hue: number): number {
+  if (hue < 0) hue += 1;
+  if (hue > 1) hue -= 1;
+  if (hue < 1 / 6) return low + (high - low) * 6 * hue;
+  if (hue < 1 / 2) return high;
+  if (hue < 2 / 3) return low + (high - low) * (2 / 3 - hue) * 6;
+  return low;
+}
+
+function hslToRgb(hue: number, saturation: number, lightness: number): [number, number, number] {
+  if (saturation === 0) {
+    const value = Math.floor(lightness * 255);
+    return [value, value, value];
+  }
+  const high = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const low = 2 * lightness - high;
+  return [
+    Math.floor(hueToRgb(low, high, hue + 1 / 3) * 255),
+    Math.floor(hueToRgb(low, high, hue) * 255),
+    Math.floor(hueToRgb(low, high, hue - 1 / 3) * 255),
+  ];
+}
+
 function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined): string | undefined {
   const base = normalizeHex(hex);
   if (!base) return undefined;
   const shadeValue = shade && /^[0-9a-f]{2}$/i.test(shade) ? parseInt(shade, 16) / 255 : undefined;
   const tintValue = tint && /^[0-9a-f]{2}$/i.test(tint) ? parseInt(tint, 16) / 255 : undefined;
+  if (shadeValue === undefined && tintValue === undefined) return base;
   const channels = base.match(/../g)!.map((channel) => parseInt(channel, 16));
-  const transformed = channels.map((channel) => {
-    let result = channel;
-    if (shadeValue !== undefined) result = Math.round(result * shadeValue);
-    if (tintValue !== undefined) result = Math.round(result + (255 - result) * tintValue);
-    return Math.max(0, Math.min(255, result));
-  });
+  const [hue, saturation, lightness] = rgbToHsl(channels[0]!, channels[1]!, channels[2]!);
+  let transformedLightness = lightness;
+  if (shadeValue !== undefined) transformedLightness *= shadeValue;
+  if (tintValue !== undefined) transformedLightness = transformedLightness * tintValue + (1 - tintValue);
+  const transformed = hslToRgb(hue, saturation, Math.max(0, Math.min(1, transformedLightness)));
   return transformed.map((channel) => channel.toString(16).padStart(2, '0').toUpperCase()).join('');
 }
 
@@ -125,7 +190,12 @@ function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): stri
   if (!element) return undefined;
   const direct = normalizeHex(wordAttr(element, 'val'));
   if (direct && direct.toLowerCase() !== 'auto') return direct;
-  const themeColor = wordAttr(element, 'themeColor');
+  const themeColor = {
+    text1: 'dk1',
+    background1: 'lt1',
+    text2: 'dk2',
+    background2: 'lt2',
+  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
   return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
 }
 
@@ -133,7 +203,12 @@ function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): 
   if (!element) return undefined;
   const direct = normalizeHex(wordAttr(element, 'color'));
   if (direct && direct.toLowerCase() !== 'auto') return direct;
-  const themeColor = wordAttr(element, 'themeColor');
+  const themeColor = {
+    text1: 'dk1',
+    background1: 'lt1',
+    text2: 'dk2',
+    background2: 'lt2',
+  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
   return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
 }
 
@@ -207,8 +282,8 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
 
 function themeColorValue(node: Element | undefined): string | undefined {
   if (!node) return undefined;
-  const srgb = node.getAttribute('val') ?? node.getAttribute('lastClr') ?? undefined;
-  return normalizeHex(srgb);
+  return normalizeHex(node.getAttribute('val') ?? undefined)
+    ?? normalizeHex(node.getAttribute('lastClr') ?? undefined);
 }
 
 function parseTheme(themeElement: Element | undefined): ThemeInfo {
@@ -333,40 +408,77 @@ function closestAncestor(element: Element, localName: string): Element | undefin
   return undefined;
 }
 
-function tableConditions(paragraph: Element): TableCondition[] {
-  const cell = closestAncestor(paragraph, 'tc');
-  const row = closestAncestor(paragraph, 'tr');
-  const table = closestAncestor(paragraph, 'tbl');
-  if (!cell || !row || !table) return [];
-  const tableProps = children(table, 'tblPr')[0];
-  const look = children(tableProps ?? table, 'tblLook')[0];
-  const rows = children(table, 'tr');
-  const cells = children(row, 'tc');
-  const rowIndex = rows.indexOf(row);
-  const cellIndex = cells.indexOf(cell);
-  const enabled = (name: string, defaultValue = true): boolean => {
-    const value = wordAttr(look, name);
-    if (value === undefined) return defaultValue;
-    return !['0', 'false', 'off'].includes(value.toLowerCase());
-  };
-  const conditions: TableCondition[] = [];
-  if (rowIndex === 0 && enabled('firstRow')) conditions.push('firstRow');
-  if (rowIndex === rows.length - 1 && enabled('lastRow')) conditions.push('lastRow');
-  if (cellIndex === 0 && enabled('firstCol')) conditions.push('firstCol');
-  if (cellIndex === cells.length - 1 && enabled('lastCol')) conditions.push('lastCol');
-  if (!enabled('noHBand', false)) conditions.push(((rowIndex + 1) % 2 === 1 ? 'band1Horz' : 'band2Horz'));
-  return conditions;
+function readLookFlag(look: Element | undefined, name: string, defaultValue: boolean): boolean {
+  const value = wordAttr(look, name);
+  if (value === undefined) return defaultValue;
+  return !['0', 'false', 'off'].includes(value.toLowerCase());
 }
 
-function tableStyleChain(context: StylesContext, paragraph: Element): ParsedStyle[] {
+function tableMeta(context: StylesContext, table: Element): TableMeta {
+  const cache = context._tableMeta ??= new WeakMap<Element, TableMeta>();
+  const existing = cache.get(table);
+  if (existing) return existing;
+  const rows = children(table, 'tr');
+  const rowIndex = new Map<Element, number>();
+  const cellIndex = new WeakMap<Element, number>();
+  rows.forEach((row, index) => {
+    rowIndex.set(row, index);
+    children(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
+  });
+  const tableProps = children(table, 'tblPr')[0];
+  const rowBandSize = Math.max(1, readNumber(wordValue(children(tableProps ?? table, 'tblStyleRowBandSize')[0])) ?? 1);
+  const meta = { rows, rowIndex, cellIndex, look: children(tableProps ?? table, 'tblLook')[0], rowBandSize };
+  cache.set(table, meta);
+  return meta;
+}
+
+function tableContext(context: StylesContext, paragraph: Element): TableContext {
+  const cache = context._tableContext ??= new WeakMap<Element, TableContext>();
+  const existing = cache.get(paragraph);
+  if (existing) return existing;
   const table = closestAncestor(paragraph, 'tbl');
-  const styleId = wordValue(children(children(table ?? paragraph, 'tblPr')[0] ?? paragraph, 'tblStyle')[0]) ?? undefined;
-  return resolveStyleChainOrDefault(context, styleId, 'table');
+  if (!table) {
+    const empty = { conditions: [], chain: [] };
+    cache.set(paragraph, empty);
+    return empty;
+  }
+  const cell = closestAncestor(paragraph, 'tc');
+  const row = closestAncestor(paragraph, 'tr');
+  if (!cell || !row) {
+    const empty = { conditions: [], chain: [] };
+    cache.set(paragraph, empty);
+    return empty;
+  }
+  const meta = tableMeta(context, table);
+  const rowPosition = meta.rowIndex.get(row) ?? -1;
+  const cellPosition = meta.cellIndex.get(cell) ?? -1;
+  const conditions: TableCondition[] = [];
+  const look = meta.look;
+  const firstRow = readLookFlag(look, 'firstRow', false);
+  const lastRow = readLookFlag(look, 'lastRow', false);
+  const firstColumn = readLookFlag(look, 'firstColumn', false);
+  const lastColumn = readLookFlag(look, 'lastColumn', false);
+  if (rowPosition === 0 && firstRow) conditions.push('firstRow');
+  if (rowPosition === meta.rows.length - 1 && lastRow) conditions.push('lastRow');
+  const cellCount = children(row, 'tc').length;
+  if (cellPosition === 0 && firstColumn) conditions.push('firstCol');
+  if (cellPosition === cellCount - 1 && lastColumn) conditions.push('lastCol');
+  if (!readLookFlag(look, 'noHBand', false)) {
+    const bandStart = firstRow ? 1 : 0;
+    const bandEnd = meta.rows.length - (lastRow ? 1 : 0);
+    if (rowPosition >= bandStart && rowPosition < bandEnd) {
+      const bandIndex = Math.floor((rowPosition - bandStart) / meta.rowBandSize);
+      conditions.push(bandIndex % 2 === 0 ? 'band1Horz' : 'band2Horz');
+    }
+  }
+  const styleId = wordValue(children(children(table, 'tblPr')[0] ?? table, 'tblStyle')[0]) ?? undefined;
+  const resolved = { conditions, chain: resolveStyleChainOrDefault(context, styleId, 'table') };
+  cache.set(paragraph, resolved);
+  return resolved;
 }
 
 function tableParagraphFormats(context: StylesContext, paragraph: Element): ParagraphFormat[] {
-  const conditions = tableConditions(paragraph);
-  const chain = tableStyleChain(context, paragraph);
+  const { conditions, chain } = tableContext(context, paragraph);
   const formats: ParagraphFormat[] = [];
   for (const style of chain) {
     formats.push(style.paragraph ?? {});
@@ -378,8 +490,7 @@ function tableParagraphFormats(context: StylesContext, paragraph: Element): Para
 }
 
 function tableRunFormats(context: StylesContext, paragraph: Element): RunFormat[] {
-  const conditions = tableConditions(paragraph);
-  const chain = tableStyleChain(context, paragraph);
+  const { conditions, chain } = tableContext(context, paragraph);
   const formats: RunFormat[] = [];
   for (const style of chain) {
     formats.push(style.run ?? {});
@@ -390,26 +501,42 @@ function tableRunFormats(context: StylesContext, paragraph: Element): RunFormat[
   return formats;
 }
 
-export function computeEffectiveParagraphFormat(context: StylesContext, paragraph: Element): ParagraphFormat {
+function paragraphContext(context: StylesContext, paragraph: Element): ParagraphContext {
+  const cache = context._paragraphContext ??= new WeakMap<Element, ParagraphContext>();
+  const existing = cache.get(paragraph);
+  if (existing) return existing;
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
   const paragraphStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'paragraph');
-  return mergeParagraphFormats(
-    context.docDefaults.paragraph,
-    ...tableParagraphFormats(context, paragraph),
-    ...paragraphStyles.map((style) => style.paragraph),
+  const tableParagraph = tableParagraphFormats(context, paragraph);
+  const tableRun = tableRunFormats(context, paragraph);
+  const resolved = {
     direct,
-  );
+    paragraphStyles,
+    tableParagraph,
+    tableRun,
+    effectiveParagraph: mergeParagraphFormats(
+      context.docDefaults.paragraph,
+      ...tableParagraph,
+      ...paragraphStyles.map((style) => style.paragraph),
+      direct,
+    ),
+  };
+  cache.set(paragraph, resolved);
+  return resolved;
+}
+
+export function computeEffectiveParagraphFormat(context: StylesContext, paragraph: Element): ParagraphFormat {
+  return paragraphContext(context, paragraph).effectiveParagraph;
 }
 
 export function computeEffectiveRunFormat(context: StylesContext, paragraph: Element, run: Element): RunFormat {
   const direct = readRunProperties(children(run, 'rPr')[0], context.theme);
-  const paragraphStyleId = readParagraphProperties(children(paragraph, 'pPr')[0]).style ?? undefined;
-  const paragraphStyles = resolveStyleChainOrDefault(context, paragraphStyleId, 'paragraph');
+  const resolvedParagraph = paragraphContext(context, paragraph);
   const characterStyles = resolveStyleChainOrDefault(context, direct.style ?? undefined, 'character');
   return mergeRunFormats(
     context.docDefaults.run,
-    ...tableRunFormats(context, paragraph),
-    ...paragraphStyles.map((style) => style.run),
+    ...resolvedParagraph.tableRun,
+    ...resolvedParagraph.paragraphStyles.map((style) => style.run),
     ...characterStyles.map((style) => style.run),
     direct,
   );
