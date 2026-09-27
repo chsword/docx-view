@@ -2,6 +2,7 @@ import { DocxDocument } from './document.js';
 import type { BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, ParagraphInfo, RunInfo, TableFormat, TableRowInfo, WidthFormat } from './types.js';
 import { pxToEmu } from './drawing.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
+import { sanitizeText, sanitizeTextWithInfo } from './xml.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -89,6 +90,7 @@ function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
+  onError?: (error: Error, context: { paragraph: number }) => void;
 }
 
 /** A browser-only, editable view of the supported DOCX paragraph/run/table subset. */
@@ -100,6 +102,7 @@ export class DocxEditor {
     element: HTMLParagraphElement;
     content: HTMLSpanElement;
     text: string;
+    failed: boolean;
   }>();
   private selected: number | null = null;
   private selectedImageInfo: ImageInfo | null = null;
@@ -132,11 +135,22 @@ export class DocxEditor {
     if (this.destroyed) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      const text = this.readText(entry.content);
-      if (text !== entry.text) {
-        this.document.setParagraphText(index, text);
-        entry.text = text;
+      const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
+      if (sanitized.text === entry.text) {
+        entry.failed = false;
+        continue;
+      }
+      if (sanitized.truncated && !entry.failed) {
+        this.reportError(new Error(`Paragraph text was truncated at ${sanitized.truncatedAt ?? sanitized.text.length} characters.`), index);
+      }
+      try {
+        this.document.setParagraphText(index, sanitized.text);
+        entry.text = sanitized.text;
+        entry.failed = false;
         changed = true;
+      } catch (error) {
+        entry.failed = true;
+        this.reportError(error, index);
       }
     }
     if (changed) this.options.onChange?.(this.document.getSnapshot());
@@ -386,7 +400,7 @@ export class DocxEditor {
     }
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     element.append(content);
-    this.paragraphs.set(paragraph.index, { element, content, text: this.readText(content) });
+    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
@@ -584,12 +598,23 @@ export class DocxEditor {
     const range = selection.getRangeAt(0);
     if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return;
     range.deleteContents();
-    const node = this.root.ownerDocument.createTextNode(text.replace(/\r\n?/g, '\n'));
+    const node = this.root.ownerDocument.createTextNode(sanitizeText(text).replace(/\r\n?/g, '\n'));
     range.insertNode(node);
     range.setStartAfter(node);
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+  }
+
+  private reportError(error: unknown, paragraph: number): void {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    try {
+      if (this.options.onError) this.options.onError(normalized, { paragraph });
+      else console.error(normalized);
+    } catch (reportError) {
+      console.error(normalized);
+      console.error(reportError);
+    }
   }
 
   private caretIn(element: HTMLElement): { start: number; end: number } | null {
