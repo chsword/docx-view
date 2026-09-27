@@ -811,9 +811,24 @@ export class DocxDocument {
     else paragraph.appendChild(run);
     next.set(this.mainPath, encodeXml(serializeXml(main)));
     this.commitParts(next);
-    return this.getImages().find((image) => image.sourcePartPath === this.mainPath &&
-      image.paragraph === paragraphIndex && image.run === insertedRunIndex &&
-      image.relationshipId === relationshipId && image.ordinal === 0) ?? this.resolveImage(relationshipId);
+    return {
+      id: `${this.mainPath}:${paragraphIndex}:${insertedRunIndex}:0:${relationshipId}`,
+      paragraph: paragraphIndex,
+      run: insertedRunIndex,
+      ordinal: 0,
+      sourcePartPath: this.mainPath,
+      relationshipId,
+      partPath,
+      contentType: options.contentType,
+      widthEmu: size.widthEmu,
+      heightEmu: size.heightEmu,
+      widthPx: emuToPx(size.widthEmu),
+      heightPx: emuToPx(size.heightEmu),
+      alt: options.alt,
+      title: options.alt,
+      placement: options.placement ?? 'inline',
+      isExternal: false,
+    };
   }
 
   replaceImageBytes(image: ImageInfo | string, bytes: Uint8Array, contentType?: string): void {
@@ -920,10 +935,10 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(sourcePart);
     if (this.hasPart(relPath)) {
       const rels = this.getPartDocument(relPath);
-      if (!documentUsesRelationship(main, info.relationshipId)) {
-        const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
-          .find((rel) => rel.getAttribute('Id') === info.relationshipId);
-        relationship?.parentNode?.removeChild(relationship);
+      const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
+        .find((rel) => rel.getAttribute('Id') === info.relationshipId);
+      if (relationship && !documentUsesRelationship(main, relationship.getAttribute('Id') ?? '')) {
+        relationship.parentNode?.removeChild(relationship);
         next.set(relPath, encodeXml(serializeXml(rels)));
       }
     }

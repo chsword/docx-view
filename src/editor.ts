@@ -189,7 +189,7 @@ export class DocxEditor {
     const wrapper = this.root.ownerDocument.createElement(image.placement === 'floating' ? 'div' : 'span');
     wrapper.className = `docx-image${this.selectedImageInfo?.id === image.id ? ' selected' : ''}`;
     wrapper.contentEditable = 'false';
-    wrapper.tabIndex = image.behindDoc ? -1 : 0;
+    wrapper.tabIndex = 0;
     wrapper.dataset.image = image.id;
     wrapper.dataset.paragraph = String(paragraph);
     wrapper.style.position = 'relative';
@@ -257,6 +257,7 @@ export class DocxEditor {
       const keyEvent = event as KeyboardEvent;
       if (['Delete', 'Backspace'].includes(keyEvent.key)) {
         keyEvent.preventDefault();
+        keyEvent.stopPropagation();
         this.document.deleteImage(image);
         this.render();
         this.options.onChange?.(this.document.getSnapshot());
