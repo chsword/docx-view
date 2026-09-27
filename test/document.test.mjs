@@ -223,9 +223,21 @@ test('inline drawing images are parsed and exposed on runs and paragraphs', () =
   const paragraph = doc.getParagraphs()[0];
   assert.equal(paragraph.images.length, 1);
   assert.equal(paragraph.runs[0].image?.alt, '封面图');
+  assert.equal(paragraph.runs[0].images?.length, 1);
   assert.equal(paragraph.images[0].widthPx, emuToPx(190500));
   assert.deepEqual(doc.getImageBytes(paragraph.images[0]), PNG_BYTES);
   assert.match(doc.getImageDataUrl(paragraph.images[0]), /^data:image\/png;base64,/);
+});
+
+test('a run exposes and preserves multiple images in document order', () => {
+  const doc = withImageDoc(
+    `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="one"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="one"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing><w:drawing><wp:inline><wp:extent cx="457200" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="2" name="two"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="two"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="457200" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.gif"/>`,
+    [{ path: 'word/media/image1.png', bytes: PNG_BYTES, type: 'image/png' }, { path: 'word/media/image2.gif', bytes: GIF_BYTES, type: 'image/gif' }],
+  );
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.deepEqual(run.images?.map((image) => image.relationshipId), ['rId1', 'rId2']);
+  assert.deepEqual(doc.getImages().map((image) => image.relationshipId), ['rId1', 'rId2']);
 });
 
 test('floating drawing metadata such as wrap, rotation, flip and crop is parsed', () => {
@@ -286,6 +298,22 @@ test('insertImage creates media, relationships, content type entries and round-t
   assert.deepEqual((await DocxDocument.load(await doc.toUint8Array())).getImageBytes(image), PNG_BYTES);
 });
 
+test('floating insertImage writes anchor attributes required by Word', () => {
+  const doc = DocxDocument.create();
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', placement: 'floating' });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<wp:anchor[^>]*locked="0"/);
+  assert.match(xml, /<wp:anchor[^>]*layoutInCell="1"/);
+  assert.match(xml, /<wp:simplePos x="0" y="0"\/>/);
+});
+
+test('insertImage before a nested run uses the paragraph child container instead of throwing DOMException', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink r:id="rIdX"><w:r><w:t>link</w:t></w:r></w:hyperlink></w:p>`);
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0, run: 0 });
+  assert.equal(doc.getImages().length, 1);
+  assert.equal(image.run, 0);
+});
+
 test('insertImage infers intrinsic dimensions from PNG bytes when size is omitted', () => {
   const doc = DocxDocument.create();
   const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
@@ -315,6 +343,15 @@ test('replaceImageBytes swaps image bytes without breaking the relationship', ()
   assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /image\d+\.gif/);
 });
 
+test('replaceImageBytes infers content type from bytes when omitted', () => {
+  const doc = DocxDocument.create();
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
+  doc.replaceImageBytes(image, GIF_BYTES);
+  const updated = doc.getImages()[0];
+  assert.equal(updated.contentType, 'image/gif');
+  assert.match(updated.partPath, /\.gif$/);
+});
+
 test('resizeImage updates stored extents and can keep aspect ratio', () => {
   const doc = DocxDocument.create();
   const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
@@ -332,6 +369,25 @@ test('setImageAlt updates alt and title metadata', () => {
   assert.equal(updated.alt, '替代文本');
   assert.equal(updated.title, '标题');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /descr="替代文本"/);
+});
+
+test('VML images can be resized and retitled instead of silently no-oping', () => {
+  const doc = withImageDoc(
+    `<w:p><w:r><w:pict><v:shape id="shape1" style="width:48pt;height:24pt"><v:imagedata r:id="rId1"/></v:shape></w:pict></w:r></w:p>`,
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>`,
+  );
+  const image = doc.getImages()[0];
+  const revision = doc.revision;
+  doc.resizeImage(image, { widthEmu: pxToEmu(300), heightEmu: pxToEmu(150) });
+  doc.setImageAlt(image, 'new alt', 'new title');
+  const updated = doc.getImages()[0];
+  assert.equal(Math.round(updated.widthPx), 300);
+  assert.equal(Math.round(updated.heightPx), 150);
+  assert.equal(updated.alt, 'new alt');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /width:225pt/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /height:112\.5pt/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /alt="new alt"/);
+  assert.equal(doc.revision, revision + 2);
 });
 
 test('deleteImage removes its drawing, empty run and unique media part', () => {
@@ -365,6 +421,19 @@ test('images sharing a relationship within one run remain individually addressab
   doc.deleteImage(second);
   assert.equal(doc.getImages().length, 1);
   assert.equal((doc.getPartXml(doc.mainDocumentPath).match(/<w:drawing>/g) ?? []).length, 1);
+});
+
+test('images with different relationships and mixed drawing order remain individually addressable', () => {
+  const doc = withImageDoc(
+    `<w:p><w:r><w:pict><v:shape style="width:24pt;height:24pt"><v:imagedata r:id="rId1"/></v:shape></w:pict><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="2" name="two"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="two"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.gif"/>`,
+    [{ path: 'word/media/image1.png', bytes: PNG_BYTES, type: 'image/png' }, { path: 'word/media/image2.gif', bytes: GIF_BYTES, type: 'image/gif' }],
+  );
+  const [, second] = doc.getImages();
+  doc.setImageAlt(second, 'second');
+  doc.resizeImage(second, { widthEmu: pxToEmu(120), keepAspect: true });
+  assert.equal(Math.round(doc.getImages()[1].widthPx), 120);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /descr="second"/);
 });
 
 test('broken relationships, missing media parts and invalid extents do not crash image reads', () => {

@@ -16,6 +16,7 @@ export interface RunInfo extends RunFormat {
   index: number;
   text: string;
   image?: ImageInfo;
+  images?: ImageInfo[];
 }
 
 export interface ParagraphInfo extends ParagraphFormat {

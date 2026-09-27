@@ -35,6 +35,7 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = Object.fromEntries(
   Object.entries(CONTENT_TYPE_EXTENSIONS).flatMap(([type, extension]) =>
     type === 'image/jpeg' ? [[extension, type], ['jpeg', type]] : [[extension, type]]),
 );
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export function emuToPx(emu: number): number {
   return emu * PX_PER_INCH / EMU_PER_INCH;
@@ -64,6 +65,12 @@ export function isBrowserRenderableContentType(contentType?: string): boolean {
   return ['image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/svg+xml'].includes(contentType ?? '');
 }
 
+export function assertBase64(text: string): void {
+  if (typeof text !== 'string' || !text || text.length > 22_500_000 || !BASE64_RE.test(text)) {
+    throw new Error('bytes must be a valid base64 string.');
+  }
+}
+
 export function resolveRelationshipsPath(partPath: string): string {
   validatePath(partPath);
   const slash = partPath.lastIndexOf('/');
@@ -88,46 +95,40 @@ export function resolveTargetPath(partPath: string, target: string): string | un
 }
 
 export function encodeBase64(bytes: Uint8Array): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let result = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i]!;
-    const b = bytes[i + 1];
-    const c = bytes[i + 2];
-    result += alphabet[a >> 2];
-    result += alphabet[((a & 3) << 4) | ((b ?? 0) >> 4)];
-    result += b === undefined ? '=' : alphabet[((b & 15) << 2) | ((c ?? 0) >> 6)];
-    result += c === undefined ? '=' : alphabet[c & 63];
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
-  return result;
+  return btoa(binary);
 }
 
 export function decodeBase64(text: string): Uint8Array {
-  if (typeof text !== 'string' || !text || text.length > 22_500_000 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) {
-    throw new Error('bytes must be a valid base64 string.');
-  }
-  const table: Record<string, number> = {};
-  for (const [index, char] of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('').entries()) {
-    table[char] = index;
-  }
-  const output: number[] = [];
-  for (let i = 0; i < text.length; i += 4) {
-    const a = table[text[i]!]!;
-    const b = table[text[i + 1]!]!;
-    const c = text[i + 2] === '=' ? -1 : table[text[i + 2]!]!;
-    const d = text[i + 3] === '=' ? -1 : table[text[i + 3]!]!;
-    output.push((a << 2) | (b >> 4));
-    if (c >= 0) output.push(((b & 15) << 4) | (c >> 2));
-    if (d >= 0) output.push(((c & 3) << 6) | d);
-  }
-  const bytes = Uint8Array.from(output);
-  if (encodeBase64(bytes) !== text) throw new Error('bytes must be a valid base64 string.');
+  assertBase64(text);
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
   return bytes;
 }
 
 export function dataUrlForBytes(bytes: Uint8Array, contentType: string): string {
   return `data:${contentType};base64,${encodeBase64(bytes)}`;
+}
+
+export function detectImageContentType(bytes: Uint8Array): string | undefined {
+  if (bytes.length >= 8 && bytes.slice(0, 8).every((value, index) => value === [137, 80, 78, 71, 13, 10, 26, 10][index])) {
+    return 'image/png';
+  }
+  if (bytes.length >= 6 && /^GIF8[79]a$/.test(new TextDecoder('ascii').decode(bytes.slice(0, 6)))) {
+    return 'image/gif';
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    return 'image/bmp';
+  }
+  return undefined;
 }
 
 export function placeholderDataUrl(label: string, widthPx = 160, heightPx = 90): string {
@@ -254,7 +255,8 @@ function readVmlImage(
     const relationshipId = imageData.getAttributeNS(OFFICE_REL_NS, 'id') ?? imageData.getAttribute('r:id') ?? undefined;
     if (!relationshipId) return [];
     const relation = relationships.get(relationshipId);
-    const style = imageData.parentNode && (imageData.parentNode as Element).getAttribute('style');
+    const shape = imageData.parentNode as Element | null;
+    const style = shape?.getAttribute('style');
     const widthMatch = style?.match(/width:([\d.]+)pt/i);
     const heightMatch = style?.match(/height:([\d.]+)pt/i);
     const widthEmu = clampEmu(widthMatch ? ptToEmu(Number(widthMatch[1])) : 0);
@@ -273,7 +275,9 @@ function readVmlImage(
       heightPx: emuToPx(heightEmu),
       placement: 'inline',
       isExternal: relation?.mode === 'External',
-      name: (imageData.parentNode as Element | null)?.getAttribute('alt') ?? undefined,
+      name: shape?.getAttribute('id') ?? undefined,
+      alt: shape?.getAttribute('alt') ?? undefined,
+      title: shape?.getAttribute('title') ?? undefined,
     } satisfies ImageInfo];
   });
 }

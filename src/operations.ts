@@ -1,5 +1,5 @@
 import type { AgentRequest, ParagraphFormat, RunFormat } from './types.js';
-import { decodeBase64 } from './drawing.js';
+import { assertBase64 } from './drawing.js';
 import { assertText } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
@@ -87,7 +87,7 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'insertImage':
         keys(op, ['type', 'bytes', 'contentType', 'paragraph', 'run', 'widthEmu', 'heightEmu', 'alt', 'placement']);
         assertText(op.bytes, 'bytes');
-        decodeBase64(op.bytes);
+        assertBase64(op.bytes);
         assertText(op.contentType, 'contentType');
         if ('paragraph' in op) assertIndex(op.paragraph);
         if ('run' in op) assertIndex(op.run);
@@ -108,7 +108,7 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'image', 'bytes', 'contentType']);
         assertText(op.image, 'image');
         assertText(op.bytes, 'bytes');
-        decodeBase64(op.bytes);
+        assertBase64(op.bytes);
         if ('contentType' in op) assertText(op.contentType, 'contentType');
         break;
       case 'setImageAlt':

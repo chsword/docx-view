@@ -72,13 +72,22 @@ export class DocxEditor {
       return;
     }
     const caret = this.captureCaret();
+    const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
+      ?? this.selectedImageInfo?.id
+      ?? null;
     this.flush();
     this.paragraphs.clear();
-    this.selectedImageInfo = null;
     const fragment = this.root.ownerDocument.createDocumentFragment();
     this.appendBlocks(fragment, this.document.getBlocks());
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
+    const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
+    this.selectImage(nextSelected);
+    if (activeImageId) {
+      Array.from(this.root.querySelectorAll<HTMLElement>('[data-image]'))
+        .find((node) => node.dataset.image === activeImageId)
+        ?.focus({ preventScroll: true });
+    }
     if (caret) this.restoreCaret(caret);
   }
 
@@ -93,10 +102,17 @@ export class DocxEditor {
   }
 
   private readText(element: HTMLElement): string {
-    // Native editing can introduce line-break elements (e.g. via mobile keyboards).
-    if (!element.querySelector('br, div, p')) return element.textContent ?? '';
-    const text = element.innerText.replace(/\r\n?/g, '\n');
-    return text === '\n' && !element.textContent ? '' : text;
+    const walk = (node: Node): string => {
+      if (node.nodeType === 3) return node.textContent ?? '';
+      if (node.nodeType !== 1) return '';
+      const current = node as HTMLElement;
+      if (current.dataset.image || current.contentEditable === 'false') return '';
+      if (current.tagName === 'BR') return '\n';
+      const text = Array.from(current.childNodes).map(walk).join('');
+      if (['DIV', 'P'].includes(current.tagName)) return text ? `${text}\n` : '';
+      return text;
+    };
+    return walk(element).replace(/\n$/, '');
   }
 
   private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
@@ -144,7 +160,7 @@ export class DocxEditor {
         if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
         element.append(span);
       }
-      if (run.image) element.append(this.makeImage(paragraph.index, run.image));
+      for (const image of run.images ?? (run.image ? [run.image] : [])) element.append(this.makeImage(paragraph.index, image));
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
     this.paragraphs.set(paragraph.index, { element, text: this.readText(element) });

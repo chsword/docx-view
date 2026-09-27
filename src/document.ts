@@ -4,8 +4,8 @@ import type {
   AgentRequest, DocumentBlock, DocumentSnapshot, ImageInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
 import {
-  A_NS, dataUrlForBytes, decodeBase64, detectImageSize, emuToPx, extensionForContentType, IMAGE_REL,
-  isBrowserRenderableContentType, OFFICE_REL_NS, PIC_NS, placeholderDataUrl, pxToEmu, readRunImages,
+  A_NS, dataUrlForBytes, decodeBase64, detectImageContentType, detectImageSize, emuToPx, extensionForContentType, IMAGE_REL,
+  isBrowserRenderableContentType, OFFICE_REL_NS, PIC_NS, placeholderDataUrl, ptToEmu, pxToEmu, readRunImages,
   resolveRelationshipsPath, resolveTargetPath, V_NS, WP_NS,
 } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
@@ -229,6 +229,7 @@ function readRun(
     fontSize: size && Number.isFinite(Number(size)) ? Number(size) / 2 : undefined,
     fontFamily: get('rFonts')?.getAttributeNS(WORD_NS, 'ascii') ?? undefined,
     color: color && /^[a-f\d]{6}$/i.test(color) ? color : undefined,
+    images,
     image: images[0],
   };
 }
@@ -260,22 +261,45 @@ function setOptionalAttribute(element: Element, name: string, value: string | un
 
 function imageElementForRun(run: Element, relationshipId: string, ordinal = 0): Element | undefined {
   let index = 0;
-  for (const drawing of elementChildren(run, WORD_NS, 'drawing')) {
-    const blips = Array.from(drawing.getElementsByTagNameNS(A_NS, 'blip'));
-    if (blips.some((blip) => [blip.getAttributeNS(OFFICE_REL_NS, 'embed'), blip.getAttributeNS(OFFICE_REL_NS, 'link'),
-      blip.getAttribute('r:embed'), blip.getAttribute('r:link')].includes(relationshipId))) {
-      if (index === ordinal) return drawing;
-      index++;
-    }
-  }
-  for (const pict of elementChildren(run, WORD_NS, 'pict')) {
-    const imageData = Array.from(pict.getElementsByTagNameNS(V_NS, 'imagedata'));
-    if (imageData.some((node) => [node.getAttributeNS(OFFICE_REL_NS, 'id'), node.getAttribute('r:id')].includes(relationshipId))) {
-      if (index === ordinal) return pict;
+  for (let child = run.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    const ids = element.namespaceURI === WORD_NS && element.localName === 'drawing'
+      ? Array.from(element.getElementsByTagNameNS(A_NS, 'blip')).map((blip) =>
+        blip.getAttributeNS(OFFICE_REL_NS, 'embed') ?? blip.getAttributeNS(OFFICE_REL_NS, 'link') ??
+        blip.getAttribute('r:embed') ?? blip.getAttribute('r:link'))
+      : element.namespaceURI === WORD_NS && element.localName === 'pict'
+        ? Array.from(element.getElementsByTagNameNS(V_NS, 'imagedata')).map((node) =>
+          node.getAttributeNS(OFFICE_REL_NS, 'id') ?? node.getAttribute('r:id'))
+        : [];
+    for (const id of ids) {
+      if (index === ordinal && id === relationshipId) return element;
       index++;
     }
   }
   return undefined;
+}
+
+function paragraphDirectChild(paragraph: Element, node: Node): Node {
+  let current: Node | null = node;
+  while (current?.parentNode && current.parentNode !== paragraph) current = current.parentNode;
+  if (!current || current.parentNode !== paragraph) throw new Error('Target run is not inside the requested paragraph.');
+  return current;
+}
+
+function updateStyleLength(style: string | null, name: string, points: number): string {
+  const normalized = (style ?? '').trim();
+  const declaration = `${name}:${Math.max(0, points)}pt`;
+  if (!normalized) return declaration;
+  const parts = normalized.split(';').map((part) => part.trim()).filter(Boolean);
+  let replaced = false;
+  const next = parts.map((part) => {
+    if (!part.toLowerCase().startsWith(`${name.toLowerCase()}:`)) return part;
+    replaced = true;
+    return declaration;
+  });
+  if (!replaced) next.push(declaration);
+  return next.join(';');
 }
 
 function contentTypesDefaults(types: Element): Element[] {
@@ -296,10 +320,15 @@ function createDrawingElement(
   const container = document.createElementNS(WP_NS, `wp:${options.placement === 'floating' ? 'anchor' : 'inline'}`);
   if (options.placement === 'floating') {
     container.setAttribute('behindDoc', '0');
+    container.setAttribute('locked', '0');
+    container.setAttribute('layoutInCell', '1');
     container.setAttribute('simplePos', '0');
     container.setAttribute('relativeHeight', '251658240');
     container.setAttribute('allowOverlap', '1');
-    container.appendChild(document.createElementNS(WP_NS, 'wp:simplePos'));
+    const simplePos = document.createElementNS(WP_NS, 'wp:simplePos');
+    simplePos.setAttribute('x', '0');
+    simplePos.setAttribute('y', '0');
+    container.appendChild(simplePos);
     const positionH = document.createElementNS(WP_NS, 'wp:positionH');
     positionH.setAttribute('relativeFrom', 'column');
     const alignH = document.createElementNS(WP_NS, 'wp:align');
@@ -444,6 +473,7 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -499,6 +529,16 @@ export class DocxDocument {
       ?? undefined;
   }
 
+  private createContentTypeResolver(): (path: string) => string | undefined {
+    const types = this.getPartDocument('[Content_Types].xml').documentElement!;
+    const overrides = new Map(children(types, 'Override', CONTENT_TYPES_NS)
+      .map((type) => [type.getAttribute('PartName') ?? '', type.getAttribute('ContentType') ?? '']));
+    const defaults = new Map(children(types, 'Default', CONTENT_TYPES_NS)
+      .map((type) => [(type.getAttribute('Extension') ?? '').toLowerCase(), type.getAttribute('ContentType') ?? '']));
+    return (path: string): string | undefined =>
+      overrides.get(`/${path}`) || defaults.get(path.split('.').pop()?.toLowerCase() ?? '') || undefined;
+  }
+
   private relationshipsFor(partPath: string): Map<string, RelationshipTarget> {
     const relPath = resolveRelationshipsPath(partPath);
     if (!this.hasPart(relPath)) return new Map();
@@ -519,8 +559,9 @@ export class DocxDocument {
 
   private paragraphsWithRelationships(): ParagraphInfo[] {
     const relationships = this.relationshipsFor(this.mainPath);
+    const contentTypeFor = this.createContentTypeResolver();
     return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p')
-      .map((paragraph, index) => readParagraph(paragraph, index, relationships, (path) => this.getContentType(path), this.mainPath));
+      .map((paragraph, index) => readParagraph(paragraph, index, relationships, contentTypeFor, this.mainPath));
   }
 
   getPartBytes(path: string): Uint8Array {
@@ -617,10 +658,11 @@ export class DocxDocument {
     const body = bodyOf(this.getPartDocument(this.mainPath));
     const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
     const relationships = this.relationshipsFor(this.mainPath);
+    const contentTypeFor = this.createContentTypeResolver();
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{
         type: 'paragraph',
-        paragraph: readParagraph(child, indices.get(child)!, relationships, (path) => this.getContentType(path), this.mainPath),
+        paragraph: readParagraph(child, indices.get(child)!, relationships, contentTypeFor, this.mainPath),
       }];
       if (child.localName === 'tbl') return [{
         type: 'table',
@@ -743,21 +785,25 @@ export class DocxDocument {
   }
 
   getImageBytes(image: ImageInfo | string): Uint8Array {
-    const info = this.resolveImage(image);
+    const info = typeof image === 'string' ? this.resolveImage(image) : image;
     if (info.isExternal) throw new Error('External images are not loaded.');
     if (!info.partPath || !this.hasPart(info.partPath)) throw new Error(`Image part not found for ${info.relationshipId}.`);
     return this.getPartBytes(info.partPath);
   }
 
   getImageDataUrl(image: ImageInfo | string): string {
-    const info = this.resolveImage(image);
+    const info = typeof image === 'string' ? this.resolveImage(image) : image;
     if (info.isExternal) return placeholderDataUrl('外部图片未加载', info.widthPx || 160, info.heightPx || 90);
     if (!info.partPath || !this.hasPart(info.partPath)) return placeholderDataUrl(info.name ?? '图片缺失', info.widthPx || 160, info.heightPx || 90);
     const contentType = info.contentType ?? this.getContentType(info.partPath);
     if (!isBrowserRenderableContentType(contentType)) {
       return placeholderDataUrl(info.name ?? info.partPath.split('/').pop() ?? '不支持的图片', info.widthPx || 160, info.heightPx || 90);
     }
-    return dataUrlForBytes(this.getPartBytes(info.partPath), contentType!);
+    const cached = this.imageDataUrls.get(info.partPath);
+    if (cached && cached.revision === this.revision && cached.contentType === contentType) return cached.url;
+    const url = dataUrlForBytes(this.getPartBytes(info.partPath), contentType!);
+    this.imageDataUrls.set(info.partPath, { revision: this.revision, contentType: contentType!, url });
+    return url;
   }
 
   insertImage(options: {
@@ -788,7 +834,7 @@ export class DocxDocument {
     const targetRuns = ownRuns(paragraph);
     const beforeRun = options.run !== undefined ? targetRuns[options.run] : undefined;
     if (options.run !== undefined && !beforeRun) throw new Error(`Run ${options.run} does not exist.`);
-    const insertedRunIndex = options.run ?? targetRuns.length;
+    const insertBefore = beforeRun ? paragraphDirectChild(paragraph, beforeRun) : null;
     const relPath = resolveRelationshipsPath(this.mainPath);
     const next = this.ensureMediaContentType(partPath, options.contentType);
     next.set(partPath, Uint8Array.from(options.bytes));
@@ -807,8 +853,9 @@ export class DocxDocument {
       placement: options.placement ?? 'inline',
       docPrId: this.nextDocPrId(main),
     }));
-    if (beforeRun) paragraph.insertBefore(run, beforeRun);
+    if (insertBefore) paragraph.insertBefore(run, insertBefore);
     else paragraph.appendChild(run);
+    const insertedRunIndex = ownRuns(paragraph).indexOf(run);
     next.set(this.mainPath, encodeXml(serializeXml(main)));
     this.commitParts(next);
     return {
@@ -837,16 +884,18 @@ export class DocxDocument {
     }
     const info = this.resolveImage(image);
     if (info.isExternal || !info.partPath) throw new Error('External images cannot be replaced.');
+    const inferredType = contentType ?? detectImageContentType(bytes) ?? info.contentType;
+    if (!inferredType) throw new Error('contentType is required when the image format cannot be inferred from bytes.');
     let next = new Map(this.parts);
     let path = info.partPath;
-    if (contentType) {
-      assertText(contentType, 'contentType');
+    if (inferredType) {
+      assertText(inferredType, 'contentType');
       const currentExtension = path.split('.').pop()?.toLowerCase();
-      const nextExtension = extensionForContentType(contentType);
-      if (!nextExtension) throw new Error(`Unsupported image content type: ${contentType}`);
+      const nextExtension = extensionForContentType(inferredType);
+      if (!nextExtension) throw new Error(`Unsupported image content type: ${inferredType}`);
       if (currentExtension !== nextExtension && !(currentExtension === 'jpg' && nextExtension === 'jpeg') &&
           !(currentExtension === 'jpeg' && nextExtension === 'jpg')) {
-        const movedPath = this.nextImagePartPath(contentType);
+        const movedPath = this.nextImagePartPath(inferredType);
         for (const relPath of this.listParts().filter((entry) => entry.endsWith('.rels'))) {
           const sourcePart = sourcePartFromRelationshipsPath(relPath);
           if (!sourcePart) continue;
@@ -865,7 +914,7 @@ export class DocxDocument {
         next.delete(info.partPath);
         path = movedPath;
       }
-      next = this.ensureMediaContentType(path, contentType, next);
+      next = this.ensureMediaContentType(path, inferredType, next);
     }
     next.set(path, Uint8Array.from(bytes));
     this.commitParts(next);
@@ -889,6 +938,12 @@ export class DocxDocument {
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
       if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+      if (imageElement.localName === 'pict') {
+        const shape = Array.from(imageElement.getElementsByTagNameNS(V_NS, 'shape'))[0];
+        if (!shape) throw new Error('VML image shape is missing.');
+        shape.setAttribute('style', updateStyleLength(updateStyleLength(shape.getAttribute('style'), 'width', emuToPx(nextWidth) * 72 / 96), 'height', emuToPx(nextHeight) * 72 / 96));
+        return;
+      }
       for (const extent of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'extent'))) {
         extent.setAttribute('cx', String(Math.max(1, Math.round(nextWidth))));
         extent.setAttribute('cy', String(Math.max(1, Math.round(nextHeight))));
@@ -909,6 +964,13 @@ export class DocxDocument {
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
       if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+      if (imageElement.localName === 'pict') {
+        const shape = Array.from(imageElement.getElementsByTagNameNS(V_NS, 'shape'))[0];
+        if (!shape) throw new Error('VML image shape is missing.');
+        shape.setAttribute('alt', alt);
+        setOptionalAttribute(shape, 'title', title);
+        return;
+      }
       for (const docPr of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'docPr'))) {
         docPr.setAttribute('descr', alt);
         setOptionalAttribute(docPr, 'title', title);
