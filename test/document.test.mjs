@@ -181,7 +181,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 8);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -243,4 +243,127 @@ test('UTF-16 XML input is decoded and edited output declares UTF-8', async () =>
   doc.setParagraphText(0, '编码');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /encoding="UTF-8"/);
   assert.equal((await DocxDocument.load(await doc.toUint8Array())).getParagraphs()[0].text, '编码');
+});
+
+test('reads external hyperlink relationship and run metadata', () => {
+  const doc = withBody('<w:p><w:hyperlink r:id="rId9" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:t>官网</w:t></w:r></w:hyperlink></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>'), 'application/vnd.openxmlformats-package.relationships+xml');
+  const links = doc.getHyperlinks();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].url, 'https://example.com');
+  assert.equal(doc.getParagraphs()[0].runs[0].hyperlink?.url, 'https://example.com');
+});
+
+test('marks javascript and data hyperlinks as unsafe', () => {
+  const doc = withBody('<w:p><w:hyperlink r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:t>bad</w:t></w:r></w:hyperlink></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/></Relationships>'), 'application/vnd.openxmlformats-package.relationships+xml');
+  assert.equal(doc.getHyperlinks()[0].unsafe, true);
+  assert.equal(doc.getParagraphs()[0].runs[0].hyperlink?.unsafe, true);
+});
+
+test('reads anchor hyperlinks and tooltip', () => {
+  const doc = withBody('<w:p><w:hyperlink w:anchor="chapter1" w:tooltip="跳转" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>目录</w:t></w:r></w:hyperlink></w:p>');
+  const link = doc.getHyperlinks()[0];
+  assert.equal(link.anchor, 'chapter1');
+  assert.equal(link.tooltip, '跳转');
+  assert.equal(link.isExternal, false);
+});
+
+test('parses fldSimple HYPERLINK field URLs', () => {
+  const doc = withBody('<w:p><w:fldSimple w:instr=" HYPERLINK &quot;https://legacy.example&quot; "><w:r><w:t>legacy</w:t></w:r></w:fldSimple></w:p>');
+  const link = doc.getHyperlinks()[0];
+  assert.equal(link.url, 'https://legacy.example');
+  assert.equal(link.text, 'legacy');
+});
+
+test('bookmarks are listed and internal entries hidden by default', () => {
+  const doc = withBody('<w:p><w:bookmarkStart w:id="1" w:name="user"/><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r><w:bookmarkEnd w:id="1"/><w:bookmarkStart w:id="2" w:name="_GoBack"/><w:bookmarkEnd w:id="2"/></w:p>');
+  const visible = doc.getBookmarks();
+  const all = doc.getBookmarks({ includeInternal: true });
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].name, 'user');
+  assert.equal(visible[0].endParagraph, 1);
+  assert.equal(all.length, 2);
+});
+
+test('insertBookmark and deleteBookmark maintain ids and boundaries', () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('next');
+  const mark = doc.insertBookmark('range', { startParagraph: 0, endParagraph: 1 });
+  assert.equal(mark.startParagraph, 0);
+  assert.equal(mark.endParagraph, 1);
+  assert.equal(doc.getBookmarks().length, 1);
+  doc.deleteBookmark('range');
+  assert.equal(doc.getBookmarks().length, 0);
+});
+
+test('insertBookmark rejects duplicate names', () => {
+  const doc = DocxDocument.create();
+  doc.insertBookmark('dup', { startParagraph: 0 });
+  assert.throws(() => doc.insertBookmark('dup', { startParagraph: 0 }), /already exists/);
+});
+
+test('insertHyperlink wraps selected text and creates external relationship', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'hello world');
+  const link = doc.insertHyperlink({ paragraph: 0, start: 6, end: 11 }, { url: 'https://example.com', tooltip: 'site' });
+  assert.equal(link.text, 'world');
+  assert.equal(link.url, 'https://example.com');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:hyperlink/);
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /Target="https:\/\/example.com"/);
+});
+
+test('insertHyperlink rejects non-whitelisted schemes', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'x');
+  assert.throws(() => doc.insertHyperlink({ paragraph: 0, start: 0, end: 1 }, { url: 'javascript:alert(1)' }), /http, https or mailto/);
+  assert.throws(() => doc.insertHyperlink({ paragraph: 0, start: 0, end: 1 }, { url: 'file:///tmp/a' }), /http, https or mailto/);
+});
+
+test('insertHyperlink supports mailto and anchors', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'contact');
+  const external = doc.insertHyperlink({ paragraph: 0, start: 0, end: 7 }, { url: 'mailto:test@example.com' });
+  assert.equal(external.unsafe, false);
+  doc.removeHyperlink(0);
+  doc.insertHyperlink({ paragraph: 0, start: 0, end: 7 }, { anchor: 'dest' });
+  assert.equal(doc.getHyperlinks()[0].anchor, 'dest');
+});
+
+test('removeHyperlink keeps text by default and cleans dangling relationship', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'demo');
+  doc.insertHyperlink({ paragraph: 0, start: 0, end: 4 }, { url: 'https://example.com' });
+  const id = doc.getHyperlinks()[0].relationshipId;
+  doc.removeHyperlink(0);
+  assert.equal(doc.getParagraphs()[0].text, 'demo');
+  assert.equal(doc.getHyperlinks().length, 0);
+  assert.doesNotMatch(doc.getPartXml('word/_rels/document.xml.rels'), new RegExp(`Id="${id}"`));
+});
+
+test('removeHyperlink with keepText false removes linked text', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'demo');
+  doc.insertHyperlink({ paragraph: 0, start: 0, end: 4 }, { url: 'https://example.com' });
+  doc.removeHyperlink(0, { keepText: false });
+  assert.equal(doc.getParagraphs()[0].text, '');
+});
+
+test('updateHyperlink rewrites attributes and relationship target', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  doc.insertHyperlink({ paragraph: 0, start: 0, end: 3 }, { url: 'https://a.example' });
+  doc.updateHyperlink(0, { url: 'https://b.example', tooltip: 'B' });
+  assert.equal(doc.getHyperlinks()[0].url, 'https://b.example');
+  assert.equal(doc.getHyperlinks()[0].tooltip, 'B');
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /https:\/\/b.example/);
+});
+
+test('agent operations validate hyperlink and bookmark commands', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'insertHyperlink', target: { paragraph: 0, start: 0, end: 0 }, link: { url: 'javascript:1' } }] }), /http, https or mailto/);
+  const snapshot = doc.applyOperations({ operations: [{ type: 'insertBookmark', name: 'b1', range: { startParagraph: 0 } }] });
+  assert.equal(snapshot.bookmarks[0].name, 'b1');
+  doc.applyOperations({ operations: [{ type: 'deleteBookmark', name: 'b1' }] });
+  assert.equal(doc.getBookmarks().length, 0);
 });

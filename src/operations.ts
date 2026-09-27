@@ -1,5 +1,6 @@
 import type { AgentRequest, ParagraphFormat, RunFormat } from './types.js';
 import { assertText } from './xml.js';
+import { assertHyperlinkInput } from './hyperlink.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -83,6 +84,38 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         break;
       case 'insertTable':
         keys(op, ['type', 'rows']); validateRows(op.rows); break;
+      case 'insertHyperlink':
+        keys(op, ['type', 'target', 'link']);
+        object(op.target); keys(op.target, ['paragraph', 'start', 'end']);
+        assertIndex(op.target.paragraph); assertIndex(op.target.start); assertIndex(op.target.end);
+        if (op.target.end < op.target.start) throw new Error('target.end must be >= target.start.');
+        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
+        break;
+      case 'updateHyperlink':
+        keys(op, ['type', 'hyperlink', 'link']);
+        if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
+        else if (typeof op.hyperlink !== 'object' || !op.hyperlink) throw new Error('hyperlink must be number or object.');
+        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
+        break;
+      case 'removeHyperlink':
+        keys(op, ['type', 'hyperlink', 'options']);
+        if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
+        else if (typeof op.hyperlink !== 'object' || !op.hyperlink) throw new Error('hyperlink must be number or object.');
+        if ('options' in op) {
+          object(op.options);
+          keys(op.options, ['keepText']);
+          if ('keepText' in op.options && typeof op.options.keepText !== 'boolean') throw new Error('keepText must be boolean.');
+        }
+        break;
+      case 'insertBookmark':
+        keys(op, ['type', 'name', 'range']);
+        assertText(op.name, 'name');
+        object(op.range); keys(op.range, ['startParagraph', 'endParagraph']);
+        assertIndex(op.range.startParagraph);
+        if ('endParagraph' in op.range) assertIndex(op.range.endParagraph);
+        break;
+      case 'deleteBookmark':
+        keys(op, ['type', 'name']); assertText(op.name, 'name'); break;
       case 'setPartXml':
         keys(op, ['type', 'path', 'xml']); assertText(op.path, 'path'); assertText(op.xml, 'xml'); break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
@@ -125,6 +158,23 @@ export const AGENT_OPERATION_SCHEMA = {
             type: 'array', minItems: 1, maxItems: 1000,
             items: { type: 'array', minItems: 1, maxItems: 100, items: text },
           } }),
+          operation('insertHyperlink', {
+            target: shape({ paragraph: index, start: index, end: index }),
+            link: shape({ url: text, anchor: text, tooltip: text }, []),
+          }),
+          operation('updateHyperlink', {
+            hyperlink: { oneOf: [index, { type: 'object' }] },
+            link: shape({ url: text, anchor: text, tooltip: text }, []),
+          }),
+          operation('removeHyperlink', {
+            hyperlink: { oneOf: [index, { type: 'object' }] },
+            options: shape({ keepText: { type: 'boolean' } }, []),
+          }, ['hyperlink']),
+          operation('insertBookmark', {
+            name: text,
+            range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']),
+          }),
+          operation('deleteBookmark', { name: text }),
           operation('setPartXml', { path: text, xml: text }),
         ],
       },

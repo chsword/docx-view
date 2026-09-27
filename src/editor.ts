@@ -123,7 +123,9 @@ export class DocxEditor {
     if (paragraph.alignment) element.style.textAlign = paragraph.alignment === 'both' ? 'justify' : paragraph.alignment;
     if (paragraph.style) element.dataset.style = paragraph.style;
     for (const run of paragraph.runs) {
-      const span = this.root.ownerDocument.createElement('span');
+      const span = run.hyperlink && !run.hyperlink.unsafe
+        ? this.root.ownerDocument.createElement('a')
+        : this.root.ownerDocument.createElement('span');
       span.textContent = run.text;
       if (run.bold !== undefined) span.style.fontWeight = run.bold ? '700' : '400';
       if (run.italic !== undefined) span.style.fontStyle = run.italic ? 'italic' : 'normal';
@@ -131,6 +133,21 @@ export class DocxEditor {
       if (run.fontSize !== undefined) span.style.fontSize = `${run.fontSize}pt`;
       if (run.fontFamily) span.style.fontFamily = run.fontFamily;
       if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
+      if (run.hyperlink) {
+        span.dataset.docxLink = '1';
+        span.dataset.docxUnsafe = String(run.hyperlink.unsafe);
+        if (run.hyperlink.anchor) span.dataset.docxAnchor = run.hyperlink.anchor;
+        if (run.hyperlink.url) span.dataset.docxUrl = run.hyperlink.url;
+        if (span instanceof HTMLAnchorElement) {
+          span.href = run.hyperlink.url ?? `#${run.hyperlink.anchor ?? ''}`;
+          span.target = '_blank';
+          span.rel = 'noopener noreferrer';
+          if (!run.underline) span.style.textDecoration = 'underline';
+          if (!run.color) span.style.color = '#0563C1';
+        } else if (run.hyperlink.unsafe) {
+          span.classList.add('docx-link-unsafe');
+        }
+      }
       element.append(span);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;
@@ -161,6 +178,22 @@ export class DocxEditor {
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
       }
+    });
+    element.addEventListener('click', (event) => {
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      if (!target) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+      if (!EventClass) return;
+      this.root.dispatchEvent(new EventClass('docx-linkclick', {
+        bubbles: true,
+        detail: {
+          url: target.dataset.docxUrl,
+          anchor: target.dataset.docxAnchor,
+          unsafe: target.dataset.docxUnsafe === 'true',
+        },
+      }));
     });
     element.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {

@@ -61,7 +61,7 @@ console.log(reopened.getSnapshot());
 
 | API | 用途 |
 | --- | --- |
-| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、文字格式、部件列表和修订号 |
+| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、文字格式、超链接、书签、部件列表和修订号 |
 | `setParagraphText(index, text)` | 修改段落文字，支持制表符和换行 |
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
 | `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
@@ -69,6 +69,9 @@ console.log(reopened.getSnapshot());
 | `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
+| `getHyperlinks()` / `getBookmarks(options?)` | 读取超链接、书签（默认隐藏 `_GoBack` / `_Toc*` 内置书签） |
+| `insertHyperlink()` / `updateHyperlink()` / `removeHyperlink()` | 插入、更新、删除超链接（URL 仅允许 `http` / `https` / `mailto`） |
+| `insertBookmark()` / `deleteBookmark()` | 管理跨段落书签 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
@@ -159,7 +162,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`insertHyperlink`、`updateHyperlink`、`removeHyperlink`、`insertBookmark`、`deleteBookmark`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。
@@ -169,10 +172,10 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、显式 run 格式、段落对齐和基础表格；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
+当前可视化视图支持正文段落、显式 run 格式、段落对齐、基础表格与超链接显示；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
-XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点渲染，不将文档 XML 当作 HTML；粘贴仅接受纯文本，不主动加载外部关系目标。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
+XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点渲染，不将文档 XML 当作 HTML；粘贴仅接受纯文本。超链接点击默认不自动导航，只在 Ctrl/Cmd+点击时派发 `docx-linkclick` 事件；`javascript:`、`data:`、`vbscript:`、`file:` 会被标记为 `unsafe` 并按普通文本呈现。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
 测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、表格与分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。

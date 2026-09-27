@@ -137,6 +137,11 @@ function setDocument(next: DocxDocument, name: string): void {
 }
 
 host.addEventListener('docx-selectionchange', updateSelection);
+host.addEventListener('docx-linkclick', (event: Event) => {
+  const detail = (event as CustomEvent<{ url?: string; anchor?: string; unsafe: boolean }>).detail;
+  const target = detail.url ?? (detail.anchor ? `#${detail.anchor}` : '(empty)');
+  message(detail.unsafe ? `已拦截不安全链接：${target}` : `捕获链接点击事件：${target}`);
+});
 for (const key of ['bold', 'italic', 'underline'] as const) {
   element(`format-${key}`).addEventListener('click', () => run(() => {
     const index = selectedIndex();
