@@ -168,8 +168,8 @@ export function tableGrid(table: Element): number[] {
     number(column.getAttributeNS(WORD_NS, 'w') ?? column.getAttribute('w:w')) ?? DEFAULT_GRID_WIDTH
   ));
   if (grid.length) return grid;
-  const columns = childrenThroughTransparent(table, 'tr').reduce((max, row) =>
-    Math.max(max, rowCells(row).reduce((count, cell) => count + cell.span, 0)), 0);
+  const columns = childrenThroughTransparent(table, 'tr')
+    .reduce((max, row) => Math.max(max, rowCells(row).reduce((count, cell) => count + cell.span, 0)), 0);
   return Array.from({ length: columns }, () => DEFAULT_GRID_WIDTH);
 }
 
