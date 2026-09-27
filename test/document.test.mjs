@@ -352,6 +352,16 @@ test('replaceImageBytes infers content type from bytes when omitted', () => {
   assert.match(updated.partPath, /\.gif$/);
 });
 
+test('getImageDataUrl cache invalidates after replaceImageBytes', () => {
+  const doc = DocxDocument.create();
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
+  const before = doc.getImageDataUrl(image);
+  doc.replaceImageBytes(image, GIF_BYTES);
+  const after = doc.getImageDataUrl(doc.getImages()[0]);
+  assert.notEqual(after, before);
+  assert.match(after, /^data:image\/gif;base64,/);
+});
+
 test('resizeImage updates stored extents and can keep aspect ratio', () => {
   const doc = DocxDocument.create();
   const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });

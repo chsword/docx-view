@@ -95,6 +95,10 @@ export function resolveTargetPath(partPath: string, target: string): string | un
 }
 
 export function encodeBase64(bytes: Uint8Array): string {
+  const NodeBuffer = (globalThis as { Buffer?: { from(bytes: ArrayBufferLike, byteOffset?: number, length?: number): { toString(encoding: 'base64'): string } } }).Buffer;
+  if (NodeBuffer) {
+    return NodeBuffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
   let binary = '';
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
