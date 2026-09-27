@@ -92,6 +92,8 @@ export interface RunInfo extends RunFormat {
   index: number;
   text: string;
   effective?: RunFormat;
+  image?: ImageInfo;
+  images?: ImageInfo[];
 }
 
 export interface ParagraphInfo extends ParagraphFormat {
@@ -100,6 +102,7 @@ export interface ParagraphInfo extends ParagraphFormat {
   runs: RunInfo[];
   effective?: ParagraphFormat;
   numbering?: NumberingInfo;
+  images: ImageInfo[];
 }
 
 export interface BorderFormat {
@@ -193,6 +196,32 @@ export interface TableInfo {
   grid: number[];
 }
 
+export interface ImageInfo {
+  id: string;
+  paragraph: number;
+  run: number;
+  ordinal?: number;
+  sourcePartPath?: string;
+  relationshipId: string;
+  partPath?: string;
+  contentType?: string;
+  widthEmu: number;
+  heightEmu: number;
+  widthPx: number;
+  heightPx: number;
+  name?: string;
+  alt?: string;
+  title?: string;
+  placement: 'inline' | 'floating';
+  wrap?: 'none' | 'square' | 'tight' | 'through' | 'topAndBottom';
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  crop?: { left: number; top: number; right: number; bottom: number };
+  isExternal: boolean;
+  behindDoc?: boolean;
+}
+
 export type DocumentBlock =
   | { type: 'paragraph'; paragraph: ParagraphInfo }
   | { type: 'table'; rows: TableRowInfo[]; format?: TableFormat; grid: number[] };
@@ -227,6 +256,11 @@ export type AgentOperation =
   | { type: 'formatTableRow'; table: number; row: number; format: RowFormat }
   | { type: 'formatCell'; table: number; row: number; col: number; format: CellFormat }
   | { type: 'setCellText'; table: number; row: number; col: number; text: string }
+  | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
+  | { type: 'replaceImageBytes'; image: string; bytes: string; contentType?: string }
+  | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }
+  | { type: 'setImageAlt'; image: string; alt: string; title?: string }
+  | { type: 'deleteImage'; image: string }
   | { type: 'setPartXml'; path: string; xml: string };
 
 export interface AgentRequest {

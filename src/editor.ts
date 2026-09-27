@@ -1,5 +1,6 @@
 import { DocxDocument } from './document.js';
-import type { BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo, TableFormat, TableRowInfo, WidthFormat } from './types.js';
+import type { BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, ParagraphInfo, RunInfo, TableFormat, TableRowInfo, WidthFormat } from './types.js';
+import { pxToEmu } from './drawing.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
@@ -101,6 +102,7 @@ export class DocxEditor {
     text: string;
   }>();
   private selected: number | null = null;
+  private selectedImageInfo: ImageInfo | null = null;
   private composing = false;
   private renderAfterComposition = false;
   private destroyed = false;
@@ -113,11 +115,16 @@ export class DocxEditor {
     this.root.setAttribute('aria-label', '文档编辑区域');
     container.append(this.root);
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
+    this.root.addEventListener('keydown', this.handleRootKeydown);
     this.render();
   }
 
   get selectedParagraph(): number | null {
     return this.selected;
+  }
+
+  get selectedImage(): ImageInfo | null {
+    return this.selectedImageInfo;
   }
 
   /** Commit visible text before an external API operation or an export. */
@@ -140,6 +147,7 @@ export class DocxEditor {
     this.flush();
     this.document = document;
     this.selected = null;
+    this.selectedImageInfo = null;
     this.composing = false;
     this.renderAfterComposition = false;
     this.paragraphs.clear();
@@ -153,12 +161,22 @@ export class DocxEditor {
       return;
     }
     const caret = this.captureCaret();
+    const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
+      ?? this.selectedImageInfo?.id
+      ?? null;
     this.flush();
     this.paragraphs.clear();
     const fragment = this.root.ownerDocument.createDocumentFragment();
     this.appendBlocks(fragment, this.document.getBlocks());
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
+    const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
+    this.selectImage(nextSelected);
+    if (activeImageId) {
+      Array.from(this.root.querySelectorAll<HTMLElement>('[data-image]'))
+        .find((node) => node.dataset.image === activeImageId)
+        ?.focus({ preventScroll: true });
+    }
     if (caret) this.restoreCaret(caret);
   }
 
@@ -167,15 +185,23 @@ export class DocxEditor {
     this.flush();
     this.destroyed = true;
     this.root.ownerDocument.removeEventListener('selectionchange', this.handleSelection);
+    this.root.removeEventListener('keydown', this.handleRootKeydown);
     this.root.remove();
     this.paragraphs.clear();
   }
 
   private readText(element: HTMLElement): string {
-    // Native editing can introduce line-break elements (e.g. via mobile keyboards).
-    if (!element.querySelector('br, div, p')) return element.textContent ?? '';
-    const text = element.innerText.replace(/\r\n?/g, '\n');
-    return text === '\n' && !element.textContent ? '' : text;
+    const walk = (node: Node): string => {
+      if (node.nodeType === 3) return node.textContent ?? '';
+      if (node.nodeType !== 1) return '';
+      const current = node as HTMLElement;
+      if (current.dataset.image || current.contentEditable === 'false') return '';
+      if (current.tagName === 'BR') return '\n';
+      const text = Array.from(current.childNodes).map(walk).join('');
+      if (['DIV', 'P'].includes(current.tagName)) return text ? `${text}\n` : '';
+      return text;
+    };
+    return walk(element).replace(/\n$/, '');
   }
 
   private twipsToPx(value: number | undefined): number | undefined {
@@ -350,10 +376,13 @@ export class DocxEditor {
       this.focusContent(content);
     });
     for (const run of paragraph.runs) {
-      const span = this.root.ownerDocument.createElement('span');
-      span.textContent = run.text;
-      applyRunStyle(span, run);
-      content.append(span);
+      if (run.text) {
+        const span = this.root.ownerDocument.createElement('span');
+        span.textContent = run.text;
+        applyRunStyle(span, run);
+        content.append(span);
+      }
+      for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
     }
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     element.append(content);
@@ -420,6 +449,133 @@ export class DocxEditor {
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
     return element;
+  }
+
+  private makeImage(paragraph: number, image: ImageInfo): HTMLElement {
+    const wrapper = this.root.ownerDocument.createElement(image.placement === 'floating' ? 'div' : 'span');
+    wrapper.className = `docx-image${this.selectedImageInfo?.id === image.id ? ' selected' : ''}`;
+    wrapper.contentEditable = 'false';
+    wrapper.tabIndex = 0;
+    wrapper.dataset.image = image.id;
+    wrapper.dataset.paragraph = String(paragraph);
+    wrapper.style.position = 'relative';
+    wrapper.style.display = image.placement === 'floating' ? 'block' : 'inline-block';
+    wrapper.style.width = `${Math.max(1, image.widthPx || 1)}px`;
+    wrapper.style.height = `${Math.max(1, image.heightPx || 1)}px`;
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.verticalAlign = 'text-bottom';
+    wrapper.style.margin = image.placement === 'floating' ? '8px 12px 8px 0' : '0 2px';
+    wrapper.style.overflow = 'hidden';
+    if (image.placement === 'floating') {
+      if (['square', 'tight', 'through'].includes(image.wrap ?? '')) wrapper.style.cssFloat = 'left';
+      else if (image.wrap === 'topAndBottom') { wrapper.style.margin = '12px auto'; }
+      else if (image.wrap === 'none') { wrapper.style.position = 'absolute'; wrapper.style.right = '0'; }
+      wrapper.style.zIndex = image.behindDoc ? '0' : '1';
+    }
+    const viewport = this.root.ownerDocument.createElement('span');
+    viewport.style.display = 'block';
+    viewport.style.width = '100%';
+    viewport.style.height = '100%';
+    viewport.style.overflow = 'hidden';
+    const stage = this.root.ownerDocument.createElement('span');
+    stage.style.display = 'block';
+    stage.style.width = '100%';
+    stage.style.height = '100%';
+    const img = this.root.ownerDocument.createElement('img');
+    img.src = this.document.getImageDataUrl(image);
+    img.alt = image.alt ?? '';
+    img.draggable = false;
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.display = 'block';
+    if (image.crop) {
+      const scaleX = 1 / Math.max(0.01, 1 - image.crop.left - image.crop.right);
+      const scaleY = 1 / Math.max(0.01, 1 - image.crop.top - image.crop.bottom);
+      img.style.width = `${scaleX * 100}%`;
+      img.style.height = `${scaleY * 100}%`;
+      img.style.transformOrigin = 'top left';
+      img.style.transform = `translate(${-image.crop.left * 100}%, ${-image.crop.top * 100}%)`;
+    }
+    const transforms = [
+      image.rotation ? `rotate(${image.rotation}deg)` : '',
+      image.flipH ? 'scaleX(-1)' : '',
+      image.flipV ? 'scaleY(-1)' : '',
+    ].filter(Boolean);
+    if (transforms.length) stage.style.transform = transforms.join(' ');
+    stage.append(img);
+    viewport.append(stage);
+    wrapper.append(viewport);
+    for (const handle of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
+      const node = this.root.ownerDocument.createElement('span');
+      node.className = `docx-image-handle docx-image-handle-${handle}`;
+      node.dataset.handle = handle;
+      node.addEventListener('mousedown', (event) => this.startResize(event, wrapper, image, handle));
+      wrapper.append(node);
+    }
+    wrapper.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.selectParagraph(paragraph);
+      this.selectImage(image);
+      wrapper.focus();
+    });
+    wrapper.addEventListener('keydown', (event) => {
+      const keyEvent = event as KeyboardEvent;
+      if (['Delete', 'Backspace'].includes(keyEvent.key)) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        this.document.deleteImage(image);
+        this.render();
+        this.options.onChange?.(this.document.getSnapshot());
+        return;
+      }
+      if (!keyEvent.altKey || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(keyEvent.key)) return;
+      keyEvent.preventDefault();
+      const step = keyEvent.shiftKey ? 16 : 8;
+      const delta = keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp' ? -step : step;
+      if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowRight') {
+        this.document.resizeImage(image, { widthEmu: pxToEmu(Math.max(1, (image.widthPx || 1) + delta)), keepAspect: keyEvent.shiftKey });
+      } else {
+        this.document.resizeImage(image, { heightEmu: pxToEmu(Math.max(1, (image.heightPx || 1) + delta)), keepAspect: keyEvent.shiftKey });
+      }
+      this.render();
+      this.options.onChange?.(this.document.getSnapshot());
+    });
+    return wrapper;
+  }
+
+  private startResize(event: MouseEvent, wrapper: HTMLElement, image: ImageInfo, handle: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.selectImage(image);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = Math.max(1, image.widthPx || 1);
+    const startHeight = Math.max(1, image.heightPx || 1);
+    const move = (next: MouseEvent): void => {
+      const horizontal = handle.includes('e') ? 1 : handle.includes('w') ? -1 : 0;
+      const vertical = handle.includes('s') ? 1 : handle.includes('n') ? -1 : 0;
+      const width = Math.max(1, startWidth + (next.clientX - startX) * horizontal);
+      const height = Math.max(1, startHeight + (next.clientY - startY) * vertical);
+      wrapper.style.width = `${width}px`;
+      wrapper.style.height = `${height}px`;
+    };
+    const up = (next: MouseEvent): void => {
+      this.root.ownerDocument.removeEventListener('mousemove', move);
+      this.root.ownerDocument.removeEventListener('mouseup', up);
+      const widthEmu = pxToEmu(parseFloat(wrapper.style.width));
+      const heightEmu = pxToEmu(parseFloat(wrapper.style.height));
+      const resize = next.shiftKey
+        ? (Math.abs(next.clientX - startX) >= Math.abs(next.clientY - startY)
+          ? { widthEmu, keepAspect: true }
+          : { heightEmu, keepAspect: true })
+        : { widthEmu, heightEmu };
+      this.document.resizeImage(image, resize);
+      this.render();
+      this.options.onChange?.(this.document.getSnapshot());
+    };
+    this.root.ownerDocument.addEventListener('mousemove', move);
+    this.root.ownerDocument.addEventListener('mouseup', up);
   }
 
   private insertText(element: HTMLElement, text: string): void {
@@ -490,6 +646,12 @@ export class DocxEditor {
     if (EventClass) this.root.dispatchEvent(new EventClass('docx-selectionchange', { bubbles: true, detail: { index } }));
   }
 
+  private selectImage(image: ImageInfo | null): void {
+    this.selectedImageInfo = image;
+    const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+    if (EventClass) this.root.dispatchEvent(new EventClass('docx-imageselectionchange', { bubbles: true, detail: image ? { image } : null }));
+  }
+
   private readonly handleSelection = (): void => {
     const selection = this.root.ownerDocument.getSelection();
     const node = selection?.anchorNode;
@@ -497,6 +659,19 @@ export class DocxEditor {
     const element = node.nodeType === 1 ? node as Element : node.parentElement;
     const paragraph = element?.closest<HTMLElement>('[data-paragraph]');
     if (paragraph && this.root.contains(paragraph)) this.selectParagraph(Number(paragraph.dataset.paragraph));
+    const image = element?.closest<HTMLElement>('[data-image]');
+    if (!image) this.selectImage(null);
+  };
+
+  private readonly handleRootKeydown = (event: KeyboardEvent): void => {
+    if (!this.selectedImageInfo || !['Delete', 'Backspace'].includes(event.key)) return;
+    const active = this.root.ownerDocument.activeElement as HTMLElement | null;
+    const image = active?.closest('[data-image]') as HTMLElement | null;
+    if (!image || image.dataset.image !== this.selectedImageInfo.id) return;
+    event.preventDefault();
+    this.document.deleteImage(this.selectedImageInfo);
+    this.render();
+    this.options.onChange?.(this.document.getSnapshot());
   };
 
   private captureCaret(): { index: number; start: number; end: number } | null {

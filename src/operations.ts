@@ -1,4 +1,5 @@
 import type { AgentRequest, CellFormat, ParagraphFormat, RowFormat, RunFormat, TableFormat } from './types.js';
+import { assertBase64 } from './drawing.js';
 import { assertText } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
@@ -280,6 +281,39 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'table', 'row', 'col', 'text']);
         assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); assertText(op.text);
         break;
+      case 'insertImage':
+        keys(op, ['type', 'bytes', 'contentType', 'paragraph', 'run', 'widthEmu', 'heightEmu', 'alt', 'placement']);
+        assertText(op.bytes, 'bytes');
+        assertBase64(op.bytes);
+        assertText(op.contentType, 'contentType');
+        if ('paragraph' in op) assertIndex(op.paragraph);
+        if ('run' in op) assertIndex(op.run);
+        if ('widthEmu' in op && (typeof op.widthEmu !== 'number' || !Number.isFinite(op.widthEmu) || op.widthEmu <= 0)) throw new Error('widthEmu must be a positive number.');
+        if ('heightEmu' in op && (typeof op.heightEmu !== 'number' || !Number.isFinite(op.heightEmu) || op.heightEmu <= 0)) throw new Error('heightEmu must be a positive number.');
+        if ('alt' in op) assertText(op.alt, 'alt');
+        if ('placement' in op && !['inline', 'floating'].includes(String(op.placement))) throw new Error('Invalid image placement.');
+        break;
+      case 'resizeImage':
+        keys(op, ['type', 'image', 'size']); assertText(op.image, 'image'); object(op.size);
+        keys(op.size, ['widthEmu', 'heightEmu', 'keepAspect']);
+        if (!('widthEmu' in op.size) && !('heightEmu' in op.size)) throw new Error('resizeImage requires widthEmu and/or heightEmu.');
+        if ('widthEmu' in op.size && (typeof op.size.widthEmu !== 'number' || !Number.isFinite(op.size.widthEmu) || op.size.widthEmu <= 0)) throw new Error('widthEmu must be a positive number.');
+        if ('heightEmu' in op.size && (typeof op.size.heightEmu !== 'number' || !Number.isFinite(op.size.heightEmu) || op.size.heightEmu <= 0)) throw new Error('heightEmu must be a positive number.');
+        if ('keepAspect' in op.size && typeof op.size.keepAspect !== 'boolean') throw new Error('keepAspect must be boolean.');
+        break;
+      case 'replaceImageBytes':
+        keys(op, ['type', 'image', 'bytes', 'contentType']);
+        assertText(op.image, 'image');
+        assertText(op.bytes, 'bytes');
+        assertBase64(op.bytes);
+        if ('contentType' in op) assertText(op.contentType, 'contentType');
+        break;
+      case 'setImageAlt':
+        keys(op, ['type', 'image', 'alt', 'title']); assertText(op.image, 'image'); assertText(op.alt, 'alt');
+        if ('title' in op) assertText(op.title, 'title');
+        break;
+      case 'deleteImage':
+        keys(op, ['type', 'image']); assertText(op.image, 'image'); break;
       case 'setPartXml':
         keys(op, ['type', 'path', 'xml']); assertText(op.path, 'path'); assertText(op.xml, 'xml'); break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
@@ -297,6 +331,14 @@ const nullable = <T extends Record<string, unknown>>(schema: T) => ({ anyOf: [sc
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
+const imageSizeShape = {
+  ...shape({
+    widthEmu: { type: 'number', exclusiveMinimum: 0 },
+    heightEmu: { type: 'number', exclusiveMinimum: 0 },
+    keepAspect: { type: 'boolean' },
+  }, []),
+  anyOf: [{ required: ['widthEmu'] }, { required: ['heightEmu'] }],
+};
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
 const width = shape({ type: { enum: ['auto', 'dxa', 'pct'] }, value: { type: 'number', minimum: 0 } });
@@ -401,6 +443,27 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('formatTableRow', { table: index, row: index, format: rowFormat }),
           operation('formatCell', { table: index, row: index, col: index, format: cellFormat }),
           operation('setCellText', { table: index, row: index, col: index, text }),
+          operation('insertImage', {
+            bytes: { type: 'string', maxLength: 22_500_000 },
+            contentType: text,
+            paragraph: index,
+            run: index,
+            widthEmu: { type: 'number', exclusiveMinimum: 0 },
+            heightEmu: { type: 'number', exclusiveMinimum: 0 },
+            alt: text,
+            placement: { enum: ['inline', 'floating'] },
+          }, ['bytes', 'contentType']),
+          operation('replaceImageBytes', {
+            image: text,
+            bytes: { type: 'string', maxLength: 22_500_000 },
+            contentType: text,
+          }, ['image', 'bytes']),
+          operation('resizeImage', {
+            image: text,
+            size: imageSizeShape,
+          }),
+          operation('setImageAlt', { image: text, alt: text, title: text }, ['image', 'alt']),
+          operation('deleteImage', { image: text }),
           operation('setPartXml', { path: text, xml: text }),
         ],
       },
