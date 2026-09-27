@@ -18,6 +18,7 @@ const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingm
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
 const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
 const NUMBERING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering';
+const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
 const encoder = new TextEncoder();
 
 function decodeXml(bytes: Uint8Array): string {
@@ -494,22 +495,34 @@ export class DocxDocument {
     return path;
   }
 
-  private getNumberingPath(): string | undefined {
+  private getRelatedPartPath(type: string): string | undefined {
     const relsPath = relationshipsPath(this.mainPath);
     if (!this.parts.has(relsPath)) return undefined;
     const rels = this.getPartDocument(relsPath).documentElement;
     if (!rels || rels.namespaceURI !== REL_NS || rels.localName !== 'Relationships') return undefined;
     const relationship = children(rels, 'Relationship', REL_NS).find(rel =>
-      rel.getAttribute('Type') === NUMBERING_REL && rel.getAttribute('TargetMode') !== 'External');
+      rel.getAttribute('Type') === type && rel.getAttribute('TargetMode') !== 'External');
     const target = relationship?.getAttribute('Target');
     return target ? resolveTarget(this.mainPath, decodeURIComponent(target)) : undefined;
   }
 
+  private getNumberingPath(): string | undefined {
+    return this.getRelatedPartPath(NUMBERING_REL);
+  }
+
+  private getStylesPath(): string | undefined {
+    return this.getRelatedPartPath(STYLES_REL)
+      ?? (this.parts.has(`${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}styles.xml`)
+        ? `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}styles.xml`
+        : this.parts.has('word/styles.xml') ? 'word/styles.xml' : undefined);
+  }
+
   private getNumberingDocuments(): { numbering?: Document; styles?: Document } {
     const numberingPath = this.getNumberingPath();
+    const stylesPath = this.getStylesPath();
     return {
       numbering: numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined,
-      styles: this.parts.has('word/styles.xml') ? this.getPartDocument('word/styles.xml') : undefined,
+      styles: stylesPath && this.parts.has(stylesPath) ? this.getPartDocument(stylesPath) : undefined,
     };
   }
 

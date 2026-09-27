@@ -120,6 +120,26 @@ test('createNumbering works when the main document is stored at a custom package
   assert.match(reopened.getPartXml('custom/_rels/main.xml.rels'), /Target="numbering.xml"/);
 });
 
+test('style-based numbering resolves through custom main-document relationships', async () => {
+  const source = withBody('<w:p><w:pPr><w:pStyle w:val="ListStyle"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  attachNumbering(source, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num></w:numbering>`, `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="ListStyle"><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr></w:style></w:styles>`);
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(await source.toUint8Array());
+  zip.file('custom/main.xml', await zip.file('word/document.xml').async('uint8array'));
+  zip.remove('word/document.xml');
+  zip.file('customAssets/styles.xml', await zip.file('word/styles.xml').async('uint8array'));
+  zip.remove('word/styles.xml');
+  zip.remove('word/_rels/document.xml.rels');
+  zip.file('custom/_rels/main.xml.rels', `<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="../word/numbering.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="../customAssets/styles.xml"/></Relationships>`);
+  zip.file('_rels/.rels', (await zip.file('_rels/.rels').async('string')).replace('word/document.xml', 'custom/main.xml'));
+  zip.file('[Content_Types].xml', (await zip.file('[Content_Types].xml').async('string'))
+    .replace('/word/document.xml', '/custom/main.xml')
+    .replace('/word/styles.xml', '/customAssets/styles.xml'));
+  const doc = await DocxDocument.load(await zip.generateAsync({ type: 'uint8array' }));
+  assert.equal(doc.mainDocumentPath, 'custom/main.xml');
+  assert.equal(doc.getParagraphs()[0].numbering.text, '1.');
+});
+
 test('setParagraphLevel clamps between 0 and 8 and clearParagraphNumbering removes direct numPr', () => {
   const doc = DocxDocument.create();
   const numId = doc.createNumbering('multilevel');
