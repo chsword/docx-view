@@ -162,7 +162,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`insertImage`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`formatRun`、`replaceText`、`insertTable`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

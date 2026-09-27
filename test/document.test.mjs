@@ -199,7 +199,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 12);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -308,8 +308,11 @@ test('replaceImageBytes swaps image bytes without breaking the relationship', ()
   const doc = DocxDocument.create();
   const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
   doc.replaceImageBytes(image, GIF_BYTES, 'image/gif');
+  const updated = doc.getImages()[0];
   assert.deepEqual(doc.getImageBytes(image.relationshipId), GIF_BYTES);
   assert.match(doc.getImageDataUrl(image.relationshipId), /^data:image\/gif;base64,/);
+  assert.match(updated.partPath, /\.gif$/);
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /image\d+\.gif/);
 });
 
 test('resizeImage updates stored extents and can keep aspect ratio', () => {
@@ -365,7 +368,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 12);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 13);
 });
 
 test('malformed XML, DTD, broken package targets and oversized parts are rejected atomically', async () => {

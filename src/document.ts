@@ -391,6 +391,21 @@ function relativeTargetPath(fromPart: string, toPart: string): string {
   return `${from.map(() => '..').concat(to).join('/')}`;
 }
 
+function sourcePartFromRelationshipsPath(relPath: string): string | undefined {
+  const match = relPath.match(/^(.*\/)?_rels\/([^/]+)\.rels$/);
+  if (!match) return undefined;
+  const dir = match[1] ?? '';
+  return `${dir}${match[2] ?? ''}`;
+}
+
+function documentUsesRelationship(document: Document, relationshipId: string): boolean {
+  return Array.from(document.getElementsByTagNameNS(A_NS, 'blip')).some((blip) =>
+    [blip.getAttributeNS(OFFICE_REL_NS, 'embed'), blip.getAttributeNS(OFFICE_REL_NS, 'link'),
+      blip.getAttribute('r:embed'), blip.getAttribute('r:link')].includes(relationshipId)) ||
+    Array.from(document.getElementsByTagNameNS(V_NS, 'imagedata')).some((node) =>
+      [node.getAttributeNS(OFFICE_REL_NS, 'id'), node.getAttribute('r:id')].includes(relationshipId));
+}
+
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -622,8 +637,9 @@ export class DocxDocument {
   }
 
   private resolveImage(image: ImageInfo | string): ImageInfo {
-    if (typeof image !== 'string') return image;
-    const matches = this.getImages().filter((item) => item.relationshipId === image);
+    const matches = this.getImages().filter((item) => typeof image === 'string'
+      ? item.relationshipId === image
+      : item.relationshipId === image.relationshipId && item.paragraph === image.paragraph && item.run === image.run);
     if (!matches.length) throw new Error(`Image ${image} does not exist.`);
     if (matches.length > 1) throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo instead.`);
     return matches[0]!;
@@ -655,8 +671,10 @@ export class DocxDocument {
     throw new Error('Unable to allocate a unique media part path.');
   }
 
-  private ensureMediaContentType(path: string, contentType: string): Map<string, Uint8Array> {
-    const types = this.getPartDocument('[Content_Types].xml');
+  private ensureMediaContentType(path: string, contentType: string, base = this.parts): Map<string, Uint8Array> {
+    const typesBytes = base.get('[Content_Types].xml');
+    if (!typesBytes) throw new Error('Missing [Content_Types].xml.');
+    const types = parseXml(decodeXml(typesBytes));
     const defaults = contentTypesDefaults(types.documentElement!);
     const overrides = contentTypesOverrides(types.documentElement!);
     const extension = path.split('.').pop()?.toLowerCase() ?? '';
@@ -681,7 +699,7 @@ export class DocxDocument {
       override.setAttribute('ContentType', contentType);
       types.documentElement!.appendChild(override);
     }
-    const next = new Map(this.parts);
+    const next = new Map(base);
     next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
     return next;
   }
@@ -789,25 +807,53 @@ export class DocxDocument {
     }
     const info = this.resolveImage(image);
     if (info.isExternal || !info.partPath) throw new Error('External images cannot be replaced.');
-    const next = contentType ? this.ensureMediaContentType(info.partPath, contentType) : new Map(this.parts);
-    next.set(info.partPath, Uint8Array.from(bytes));
+    let next = new Map(this.parts);
+    let path = info.partPath;
+    if (contentType) {
+      assertText(contentType, 'contentType');
+      const currentExtension = path.split('.').pop()?.toLowerCase();
+      const nextExtension = extensionForContentType(contentType);
+      if (!nextExtension) throw new Error(`Unsupported image content type: ${contentType}`);
+      if (currentExtension !== nextExtension && !(currentExtension === 'jpg' && nextExtension === 'jpeg') &&
+          !(currentExtension === 'jpeg' && nextExtension === 'jpg')) {
+        const movedPath = this.nextImagePartPath(contentType);
+        for (const relPath of this.listParts().filter((entry) => entry.endsWith('.rels'))) {
+          const sourcePart = sourcePartFromRelationshipsPath(relPath);
+          if (!sourcePart) continue;
+          const rels = this.getPartDocument(relPath);
+          let changed = false;
+          for (const rel of children(rels.documentElement!, 'Relationship', REL_NS)) {
+            if (rel.getAttribute('Type') !== IMAGE_REL || rel.getAttribute('TargetMode') === 'External') continue;
+            const target = rel.getAttribute('Target');
+            if (target && resolveTargetPath(sourcePart, decodeURIComponent(target)) === info.partPath) {
+              rel.setAttribute('Target', relativeTargetPath(sourcePart, movedPath));
+              changed = true;
+            }
+          }
+          if (changed) next.set(relPath, encodeXml(serializeXml(rels)));
+        }
+        next.delete(info.partPath);
+        path = movedPath;
+      }
+      next = this.ensureMediaContentType(path, contentType, next);
+    }
+    next.set(path, Uint8Array.from(bytes));
     this.commitParts(next);
   }
 
   resizeImage(image: ImageInfo | string, size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean }): void {
     const info = this.resolveImage(image);
-    const widthEmu = size.widthEmu ?? info.widthEmu;
-    const heightEmu = size.heightEmu ?? info.heightEmu;
-    const nextWidth = size.keepAspect && size.widthEmu && !size.heightEmu && info.widthEmu > 0
-      ? size.widthEmu
-      : size.keepAspect && size.heightEmu && !size.widthEmu && info.heightEmu > 0
-        ? Math.round(size.heightEmu * (info.widthEmu / info.heightEmu))
-        : widthEmu;
-    const nextHeight = size.keepAspect && size.widthEmu && !size.heightEmu && info.widthEmu > 0
-      ? Math.round(size.widthEmu * (info.heightEmu / info.widthEmu))
-      : size.keepAspect && size.heightEmu && !size.widthEmu && info.heightEmu > 0
-        ? size.heightEmu
-        : heightEmu;
+    let nextWidth = size.widthEmu ?? info.widthEmu;
+    let nextHeight = size.heightEmu ?? info.heightEmu;
+    if (size.keepAspect && info.widthEmu > 0 && info.heightEmu > 0) {
+      if (size.widthEmu !== undefined) {
+        nextWidth = size.widthEmu;
+        nextHeight = Math.round(size.widthEmu * (info.heightEmu / info.widthEmu));
+      } else if (size.heightEmu !== undefined) {
+        nextHeight = size.heightEmu;
+        nextWidth = Math.round(size.heightEmu * (info.widthEmu / info.heightEmu));
+      }
+    }
     this.updatePartXml(this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
@@ -858,8 +904,7 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(this.mainPath);
     if (this.hasPart(relPath)) {
       const rels = this.getPartDocument(relPath);
-      const remainingImages = readRunImages(run, info.paragraph, info.run, this.relationshipsFor(this.mainPath), (path) => this.getContentType(path));
-      if (!remainingImages.some((item) => item.relationshipId === info.relationshipId)) {
+      if (!documentUsesRelationship(main, info.relationshipId)) {
         const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
           .find((rel) => rel.getAttribute('Id') === info.relationshipId);
         relationship?.parentNode?.removeChild(relationship);
@@ -867,15 +912,15 @@ export class DocxDocument {
       }
     }
     if (info.partPath) {
-      const stillReferenced = this.listParts()
+      const stillReferenced = [...next.keys()]
         .filter((path) => path.endsWith('.rels'))
         .some((path) => {
-          const sourcePart = path.replace(/(^|\/)_rels\//, '$1').replace(/\.rels$/, '');
-          const rels = this.getPartDocument(path);
+          const sourcePart = sourcePartFromRelationshipsPath(path);
+          if (!sourcePart) return false;
+          const rels = parseXml(decodeXml(next.get(path)!));
           return children(rels.documentElement!, 'Relationship', REL_NS)
             .filter((rel) => rel.getAttribute('Type') === IMAGE_REL && rel.getAttribute('TargetMode') !== 'External')
-            .some((rel) => resolveTargetPath(sourcePart, decodeURIComponent(rel.getAttribute('Target') ?? '')) === info.partPath &&
-              !(sourcePart === this.mainPath && rel.getAttribute('Id') === info.relationshipId));
+            .some((rel) => resolveTargetPath(sourcePart, decodeURIComponent(rel.getAttribute('Target') ?? '')) === info.partPath);
         });
       if (!stillReferenced) next.delete(info.partPath);
     }
@@ -1034,6 +1079,7 @@ export class DocxDocument {
           alt: operation.alt,
           placement: operation.placement,
         }); break;
+        case 'replaceImageBytes': draft.replaceImageBytes(operation.image, decodeBase64(operation.bytes), operation.contentType); break;
         case 'resizeImage': draft.resizeImage(operation.image, operation.size); break;
         case 'setImageAlt': draft.setImageAlt(operation.image, operation.alt, operation.title); break;
         case 'deleteImage': draft.deleteImage(operation.image); break;

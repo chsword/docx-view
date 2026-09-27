@@ -68,6 +68,7 @@ export type AgentOperation =
   | { type: 'replaceText'; search: string; replacement: string }
   | { type: 'insertTable'; rows: string[][] }
   | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
+  | { type: 'replaceImageBytes'; image: string; bytes: string; contentType?: string }
   | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }
   | { type: 'setImageAlt'; image: string; alt: string; title?: string }
   | { type: 'deleteImage'; image: string }

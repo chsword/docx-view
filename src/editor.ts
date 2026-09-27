@@ -273,11 +273,14 @@ export class DocxEditor {
     const up = (next: MouseEvent): void => {
       this.root.ownerDocument.removeEventListener('mousemove', move);
       this.root.ownerDocument.removeEventListener('mouseup', up);
-      this.document.resizeImage(image, {
-        widthEmu: pxToEmu(parseFloat(wrapper.style.width)),
-        heightEmu: pxToEmu(parseFloat(wrapper.style.height)),
-        keepAspect: next.shiftKey,
-      });
+      const widthEmu = pxToEmu(parseFloat(wrapper.style.width));
+      const heightEmu = pxToEmu(parseFloat(wrapper.style.height));
+      const resize = next.shiftKey
+        ? (Math.abs(next.clientX - startX) >= Math.abs(next.clientY - startY)
+          ? { widthEmu, keepAspect: true }
+          : { heightEmu, keepAspect: true })
+        : { widthEmu, heightEmu };
+      this.document.resizeImage(image, resize);
       this.render();
       this.options.onChange?.(this.document.getSnapshot());
     };

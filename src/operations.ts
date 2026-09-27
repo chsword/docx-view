@@ -104,6 +104,13 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         if ('heightEmu' in op.size && (typeof op.size.heightEmu !== 'number' || !Number.isFinite(op.size.heightEmu) || op.size.heightEmu <= 0)) throw new Error('heightEmu must be a positive number.');
         if ('keepAspect' in op.size && typeof op.size.keepAspect !== 'boolean') throw new Error('keepAspect must be boolean.');
         break;
+      case 'replaceImageBytes':
+        keys(op, ['type', 'image', 'bytes', 'contentType']);
+        assertText(op.image, 'image');
+        assertText(op.bytes, 'bytes');
+        decodeBase64(op.bytes);
+        if ('contentType' in op) assertText(op.contentType, 'contentType');
+        break;
       case 'setImageAlt':
         keys(op, ['type', 'image', 'alt', 'title']); assertText(op.image, 'image'); assertText(op.alt, 'alt');
         if ('title' in op) assertText(op.title, 'title');
@@ -162,6 +169,11 @@ export const AGENT_OPERATION_SCHEMA = {
             alt: text,
             placement: { enum: ['inline', 'floating'] },
           }, ['bytes', 'contentType']),
+          operation('replaceImageBytes', {
+            image: text,
+            bytes: { type: 'string', maxLength: 22_500_000 },
+            contentType: text,
+          }, ['image', 'bytes']),
           operation('resizeImage', {
             image: text,
             size: shape({
