@@ -49,11 +49,15 @@ function isTransparentWrapper(element: Element): boolean {
   return element.namespaceURI === WORD_NS && TRANSPARENT_WRAPPERS.has(element.localName ?? '');
 }
 
-function blockElements(parent: Element): Element[] {
+function blockPositions(parent: Element): { block: Element; parent: Element }[] {
   return children(parent).flatMap(child => {
-    if (isTransparentWrapper(child)) return blockElements(child);
-    return ['p', 'tbl'].includes(child.localName ?? '') ? [child] : [];
+    if (isTransparentWrapper(child)) return blockPositions(child);
+    return ['p', 'tbl'].includes(child.localName ?? '') ? [{ block: child, parent }] : [];
   });
+}
+
+function blockElements(parent: Element): Element[] {
+  return blockPositions(parent).map(position => position.block);
 }
 
 function paragraphElements(parent: Element): Element[] {
@@ -68,24 +72,18 @@ function paragraphContainer(paragraph: Element): Element {
   while (parent && parent.nodeType === 1) {
     const element = parent as Element;
     if (element.namespaceURI === WORD_NS && ['body', 'tc'].includes(element.localName ?? '')) return element;
-    if (isTransparentWrapper(element)) {
-      parent = element.parentNode;
-      continue;
-    }
     parent = element.parentNode;
   }
   throw new Error('Paragraph is not inside a body or table cell container.');
 }
 
-function insertPointAfterLastBlock(container: Element): Node | null {
-  const nodes = children(container);
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const node = nodes[i]!;
-    if (['p', 'tbl'].includes(node.localName ?? '') || (isTransparentWrapper(node) && blockElements(node).length)) {
-      return node.nextSibling;
-    }
+function insertParagraphAfterLastBlock(container: Element, paragraph: Element): void {
+  const last = blockPositions(container).at(-1);
+  if (last) {
+    last.parent.insertBefore(paragraph, last.block.nextSibling);
+    return;
   }
-  return children(container, 'tcPr')[0]?.nextSibling ?? container.firstChild;
+  container.insertBefore(paragraph, children(container, 'tcPr')[0]?.nextSibling ?? container.firstChild);
 }
 
 function textElements(element: Element): Element[] {
@@ -484,7 +482,7 @@ export class DocxDocument {
       parent.removeChild(paragraph);
       const last = blockElements(container).at(-1);
       if (container.localName === 'tc' && last?.localName !== 'p') {
-        container.insertBefore(newParagraph(document, ''), insertPointAfterLastBlock(container));
+        insertParagraphAfterLastBlock(container, newParagraph(document, ''));
       }
     });
   }
