@@ -1,8 +1,14 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
+  AgentRequest, DocumentBlock, DocumentSnapshot, ImageInfo, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
 } from './types.js';
+import {
+  A_NS, dataUrlForBytes, decodeBase64, detectImageSize, emuToPx, extensionForContentType, IMAGE_REL,
+  isBrowserRenderableContentType, OFFICE_REL_NS, PIC_NS, placeholderDataUrl, pxToEmu, readRunImages,
+  resolveRelationshipsPath, resolveTargetPath, V_NS, WP_NS,
+} from './drawing.js';
+import type { RelationshipTarget } from './drawing.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
@@ -16,6 +22,19 @@ const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
 const encoder = new TextEncoder();
+const IMAGE_LIMIT = 16 * 1024 * 1024;
+
+function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
+  const result: Element[] = [];
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    if ((!namespace || element.namespaceURI === namespace) && (!localName || element.localName === localName)) {
+      result.push(element);
+    }
+  }
+  return result;
+}
 
 function decodeXml(bytes: Uint8Array): string {
   const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
@@ -91,6 +110,19 @@ function newParagraph(document: Document, text: string): Element {
   appendText(run, text);
   paragraph.appendChild(run);
   return paragraph;
+}
+
+function isRunVisuallyEmpty(run: Element): boolean {
+  return !textOf(run) && !Array.from(run.childNodes).some((child) => child.nodeType === 1 &&
+    (child as Element).namespaceURI === WORD_NS && ['drawing', 'pict', 'object'].includes((child as Element).localName ?? ''));
+}
+
+function isEmptyRun(run: Element): boolean {
+  return !Array.from(run.childNodes).some((child) => {
+    if (child.nodeType !== 1) return child.textContent?.trim().length;
+    const element = child as Element;
+    return !(element.namespaceURI === WORD_NS && ['rPr'].includes(element.localName ?? ''));
+  });
 }
 
 // Edit only text-bearing nodes. Drawings, bookmarks, field codes and other XML survive.
@@ -176,31 +208,187 @@ function ownRuns(paragraph: Element): Element[] {
   });
 }
 
-function readRun(run: Element, index: number): RunInfo {
+function readRun(
+  run: Element,
+  index: number,
+  paragraph: number,
+  relationships: Map<string, RelationshipTarget>,
+  getContentType: (path: string) => string | undefined,
+): RunInfo {
   const props = children(run, 'rPr')[0];
   const get = (name: string) => props ? children(props, name)[0] : undefined;
   const toggle = (name: string) => get(name) ? !['0', 'false', 'off'].includes(wordValue(get(name)) ?? '') : undefined;
   const size = wordValue(get('sz'));
   const underline = get('u');
   const color = wordValue(get('color'));
+  const images = readRunImages(run, paragraph, index, relationships, getContentType);
   return {
     index, text: textOf(run), bold: toggle('b'), italic: toggle('i'),
     underline: underline ? !['none', '0', 'false'].includes(wordValue(underline) ?? '') : undefined,
     fontSize: size && Number.isFinite(Number(size)) ? Number(size) / 2 : undefined,
     fontFamily: get('rFonts')?.getAttributeNS(WORD_NS, 'ascii') ?? undefined,
     color: color && /^[a-f\d]{6}$/i.test(color) ? color : undefined,
+    image: images[0],
   };
 }
 
-function readParagraph(paragraph: Element, index: number): ParagraphInfo {
+function readParagraph(
+  paragraph: Element,
+  index: number,
+  relationships: Map<string, RelationshipTarget>,
+  getContentType: (path: string) => string | undefined,
+): ParagraphInfo {
   const props = children(paragraph, 'pPr')[0];
   const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
+  const runs = ownRuns(paragraph).map((run, runIndex) => readRun(run, runIndex, index, relationships, getContentType));
   return {
-    index, text: textOf(paragraph), runs: ownRuns(paragraph).map(readRun),
+    index, text: textOf(paragraph), runs,
     style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
     alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
+    images: runs.flatMap((run) => run.image ? [run.image] : []),
   };
+}
+
+function setOptionalAttribute(element: Element, name: string, value: string | undefined): void {
+  if (value === undefined || value === '') element.removeAttribute(name);
+  else element.setAttribute(name, value);
+}
+
+function imageElementForRun(run: Element, relationshipId: string): Element | undefined {
+  for (const drawing of elementChildren(run, WORD_NS, 'drawing')) {
+    const blips = Array.from(drawing.getElementsByTagNameNS(A_NS, 'blip'));
+    if (blips.some((blip) => [blip.getAttributeNS(OFFICE_REL_NS, 'embed'), blip.getAttributeNS(OFFICE_REL_NS, 'link'),
+      blip.getAttribute('r:embed'), blip.getAttribute('r:link')].includes(relationshipId))) {
+      return drawing;
+    }
+  }
+  for (const pict of elementChildren(run, WORD_NS, 'pict')) {
+    const imageData = Array.from(pict.getElementsByTagNameNS(V_NS, 'imagedata'));
+    if (imageData.some((node) => [node.getAttributeNS(OFFICE_REL_NS, 'id'), node.getAttribute('r:id')].includes(relationshipId))) {
+      return pict;
+    }
+  }
+  return undefined;
+}
+
+function contentTypesDefaults(types: Element): Element[] {
+  return children(types, 'Default', CONTENT_TYPES_NS);
+}
+
+function contentTypesOverrides(types: Element): Element[] {
+  return children(types, 'Override', CONTENT_TYPES_NS);
+}
+
+function createDrawingElement(
+  document: Document,
+  relationshipId: string,
+  size: { widthEmu: number; heightEmu: number },
+  options: { alt?: string; title?: string; name?: string; placement: 'inline' | 'floating'; docPrId: number },
+): Element {
+  const drawing = wordElement(document, 'drawing');
+  const container = document.createElementNS(WP_NS, `wp:${options.placement === 'floating' ? 'anchor' : 'inline'}`);
+  if (options.placement === 'floating') {
+    container.setAttribute('behindDoc', '0');
+    container.setAttribute('simplePos', '0');
+    container.setAttribute('relativeHeight', '251658240');
+    container.setAttribute('allowOverlap', '1');
+    container.appendChild(document.createElementNS(WP_NS, 'wp:simplePos'));
+    const positionH = document.createElementNS(WP_NS, 'wp:positionH');
+    positionH.setAttribute('relativeFrom', 'column');
+    const alignH = document.createElementNS(WP_NS, 'wp:align');
+    alignH.appendChild(document.createTextNode('left'));
+    positionH.appendChild(alignH);
+    const positionV = document.createElementNS(WP_NS, 'wp:positionV');
+    positionV.setAttribute('relativeFrom', 'paragraph');
+    const alignV = document.createElementNS(WP_NS, 'wp:align');
+    alignV.appendChild(document.createTextNode('top'));
+    positionV.appendChild(alignV);
+    container.appendChild(positionH);
+    container.appendChild(positionV);
+  }
+  const extent = document.createElementNS(WP_NS, 'wp:extent');
+  extent.setAttribute('cx', String(Math.round(size.widthEmu)));
+  extent.setAttribute('cy', String(Math.round(size.heightEmu)));
+  const effectExtent = document.createElementNS(WP_NS, 'wp:effectExtent');
+  for (const side of ['l', 't', 'r', 'b']) effectExtent.setAttribute(side, '0');
+  const docPr = document.createElementNS(WP_NS, 'wp:docPr');
+  docPr.setAttribute('id', String(options.docPrId));
+  docPr.setAttribute('name', options.name ?? `图片 ${options.docPrId}`);
+  setOptionalAttribute(docPr, 'descr', options.alt);
+  setOptionalAttribute(docPr, 'title', options.title);
+  const framePr = document.createElementNS(WP_NS, 'wp:cNvGraphicFramePr');
+  const graphicFrameLocks = document.createElementNS(A_NS, 'a:graphicFrameLocks');
+  graphicFrameLocks.setAttribute('noChangeAspect', '1');
+  framePr.appendChild(graphicFrameLocks);
+  const graphic = document.createElementNS(A_NS, 'a:graphic');
+  const graphicData = document.createElementNS(A_NS, 'a:graphicData');
+  graphicData.setAttribute('uri', PIC_NS);
+  const pic = document.createElementNS(PIC_NS, 'pic:pic');
+  const nvPicPr = document.createElementNS(PIC_NS, 'pic:nvPicPr');
+  const cNvPr = document.createElementNS(PIC_NS, 'pic:cNvPr');
+  cNvPr.setAttribute('id', '0');
+  cNvPr.setAttribute('name', options.name ?? `image-${options.docPrId}`);
+  setOptionalAttribute(cNvPr, 'descr', options.alt);
+  setOptionalAttribute(cNvPr, 'title', options.title);
+  const cNvPicPr = document.createElementNS(PIC_NS, 'pic:cNvPicPr');
+  nvPicPr.appendChild(cNvPr);
+  nvPicPr.appendChild(cNvPicPr);
+  const blipFill = document.createElementNS(PIC_NS, 'pic:blipFill');
+  const blip = document.createElementNS(A_NS, 'a:blip');
+  blip.setAttributeNS(OFFICE_REL_NS, 'r:embed', relationshipId);
+  const stretch = document.createElementNS(A_NS, 'a:stretch');
+  stretch.appendChild(document.createElementNS(A_NS, 'a:fillRect'));
+  blipFill.appendChild(blip);
+  blipFill.appendChild(stretch);
+  const spPr = document.createElementNS(PIC_NS, 'pic:spPr');
+  const xfrm = document.createElementNS(A_NS, 'a:xfrm');
+  const off = document.createElementNS(A_NS, 'a:off');
+  off.setAttribute('x', '0');
+  off.setAttribute('y', '0');
+  const ext = document.createElementNS(A_NS, 'a:ext');
+  ext.setAttribute('cx', String(Math.round(size.widthEmu)));
+  ext.setAttribute('cy', String(Math.round(size.heightEmu)));
+  xfrm.appendChild(off);
+  xfrm.appendChild(ext);
+  const prstGeom = document.createElementNS(A_NS, 'a:prstGeom');
+  prstGeom.setAttribute('prst', 'rect');
+  prstGeom.appendChild(document.createElementNS(A_NS, 'a:avLst'));
+  spPr.appendChild(xfrm);
+  spPr.appendChild(prstGeom);
+  pic.appendChild(nvPicPr);
+  pic.appendChild(blipFill);
+  pic.appendChild(spPr);
+  graphicData.appendChild(pic);
+  graphic.appendChild(graphicData);
+  if (options.placement === 'floating') {
+    const wrapSquare = document.createElementNS(WP_NS, 'wp:wrapSquare');
+    wrapSquare.setAttribute('wrapText', 'bothSides');
+    container.appendChild(extent);
+    container.appendChild(effectExtent);
+    container.appendChild(wrapSquare);
+    container.appendChild(docPr);
+    container.appendChild(framePr);
+    container.appendChild(graphic);
+  } else {
+    container.appendChild(extent);
+    container.appendChild(effectExtent);
+    container.appendChild(docPr);
+    container.appendChild(framePr);
+    container.appendChild(graphic);
+  }
+  drawing.appendChild(container);
+  return drawing;
+}
+
+function relativeTargetPath(fromPart: string, toPart: string): string {
+  const from = fromPart.split('/').slice(0, -1);
+  const to = toPart.split('/');
+  while (from.length && to.length && from[0] === to[0]) {
+    from.shift();
+    to.shift();
+  }
+  return `${from.map(() => '..').concat(to).join('/')}`;
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -276,6 +464,43 @@ export class DocxDocument {
   get mainDocumentPath(): string { return this.mainPath; }
 
   listParts(): string[] { return [...this.parts.keys()].sort(); }
+
+  private hasPart(path: string): boolean {
+    return this.parts.has(path);
+  }
+
+  private getContentType(path: string): string | undefined {
+    const types = this.getPartDocument('[Content_Types].xml').documentElement!;
+    return children(types, 'Override', CONTENT_TYPES_NS)
+      .find(type => type.getAttribute('PartName') === `/${path}`)?.getAttribute('ContentType')
+      ?? children(types, 'Default', CONTENT_TYPES_NS)
+        .find(type => type.getAttribute('Extension')?.toLowerCase() === path.split('.').pop()?.toLowerCase())?.getAttribute('ContentType')
+      ?? undefined;
+  }
+
+  private relationshipsFor(partPath: string): Map<string, RelationshipTarget> {
+    const relPath = resolveRelationshipsPath(partPath);
+    if (!this.hasPart(relPath)) return new Map();
+    const rels = this.getPartDocument(relPath).documentElement!;
+    const entries: [string, RelationshipTarget][] = children(rels, 'Relationship', REL_NS).flatMap((rel) => {
+      const target = rel.getAttribute('Target') ?? undefined;
+      const id = rel.getAttribute('Id') ?? '';
+      if (!id) return [];
+      return [[id, {
+        id: rel.getAttribute('Id') ?? '',
+        mode: rel.getAttribute('TargetMode') ?? undefined,
+        target,
+        partPath: target && rel.getAttribute('TargetMode') !== 'External' ? resolveTargetPath(partPath, decodeURIComponent(target)) : undefined,
+      } satisfies RelationshipTarget]];
+    });
+    return new Map(entries);
+  }
+
+  private paragraphsWithRelationships(): ParagraphInfo[] {
+    const relationships = this.relationshipsFor(this.mainPath);
+    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p')
+      .map((paragraph, index) => readParagraph(paragraph, index, relationships, (path) => this.getContentType(path)));
+  }
 
   getPartBytes(path: string): Uint8Array {
     validatePath(path);
@@ -364,14 +589,18 @@ export class DocxDocument {
   }
 
   getParagraphs(): ParagraphInfo[] {
-    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p').map(readParagraph);
+    return this.paragraphsWithRelationships();
   }
 
   getBlocks(): DocumentBlock[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
     const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
+    const relationships = this.relationshipsFor(this.mainPath);
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
-      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
+      if (child.localName === 'p') return [{
+        type: 'paragraph',
+        paragraph: readParagraph(child, indices.get(child)!, relationships, (path) => this.getContentType(path)),
+      }];
       if (child.localName === 'tbl') return [{
         type: 'table',
         rows: children(child, 'tr').map(row => ({
@@ -386,6 +615,271 @@ export class DocxDocument {
 
   getSnapshot(): DocumentSnapshot {
     return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts() };
+  }
+
+  getImages(): ImageInfo[] {
+    return this.getParagraphs().flatMap((paragraph) => paragraph.images);
+  }
+
+  private resolveImage(image: ImageInfo | string): ImageInfo {
+    if (typeof image !== 'string') return image;
+    const matches = this.getImages().filter((item) => item.relationshipId === image);
+    if (!matches.length) throw new Error(`Image ${image} does not exist.`);
+    if (matches.length > 1) throw new Error(`Image relationshipId ${image} is ambiguous; pass ImageInfo instead.`);
+    return matches[0]!;
+  }
+
+  private inferImageSize(bytes: Uint8Array, widthEmu?: number, heightEmu?: number): { widthEmu: number; heightEmu: number } {
+    const detected = detectImageSize(bytes);
+    if (widthEmu && heightEmu) return { widthEmu, heightEmu };
+    if (detected) {
+      const aspect = detected.width / detected.height;
+      if (widthEmu) return { widthEmu, heightEmu: Math.max(1, Math.round(widthEmu / aspect)) };
+      if (heightEmu) return { widthEmu: Math.max(1, Math.round(heightEmu * aspect)), heightEmu };
+      const width = Math.max(1, Math.round(pxToEmu(detected.width)));
+      const height = Math.max(1, Math.round(pxToEmu(detected.height)));
+      return { widthEmu: width, heightEmu: height };
+    }
+    const fallbackWidth = widthEmu ?? 4 * 914400;
+    const fallbackHeight = heightEmu ?? fallbackWidth;
+    return { widthEmu: fallbackWidth, heightEmu: fallbackHeight };
+  }
+
+  private nextImagePartPath(contentType: string): string {
+    const extension = extensionForContentType(contentType);
+    if (!extension) throw new Error(`Unsupported image content type: ${contentType}`);
+    for (let index = 1; index < 10_000; index++) {
+      const path = `word/media/image${index}.${extension}`;
+      if (!this.hasPart(path)) return path;
+    }
+    throw new Error('Unable to allocate a unique media part path.');
+  }
+
+  private ensureMediaContentType(path: string, contentType: string): Map<string, Uint8Array> {
+    const types = this.getPartDocument('[Content_Types].xml');
+    const defaults = contentTypesDefaults(types.documentElement!);
+    const overrides = contentTypesOverrides(types.documentElement!);
+    const extension = path.split('.').pop()?.toLowerCase() ?? '';
+    const defaultEntry = defaults.find((node) => node.getAttribute('Extension')?.toLowerCase() === extension);
+    const overrideEntry = overrides.find((node) => node.getAttribute('PartName') === `/${path}`);
+    if (!defaultEntry && !overrideEntry) {
+      const addDefault = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'emf', 'wmf', 'svg'].includes(extension);
+      const element = types.createElementNS(CONTENT_TYPES_NS, addDefault ? 'Default' : 'Override');
+      if (addDefault) {
+        element.setAttribute('Extension', extension);
+        element.setAttribute('ContentType', contentType);
+      } else {
+        element.setAttribute('PartName', `/${path}`);
+        element.setAttribute('ContentType', contentType);
+      }
+      types.documentElement!.appendChild(element);
+    } else if (overrideEntry) {
+      overrideEntry.setAttribute('ContentType', contentType);
+    } else if (defaultEntry?.getAttribute('ContentType') !== contentType) {
+      const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+      override.setAttribute('PartName', `/${path}`);
+      override.setAttribute('ContentType', contentType);
+      types.documentElement!.appendChild(override);
+    }
+    const next = new Map(this.parts);
+    next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+    return next;
+  }
+
+  private ensureRelationshipsDocument(partPath: string, next: Map<string, Uint8Array>): Document {
+    const relPath = resolveRelationshipsPath(partPath);
+    const existing = next.get(relPath);
+    if (existing) return parseXml(decodeXml(existing));
+    const document = parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    next.set(relPath, encodeXml(serializeXml(document)));
+    return document;
+  }
+
+  private nextRelationshipId(rels: Document): string {
+    const used = new Set(children(rels.documentElement!, 'Relationship', REL_NS).map((rel) => rel.getAttribute('Id')));
+    for (let index = 1; index < 10_000; index++) {
+      const id = `rId${index}`;
+      if (!used.has(id)) return id;
+    }
+    throw new Error('Unable to allocate a unique relationship id.');
+  }
+
+  private nextDocPrId(document: Document): number {
+    const used = new Set(Array.from(document.getElementsByTagNameNS(WP_NS, 'docPr'))
+      .map((element) => Number(element.getAttribute('id')))
+      .filter((value) => Number.isFinite(value) && value >= 0));
+    for (let index = 1; index < 1_000_000; index++) {
+      if (!used.has(index)) return index;
+    }
+    throw new Error('Unable to allocate a unique wp:docPr id.');
+  }
+
+  getImageBytes(image: ImageInfo | string): Uint8Array {
+    const info = this.resolveImage(image);
+    if (info.isExternal) throw new Error('External images are not loaded.');
+    if (!info.partPath || !this.hasPart(info.partPath)) throw new Error(`Image part not found for ${info.relationshipId}.`);
+    return this.getPartBytes(info.partPath);
+  }
+
+  getImageDataUrl(image: ImageInfo | string): string {
+    const info = this.resolveImage(image);
+    if (info.isExternal) return placeholderDataUrl('外部图片未加载', info.widthPx || 160, info.heightPx || 90);
+    if (!info.partPath || !this.hasPart(info.partPath)) return placeholderDataUrl(info.name ?? '图片缺失', info.widthPx || 160, info.heightPx || 90);
+    const contentType = info.contentType ?? this.getContentType(info.partPath);
+    if (!isBrowserRenderableContentType(contentType)) {
+      return placeholderDataUrl(info.name ?? info.partPath.split('/').pop() ?? '不支持的图片', info.widthPx || 160, info.heightPx || 90);
+    }
+    return dataUrlForBytes(this.getPartBytes(info.partPath), contentType!);
+  }
+
+  insertImage(options: {
+    bytes: Uint8Array;
+    contentType: string;
+    paragraph?: number;
+    run?: number;
+    widthEmu?: number;
+    heightEmu?: number;
+    alt?: string;
+    placement?: 'inline' | 'floating';
+  }): ImageInfo {
+    if (!(options.bytes instanceof Uint8Array) || options.bytes.byteLength > IMAGE_LIMIT) {
+      throw new Error('Image bytes must be a Uint8Array no larger than 16 MiB.');
+    }
+    assertText(options.contentType, 'contentType');
+    if (options.paragraph !== undefined) assertIndex(options.paragraph);
+    if (options.run !== undefined) assertIndex(options.run);
+    if (options.alt !== undefined) assertText(options.alt, 'alt');
+    const size = this.inferImageSize(options.bytes, options.widthEmu, options.heightEmu);
+    const partPath = this.nextImagePartPath(options.contentType);
+    const main = this.getPartDocument(this.mainPath);
+    const paragraph = options.paragraph !== undefined
+      ? paragraphAt(main, options.paragraph)
+      : descendants(bodyOf(main), 'p').at(-1) ?? paragraphAt(main, 0);
+    const targetRuns = ownRuns(paragraph);
+    const beforeRun = options.run !== undefined ? targetRuns[options.run] : undefined;
+    if (options.run !== undefined && !beforeRun) throw new Error(`Run ${options.run} does not exist.`);
+    const relPath = resolveRelationshipsPath(this.mainPath);
+    const next = this.ensureMediaContentType(partPath, options.contentType);
+    next.set(partPath, Uint8Array.from(options.bytes));
+    const rels = this.hasPart(relPath) ? this.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const relationshipId = this.nextRelationshipId(rels);
+    const relationship = rels.createElementNS(REL_NS, 'Relationship');
+    relationship.setAttribute('Id', relationshipId);
+    relationship.setAttribute('Type', IMAGE_REL);
+    relationship.setAttribute('Target', relativeTargetPath(this.mainPath, partPath));
+    rels.documentElement!.appendChild(relationship);
+    next.set(relPath, encodeXml(serializeXml(rels)));
+    const run = wordElement(main, 'r');
+    run.appendChild(createDrawingElement(main, relationshipId, size, {
+      alt: options.alt,
+      title: options.alt,
+      placement: options.placement ?? 'inline',
+      docPrId: this.nextDocPrId(main),
+    }));
+    if (beforeRun) paragraph.insertBefore(run, beforeRun);
+    else paragraph.appendChild(run);
+    next.set(this.mainPath, encodeXml(serializeXml(main)));
+    this.commitParts(next);
+    return this.resolveImage(relationshipId);
+  }
+
+  replaceImageBytes(image: ImageInfo | string, bytes: Uint8Array, contentType?: string): void {
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength > IMAGE_LIMIT) {
+      throw new Error('Image bytes must be a Uint8Array no larger than 16 MiB.');
+    }
+    const info = this.resolveImage(image);
+    if (info.isExternal || !info.partPath) throw new Error('External images cannot be replaced.');
+    const next = contentType ? this.ensureMediaContentType(info.partPath, contentType) : new Map(this.parts);
+    next.set(info.partPath, Uint8Array.from(bytes));
+    this.commitParts(next);
+  }
+
+  resizeImage(image: ImageInfo | string, size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean }): void {
+    const info = this.resolveImage(image);
+    const widthEmu = size.widthEmu ?? info.widthEmu;
+    const heightEmu = size.heightEmu ?? info.heightEmu;
+    const nextWidth = size.keepAspect && size.widthEmu && !size.heightEmu && info.widthEmu > 0
+      ? size.widthEmu
+      : size.keepAspect && size.heightEmu && !size.widthEmu && info.heightEmu > 0
+        ? Math.round(size.heightEmu * (info.widthEmu / info.heightEmu))
+        : widthEmu;
+    const nextHeight = size.keepAspect && size.widthEmu && !size.heightEmu && info.widthEmu > 0
+      ? Math.round(size.widthEmu * (info.heightEmu / info.widthEmu))
+      : size.keepAspect && size.heightEmu && !size.widthEmu && info.heightEmu > 0
+        ? size.heightEmu
+        : heightEmu;
+    this.updatePartXml(this.mainPath, (document) => {
+      const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
+      if (!run) throw new Error(`Run ${info.run} does not exist.`);
+      const imageElement = imageElementForRun(run, info.relationshipId);
+      if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+      for (const extent of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'extent'))) {
+        extent.setAttribute('cx', String(Math.max(1, Math.round(nextWidth))));
+        extent.setAttribute('cy', String(Math.max(1, Math.round(nextHeight))));
+      }
+      for (const ext of Array.from(imageElement.getElementsByTagNameNS(A_NS, 'ext'))) {
+        ext.setAttribute('cx', String(Math.max(1, Math.round(nextWidth))));
+        ext.setAttribute('cy', String(Math.max(1, Math.round(nextHeight))));
+      }
+    });
+  }
+
+  setImageAlt(image: ImageInfo | string, alt: string, title?: string): void {
+    assertText(alt, 'alt');
+    if (title !== undefined) assertText(title, 'title');
+    const info = this.resolveImage(image);
+    this.updatePartXml(this.mainPath, (document) => {
+      const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
+      if (!run) throw new Error(`Run ${info.run} does not exist.`);
+      const imageElement = imageElementForRun(run, info.relationshipId);
+      if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+      for (const docPr of Array.from(imageElement.getElementsByTagNameNS(WP_NS, 'docPr'))) {
+        docPr.setAttribute('descr', alt);
+        setOptionalAttribute(docPr, 'title', title);
+      }
+      for (const cNvPr of Array.from(imageElement.getElementsByTagNameNS(PIC_NS, 'cNvPr'))) {
+        cNvPr.setAttribute('descr', alt);
+        setOptionalAttribute(cNvPr, 'title', title);
+      }
+    });
+  }
+
+  deleteImage(image: ImageInfo | string): void {
+    const info = this.resolveImage(image);
+    const main = this.getPartDocument(this.mainPath);
+    const run = ownRuns(paragraphAt(main, info.paragraph))[info.run];
+    if (!run) throw new Error(`Run ${info.run} does not exist.`);
+    const imageElement = imageElementForRun(run, info.relationshipId);
+    if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+    run.removeChild(imageElement);
+    const next = new Map(this.parts);
+    if (isEmptyRun(run)) run.parentNode!.removeChild(run);
+    next.set(this.mainPath, encodeXml(serializeXml(main)));
+    const relPath = resolveRelationshipsPath(this.mainPath);
+    if (this.hasPart(relPath)) {
+      const rels = this.getPartDocument(relPath);
+      const remainingImages = readRunImages(run, info.paragraph, info.run, this.relationshipsFor(this.mainPath), (path) => this.getContentType(path));
+      if (!remainingImages.some((item) => item.relationshipId === info.relationshipId)) {
+        const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
+          .find((rel) => rel.getAttribute('Id') === info.relationshipId);
+        relationship?.parentNode?.removeChild(relationship);
+        next.set(relPath, encodeXml(serializeXml(rels)));
+      }
+    }
+    if (info.partPath) {
+      const stillReferenced = this.listParts()
+        .filter((path) => path.endsWith('.rels'))
+        .some((path) => {
+          const sourcePart = path.replace(/(^|\/)_rels\//, '$1').replace(/\.rels$/, '');
+          const rels = this.getPartDocument(path);
+          return children(rels.documentElement!, 'Relationship', REL_NS)
+            .filter((rel) => rel.getAttribute('Type') === IMAGE_REL && rel.getAttribute('TargetMode') !== 'External')
+            .some((rel) => resolveTargetPath(sourcePart, decodeURIComponent(rel.getAttribute('Target') ?? '')) === info.partPath &&
+              !(sourcePart === this.mainPath && rel.getAttribute('Id') === info.relationshipId));
+        });
+      if (!stillReferenced) next.delete(info.partPath);
+    }
+    this.commitParts(next);
   }
 
   setParagraphText(index: number, text: string): void {
@@ -530,6 +1024,19 @@ export class DocxDocument {
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;
+        case 'insertImage': draft.insertImage({
+          bytes: decodeBase64(operation.bytes),
+          contentType: operation.contentType,
+          paragraph: operation.paragraph,
+          run: operation.run,
+          widthEmu: operation.widthEmu,
+          heightEmu: operation.heightEmu,
+          alt: operation.alt,
+          placement: operation.placement,
+        }); break;
+        case 'resizeImage': draft.resizeImage(operation.image, operation.size); break;
+        case 'setImageAlt': draft.setImageAlt(operation.image, operation.alt, operation.title); break;
+        case 'deleteImage': draft.deleteImage(operation.image); break;
         case 'setPartXml': draft.setPartXml(operation.path, operation.xml); break;
       }
     }

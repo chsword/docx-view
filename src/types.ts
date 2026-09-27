@@ -15,12 +15,37 @@ export interface ParagraphFormat {
 export interface RunInfo extends RunFormat {
   index: number;
   text: string;
+  image?: ImageInfo;
 }
 
 export interface ParagraphInfo extends ParagraphFormat {
   index: number;
   text: string;
   runs: RunInfo[];
+  images: ImageInfo[];
+}
+
+export interface ImageInfo {
+  paragraph: number;
+  run: number;
+  relationshipId: string;
+  partPath?: string;
+  contentType?: string;
+  widthEmu: number;
+  heightEmu: number;
+  widthPx: number;
+  heightPx: number;
+  name?: string;
+  alt?: string;
+  title?: string;
+  placement: 'inline' | 'floating';
+  wrap?: 'none' | 'square' | 'tight' | 'through' | 'topAndBottom';
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  crop?: { left: number; top: number; right: number; bottom: number };
+  isExternal: boolean;
+  behindDoc?: boolean;
 }
 
 export type DocumentBlock =
@@ -42,6 +67,10 @@ export type AgentOperation =
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
   | { type: 'replaceText'; search: string; replacement: string }
   | { type: 'insertTable'; rows: string[][] }
+  | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
+  | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }
+  | { type: 'setImageAlt'; image: string; alt: string; title?: string }
+  | { type: 'deleteImage'; image: string }
   | { type: 'setPartXml'; path: string; xml: string };
 
 export interface AgentRequest {

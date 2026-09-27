@@ -1,6 +1,9 @@
 import { DocxDocument, DocxEditor } from '../src/index.js';
+import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
 import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
 import './style.css';
+
+const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
 
 function element<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -11,6 +14,7 @@ function element<T extends HTMLElement>(id: string): T {
 let doc = createSample();
 let filename = '产品计划.docx';
 let xmlRevision = -1;
+let imageAction: 'insert' | 'replace' = 'insert';
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
@@ -28,6 +32,7 @@ function createSample(): DocxDocument {
   sample.formatRun(2, 0, { bold: true, fontSize: 16, color: '3567D6' });
   sample.insertParagraph('让每一份文档都能自由流转。我们希望把熟悉的文字编辑，与透明的文档结构、可靠的自动化连接起来。');
   sample.insertParagraph('点击任意段落开始编辑，也可以在右侧运行一组 Agent 指令。所有处理都发生在你的浏览器里，文件不会上传。');
+  sample.insertImage({ bytes: SAMPLE_IMAGE, contentType: 'image/png', paragraph: 3, alt: '示例图片' });
   sample.insertParagraph('02  从一个小计划开始');
   sample.formatRun(5, 0, { bold: true, fontSize: 16, color: '3567D6' });
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
@@ -54,6 +59,7 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element('paragraph-count').textContent = String(snapshot.paragraphs.length);
   element('snapshot-output').textContent = JSON.stringify(snapshot, null, 2);
   updateSelection();
+  updateImageSelection();
 }
 
 function updateSelection(): void {
@@ -73,6 +79,14 @@ function updateSelection(): void {
   const runColor = paragraph?.runs[0]?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
   alignment.value = paragraph?.alignment ?? 'left';
+}
+
+function updateImageSelection(): void {
+  const image = editor.selectedImage;
+  element('image-selection-label').textContent = image ? `已选择图片 · ${image.alt ?? image.name ?? image.relationshipId}` : '未选中图片';
+  element<HTMLInputElement>('image-alt').value = image?.alt ?? '';
+  element<HTMLButtonElement>('replace-image').disabled = !image;
+  element<HTMLButtonElement>('delete-image').disabled = !image;
 }
 
 function selectedIndex(): number {
@@ -137,6 +151,7 @@ function setDocument(next: DocxDocument, name: string): void {
 }
 
 host.addEventListener('docx-selectionchange', updateSelection);
+host.addEventListener('docx-imageselectionchange', updateImageSelection);
 for (const key of ['bold', 'italic', 'underline'] as const) {
   element(`format-${key}`).addEventListener('click', () => run(() => {
     const index = selectedIndex();
@@ -175,6 +190,30 @@ element('add-table').addEventListener('click', () => run(() => {
   refresh();
   message('已在文档末尾添加 2 × 2 表格。');
 }));
+element('insert-image').addEventListener('click', () => {
+  imageAction = 'insert';
+  element<HTMLInputElement>('image-file-input').click();
+});
+element('replace-image').addEventListener('click', () => {
+  if (!editor.selectedImage) return;
+  imageAction = 'replace';
+  element<HTMLInputElement>('image-file-input').click();
+});
+element('delete-image').addEventListener('click', () => run(() => {
+  if (!editor.selectedImage) throw new Error('请先选择一张图片。');
+  doc.deleteImage(editor.selectedImage);
+  editor.render();
+  refresh();
+  message('已删除图片。');
+}));
+element<HTMLInputElement>('image-alt').addEventListener('change', (event) => run(() => {
+  if (!editor.selectedImage) throw new Error('请先选择一张图片。');
+  const input = event.target as HTMLInputElement;
+  doc.setImageAlt(editor.selectedImage, input.value);
+  editor.render();
+  refresh();
+  message('已更新图片替代文本。');
+}));
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;
   setDocument(DocxDocument.create(), '未命名.docx');
@@ -191,6 +230,26 @@ element<HTMLInputElement>('file-input').addEventListener('change', (event) => ru
   const next = await DocxDocument.load(file);
   setDocument(next, file.name);
   message(`已打开 ${file.name}。未支持的版式可能不会显示，原始部件会保留。`);
+}));
+element<HTMLInputElement>('image-file-input').addEventListener('change', (event) => run(async () => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const contentType = file.type || contentTypeForExtension(file.name.split('.').pop() ?? '') || 'application/octet-stream';
+  if (!contentType.startsWith('image/')) throw new Error('请选择图片文件。');
+  editor.flush();
+  if (imageAction === 'replace') {
+    if (!editor.selectedImage) throw new Error('请先选择一张图片，再替换。');
+    doc.replaceImageBytes(editor.selectedImage, bytes, contentType);
+    message(`已替换图片：${file.name}`);
+  } else {
+    doc.insertImage({ bytes, contentType, paragraph: editor.selectedParagraph ?? undefined, alt: file.name.replace(/\.[^.]+$/, '') });
+    message(`已插入图片：${file.name}`);
+  }
+  editor.render();
+  refresh();
 }));
 element('download-document').addEventListener('click', () => run(async () => {
   editor.flush();

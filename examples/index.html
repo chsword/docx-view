@@ -17,6 +17,7 @@
           <button id="open-document" class="button">打开 DOCX</button>
           <button id="download-document" class="button primary">↓ 下载 DOCX</button>
           <input id="file-input" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+          <input id="image-file-input" type="file" accept="image/*" hidden />
         </div>
       </header>
 
@@ -37,10 +38,11 @@
               </div>
               <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
               <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option></select></div>
-              <div class="tool-group insert-tools"><button id="add-paragraph" class="tool wide">＋ 段落</button><button id="add-table" class="tool wide">⊞ 表格</button></div>
+              <div class="tool-group insert-tools"><button id="add-paragraph" class="tool wide">＋ 段落</button><button id="add-table" class="tool wide">⊞ 表格</button><button id="insert-image" class="tool wide">🖼 插图</button><button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button></div>
+              <div class="tool-group"><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" /></div>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>
-            <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>
+            <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span id="image-selection-label">未选中图片</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>
           </div>
 
           <aside class="inspector">
@@ -71,7 +73,7 @@
               <p class="panel-description"><code>getSnapshot()</code> 返回修订号、段落、文本片段、块结构和部件清单。</p>
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
             </section>
-            <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式与基础表格；不是 Word 排版引擎，不模拟精确分页。图片、页眉等未展示内容仍保存在包中。修改段落文字可能改变文字片段的格式分布；仅查看不会重写它。</p></div>
+            <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式、基础表格和图片显示 / 插入 / 替换 / 删除 / 调整尺寸。浮动图片采用简化布局，不追求与 Word 像素级一致；外部链接图片会显示占位框且不会主动联网加载。</p></div>
           </aside>
         </section>
         <footer class="page-footer"><span>纸间 · 给文档更多可能</span><span>无上传 · 无云端存储 · 无外部字体</span></footer>
