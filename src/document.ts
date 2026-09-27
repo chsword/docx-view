@@ -619,7 +619,11 @@ export class DocxDocument {
       this.parts = draft.parts;
       this.mainPath = draft.mainPath;
     } else {
-      if (transaction.mainChanged) bodyOf(this.mutablePartDocument(previousMainPath));
+      if (transaction.mainChanged) {
+        const bytes = transaction.parts.get(previousMainPath);
+        if (!bytes) throw new Error(`Package part not found: ${previousMainPath}`);
+        bodyOf(transaction.documents.get(previousMainPath) ?? parseXml(decodeXml(bytes)));
+      }
       this.parts = transaction.parts;
     }
     this.currentRevision++;
