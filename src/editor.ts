@@ -61,7 +61,7 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): vo
   }
 }
 
-function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
+function applyRunStyle(span: HTMLElement, run: RunInfo): void {
   const effective = run.effective ?? run;
   if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
   if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
@@ -398,10 +398,40 @@ export class DocxEditor {
     });
     for (const run of paragraph.runs) {
       if (run.text) {
-        const span = this.root.ownerDocument.createElement('span');
-        span.textContent = run.text;
-        applyRunStyle(span, run);
-        content.append(span);
+        const unsafe = run.hyperlink?.unsafe ?? false;
+        if (run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor)) {
+          const link = this.root.ownerDocument.createElement('a');
+          link.textContent = run.text;
+          link.dataset.docxLink = '1';
+          link.dataset.docxUnsafe = 'false';
+          if (run.hyperlink.url) {
+            link.href = run.hyperlink.url;
+            link.dataset.docxUrl = run.hyperlink.url;
+          } else if (run.hyperlink.anchor) {
+            link.href = `#${run.hyperlink.anchor}`;
+          }
+          if (run.hyperlink.anchor) link.dataset.docxAnchor = run.hyperlink.anchor;
+          if (run.hyperlink.tooltip) link.title = run.hyperlink.tooltip;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.style.color = '#0563C1';
+          link.style.textDecoration = 'underline';
+          applyRunStyle(link, run);
+          content.append(link);
+        } else {
+          const span = this.root.ownerDocument.createElement('span');
+          span.textContent = run.text;
+          applyRunStyle(span, run);
+          if (run.hyperlink) {
+            span.dataset.docxLink = '1';
+            span.dataset.docxUnsafe = String(unsafe);
+            if (run.hyperlink.url) span.dataset.docxUrl = run.hyperlink.url;
+            if (run.hyperlink.anchor) span.dataset.docxAnchor = run.hyperlink.anchor;
+            if (run.hyperlink.tooltip) span.title = run.hyperlink.tooltip;
+            if (unsafe) span.style.textDecoration = 'underline wavy red';
+          }
+          content.append(span);
+        }
       }
       for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
     }
@@ -427,6 +457,14 @@ export class DocxEditor {
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     content.addEventListener('drop', (event) => { event.preventDefault(); });
     content.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        const target = this.linkTargetFromSelection();
+        if (target) {
+          event.preventDefault();
+          this.dispatchLinkClick(target);
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.isComposing && !this.composing) {
         event.preventDefault();
         this.insertText(content, '\n');
@@ -461,6 +499,13 @@ export class DocxEditor {
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
       }
+    });
+    content.addEventListener('click', (event) => {
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      if (!target || !this.root.contains(target)) return;
+      event.preventDefault();
+      if (!(event.ctrlKey || event.metaKey)) return;
+      this.dispatchLinkClick(target);
     });
     content.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {

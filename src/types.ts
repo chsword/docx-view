@@ -92,6 +92,7 @@ export interface RunInfo extends RunFormat {
   index: number;
   text: string;
   effective?: RunFormat;
+  hyperlink?: { url?: string; anchor?: string; tooltip?: string; unsafe: boolean };
   image?: ImageInfo;
   images?: ImageInfo[];
 }
@@ -252,6 +253,8 @@ export interface DocumentSnapshot {
   blocks: DocumentBlock[];
   parts: string[];
   styles: StyleInfo[];
+  hyperlinks: HyperlinkInfo[];
+  bookmarks: BookmarkInfo[];
 }
 
 export type AgentOperation =
@@ -276,6 +279,11 @@ export type AgentOperation =
   | { type: 'formatTableRow'; table: number; row: number; format: RowFormat }
   | { type: 'formatCell'; table: number; row: number; col: number; format: CellFormat }
   | { type: 'setCellText'; table: number; row: number; col: number; text: string }
+  | { type: 'insertHyperlink'; target: { paragraph: number; start: number; end: number }; link: { url?: string; anchor?: string; tooltip?: string } }
+  | { type: 'updateHyperlink'; hyperlink: number | { paragraph: number; runs: number[]; text: string }; link: { url?: string; anchor?: string; tooltip?: string } }
+  | { type: 'removeHyperlink'; hyperlink: number | { paragraph: number; runs: number[]; text: string }; options?: { keepText?: boolean } }
+  | { type: 'insertBookmark'; name: string; range: { startParagraph: number; endParagraph?: number } }
+  | { type: 'deleteBookmark'; name: string }
   | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
   | { type: 'replaceImageBytes'; image: string; bytes: string; contentType?: string }
   | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }
