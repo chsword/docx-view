@@ -1,4 +1,5 @@
-import type { AgentRequest, ParagraphFormat, RunFormat } from './types.js';
+import type { AgentRequest, CellFormat, ParagraphFormat, RowFormat, RunFormat, TableFormat } from './types.js';
+import { assertBase64 } from './drawing.js';
 import { assertText } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
 
@@ -9,22 +10,13 @@ function object(value: unknown): asserts value is Record<string, unknown> {
 }
 
 function keys(value: Record<string, unknown>, allowed: string[]): void {
-  if (Object.keys(value).some(key => !allowed.includes(key))) {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) {
     throw new Error('Unknown operation or format property.');
   }
 }
 
-function validateHyperlinkReference(value: unknown): void {
-  object(value);
-  const reference = value as Record<string, unknown>;
-  if (!Number.isSafeInteger(reference.paragraph) || (reference.paragraph as number) < 0) {
-    throw new Error('hyperlink.paragraph must be a non-negative safe integer.');
-  }
-  if (typeof reference.text !== 'string') throw new Error('hyperlink.text must be a string.');
-  if (!Array.isArray(reference.runs) || !reference.runs.length ||
-      reference.runs.some(run => !Number.isSafeInteger(run) || run < 0)) {
-    throw new Error('hyperlink.runs must be a non-empty array of non-negative safe integers.');
-  }
+function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void): void {
+  if (value !== null && value !== undefined) validate(value);
 }
 
 export function assertIndex(value: unknown): asserts value is number {
@@ -33,39 +25,182 @@ export function assertIndex(value: unknown): asserts value is number {
   }
 }
 
+export function assertInteger(value: unknown, name = 'value'): asserts value is number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} must be a safe integer.`);
+}
+
 export function validateRunFormat(value: unknown): asserts value is RunFormat {
   object(value);
-  keys(value, ['bold', 'italic', 'underline', 'fontSize', 'fontFamily', 'color']);
-  for (const key of ['bold', 'italic', 'underline']) {
-    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  keys(value, [
+    'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+    'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
+    'highlight', 'characterSpacing',
+  ]);
+  for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps']) {
+    if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
-  if ('fontSize' in value && (typeof value.fontSize !== 'number' ||
+  for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
+    if (key in value) maybeNull(value[key] as string | null | undefined, (entry) => assertText(entry, key));
+  }
+  for (const key of ['color', 'underlineColor']) {
+    if (key in value && value[key] !== null && (typeof value[key] !== 'string' || !/^[a-f\d]{6}$/i.test(value[key] as string))) {
+      throw new Error(`${key} must be six hexadecimal digits without #.`);
+    }
+  }
+  if ('fontSize' in value && value.fontSize !== null && (typeof value.fontSize !== 'number' ||
       !Number.isFinite(value.fontSize) || value.fontSize < 1 || value.fontSize > 400 ||
       !Number.isInteger(value.fontSize * 2))) {
     throw new Error('fontSize must be 1–400 points in half-point increments.');
   }
-  if ('fontFamily' in value) assertText(value.fontFamily, 'fontFamily');
-  if ('color' in value && (typeof value.color !== 'string' || !/^[a-f\d]{6}$/i.test(value.color))) {
-    throw new Error('color must be six hexadecimal digits without #.');
+  if ('verticalAlign' in value && value.verticalAlign !== null && !['baseline', 'subscript', 'superscript'].includes(String(value.verticalAlign))) {
+    throw new Error('verticalAlign must be baseline, subscript or superscript.');
+  }
+  if ('characterSpacing' in value && value.characterSpacing !== null &&
+      (!Number.isSafeInteger(value.characterSpacing as number) || Math.abs(value.characterSpacing as number) > 31680)) {
+    throw new Error('characterSpacing must be a safe integer within OOXML spacing bounds.');
   }
 }
 
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {
   object(value);
-  keys(value, ['alignment', 'style']);
-  if ('alignment' in value && !['left', 'center', 'right', 'both'].includes(String(value.alignment))) {
+  keys(value, [
+    'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
+    'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
+    'widowControl', 'outlineLevel',
+  ]);
+  if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
   }
-  if ('style' in value) assertText(value.style, 'style');
+  if ('style' in value) maybeNull(value.style as string | null | undefined, (entry) => assertText(entry, 'style'));
+  for (const key of ['indentLeft', 'indentRight', 'lineSpacing']) {
+    if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || Math.abs(value[key] as number) > 31680)) {
+      throw new Error(`${key} must be a safe integer within OOXML bounds.`);
+    }
+  }
+  for (const key of ['indentFirstLine', 'indentHanging', 'spacingBefore', 'spacingAfter']) {
+    if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0 || (value[key] as number) > 31680)) {
+      throw new Error(`${key} must be an unsigned twips value within OOXML bounds.`);
+    }
+  }
+  if ('outlineLevel' in value && value.outlineLevel !== null &&
+      (!Number.isSafeInteger(value.outlineLevel as number) || (value.outlineLevel as number) < 0 || (value.outlineLevel as number) > 9)) {
+    throw new Error('outlineLevel must be an integer from 0 to 9.');
+  }
+  if ('lineSpacingRule' in value && value.lineSpacingRule !== null && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
+    throw new Error('Invalid lineSpacingRule.');
+  }
+  for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl']) {
+    if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+}
+
+function validateWidth(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const width = value as Record<string, unknown>;
+  keys(width, ['type', 'value']);
+  if (!['auto', 'dxa', 'pct'].includes(String(width.type))) throw new Error(`${name}.type must be auto, dxa or pct.`);
+  if (!Number.isFinite(width.value) || typeof width.value !== 'number' || width.value < 0) {
+    throw new Error(`${name}.value must be a non-negative number.`);
+  }
+}
+
+function validateBorder(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const border = value as Record<string, unknown>;
+  keys(border, ['style', 'size', 'space', 'color', 'none']);
+  if ('style' in border && typeof border.style !== 'string') throw new Error(`${name}.style must be a string.`);
+  for (const key of ['size', 'space']) {
+    if (key in border && (typeof border[key] !== 'number' || !Number.isFinite(border[key]) || border[key] < 0)) {
+      throw new Error(`${name}.${key} must be a non-negative number.`);
+    }
+  }
+  if ('color' in border && (typeof border.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(border.color))) {
+    throw new Error(`${name}.color must be auto or six hexadecimal digits.`);
+  }
+  if ('none' in border && typeof border.none !== 'boolean') throw new Error(`${name}.none must be boolean.`);
+}
+
+function validateBorders(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const borders = value as Record<string, unknown>;
+  keys(borders, ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']);
+  for (const side of ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']) {
+    if (side in borders) validateBorder(borders[side], `${name}.${side}`);
+  }
+}
+
+function validateShading(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const shading = value as Record<string, unknown>;
+  keys(shading, ['fill', 'color', 'value']);
+  for (const key of ['fill', 'color']) {
+    if (key in shading && (typeof shading[key] !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(String(shading[key])))) {
+      throw new Error(`${name}.${key} must be auto or six hexadecimal digits.`);
+    }
+  }
+  if ('value' in shading && typeof shading.value !== 'string') throw new Error(`${name}.value must be a string.`);
+}
+
+function validateMargins(value: unknown, name: string): void {
+  object(value as Record<string, unknown>);
+  const margin = value as Record<string, unknown>;
+  keys(margin, ['top', 'right', 'bottom', 'left']);
+  for (const side of ['top', 'right', 'bottom', 'left']) if (side in margin) validateWidth(margin[side], `${name}.${side}`);
+}
+
+export function validateTableFormat(value: unknown): asserts value is TableFormat {
+  object(value);
+  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look', 'caption', 'description']);
+  if ('width' in value) validateWidth(value.width, 'width');
+  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
+  if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
+  if ('borders' in value) validateBorders(value.borders, 'borders');
+  if ('shading' in value) validateShading(value.shading, 'shading');
+  if ('cellMargin' in value) validateMargins(value.cellMargin, 'cellMargin');
+  if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
+  for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
+}
+
+export function validateRowFormat(value: unknown): asserts value is RowFormat {
+  object(value);
+  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted']);
+  if ('height' in value) {
+    object(value.height);
+    const height = value.height as Record<string, unknown>;
+    keys(height, ['value', 'rule']);
+    if (typeof height.value !== 'number' || !Number.isFinite(height.value) || height.value < 0) throw new Error('height.value must be a non-negative number.');
+    if ('rule' in height && !['atLeast', 'exact'].includes(String(height.rule))) throw new Error('height.rule must be atLeast or exact.');
+  }
+  for (const key of ['cantSplit', 'header', 'deleted', 'inserted'] as const) {
+    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
+}
+
+export function validateCellFormat(value: unknown): asserts value is CellFormat {
+  object(value);
+  keys(value, ['width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'hideMark', 'hMerge', 'vMerge']);
+  if ('width' in value) validateWidth(value.width, 'width');
+  if ('borders' in value) validateBorders(value.borders, 'borders');
+  if ('shading' in value) validateShading(value.shading, 'shading');
+  if ('margin' in value) validateMargins(value.margin, 'margin');
+  if ('verticalAlign' in value && !['top', 'center', 'bottom'].includes(String(value.verticalAlign))) throw new Error('Invalid verticalAlign.');
+  if ('textDirection' in value) assertText(value.textDirection, 'textDirection');
+  for (const key of ['noWrap', 'hideMark'] as const) {
+    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  for (const key of ['hMerge', 'vMerge'] as const) {
+    if (key in value && !['restart', 'continue'].includes(String(value[key]))) throw new Error(`${key} must be restart or continue.`);
+  }
 }
 
 export function validateRows(rows: unknown): asserts rows is string[][] {
   if (!Array.isArray(rows) || rows.length === 0 || rows.length > 1000 ||
-      rows.some(row => !Array.isArray(row) || row.length === 0 || row.length > 100) ||
+      rows.some((row) => !Array.isArray(row) || row.length === 0 || row.length > 100) ||
       rows.reduce((total, row) => total + row.length, 0) > 10_000) {
     throw new Error('Table must contain 1–1000 rows, 1–100 cells per row, and at most 10,000 cells.');
   }
-  rows.forEach(row => row.forEach((text: unknown) => assertText(text)));
+  rows.forEach((row) => row.forEach((text: unknown) => assertText(text)));
 }
 
 export function validateRequest(value: unknown): asserts value is AgentRequest {
@@ -88,47 +223,98 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'index']); assertIndex(op.index); break;
       case 'formatParagraph':
         keys(op, ['type', 'index', 'format']); assertIndex(op.index); validateParagraphFormat(op.format); break;
+      case 'setParagraphNumbering':
+        keys(op, ['type', 'index', 'numId', 'level']);
+        assertIndex(op.index); assertIndex(op.numId);
+        if (op.numId < 1) throw new Error('numId must be at least 1.');
+        if ('level' in op) {
+          assertIndex(op.level);
+          if (op.level > 8) throw new Error('level must be between 0 and 8.');
+        }
+        break;
+      case 'clearParagraphNumbering':
+        keys(op, ['type', 'index']); assertIndex(op.index); break;
+      case 'setParagraphLevel':
+        keys(op, ['type', 'index', 'delta']); assertIndex(op.index); assertInteger(op.delta, 'delta'); break;
       case 'formatRun':
         keys(op, ['type', 'paragraph', 'run', 'format']);
         assertIndex(op.paragraph); assertIndex(op.run); validateRunFormat(op.format); break;
       case 'replaceText':
-        keys(op, ['type', 'search', 'replacement']); assertText(op.search); assertText(op.replacement);
+        keys(op, ['type', 'search', 'replacement']); assertText(op.search, 'search'); assertText(op.replacement, 'replacement');
         if (!op.search) throw new Error('search must not be empty.');
         break;
       case 'insertTable':
         keys(op, ['type', 'rows']); validateRows(op.rows); break;
-      case 'insertHyperlink':
-        keys(op, ['type', 'target', 'link']);
-        object(op.target); keys(op.target, ['paragraph', 'start', 'end']);
-        assertIndex(op.target.paragraph); assertIndex(op.target.start); assertIndex(op.target.end);
-        if (op.target.end < op.target.start) throw new Error('target.end must be >= target.start.');
-        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
+      case 'insertTableAt':
+        keys(op, ['type', 'rows', 'cols', 'before', 'format']);
+        assertIndex(op.rows); assertIndex(op.cols);
+        if (op.rows < 1 || op.cols < 1) throw new Error('rows and cols must be positive.');
+        if ('before' in op) assertIndex(op.before);
+        if ('format' in op) validateTableFormat(op.format);
         break;
-      case 'updateHyperlink':
-        keys(op, ['type', 'hyperlink', 'link']);
-        if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
-        else validateHyperlinkReference(op.hyperlink);
-        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
-        break;
-      case 'removeHyperlink':
-        keys(op, ['type', 'hyperlink', 'options']);
-        if (typeof op.hyperlink === 'number') assertIndex(op.hyperlink);
-        else validateHyperlinkReference(op.hyperlink);
-        if ('options' in op) {
-          object(op.options);
-          keys(op.options, ['keepText']);
-          if ('keepText' in op.options && typeof op.options.keepText !== 'boolean') throw new Error('keepText must be boolean.');
+      case 'insertTableRow':
+      case 'deleteTableRow':
+      case 'insertTableColumn':
+      case 'deleteTableColumn':
+        keys(op, ['type', 'table', 'at']); assertIndex(op.table); assertIndex(op.at); break;
+      case 'mergeCells':
+        keys(op, ['type', 'table', 'range']); assertIndex(op.table); object(op.range);
+        {
+          const range = op.range as Record<string, unknown>;
+          keys(range, ['row', 'col', 'rowSpan', 'colSpan']);
+          for (const key of ['row', 'col', 'rowSpan', 'colSpan'] as const) assertIndex(range[key]);
+          if ((range.rowSpan as number) < 1 || (range.colSpan as number) < 1) throw new Error('merge range must be positive.');
         }
         break;
-      case 'insertBookmark':
-        keys(op, ['type', 'name', 'range']);
-        assertText(op.name, 'name');
-        object(op.range); keys(op.range, ['startParagraph', 'endParagraph']);
-        assertIndex(op.range.startParagraph);
-        if ('endParagraph' in op.range) assertIndex(op.range.endParagraph);
+      case 'splitCell':
+        keys(op, ['type', 'table', 'row', 'col', 'rows', 'cols']);
+        for (const key of ['table', 'row', 'col', 'rows', 'cols'] as const) assertIndex(op[key]);
+        if ((op.rows as number) < 1 || (op.cols as number) < 1) throw new Error('split rows/cols must be positive.');
         break;
-      case 'deleteBookmark':
-        keys(op, ['type', 'name']); assertText(op.name, 'name'); break;
+      case 'formatTable':
+        keys(op, ['type', 'table', 'format']); assertIndex(op.table); validateTableFormat(op.format); break;
+      case 'formatTableRow':
+        keys(op, ['type', 'table', 'row', 'format']); assertIndex(op.table); assertIndex(op.row); validateRowFormat(op.format); break;
+      case 'formatCell':
+        keys(op, ['type', 'table', 'row', 'col', 'format']);
+        assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); validateCellFormat(op.format); break;
+      case 'setCellText':
+        keys(op, ['type', 'table', 'row', 'col', 'text']);
+        assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); assertText(op.text);
+        break;
+      case 'insertImage':
+        keys(op, ['type', 'bytes', 'contentType', 'paragraph', 'run', 'widthEmu', 'heightEmu', 'alt', 'placement']);
+        assertText(op.bytes, 'bytes');
+        assertBase64(op.bytes);
+        assertText(op.contentType, 'contentType');
+        if ('paragraph' in op) assertIndex(op.paragraph);
+        if ('run' in op) assertIndex(op.run);
+        if ('widthEmu' in op && (typeof op.widthEmu !== 'number' || !Number.isFinite(op.widthEmu) || op.widthEmu <= 0)) throw new Error('widthEmu must be a positive number.');
+        if ('heightEmu' in op && (typeof op.heightEmu !== 'number' || !Number.isFinite(op.heightEmu) || op.heightEmu <= 0)) throw new Error('heightEmu must be a positive number.');
+        if ('alt' in op) assertText(op.alt, 'alt');
+        if ('placement' in op && !['inline', 'floating'].includes(String(op.placement))) throw new Error('Invalid image placement.');
+        break;
+      case 'resizeImage':
+        keys(op, ['type', 'image', 'size']); assertText(op.image, 'image'); object(op.size);
+        keys(op.size, ['widthEmu', 'heightEmu', 'keepAspect']);
+        if (!('widthEmu' in op.size) && !('heightEmu' in op.size)) throw new Error('resizeImage requires widthEmu and/or heightEmu.');
+        if ('widthEmu' in op.size && (typeof op.size.widthEmu !== 'number' || !Number.isFinite(op.size.widthEmu) || op.size.widthEmu <= 0)) throw new Error('widthEmu must be a positive number.');
+        if ('heightEmu' in op.size && (typeof op.size.heightEmu !== 'number' || !Number.isFinite(op.size.heightEmu) || op.size.heightEmu <= 0)) throw new Error('heightEmu must be a positive number.');
+        if ('keepAspect' in op.size && typeof op.size.keepAspect !== 'boolean') throw new Error('keepAspect must be boolean.');
+        break;
+      case 'replaceImageBytes':
+        keys(op, ['type', 'image', 'bytes', 'contentType']);
+        assertText(op.image, 'image');
+        assertText(op.bytes, 'bytes');
+        assertBase64(op.bytes);
+        if ('contentType' in op) assertText(op.contentType, 'contentType');
+        break;
+      case 'setImageAlt':
+        keys(op, ['type', 'image', 'alt', 'title']); assertText(op.image, 'image'); assertText(op.alt, 'alt');
+        if ('title' in op) assertText(op.title, 'title');
+        break;
+      case 'deleteImage':
+        keys(op, ['type', 'image']); assertText(op.image, 'image'); break;
       case 'setPartXml':
         keys(op, ['type', 'path', 'xml']); assertText(op.path, 'path'); assertText(op.xml, 'xml'); break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
@@ -138,11 +324,56 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
 
 const text = { type: 'string', maxLength: 1_000_000 };
 const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const integer = { type: 'integer', minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER };
+const signedInteger = { type: 'integer', minimum: -31680, maximum: 31680 };
+const unsignedTwips = { type: 'integer', minimum: 0, maximum: 31680 };
+const outlineLevel = { type: 'integer', minimum: 0, maximum: 9 };
+const nullable = <T extends Record<string, unknown>>(schema: T) => ({ anyOf: [schema, { type: 'null' }] });
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
+const imageSizeShape = {
+  ...shape({
+    widthEmu: { type: 'number', exclusiveMinimum: 0 },
+    heightEmu: { type: 'number', exclusiveMinimum: 0 },
+    keepAspect: { type: 'boolean' },
+  }, []),
+  anyOf: [{ required: ['widthEmu'] }, { required: ['heightEmu'] }],
+};
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
+const width = shape({ type: { enum: ['auto', 'dxa', 'pct'] }, value: { type: 'number', minimum: 0 } });
+const border = shape({
+  style: text,
+  size: { type: 'number', minimum: 0 },
+  space: { type: 'number', minimum: 0 },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  none: { type: 'boolean' },
+}, []);
+const borders = shape({
+  top: border, right: border, bottom: border, left: border, insideH: border, insideV: border,
+}, []);
+const shading = shape({
+  fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  value: text,
+}, []);
+const margins = shape({ top: width, right: width, bottom: width, left: width }, []);
+const tableFormat = shape({
+  width, alignment: { enum: ['left', 'center', 'right'] }, indent: { type: 'number', minimum: 0 },
+  borders, shading, cellMargin: margins, layout: { enum: ['fixed', 'autofit'] },
+  style: text, look: text, caption: text, description: text,
+}, []);
+const rowFormat = shape({
+  height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
+  cantSplit: { type: 'boolean' }, header: { type: 'boolean' }, alignment: { enum: ['left', 'center', 'right'] },
+  deleted: { type: 'boolean' }, inserted: { type: 'boolean' },
+}, []);
+const cellFormat = shape({
+  width, borders, shading, margin: margins, verticalAlign: { enum: ['top', 'center', 'bottom'] },
+  textDirection: text, noWrap: { type: 'boolean' }, hideMark: { type: 'boolean' },
+  hMerge: { enum: ['restart', 'continue'] }, vMerge: { enum: ['restart', 'continue'] },
+}, []);
 
 /** JSON Schema for tool/function calling; requests are also validated at runtime. */
 export const AGENT_OPERATION_SCHEMA = {
@@ -159,35 +390,81 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('insertParagraph', { text, before: index }, ['text']),
           operation('deleteParagraph', { index }),
           operation('formatParagraph', { index, format: shape({
-            alignment: { enum: ['left', 'center', 'right', 'both'] }, style: text,
+            alignment: nullable({ enum: ['left', 'center', 'right', 'both', 'distribute'] }),
+            style: nullable(text),
+            indentLeft: nullable(signedInteger),
+            indentRight: nullable(signedInteger),
+            indentFirstLine: nullable(unsignedTwips),
+            indentHanging: nullable(unsignedTwips),
+            spacingBefore: nullable(unsignedTwips),
+            spacingAfter: nullable(unsignedTwips),
+            lineSpacing: nullable(signedInteger),
+            lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
+            keepNext: nullable({ type: 'boolean' }),
+            keepLines: nullable({ type: 'boolean' }),
+            pageBreakBefore: nullable({ type: 'boolean' }),
+            widowControl: nullable({ type: 'boolean' }),
+            outlineLevel: nullable(outlineLevel),
           }, []) }),
+          operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
+          operation('clearParagraphNumbering', { index }),
+          operation('setParagraphLevel', { index, delta: integer }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
-            bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
-            fontSize: { type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 },
-            fontFamily: text, color: { type: 'string', pattern: '^[a-fA-F0-9]{6}$' },
+            style: nullable(text),
+            bold: nullable({ type: 'boolean' }),
+            italic: nullable({ type: 'boolean' }),
+            underline: nullable({ type: 'boolean' }),
+            underlineStyle: nullable(text),
+            underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+            fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
+            fontFamily: nullable(text),
+            fontFamilyEastAsia: nullable(text),
+            color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+            strike: nullable({ type: 'boolean' }),
+            doubleStrike: nullable({ type: 'boolean' }),
+            verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
+            smallCaps: nullable({ type: 'boolean' }),
+            allCaps: nullable({ type: 'boolean' }),
+            highlight: nullable(text),
+            characterSpacing: nullable(signedInteger),
           }, []) }),
           operation('replaceText', { search: { ...text, minLength: 1 }, replacement: text }),
           operation('insertTable', { rows: {
             type: 'array', minItems: 1, maxItems: 1000,
             items: { type: 'array', minItems: 1, maxItems: 100, items: text },
           } }),
-          operation('insertHyperlink', {
-            target: shape({ paragraph: index, start: index, end: index }),
-            link: shape({ url: text, anchor: text, tooltip: text }, []),
+          operation('insertTableAt', { rows: { ...index, minimum: 1 }, cols: { ...index, minimum: 1 }, before: index, format: tableFormat }, ['rows', 'cols']),
+          operation('insertTableRow', { table: index, at: index }),
+          operation('deleteTableRow', { table: index, at: index }),
+          operation('insertTableColumn', { table: index, at: index }),
+          operation('deleteTableColumn', { table: index, at: index }),
+          operation('mergeCells', { table: index, range: shape({ row: index, col: index, rowSpan: { ...index, minimum: 1 }, colSpan: { ...index, minimum: 1 } }) }),
+          operation('splitCell', { table: index, row: index, col: index, rows: { ...index, minimum: 1 }, cols: { ...index, minimum: 1 } }),
+          operation('formatTable', { table: index, format: tableFormat }),
+          operation('formatTableRow', { table: index, row: index, format: rowFormat }),
+          operation('formatCell', { table: index, row: index, col: index, format: cellFormat }),
+          operation('setCellText', { table: index, row: index, col: index, text }),
+          operation('insertImage', {
+            bytes: { type: 'string', maxLength: 22_500_000 },
+            contentType: text,
+            paragraph: index,
+            run: index,
+            widthEmu: { type: 'number', exclusiveMinimum: 0 },
+            heightEmu: { type: 'number', exclusiveMinimum: 0 },
+            alt: text,
+            placement: { enum: ['inline', 'floating'] },
+          }, ['bytes', 'contentType']),
+          operation('replaceImageBytes', {
+            image: text,
+            bytes: { type: 'string', maxLength: 22_500_000 },
+            contentType: text,
+          }, ['image', 'bytes']),
+          operation('resizeImage', {
+            image: text,
+            size: imageSizeShape,
           }),
-          operation('updateHyperlink', {
-            hyperlink: { oneOf: [index, { type: 'object' }] },
-            link: shape({ url: text, anchor: text, tooltip: text }, []),
-          }),
-          operation('removeHyperlink', {
-            hyperlink: { oneOf: [index, { type: 'object' }] },
-            options: shape({ keepText: { type: 'boolean' } }, []),
-          }, ['hyperlink']),
-          operation('insertBookmark', {
-            name: text,
-            range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']),
-          }),
-          operation('deleteBookmark', { name: text }),
+          operation('setImageAlt', { image: text, alt: text, title: text }, ['image', 'alt']),
+          operation('deleteImage', { image: text }),
           operation('setPartXml', { path: text, xml: text }),
         ],
       },
