@@ -78,6 +78,25 @@ test('flush falls back to console.error when onError is not provided', () => {
   }
 });
 
+test('flush still logs original error when onError throws', () => {
+  const original = console.error;
+  const calls = [];
+  console.error = (...args) => calls.push(args);
+  try {
+    const overlong = `a${'x'.repeat(1_000_000)}`;
+    const { editor } = makeFlushEditor({
+      text: overlong,
+      options: { onError: () => { throw new Error('handler failed'); } },
+    });
+    assert.doesNotThrow(() => editor.flush());
+    assert.equal(calls.length, 2);
+    assert.match(String(calls[0][0]), /valid XML text/);
+    assert.match(String(calls[1][0]), /handler failed/);
+  } finally {
+    console.error = original;
+  }
+});
+
 test('render completes even when flush sees invalid uncommittable text', () => {
   const overlong = `a${'x'.repeat(1_000_000)}`;
   const { editor } = makeFlushEditor({ text: overlong, options: { onError: () => {} } });

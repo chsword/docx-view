@@ -198,6 +198,7 @@ export class DocxEditor {
       if (this.options.onError) this.options.onError(normalized, { paragraph });
       else console.error(normalized);
     } catch (reportError) {
+      console.error(normalized);
       console.error(reportError);
     }
   }
