@@ -20,20 +20,26 @@ const editor = new DocxEditor(host, doc, { onChange: refresh });
 
 function createSample(): DocxDocument {
   const sample = DocxDocument.create();
+  sample.defineStyle({ id: 'Title', name: '标题', type: 'paragraph', quickFormat: true, paragraph: { spacingAfter: 160 }, run: { bold: true, fontSize: 26, color: '223855' } });
+  sample.defineStyle({ id: 'Heading1', name: '标题 1', type: 'paragraph', quickFormat: true, paragraph: { spacingBefore: 120, spacingAfter: 80 }, run: { bold: true, fontSize: 16, color: '3567D6' } });
+  sample.defineStyle({ id: 'BodyText', name: '正文', type: 'paragraph', quickFormat: true, paragraph: { spacingAfter: 80 }, run: { fontSize: 11, color: '394A61' } });
+  sample.defineStyle({ id: 'Quote', name: '引用', type: 'paragraph', quickFormat: true, paragraph: { indentLeft: 360, spacingAfter: 120 }, run: { italic: true, color: '788597' } });
   sample.setParagraphText(0, '把想法，写成下一步。');
-  sample.formatRun(0, 0, { bold: true, fontSize: 26, color: '223855' });
+  sample.formatParagraph(0, { style: 'Title' }, { validateStyle: true });
   sample.insertParagraph('纸间工作室  /  产品共创计划  /  2026');
   sample.formatRun(1, 0, { fontSize: 10, color: '788597' });
   sample.insertParagraph('01  项目愿景');
-  sample.formatRun(2, 0, { bold: true, fontSize: 16, color: '3567D6' });
+  sample.formatParagraph(2, { style: 'Heading1' }, { validateStyle: true });
   sample.insertParagraph('让每一份文档都能自由流转。我们希望把熟悉的文字编辑，与透明的文档结构、可靠的自动化连接起来。');
+  sample.formatParagraph(3, { style: 'BodyText' }, { validateStyle: true });
   sample.insertParagraph('点击任意段落开始编辑，也可以在右侧运行一组 Agent 指令。所有处理都发生在你的浏览器里，文件不会上传。');
+  sample.formatParagraph(4, { style: 'BodyText' }, { validateStyle: true });
   sample.insertParagraph('02  从一个小计划开始');
-  sample.formatRun(5, 0, { bold: true, fontSize: 16, color: '3567D6' });
+  sample.formatParagraph(5, { style: 'Heading1' }, { validateStyle: true });
   sample.insertTable([['阶段', '交付内容', '状态'], ['探索', '梳理需求与文档结构', '已完成'], ['共创', '编辑体验与自动化接口', '进行中'], ['发布', '验证 DOCX 导出与兼容性', '下一步']]);
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
-  sample.formatRun(last.index, 0, { italic: true, fontSize: 11, color: '788597' });
+  sample.formatParagraph(last.index, { style: 'Quote' }, { validateStyle: true });
   return sample;
 }
 
@@ -53,7 +59,30 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element('revision').textContent = String(snapshot.revision);
   element('paragraph-count').textContent = String(snapshot.paragraphs.length);
   element('snapshot-output').textContent = JSON.stringify(snapshot, null, 2);
+  loadStyleOptions();
   updateSelection();
+}
+
+function loadStyleOptions(): void {
+  const select = element<HTMLSelectElement>('paragraph-style');
+  const previous = select.value;
+  select.replaceChildren(...[
+    (() => {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '样式';
+      return option;
+    })(),
+    ...doc.getStyles()
+      .filter((style) => style.type === 'paragraph' && style.quickFormat)
+      .map((style) => {
+        const option = document.createElement('option');
+        option.value = style.id;
+        option.textContent = `${style.name} (${style.id})`;
+        return option;
+      }),
+  ]);
+  if (Array.from(select.options).some((option) => option.value === previous)) select.value = previous;
 }
 
 function updateSelection(): void {
@@ -67,12 +96,15 @@ function updateSelection(): void {
   }
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
+  const style = element<HTMLSelectElement>('paragraph-style');
   const alignment = element<HTMLSelectElement>('alignment');
-  size.disabled = color.disabled = alignment.disabled = !paragraph;
+  size.disabled = color.disabled = style.disabled = alignment.disabled = !paragraph;
   size.value = paragraph?.runs[0]?.fontSize ? String(paragraph.runs[0].fontSize) : '';
   const runColor = paragraph?.runs[0]?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
-  alignment.value = paragraph?.alignment ?? 'left';
+  style.value = paragraph?.style ?? '';
+  alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
+  element('effective-format').textContent = paragraph ? JSON.stringify(paragraph.effective ?? {}, null, 2) : '点击正文选择段落';
 }
 
 function selectedIndex(): number {
@@ -159,6 +191,16 @@ element<HTMLSelectElement>('alignment').addEventListener('change', (event) => {
     editor.render();
     refresh();
     message('已更新段落对齐方式。');
+  });
+});
+element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event) => {
+  const style = (event.target as HTMLSelectElement).value;
+  if (!style) return;
+  run(() => {
+    doc.formatParagraph(selectedIndex(), { style }, { validateStyle: true });
+    editor.render();
+    refresh();
+    message(`已应用段落样式 ${style}。`);
   });
 });
 element('add-paragraph').addEventListener('click', () => run(() => {

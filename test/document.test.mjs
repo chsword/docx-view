@@ -5,9 +5,19 @@ import { DocxDocument } from '../dist/document.js';
 import { AGENT_OPERATION_SCHEMA } from '../dist/operations.js';
 import { WORD_NS } from '../dist/xml.js';
 
+const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
+const THEME_TYPE = 'application/vnd.openxmlformats-officedocument.theme+xml';
+
 function withBody(xml) {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body>${xml}<w:sectPr/></w:body></w:document>`);
+  return doc;
+}
+
+function withStyles(bodyXml, stylesXml, themeXml) {
+  const doc = withBody(bodyXml);
+  doc.addPart('word/styles.xml', new TextEncoder().encode(stylesXml), STYLES_TYPE);
+  if (themeXml) doc.addPart('word/theme/theme1.xml', new TextEncoder().encode(themeXml), THEME_TYPE);
   return doc;
 }
 
@@ -243,4 +253,175 @@ test('UTF-16 XML input is decoded and edited output declares UTF-8', async () =>
   doc.setParagraphText(0, '编码');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /encoding="UTF-8"/);
   assert.equal((await DocxDocument.load(await doc.toUint8Array())).getParagraphs()[0].text, '编码');
+});
+
+test('snapshot exposes parsed styles and default effective formatting', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:t>Styled</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:docDefaults>
+        <w:pPrDefault><w:pPr><w:spacing w:after="120"/></w:pPr></w:pPrDefault>
+        <w:rPrDefault><w:rPr><w:sz w:val="22"/><w:color w:val="112233"/></w:rPr></w:rPrDefault>
+      </w:docDefaults>
+      <w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/><w:qFormat/></w:style>
+      <w:style w:type="character" w:styleId="DefaultParagraphFont" w:default="1"><w:name w:val="Default Paragraph Font"/></w:style>
+    </w:styles>`,
+  );
+  const snapshot = doc.getSnapshot();
+  assert.equal(snapshot.styles[0].id, 'Normal');
+  assert.equal(snapshot.paragraphs[0].effective.spacingAfter, 120);
+  assert.equal(snapshot.paragraphs[0].runs[0].effective.fontSize, 11);
+  assert.equal(snapshot.paragraphs[0].runs[0].effective.color, '112233');
+});
+
+test('paragraph basedOn chains merge from root to leaf', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Hello</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:rPr><w:sz w:val="28"/><w:color w:val="224488"/></w:rPr><w:pPr><w:spacing w:after="160"/></w:pPr></w:style>
+      <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Base"/><w:rPr><w:b/></w:rPr><w:pPr><w:jc w:val="center"/></w:pPr></w:style>
+    </w:styles>`,
+  );
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.effective.alignment, 'center');
+  assert.equal(paragraph.effective.spacingAfter, 160);
+  assert.equal(paragraph.runs[0].effective.bold, true);
+  assert.equal(paragraph.runs[0].effective.fontSize, 14);
+  assert.equal(paragraph.runs[0].effective.color, '224488');
+});
+
+test('basedOn cycles are truncated without throwing', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="A"/></w:pPr><w:r><w:t>Loop</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="A"><w:name w:val="A"/><w:basedOn w:val="B"/><w:rPr><w:b/></w:rPr></w:style>
+      <w:style w:type="paragraph" w:styleId="B"><w:name w:val="B"/><w:basedOn w:val="A"/><w:rPr><w:i/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.effective.bold, true);
+  assert.equal(run.effective.italic, true);
+});
+
+test('style toggle off overrides inherited bold formatting', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Child"/></w:pPr><w:r><w:t>Off</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:rPr><w:b/></w:rPr></w:style>
+      <w:style w:type="paragraph" w:styleId="Child"><w:name w:val="Child"/><w:basedOn w:val="Base"/><w:rPr><w:b w:val="0"/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.bold, false);
+});
+
+test('character style chains merge onto runs', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:rStyle w:val="Emphasis"/></w:rPr><w:t>Chain</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="character" w:styleId="Strong"><w:name w:val="Strong"/><w:rPr><w:b/></w:rPr></w:style>
+      <w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:basedOn w:val="Strong"/><w:rPr><w:i/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.style, 'Emphasis');
+  assert.equal(run.effective.bold, true);
+  assert.equal(run.effective.italic, true);
+});
+
+test('theme fonts and shaded theme colors are resolved from theme1.xml', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="ThemeStyle"/></w:pPr><w:r><w:t>Theme</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="ThemeStyle"><w:name w:val="Theme Style"/><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia"/><w:color w:themeColor="accent1" w:themeShade="80"/></w:rPr></w:style>
+    </w:styles>`,
+    `<?xml version="1.0" encoding="UTF-8"?>
+    <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements>
+        <a:clrScheme name="Custom"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="111111"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="FF0000"/></a:accent1><a:accent2><a:srgbClr val="00FF00"/></a:accent2><a:accent3><a:srgbClr val="0000FF"/></a:accent3><a:accent4><a:srgbClr val="888888"/></a:accent4><a:accent5><a:srgbClr val="999999"/></a:accent5><a:accent6><a:srgbClr val="AAAAAA"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme>
+        <a:fontScheme name="Custom"><a:majorFont><a:latin typeface="Major Font"/><a:ea typeface="Major EA"/><a:cs typeface="Major CS"/></a:majorFont><a:minorFont><a:latin typeface="Minor Font"/><a:ea typeface="Minor EA"/><a:cs typeface="Minor CS"/></a:minorFont></a:fontScheme>
+      </a:themeElements>
+    </a:theme>`,
+  );
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.effective.fontFamily, 'Minor Font');
+  assert.equal(run.effective.fontFamilyEastAsia, 'Minor EA');
+  assert.equal(run.effective.color, '800000');
+});
+
+test('missing theme1.xml falls back to built-in theme tables', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="FallbackTheme"/></w:pPr><w:r><w:t>Fallback</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="FallbackTheme"><w:name w:val="Fallback Theme"/><w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/><w:color w:themeColor="accent1"/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.effective.fontFamily, 'Calibri');
+  assert.equal(run.effective.color, '4472C4');
+});
+
+test('unknown or missing styles do not throw, but optional validation can reject them', () => {
+  const doc = DocxDocument.create();
+  doc.formatParagraph(0, { style: 'MissingStyle' });
+  assert.equal(doc.getParagraphs()[0].style, 'MissingStyle');
+  assert.doesNotThrow(() => doc.getEffectiveParagraphFormat(0));
+  assert.throws(() => doc.formatParagraph(0, { style: 'StillMissing' }, { validateStyle: true }), /style not found/i);
+});
+
+test('getEffectiveParagraphFormat and getEffectiveRunFormat expose merged values', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Styled"/></w:pPr><w:r><w:t>APIs</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Styled"><w:name w:val="Styled"/><w:pPr><w:spacing w:before="120" w:after="240"/><w:jc w:val="distribute"/></w:pPr><w:rPr><w:highlight w:val="yellow"/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getEffectiveParagraphFormat(0).alignment, 'distribute');
+  assert.equal(doc.getEffectiveParagraphFormat(0).spacingAfter, 240);
+  assert.equal(doc.getEffectiveRunFormat(0, 0).highlight, 'yellow');
+});
+
+test('read-only round trips preserve styles.xml bytes exactly', async () => {
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="${WORD_NS}">\n  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>\n</w:styles>`;
+  const doc = withStyles('<w:p><w:r><w:t>Keep</w:t></w:r></w:p>', stylesXml);
+  const loaded = await DocxDocument.load(await doc.toUint8Array());
+  loaded.setParagraphText(0, 'Changed');
+  const reopened = await DocxDocument.load(await loaded.toUint8Array());
+  assert.deepEqual(reopened.getPartBytes('word/styles.xml'), new TextEncoder().encode(stylesXml));
+});
+
+test('defineStyle creates styles.xml and styles can be read back after reload', async () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({
+    id: 'MyHeading',
+    name: 'My Heading',
+    type: 'paragraph',
+    quickFormat: true,
+    paragraph: { spacingAfter: 240, alignment: 'center' },
+    run: { bold: true, fontSize: 18, color: '3355AA' },
+  });
+  doc.formatParagraph(0, { style: 'MyHeading' }, { validateStyle: true });
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reopened.getStyle('MyHeading').name, 'My Heading');
+  assert.equal(reopened.getParagraphs()[0].effective.alignment, 'center');
+  assert.equal(reopened.getParagraphs()[0].runs[0].effective.bold, true);
+  assert.match(reopened.getPartXml('word/styles.xml'), /MyHeading/);
+});
+
+test('table style conditions apply first-row and horizontal band run formatting', () => {
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="FancyTable"/><w:tblLook w:firstRow="1" w:noHBand="0"/></w:tblPr>
+      <w:tr><w:tc><w:p><w:r><w:t>H1</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>R2</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="FancyTable"><w:name w:val="Fancy Table"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band2Horz"><w:rPr><w:color w:val="AA5500"/></w:rPr></w:tblStylePr>
+      </w:style>
+    </w:styles>`,
+  );
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs[0].runs[0].effective.bold, true);
+  assert.equal(paragraphs[1].runs[0].effective.color, 'AA5500');
 });

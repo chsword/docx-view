@@ -1,5 +1,63 @@
 import { DocxDocument } from './document.js';
-import type { DocumentBlock, DocumentSnapshot, ParagraphInfo } from './types.js';
+import type { DocumentBlock, DocumentSnapshot, ParagraphInfo, RunInfo } from './types.js';
+
+function twipsToPoints(value: number | undefined): string | undefined {
+  return value !== undefined ? `${value / 20}pt` : undefined;
+}
+
+function highlightColor(value: string): string {
+  return {
+    darkBlue: '#000080',
+    darkCyan: '#008080',
+    darkGray: '#808080',
+    darkGreen: '#008000',
+    darkMagenta: '#800080',
+    darkRed: '#800000',
+    darkYellow: '#808000',
+    lightGray: '#D3D3D3',
+    magenta: '#FF00FF',
+  }[value] ?? value;
+}
+
+function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
+  const effective = paragraph.effective ?? paragraph;
+  if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
+  if (effective.indentLeft !== undefined) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
+  if (effective.indentRight !== undefined) element.style.marginRight = twipsToPoints(effective.indentRight)!;
+  if (effective.spacingBefore !== undefined) element.style.marginTop = twipsToPoints(effective.spacingBefore)!;
+  if (effective.spacingAfter !== undefined) element.style.marginBottom = twipsToPoints(effective.spacingAfter)!;
+  if (effective.indentFirstLine !== undefined || effective.indentHanging !== undefined) {
+    const indent = (effective.indentFirstLine ?? 0) - (effective.indentHanging ?? 0);
+    element.style.textIndent = twipsToPoints(indent)!;
+  }
+  if (effective.lineSpacing !== undefined) {
+    element.style.lineHeight = effective.lineSpacingRule === 'auto'
+      ? String(effective.lineSpacing / 240)
+      : `${effective.lineSpacing / 20}pt`;
+  }
+}
+
+function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
+  const effective = run.effective ?? run;
+  if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
+  if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
+  const textDecorations = [
+    effective.underline ? 'underline' : '',
+    effective.strike || effective.doubleStrike ? 'line-through' : '',
+  ].filter(Boolean);
+  if (textDecorations.length) span.style.textDecoration = textDecorations.join(' ');
+  else if (effective.underline === false || effective.strike === false || effective.doubleStrike === false) span.style.textDecoration = 'none';
+  if (effective.underlineStyle) span.style.textDecorationStyle = effective.underlineStyle === 'words' ? 'solid' : effective.underlineStyle;
+  if (effective.underlineColor && /^[0-9a-f]{6}$/i.test(effective.underlineColor)) span.style.textDecorationColor = `#${effective.underlineColor}`;
+  if (effective.fontSize !== undefined) span.style.fontSize = `${effective.fontSize}pt`;
+  if (effective.fontFamily || effective.fontFamilyEastAsia) span.style.fontFamily = effective.fontFamilyEastAsia ?? effective.fontFamily!;
+  if (effective.color && /^[0-9a-f]{6}$/i.test(effective.color)) span.style.color = `#${effective.color}`;
+  if (effective.verticalAlign === 'subscript' || effective.verticalAlign === 'superscript') span.style.verticalAlign = effective.verticalAlign;
+  if (effective.smallCaps || effective.allCaps) span.style.fontVariantCaps = effective.allCaps ? 'all-small-caps' : 'small-caps';
+  if (effective.allCaps) span.style.textTransform = 'uppercase';
+  if (effective.highlight && effective.highlight !== 'none') span.style.backgroundColor = highlightColor(effective.highlight);
+  if (effective.characterSpacing !== undefined) span.style.letterSpacing = `${effective.characterSpacing / 20}pt`;
+}
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
@@ -120,17 +178,12 @@ export class DocxEditor {
     element.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
-    if (paragraph.alignment) element.style.textAlign = paragraph.alignment === 'both' ? 'justify' : paragraph.alignment;
+    applyParagraphStyle(element, paragraph);
     if (paragraph.style) element.dataset.style = paragraph.style;
     for (const run of paragraph.runs) {
       const span = this.root.ownerDocument.createElement('span');
       span.textContent = run.text;
-      if (run.bold !== undefined) span.style.fontWeight = run.bold ? '700' : '400';
-      if (run.italic !== undefined) span.style.fontStyle = run.italic ? 'italic' : 'normal';
-      if (run.underline !== undefined) span.style.textDecoration = run.underline ? 'underline' : 'none';
-      if (run.fontSize !== undefined) span.style.fontSize = `${run.fontSize}pt`;
-      if (run.fontFamily) span.style.fontFamily = run.fontFamily;
-      if (run.color && /^[0-9a-f]{6}$/i.test(run.color)) span.style.color = `#${run.color}`;
+      applyRunStyle(span, run);
       element.append(span);
     }
     if (!paragraph.runs.length) element.textContent = paragraph.text;

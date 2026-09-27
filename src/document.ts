@@ -1,13 +1,22 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo,
+  AgentRequest, DocumentBlock, DocumentSnapshot, ParagraphFormat, ParagraphInfo, RunFormat, RunInfo, StyleInfo,
 } from './types.js';
 import {
   assertText, children, CONTENT_TYPES_NS, descendants, OFFICE_DOCUMENT_REL, parseXml, REL_NS,
   serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
+import {
+  cloneStyleInfo,
+  computeEffectiveParagraphFormat,
+  computeEffectiveRunFormat,
+  parseStyles,
+  readParagraphProperties,
+  readRunProperties,
+  type StylesContext,
+} from './styles.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
 const MAX_PART = 16 * 1024 * 1024;
@@ -15,6 +24,9 @@ const MAX_TOTAL = 64 * 1024 * 1024;
 const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
+const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
+const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
+const THEME_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const encoder = new TextEncoder();
 
 function decodeXml(bytes: Uint8Array): string {
@@ -164,6 +176,15 @@ function property(parent: Element, name: string): Element {
   return result;
 }
 
+function styleChild(parent: Element, name: string): Element {
+  let result = children(parent, name)[0];
+  if (!result) {
+    result = wordElement(parent.ownerDocument!, name);
+    parent.appendChild(result);
+  }
+  return result;
+}
+
 function ownRuns(paragraph: Element): Element[] {
   return descendants(paragraph, 'r').filter(run => {
     let parent = run.parentNode;
@@ -176,31 +197,132 @@ function ownRuns(paragraph: Element): Element[] {
   });
 }
 
-function readRun(run: Element, index: number): RunInfo {
-  const props = children(run, 'rPr')[0];
-  const get = (name: string) => props ? children(props, name)[0] : undefined;
-  const toggle = (name: string) => get(name) ? !['0', 'false', 'off'].includes(wordValue(get(name)) ?? '') : undefined;
-  const size = wordValue(get('sz'));
-  const underline = get('u');
-  const color = wordValue(get('color'));
+function dirname(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+}
+
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function relsPath(path: string): string {
+  const dir = dirname(path);
+  return `${dir ? `${dir}/` : ''}_rels/${basename(path)}.rels`;
+}
+
+function resolveTarget(sourcePart: string, target: string): string {
+  const decoded = decodeURIComponent(target).replace(/^\//, '');
+  if (!decoded) throw new Error('Invalid relationship target.');
+  if (!target.startsWith('/')) {
+    const base = dirname(sourcePart).split('/').filter(Boolean);
+    for (const segment of decoded.split('/')) {
+      if (!segment || segment === '.') continue;
+      if (segment === '..') base.pop();
+      else base.push(segment);
+    }
+    const path = base.join('/');
+    validatePath(path);
+    return path;
+  }
+  validatePath(decoded);
+  return decoded;
+}
+
+function readRun(run: Element, index: number, styles: StylesContext, paragraph: Element): RunInfo {
+  const direct = readRunProperties(children(run, 'rPr')[0], styles.theme);
   return {
-    index, text: textOf(run), bold: toggle('b'), italic: toggle('i'),
-    underline: underline ? !['none', '0', 'false'].includes(wordValue(underline) ?? '') : undefined,
-    fontSize: size && Number.isFinite(Number(size)) ? Number(size) / 2 : undefined,
-    fontFamily: get('rFonts')?.getAttributeNS(WORD_NS, 'ascii') ?? undefined,
-    color: color && /^[a-f\d]{6}$/i.test(color) ? color : undefined,
+    index,
+    text: textOf(run),
+    ...direct,
+    effective: computeEffectiveRunFormat(styles, paragraph, run),
   };
 }
 
-function readParagraph(paragraph: Element, index: number): ParagraphInfo {
-  const props = children(paragraph, 'pPr')[0];
-  const alignment = props ? wordValue(children(props, 'jc')[0]) : undefined;
+function readParagraph(paragraph: Element, index: number, styles: StylesContext): ParagraphInfo {
+  const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
   return {
-    index, text: textOf(paragraph), runs: ownRuns(paragraph).map(readRun),
-    style: props ? wordValue(children(props, 'pStyle')[0]) : undefined,
-    alignment: ['left', 'center', 'right', 'both'].includes(alignment ?? '')
-      ? alignment as ParagraphFormat['alignment'] : undefined,
+    index,
+    text: textOf(paragraph),
+    ...direct,
+    runs: ownRuns(paragraph).map((run, runIndex) => readRun(run, runIndex, styles, paragraph)),
+    effective: computeEffectiveParagraphFormat(styles, paragraph),
   };
+}
+
+function removeProperty(parent: Element, name: string): void {
+  for (const child of children(parent, name)) parent.removeChild(child);
+}
+
+function setOnOff(parent: Element, name: string, value: boolean, onValue = '1', offValue = '0'): void {
+  setWordValue(property(parent, name), value ? onValue : offValue);
+}
+
+function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
+  if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
+  if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
+  if ([format.keepNext, format.keepLines, format.pageBreakBefore, format.widowControl].some(value => value !== undefined)) {
+    if (format.keepNext !== undefined) setOnOff(props, 'keepNext', format.keepNext);
+    if (format.keepLines !== undefined) setOnOff(props, 'keepLines', format.keepLines);
+    if (format.pageBreakBefore !== undefined) setOnOff(props, 'pageBreakBefore', format.pageBreakBefore);
+    if (format.widowControl !== undefined) setOnOff(props, 'widowControl', format.widowControl);
+  }
+  if ([format.indentLeft, format.indentRight, format.indentFirstLine, format.indentHanging].some(value => value !== undefined)) {
+    const indent = property(props, 'ind');
+    if (format.indentLeft !== undefined) indent.setAttributeNS(WORD_NS, 'w:left', String(format.indentLeft));
+    if (format.indentRight !== undefined) indent.setAttributeNS(WORD_NS, 'w:right', String(format.indentRight));
+    if (format.indentFirstLine !== undefined) indent.setAttributeNS(WORD_NS, 'w:firstLine', String(format.indentFirstLine));
+    if (format.indentHanging !== undefined) indent.setAttributeNS(WORD_NS, 'w:hanging', String(format.indentHanging));
+  }
+  if ([format.spacingBefore, format.spacingAfter, format.lineSpacing, format.lineSpacingRule].some(value => value !== undefined)) {
+    const spacing = property(props, 'spacing');
+    if (format.spacingBefore !== undefined) spacing.setAttributeNS(WORD_NS, 'w:before', String(format.spacingBefore));
+    if (format.spacingAfter !== undefined) spacing.setAttributeNS(WORD_NS, 'w:after', String(format.spacingAfter));
+    if (format.lineSpacing !== undefined) spacing.setAttributeNS(WORD_NS, 'w:line', String(format.lineSpacing));
+    if (format.lineSpacingRule !== undefined) spacing.setAttributeNS(WORD_NS, 'w:lineRule', format.lineSpacingRule);
+  }
+  if (format.outlineLevel !== undefined) setWordValue(property(props, 'outlineLvl'), String(format.outlineLevel));
+}
+
+function applyRunFormatTo(props: Element, format: RunFormat): void {
+  if (format.style !== undefined) setWordValue(property(props, 'rStyle'), format.style);
+  for (const [key, tag] of [
+    ['bold', 'b'],
+    ['italic', 'i'],
+    ['strike', 'strike'],
+    ['doubleStrike', 'dstrike'],
+    ['smallCaps', 'smallCaps'],
+    ['allCaps', 'caps'],
+  ] as const) {
+    if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
+  }
+  if (format.underline !== undefined || format.underlineStyle !== undefined || format.underlineColor !== undefined) {
+    const underline = property(props, 'u');
+    if (format.underlineColor !== undefined) underline.setAttributeNS(WORD_NS, 'w:color', format.underlineColor);
+    if (format.underline !== undefined || format.underlineStyle !== undefined) {
+      const value = format.underline === false ? 'none' : (format.underlineStyle ?? (format.underline ? 'single' : 'none'));
+      setWordValue(underline, value);
+    }
+  }
+  if (format.fontSize !== undefined) {
+    setWordValue(property(props, 'sz'), String(format.fontSize * 2));
+    setWordValue(property(props, 'szCs'), String(format.fontSize * 2));
+  }
+  if (format.color !== undefined) setWordValue(property(props, 'color'), format.color);
+  if (format.fontFamily !== undefined || format.fontFamilyEastAsia !== undefined) {
+    const fonts = property(props, 'rFonts');
+    if (format.fontFamily !== undefined) {
+      for (const name of ['ascii', 'hAnsi', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
+      if (format.fontFamilyEastAsia === undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamily);
+    }
+    if (format.fontFamilyEastAsia !== undefined) fonts.setAttributeNS(WORD_NS, 'w:eastAsia', format.fontFamilyEastAsia);
+  }
+  if (format.verticalAlign !== undefined) {
+    if (format.verticalAlign === 'baseline') removeProperty(props, 'vertAlign');
+    else setWordValue(property(props, 'vertAlign'), format.verticalAlign);
+  }
+  if (format.highlight !== undefined) setWordValue(property(props, 'highlight'), format.highlight);
+  if (format.characterSpacing !== undefined) setWordValue(property(props, 'spacing'), String(format.characterSpacing));
 }
 
 async function readEntry(entry: JSZip.JSZipObject, limit: number): Promise<Uint8Array> {
@@ -363,15 +485,51 @@ export class DocxDocument {
     return path;
   }
 
+  private getRelatedPartPath(type: string, fallback?: string): string | undefined {
+    const rels = this.parts.get(relsPath(this.mainPath));
+    if (rels) {
+      try {
+        const document = parseXml(decodeXml(rels)).documentElement;
+        if (!document) return fallback && this.parts.has(fallback) ? fallback : undefined;
+        for (const relation of children(document, 'Relationship', REL_NS)) {
+          if (relation.getAttribute('Type') === type && relation.getAttribute('TargetMode') !== 'External') {
+            const target = relation.getAttribute('Target');
+            if (!target) continue;
+            const path = resolveTarget(this.mainPath, target);
+            if (this.parts.has(path)) return path;
+          }
+        }
+      } catch { /* Fall back to conventional paths for malformed optional rels parts. */ }
+    }
+    return fallback && this.parts.has(fallback) ? fallback : undefined;
+  }
+
+  private getStylesContext(): StylesContext {
+    const stylesPath = this.getRelatedPartPath(STYLES_REL, 'word/styles.xml');
+    const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
+    let stylesRoot: Element | undefined;
+    let themeRoot: Element | undefined;
+    try { stylesRoot = stylesPath ? this.getPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
+    try { themeRoot = themePath ? this.getPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
+    return parseStyles(stylesRoot, themeRoot);
+  }
+
+  private buildParagraphs(document = this.getPartDocument(this.mainPath), styles = this.getStylesContext()): ParagraphInfo[] {
+    return descendants(bodyOf(document), 'p').map((paragraph, index) => readParagraph(paragraph, index, styles));
+  }
+
   getParagraphs(): ParagraphInfo[] {
-    return descendants(bodyOf(this.getPartDocument(this.mainPath)), 'p').map(readParagraph);
+    return this.buildParagraphs();
   }
 
   getBlocks(): DocumentBlock[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    const indices = new Map(descendants(body, 'p').map((p, i) => [p, i]));
+    const document = this.getPartDocument(this.mainPath);
+    const styles = this.getStylesContext();
+    const body = bodyOf(document);
+    const paragraphs = this.buildParagraphs(document, styles);
+    const indices = new Map(descendants(body, 'p').map((paragraph, index) => [paragraph, paragraphs[index]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
-      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
+      if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
       if (child.localName === 'tbl') return [{
         type: 'table',
         rows: children(child, 'tr').map(row => ({
@@ -385,7 +543,31 @@ export class DocxDocument {
   }
 
   getSnapshot(): DocumentSnapshot {
-    return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts() };
+    const styles = this.getStyles();
+    return { revision: this.revision, paragraphs: this.getParagraphs(), blocks: this.getBlocks(), parts: this.listParts(), styles };
+  }
+
+  getStyles(): StyleInfo[] {
+    return this.getStylesContext().styles.map(cloneStyleInfo);
+  }
+
+  getStyle(id: string): StyleInfo | undefined {
+    assertText(id, 'style id');
+    const style = this.getStylesContext().byId.get(id);
+    return style ? cloneStyleInfo(style) : undefined;
+  }
+
+  getEffectiveParagraphFormat(index: number): ParagraphFormat {
+    const paragraph = paragraphAt(this.getPartDocument(this.mainPath), index);
+    return computeEffectiveParagraphFormat(this.getStylesContext(), paragraph);
+  }
+
+  getEffectiveRunFormat(paragraph: number, run: number): RunFormat {
+    const document = this.getPartDocument(this.mainPath);
+    const paragraphElement = paragraphAt(document, paragraph);
+    const runElement = ownRuns(paragraphElement)[run];
+    if (!runElement) throw new Error(`Run ${run} does not exist.`);
+    return computeEffectiveRunFormat(this.getStylesContext(), paragraphElement, runElement);
   }
 
   setParagraphText(index: number, text: string): void {
@@ -439,12 +621,14 @@ export class DocxDocument {
     });
   }
 
-  formatParagraph(index: number, format: ParagraphFormat): void {
+  formatParagraph(index: number, format: ParagraphFormat, options: { validateStyle?: boolean } = {}): void {
     validateParagraphFormat(format);
+    if (options.validateStyle && format.style !== undefined && !this.getStyle(format.style)) {
+      throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
+    }
     this.updatePartXml(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
-      if (format.style !== undefined) setWordValue(property(props, 'pStyle'), format.style);
-      if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
+      applyParagraphFormatTo(props, format);
     });
   }
 
@@ -455,21 +639,81 @@ export class DocxDocument {
       const element = ownRuns(paragraphAt(document, paragraph))[run];
       if (!element) throw new Error(`Run ${run} does not exist.`);
       const props = properties(element, 'rPr');
-      for (const [key, tag] of [['bold', 'b'], ['italic', 'i'], ['underline', 'u']] as const) {
-        if (format[key] !== undefined) {
-          setWordValue(property(props, tag), key === 'underline' ? (format[key] ? 'single' : 'none') : (format[key] ? '1' : '0'));
-        }
-      }
-      if (format.fontSize !== undefined) {
-        setWordValue(property(props, 'sz'), String(format.fontSize * 2));
-        setWordValue(property(props, 'szCs'), String(format.fontSize * 2));
-      }
-      if (format.color !== undefined) setWordValue(property(props, 'color'), format.color);
-      if (format.fontFamily !== undefined) {
-        const fonts = property(props, 'rFonts');
-        for (const name of ['ascii', 'hAnsi', 'eastAsia', 'cs']) fonts.setAttributeNS(WORD_NS, `w:${name}`, format.fontFamily);
-      }
+      applyRunFormatTo(props, format);
     });
+  }
+
+  defineStyle(style: StyleInfo): void {
+    assertText(style.id, 'style.id');
+    assertText(style.name, 'style.name');
+    const type = style.type;
+    if (!['paragraph', 'character', 'table', 'numbering'].includes(type)) throw new Error(`Unsupported style type: ${String(type)}`);
+    if (style.paragraph !== undefined) validateParagraphFormat(style.paragraph);
+    if (style.run !== undefined) validateRunFormat(style.run);
+    const draft = new DocxDocument(new Map(this.parts));
+    const stylesPath = draft.getRelatedPartPath(STYLES_REL, 'word/styles.xml') ?? (() => {
+      const path = `${dirname(draft.mainPath) ? `${dirname(draft.mainPath)}/` : ''}styles.xml`;
+      const relsDocument = draft.parts.has(relsPath(draft.mainPath))
+        ? draft.getPartDocument(relsPath(draft.mainPath))
+        : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+      const relsRoot = relsDocument.documentElement!;
+      const exists = children(relsRoot, 'Relationship', REL_NS)
+        .some(relation => relation.getAttribute('Type') === STYLES_REL);
+      if (!exists) {
+        const relation = relsDocument.createElementNS(REL_NS, 'Relationship');
+        relation.setAttribute('Id', `rId${children(relsRoot, 'Relationship', REL_NS).length + 1}`);
+        relation.setAttribute('Type', STYLES_REL);
+        relation.setAttribute('Target', basename(path));
+        relsRoot.appendChild(relation);
+        draft.parts.set(relsPath(draft.mainPath), encodeXml(serializeXml(relsDocument)));
+      }
+      if (!draft.parts.has(path)) {
+        const types = draft.getPartDocument('[Content_Types].xml');
+        const typesRoot = types.documentElement!;
+        if (!children(typesRoot, 'Override', CONTENT_TYPES_NS)
+          .some(override => override.getAttribute('PartName') === `/${path}`)) {
+          const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+          override.setAttribute('PartName', `/${path}`);
+          override.setAttribute('ContentType', STYLES_TYPE);
+          typesRoot.appendChild(override);
+          draft.parts.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+        }
+        draft.parts.set(path, encodeXml(`<w:styles xmlns:w="${WORD_NS}"/>`));
+      }
+      return path;
+    })();
+    draft.updatePartXml(stylesPath, document => {
+      const root = document.documentElement!;
+      let styleElement = children(root, 'style').find(element => element.getAttributeNS(WORD_NS, 'styleId') === style.id);
+      if (!styleElement) {
+        styleElement = wordElement(document, 'style');
+        root.appendChild(styleElement);
+      } else {
+        removeProperty(styleElement, 'name');
+        removeProperty(styleElement, 'basedOn');
+        removeProperty(styleElement, 'next');
+        removeProperty(styleElement, 'link');
+        removeProperty(styleElement, 'aliases');
+        removeProperty(styleElement, 'qFormat');
+        removeProperty(styleElement, 'pPr');
+        removeProperty(styleElement, 'rPr');
+      }
+      styleElement.setAttributeNS(WORD_NS, 'w:type', style.type);
+      styleElement.setAttributeNS(WORD_NS, 'w:styleId', style.id);
+      if (style.isDefault !== undefined) styleElement.setAttributeNS(WORD_NS, 'w:default', style.isDefault ? '1' : '0');
+      const name = styleChild(styleElement, 'name');
+      setWordValue(name, style.name);
+      if (style.basedOn) setWordValue(styleChild(styleElement, 'basedOn'), style.basedOn);
+      if (style.next) setWordValue(styleChild(styleElement, 'next'), style.next);
+      if (style.link) setWordValue(styleChild(styleElement, 'link'), style.link);
+      if (style.aliases?.length) setWordValue(styleChild(styleElement, 'aliases'), style.aliases.join(', '));
+      if (style.quickFormat) styleChild(styleElement, 'qFormat');
+      if (style.paragraph) applyParagraphFormatTo(styleChild(styleElement, 'pPr'), style.paragraph);
+      if (style.run) applyRunFormatTo(styleChild(styleElement, 'rPr'), style.run);
+    });
+    this.parts = draft.parts;
+    this.mainPath = draft.mainPath;
+    this.currentRevision++;
   }
 
   replaceText(search: string, replacement: string): void {

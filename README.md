@@ -13,7 +13,7 @@ npm ci
 npm run dev
 ```
 
-打开终端显示的地址。演示包含：新建 / 打开 / 下载 DOCX、正文与表格编辑、整段文字格式工具、OOXML 部件编辑器、Agent JSON 请求和文档快照。
+打开终端显示的地址。演示包含：新建 / 打开 / 下载 DOCX、正文与表格编辑、整段文字格式工具、样式下拉框、当前段落有效格式面板、OOXML 部件编辑器、Agent JSON 请求和文档快照。
 
 ```sh
 npm run check          # TypeScript 检查
@@ -61,12 +61,15 @@ console.log(reopened.getSnapshot());
 
 | API | 用途 |
 | --- | --- |
-| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、文字格式、部件列表和修订号 |
+| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、样式清单、部件列表和修订号 |
+| `getStyles()` / `getStyle(id)` | 读取 `styles.xml` 中的段落 / 字符 / 表格 / 编号样式元数据 |
+| `getEffectiveParagraphFormat(index)` / `getEffectiveRunFormat(paragraph, run)` | 读取 Word 样式层叠后的有效格式 |
 | `setParagraphText(index, text)` | 修改段落文字，支持制表符和换行 |
 | `insertParagraph(text, before?)` | 在指定段落前插入；省略 `before` 则追加到正文 |
 | `deleteParagraph(index)` | 删除段落；保留正文 / 单元格必要的空段落，拒绝隐式删除分节符 |
-| `formatParagraph(index, format)` | 对齐方式和样式 ID；不会自动创建样式定义 |
-| `formatRun(paragraph, run, format)` | 粗体、斜体、下划线、字体、字号（磅）、六位十六进制颜色 |
+| `formatParagraph(index, format, options?)` | 设置段落直接格式；`options.validateStyle` 可在写入前校验样式 ID |
+| `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段 |
+| `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `insertTable(rows)` | 在正文末尾插入表格，较短行补为空单元格 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
@@ -97,7 +100,7 @@ editor.render();
 
 组件还提供 `selectedParagraph`、`setDocument(doc)` 和 `destroy()`。`docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引。格式工具栏由宿主实现；演示工具栏作用于整段，而不是任意选中的字符范围。
 
-组件使用 `.docx-editor`、`.docx-paragraph`、`.docx-table` 类名，不强制注入全局 CSS；宿主可以自行设置纸张外观、表格边框等，参考 `examples/style.css`。DOCX 中支持的显式 run 格式和对齐方式由组件渲染。
+组件使用 `.docx-editor`、`.docx-paragraph`、`.docx-table` 类名，不强制注入全局 CSS；宿主可以自行设置纸张外观、表格边框等，参考 `examples/style.css`。视图优先使用样式解析后的**有效格式**渲染常用字体、字号、颜色、加粗 / 斜体 / 下划线 / 删除线、上下标、大小写、高亮、字间距及段落缩进 / 间距 / 行距 / 对齐。
 
 ### OOXML 细粒度操作
 
@@ -169,7 +172,7 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、显式 run 格式、段落对齐和基础表格；**不承诺与 Word 像素级一致或精确分页**。样式继承、编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。`w:style` ID 的修改会保存，但视图不会解析样式继承。
+当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式，以及基础表格；**不承诺与 Word 像素级一致或精确分页**。编号列表、图片显示、合并单元格、复杂版式、页眉页脚、脚注、修订及域计算尚未实现；这些部件 / XML 会尽量保留，低层 API 仍可操作。表格样式当前只参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，未实现边框 / 底纹渲染与其余条件样式。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
