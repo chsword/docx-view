@@ -1,6 +1,6 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import type { SectionInfo, SectionType } from './types.js';
-import { WORD_NS, children } from './xml.js';
+import { WORD_NS, children, descendants } from './xml.js';
 
 export const SECTION_ORDER = [
   'headerReference', 'footerReference', 'footnotePr', 'endnotePr', 'type', 'pgSz', 'pgMar', 'paperSrc',
@@ -85,12 +85,14 @@ export interface SectionDescriptor {
 
 export function collectSections(mainDocument: Document): SectionDescriptor[] {
   const body = children(mainDocument.documentElement!, 'body')[0]!;
-  const paragraphs: Element[] = [];
+  const paragraphs = descendants(body, 'p');
+  const indices = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
   const boundaries: Array<{ index: number; paragraph: Element; sectPr: Element }> = [];
   const walk = (parent: Element, sectionScope: boolean): void => {
     for (const child of children(parent)) {
       if (child.localName === 'p') {
-        const index = paragraphs.push(child) - 1;
+        const index = indices.get(child);
+        if (index === undefined) continue;
         if (sectionScope) {
           const sectPr = children(children(child, 'pPr')[0] ?? child, 'sectPr')[0];
           if (sectPr) boundaries.push({ index, paragraph: child, sectPr });
@@ -120,7 +122,10 @@ export function collectSections(mainDocument: Document): SectionDescriptor[] {
     start = boundary.index + 1;
   }
   const tail = children(body, 'sectPr')[0];
-  if (tail) sections.push({ startParagraph: start, endParagraph: Math.max(start, paragraphs.length) - 1, sectPr: tail, source: 'body' });
+  if (tail) {
+    const endParagraph = start <= paragraphs.length - 1 ? paragraphs.length - 1 : start - 1;
+    sections.push({ startParagraph: start, endParagraph, sectPr: tail, source: 'body' });
+  }
   return sections;
 }
 

@@ -23,6 +23,7 @@ const FOOTER_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relati
 const RELS_CONTENT_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
 const HEADER_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml';
 const FOOTER_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml';
+const SETTINGS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml';
 const DEFAULT_HEADER_FOOTER_KIND: 'default' | 'first' | 'even' = 'default';
 const encoder = new TextEncoder();
 
@@ -75,6 +76,14 @@ function resolvePartPath(basePart: string, target: string): string {
   return normalizePath(target.startsWith('/') ? decoded : `${partDirectory(basePart)}/${decoded}`);
 }
 
+function decodePackageTarget(target: string): string {
+  try {
+    return decodeURIComponent(target).replace(/^\/+/, '');
+  } catch {
+    return '';
+  }
+}
+
 function relativeTarget(fromPart: string, toPart: string): string {
   const from = partDirectory(fromPart).split('/').filter(Boolean);
   const to = toPart.split('/').filter(Boolean);
@@ -114,7 +123,7 @@ function textElements(element: Element): Element[] {
       const element = child as Element;
       if (element.namespaceURI === WORD_NS) {
         if (element.localName === 'p') continue;
-        if (['t', 'tab', 'br', 'cr', 'fldSimple'].includes(element.localName ?? '')) {
+        if (['t', 'tab', 'br', 'cr'].includes(element.localName ?? '')) {
           result.push(element);
           continue;
         }
@@ -129,22 +138,23 @@ function textElements(element: Element): Element[] {
 function elementText(element: Element): string {
   if (element.localName === 't') return element.textContent ?? '';
   if (element.localName === 'tab') return '\t';
-  if (element.localName === 'fldSimple') {
-    const instr = (element.getAttributeNS(WORD_NS, 'instr') ?? '').toUpperCase();
-    if (instr.includes('NUMPAGES')) return '?';
-    if (instr.includes('PAGE')) return '1';
-    return '';
-  }
   return '\n';
+}
+
+function fieldPlaceholder(root: Element): string | undefined {
+  const instructions = [
+    ...children(root, 'fldSimple').map(node => (node.getAttributeNS(WORD_NS, 'instr') ?? '').toUpperCase()),
+    ...descendants(root, 'instrText').map(node => (node.textContent ?? '').toUpperCase()),
+  ];
+  if (instructions.some(instruction => instruction.includes('NUMPAGES'))) return '?';
+  if (instructions.some(instruction => instruction.includes('PAGE'))) return '1';
+  return undefined;
 }
 
 function textOf(element: Element): string {
   const text = textElements(element).map(elementText).join('');
   if (text) return text;
-  const instructions = descendants(element, 'instrText').map(node => (node.textContent ?? '').toUpperCase());
-  if (instructions.some(instruction => instruction.includes('NUMPAGES'))) return '?';
-  if (instructions.some(instruction => instruction.includes('PAGE'))) return '1';
-  return '';
+  return fieldPlaceholder(element) ?? '';
 }
 
 function appendText(parent: Element, text: string, before: Node | null = null): void {
@@ -434,7 +444,8 @@ export class DocxDocument {
     if (main.length !== 1 || main[0]!.getAttribute('TargetMode') === 'External') {
       throw new Error('Package requires one internal officeDocument relationship.');
     }
-    const path = decodeURIComponent(main[0]!.getAttribute('Target') ?? '').replace(/^\//, '');
+    const path = decodePackageTarget(main[0]!.getAttribute('Target') ?? '');
+    if (!path) throw new Error('Invalid main document relationship target.');
     validatePath(path);
     const types = this.getPartDocument('[Content_Types].xml').documentElement;
     if (types?.namespaceURI !== CONTENT_TYPES_NS || types.localName !== 'Types') {
@@ -462,8 +473,31 @@ export class DocxDocument {
       .map(section => [section.endParagraph, (children(section.sectPr, 'type')[0]?.getAttributeNS(WORD_NS, 'val') ?? 'nextPage') as SectionType]));
     const paragraphs = descendants(body, 'p');
     const indices = new Map(paragraphs.map((p, i) => [p, i]));
-    const hasPageBreak = (paragraph: Element) => descendants(paragraph, 'br')
-      .some(node => (node.getAttributeNS(WORD_NS, 'type') ?? '') === 'page');
+    const pageBreakMarkers = (paragraph: Element): { before: number; after: number } => {
+      let before = 0;
+      let after = 0;
+      let seenText = false;
+      const walk = (node: Node): void => {
+        for (let child = node.firstChild; child; child = child.nextSibling) {
+          if (child.nodeType !== 1) continue;
+          const element = child as Element;
+          if (element.namespaceURI !== WORD_NS) continue;
+          if (element.localName === 'p') continue;
+          if (element.localName === 'br' && (element.getAttributeNS(WORD_NS, 'type') ?? '') === 'page') {
+            if (seenText) after++; else before++;
+            continue;
+          }
+          if (['t', 'tab', 'cr'].includes(element.localName ?? '') ||
+              (element.localName === 'br' && (element.getAttributeNS(WORD_NS, 'type') ?? '') !== 'page')) {
+            seenText = true;
+            continue;
+          }
+          walk(element);
+        }
+      };
+      for (const run of ownRuns(paragraph)) walk(run);
+      return { before, after };
+    };
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: readParagraph(child, indices.get(child)!) }];
       if (child.localName === 'tbl') return [{
@@ -477,13 +511,19 @@ export class DocxDocument {
     });
     const blocks = walk(body);
     const result: DocumentBlock[] = [];
+    let sectionBreaks = 0;
     for (const block of blocks) {
-      result.push(block);
-      if (block.type !== 'paragraph') continue;
+      if (block.type !== 'paragraph') {
+        result.push(block);
+        continue;
+      }
       const paragraph = paragraphs[block.paragraph.index];
-      if (paragraph && hasPageBreak(paragraph)) result.push({ type: 'pageBreak' });
+      const markers = paragraph ? pageBreakMarkers(paragraph) : { before: 0, after: 0 };
+      for (let i = 0; i < markers.before; i++) result.push({ type: 'pageBreak' });
+      result.push(block);
+      for (let i = 0; i < markers.after; i++) result.push({ type: 'pageBreak' });
       const breakType = sectionByParagraph.get(block.paragraph.index);
-      if (breakType) result.push({ type: 'sectionBreak', section: result.filter(item => item.type === 'sectionBreak').length, breakType });
+      if (breakType) result.push({ type: 'sectionBreak', section: sectionBreaks++, breakType });
     }
     return result;
   }
@@ -549,8 +589,25 @@ export class DocxDocument {
     const evenAndOdd = settings && this.parts.has(settings)
       ? !!children(this.getPartDocument(settings).documentElement!, 'evenAndOddHeaders')[0]
       : false;
-    return readSections(this.getPartDocument(this.mainPath), id => relationships.get(id)?.target)
+    const sections = readSections(this.getPartDocument(this.mainPath), id => relationships.get(id)?.target)
       .map(section => evenAndOdd ? section : { ...section, headers: { ...section.headers, even: undefined }, footers: { ...section.footers, even: undefined } });
+    if (sections.length) return sections;
+    const paragraphs = this.getParagraphs();
+    return [{
+      index: 0,
+      startParagraph: 0,
+      endParagraph: Math.max(paragraphs.length - 1, -1),
+      isImplicit: true,
+      type: 'nextPage',
+      pageWidth: 11906,
+      pageHeight: 16838,
+      orientation: 'portrait',
+      margins: { top: 0, right: 0, bottom: 0, left: 0, header: 0, footer: 0, gutter: 0 },
+      columns: { count: 1, space: 720, equalWidth: true },
+      titlePage: false,
+      headers: {},
+      footers: {},
+    }];
   }
 
   getSection(index: number): SectionInfo {
@@ -561,7 +618,12 @@ export class DocxDocument {
 
   setPageSetup(section: number, setup: Partial<PageSetup>): void {
     this.updatePartXml(this.mainPath, document => {
-      const descriptor = collectSections(document)[section];
+      let descriptors = collectSections(document);
+      if (!descriptors.length && section === 0) {
+        bodyOf(document).appendChild(wordElement(document, 'sectPr'));
+        descriptors = collectSections(document);
+      }
+      const descriptor = descriptors[section];
       if (!descriptor) throw new Error(`Section ${section} does not exist.`);
       const sectPr = descriptor.sectPr;
       if (setup.type !== undefined) setWordValue(sectionProperty(sectPr, 'type'), setup.type);
@@ -622,7 +684,11 @@ export class DocxDocument {
   insertSectionBreak(paragraph: number, type: SectionType): void {
     this.updatePartXml(this.mainPath, document => {
       const target = paragraphAt(document, paragraph);
-      const sections = collectSections(document);
+      let sections = collectSections(document);
+      if (!sections.length) {
+        bodyOf(document).appendChild(wordElement(document, 'sectPr'));
+        sections = collectSections(document);
+      }
       const index = sections.findIndex(section => paragraph >= section.startParagraph && paragraph <= section.endParagraph);
       const current = sections[index];
       if (!current) throw new Error(`Section for paragraph ${paragraph} does not exist.`);
@@ -689,13 +755,20 @@ export class DocxDocument {
   }
 
   private createHeaderFooter(section: number, type: 'header' | 'footer', kind: 'default' | 'first' | 'even'): string {
+    if (kind === 'even') this.enableEvenAndOddHeaders();
     const rootName = type === 'header' ? 'hdr' : 'ftr';
     const relType = type === 'header' ? HEADER_REL : FOOTER_REL;
     const contentType = type === 'header' ? HEADER_TYPE : FOOTER_TYPE;
     const tag = type === 'header' ? 'headerReference' : 'footerReference';
     let existingPath: string | undefined;
     const targets = this.relationshipTargets(this.mainPath);
-    const sections = collectSections(this.getPartDocument(this.mainPath));
+    let main = this.getPartDocument(this.mainPath);
+    let sections = collectSections(main);
+    if (!sections.length && section === 0) {
+      this.updatePartXml(this.mainPath, document => { bodyOf(document).appendChild(wordElement(document, 'sectPr')); });
+      main = this.getPartDocument(this.mainPath);
+      sections = collectSections(main);
+    }
     const descriptor = sections[section];
     if (!descriptor) throw new Error(`Section ${section} does not exist.`);
     const existing = children(descriptor.sectPr, tag).find(reference => reference.getAttributeNS(WORD_NS, 'type') === kind);
@@ -765,6 +838,24 @@ export class DocxDocument {
       field.appendChild(run);
       paragraph.appendChild(field);
       container.appendChild(paragraph);
+    });
+  }
+
+  private enableEvenAndOddHeaders(): void {
+    const relationships = this.relationshipTargets(this.mainPath);
+    let settingsPath = [...relationships.values()].find(relationship => relationship.type === SETTINGS_REL)?.target;
+    if (!settingsPath) {
+      settingsPath = `${partDirectory(this.mainPath) || 'word'}/settings.xml`;
+      if (!this.parts.has(settingsPath)) {
+        this.addPart(settingsPath, encodeXml(`<w:settings xmlns:w="${WORD_NS}"></w:settings>`), SETTINGS_TYPE);
+      }
+      this.addRelationship(this.mainPath, SETTINGS_REL, relativeTarget(this.mainPath, settingsPath));
+    } else if (!this.parts.has(settingsPath)) {
+      this.addPart(settingsPath, encodeXml(`<w:settings xmlns:w="${WORD_NS}"></w:settings>`), SETTINGS_TYPE);
+    }
+    this.updatePartXml(settingsPath, document => {
+      const root = document.documentElement!;
+      if (!children(root, 'evenAndOddHeaders')[0]) root.appendChild(wordElement(document, 'evenAndOddHeaders'));
     });
   }
 

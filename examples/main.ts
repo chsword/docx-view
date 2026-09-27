@@ -53,9 +53,19 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element('revision').textContent = String(snapshot.revision);
   element('paragraph-count').textContent = String(snapshot.paragraphs.length);
   element('snapshot-output').textContent = JSON.stringify(snapshot, null, 2);
-  const first = doc.getSection(0);
-  element<HTMLSelectElement>('page-orientation').value = first.orientation;
-  element<HTMLSelectElement>('page-size').value = first.pageWidth > 13000 ? 'Letter' : 'A4';
+  let orientation: 'portrait' | 'landscape' = 'portrait';
+  let pageSize: 'A4' | 'Letter' = 'A4';
+  try {
+    const first = doc.getSection(0);
+    orientation = first.orientation;
+    const longEdge = Math.max(first.pageWidth, first.pageHeight);
+    pageSize = longEdge > 16300 ? 'A4' : 'Letter';
+  } catch {
+    orientation = 'portrait';
+    pageSize = 'A4';
+  }
+  element<HTMLSelectElement>('page-orientation').value = orientation;
+  element<HTMLSelectElement>('page-size').value = pageSize;
   updateSelection();
 }
 
@@ -181,7 +191,10 @@ element('add-table').addEventListener('click', () => run(() => {
 element('apply-page-setup').addEventListener('click', () => run(() => {
   const size = element<HTMLSelectElement>('page-size').value;
   const orientation = element<HTMLSelectElement>('page-orientation').value as 'portrait' | 'landscape';
-  const setup = size === 'Letter' ? { pageWidth: 12240, pageHeight: 15840 } : { pageWidth: 11906, pageHeight: 16838 };
+  const portrait = size === 'Letter' ? { pageWidth: 12240, pageHeight: 15840 } : { pageWidth: 11906, pageHeight: 16838 };
+  const setup = orientation === 'landscape'
+    ? { pageWidth: portrait.pageHeight, pageHeight: portrait.pageWidth }
+    : portrait;
   doc.setPageSetup(0, { ...setup, orientation });
   editor.render();
   refresh();

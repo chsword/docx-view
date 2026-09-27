@@ -165,7 +165,7 @@ export class DocxEditor {
       ? this.document.getHeaderBlocks(0, kind)
       : this.document.getFooterBlocks(0, kind);
     const partXml = part ? this.document.getPartXml(part) : '';
-    const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar)\b/.test(partXml);
+    const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar|drawing|hyperlink|object|pict|sdt|customXml|smartTag|ins|del)\b/.test(partXml);
     const area = this.root.ownerDocument.createElement('div');
     area.className = `docx-${type}`;
     const label = this.root.ownerDocument.createElement('div');
@@ -178,11 +178,13 @@ export class DocxEditor {
     editable.setAttribute('role', 'textbox');
     editable.setAttribute('aria-multiline', 'true');
     editable.setAttribute('aria-labelledby', label.id);
-    editable.textContent = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
+    const renderedText = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
+    editable.textContent = renderedText;
     if (!plainEditable) editable.setAttribute('aria-readonly', 'true');
     editable.addEventListener('blur', () => {
       if (!plainEditable) return;
       const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
+      if (text === renderedText) return;
       if (type === 'header') this.document.setHeaderText(0, text, kind);
       else this.document.setFooterText(0, text, kind);
       this.render();

@@ -29,6 +29,7 @@ export interface SectionInfo {
   index: number;
   startParagraph: number;
   endParagraph: number;
+  isImplicit?: boolean;
   type: SectionType;
   pageWidth: number;
   pageHeight: number;
