@@ -95,6 +95,8 @@ input { border: 1px solid var(--border); border-radius: 5px; color: #536077; bac
 .docx-table tr:first-child td, .docx-table tr[data-header="true"] td { background: #f3f6fb; }
 .docx-table .docx-paragraph { margin: 0; }
 .docx-break-marker { margin: 8px 0 14px; color: #8ea0ba; font-size: 10px; text-align: center; border-top: 1px dashed #ccd7ea; padding-top: 6px; }
+.docx-editor a[data-docx-link="1"] { color: #0563c1; text-decoration: underline; }
+.docx-editor .docx-link-unsafe { color: #9d3f45; text-decoration: underline wavy #cc6b70; }
 .document-footer { display: flex; gap: 10px; justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); font-size: 10px; color: #8693a7; }
 .document-footer b { font-weight: 400; margin: 0 10px; color: #c7d0dd; }
 .inspector { background: #fff; border: 1px solid #dee5ef; border-radius: 12px; overflow: hidden; box-shadow: 0 7px 24px #25334a04; }

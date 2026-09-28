@@ -1,6 +1,7 @@
 import type { AgentRequest, BorderSide, CellFormat, ParagraphFormat, RowFormat, RunFormat, Shading, TableFormat, TabStop } from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
+import { assertHyperlinkInput } from './hyperlink.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -259,6 +260,19 @@ export function validateRows(rows: unknown): asserts rows is string[][] {
   rows.forEach((row) => row.forEach((text: unknown) => assertText(text)));
 }
 
+function validateHyperlinkReference(value: unknown): void {
+  if (typeof value === 'number') {
+    assertIndex(value);
+    return;
+  }
+  object(value);
+  keys(value, ['paragraph', 'runs', 'text']);
+  assertIndex(value.paragraph);
+  if (!Array.isArray(value.runs) || value.runs.length === 0) throw new Error('hyperlink.runs must be a non-empty array.');
+  for (const run of value.runs) assertIndex(run);
+  assertText(value.text, 'hyperlink.text');
+}
+
 export function validateRequest(value: unknown): asserts value is AgentRequest {
   object(value);
   keys(value, ['expectedRevision', 'operations']);
@@ -355,6 +369,45 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'table', 'row', 'col', 'text']);
         assertIndex(op.table); assertIndex(op.row); assertIndex(op.col); assertText(op.text);
         break;
+      case 'insertHyperlink':
+        keys(op, ['type', 'target', 'link']);
+        object(op.target);
+        keys(op.target, ['paragraph', 'start', 'end']);
+        assertIndex(op.target.paragraph);
+        assertIndex(op.target.start);
+        assertIndex(op.target.end);
+        object(op.link);
+        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
+        break;
+      case 'updateHyperlink':
+        keys(op, ['type', 'hyperlink', 'link']);
+        validateHyperlinkReference(op.hyperlink);
+        object(op.link);
+        assertHyperlinkInput(op.link as { url?: string; anchor?: string; tooltip?: string });
+        break;
+      case 'removeHyperlink':
+        keys(op, ['type', 'hyperlink', 'options']);
+        validateHyperlinkReference(op.hyperlink);
+        if ('options' in op) {
+          object(op.options);
+          keys(op.options, ['keepText']);
+          if ('keepText' in op.options && typeof op.options.keepText !== 'boolean') {
+            throw new Error('options.keepText must be boolean.');
+          }
+        }
+        break;
+      case 'insertBookmark':
+        keys(op, ['type', 'name', 'range']);
+        assertText(op.name, 'name');
+        object(op.range);
+        keys(op.range, ['startParagraph', 'endParagraph']);
+        assertIndex(op.range.startParagraph);
+        if ('endParagraph' in op.range) assertIndex(op.range.endParagraph);
+        break;
+      case 'deleteBookmark':
+        keys(op, ['type', 'name']);
+        assertText(op.name, 'name');
+        break;
       case 'insertImage':
         keys(op, ['type', 'bytes', 'contentType', 'paragraph', 'run', 'widthEmu', 'heightEmu', 'alt', 'placement']);
         assertText(op.bytes, 'bytes');
@@ -415,6 +468,18 @@ const imageSizeShape = {
 };
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
+const hyperlinkTarget = shape({ paragraph: index, start: index, end: index });
+const hyperlinkLink = shape({ url: text, anchor: text, tooltip: text }, []);
+const hyperlinkRef = {
+  anyOf: [
+    index,
+    shape({
+      paragraph: index,
+      runs: { type: 'array', minItems: 1, items: index },
+      text,
+    }),
+  ],
+};
 const width = shape({ type: { enum: ['auto', 'dxa', 'pct'] }, value: { type: 'number', minimum: 0 } });
 const border = shape({
   style: text,
@@ -564,6 +629,11 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('formatTableRow', { table: index, row: index, format: rowFormat }),
           operation('formatCell', { table: index, row: index, col: index, format: cellFormat }),
           operation('setCellText', { table: index, row: index, col: index, text }),
+          operation('insertHyperlink', { target: hyperlinkTarget, link: hyperlinkLink }),
+          operation('updateHyperlink', { hyperlink: hyperlinkRef, link: hyperlinkLink }),
+          operation('removeHyperlink', { hyperlink: hyperlinkRef, options: shape({ keepText: { type: 'boolean' } }, []) }, ['hyperlink']),
+          operation('insertBookmark', { name: text, range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']) }),
+          operation('deleteBookmark', { name: text }),
           operation('insertImage', {
             bytes: { type: 'string', maxLength: 22_500_000 },
             contentType: text,

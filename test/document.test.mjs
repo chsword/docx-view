@@ -432,7 +432,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 37);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -693,7 +693,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 37);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -1490,6 +1490,96 @@ test('underline patches keep color when only the style is cleared', () => {
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.match(xml, /<w:u w:color="FF0000"\/>/);
   assert.equal(doc.getParagraphs()[0].runs[0].underlineColor, 'FF0000');
+});
+
+test('read path marks anchor + javascript relationship hyperlinks as unsafe', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink r:id="rId7" w:anchor="top"><w:r><w:t>x</w:t></w:r></w:hyperlink></w:p>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>
+  </Relationships>`), RELS_TYPE);
+  const link = doc.getHyperlinks()[0];
+  assert.equal(link.unsafe, true);
+  assert.equal(doc.getParagraphs()[0].runs[0].hyperlink?.unsafe, true);
+});
+
+test('insertHyperlink supports runs inside hyperlink containers', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>linked text</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
+  assert.equal(link.text, 'linked');
+  assert.equal(doc.getHyperlinks().some((item) => item.url === 'https://example.com' && item.text === 'linked'), true);
+});
+
+test('insertHyperlink full-cover inside existing hyperlink rewrites target without nesting hyperlinks', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
+  const links = doc.getHyperlinks();
+  assert.equal(links.length, 1);
+  assert.equal(links[0]?.url, 'https://example.com');
+  assert.equal(links[0]?.text, 'linked');
+  assert.equal(links.some((item) => item.url === link.url && item.text === link.text), true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:hyperlink[^>]*>\s*<w:hyperlink/);
+});
+
+test('insertHyperlink partial-cover inside existing hyperlink splits into sibling hyperlinks without nesting', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>linked text</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 6 }, { url: 'https://example.com' });
+  const links = doc.getHyperlinks();
+  assert.equal(links.some((item) => item.url === 'https://example.com' && item.text === 'linked'), true);
+  assert.equal(links.some((item) => item.anchor === 'a' && item.text === ' text'), true);
+  assert.equal(links.some((item) => item.url === link.url && item.text === link.text), true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:hyperlink[^>]*>\s*<w:hyperlink/);
+});
+
+test('insertHyperlink keeps insertion inside w:sdtContent for sdt-wrapped runs', () => {
+  const doc = withBody('<w:p xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>wrapped text</w:t></w:r></w:sdtContent></w:sdt></w:p>');
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 7 }, { url: 'https://example.com' });
+  assert.equal(link.text, 'wrapped');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:sdtContent><w:hyperlink [^>]*><w:r><w:rPr><w:rStyle w:val="Hyperlink"/);
+  assert.doesNotMatch(xml, /<w:sdt><w:hyperlink /);
+});
+
+test('failed insertHyperlink does not change revision or leave orphan relationship', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const revision = doc.revision;
+  assert.throws(() => doc.insertHyperlink({ paragraph: 0, start: 0, end: 99 }, { url: 'https://orphan.example' }), /out of bounds/);
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.listParts().includes('word/_rels/document.xml.rels'), false);
+});
+
+test('insertHyperlink returns the inserted hyperlink, not last document hyperlink', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:r><w:t>hello world</w:t></w:r></w:p><w:p><w:hyperlink w:anchor="later"><w:r><w:t>later link</w:t></w:r></w:hyperlink></w:p>`);
+  const link = doc.insertHyperlink({ paragraph: 0, start: 0, end: 5 }, { url: 'https://example.com' });
+  assert.equal(link.paragraph, 0);
+  assert.equal(link.text, 'hello');
+  assert.equal(link.url, 'https://example.com');
+});
+
+test('applyOperations validates object-shaped hyperlink references', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'removeHyperlink', hyperlink: { paragraph: 0 } }] }), /hyperlink\.runs must be a non-empty array/);
+});
+
+test('body-level bookmarks are visible and block duplicate names', () => {
+  const doc = withBody('<w:bookmarkStart w:id="5" w:name="tbl"/><w:p><w:r><w:t>x</w:t></w:r></w:p><w:bookmarkEnd w:id="5"/>');
+  const bookmark = doc.getBookmarks({ includeInternal: true })[0];
+  assert.equal(bookmark?.name, 'tbl');
+  assert.equal(bookmark?.startParagraph, 0);
+  assert.throws(() => doc.insertBookmark('tbl', { startParagraph: 0 }), /already exists/);
+});
+
+test('updateHyperlink writes fldSimple instruction with backslash-escaped quotes', () => {
+  const doc = withBody('<w:p><w:fldSimple w:instr="HYPERLINK &quot;https://x.example&quot;"><w:r><w:t>x</w:t></w:r></w:fldSimple></w:p>');
+  doc.updateHyperlink(0, { url: 'https://x.example/?q="a"' });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:instr="HYPERLINK &quot;https:\/\/x\.example\/\?q=\\&quot;a\\&quot;&quot;"/);
+});
+
+test('snapshot includes hyperlinks and bookmarks', () => {
+  const doc = withBody(`<w:bookmarkStart w:id="1" w:name="bm"/><w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="bm"><w:r><w:t>x</w:t></w:r></w:hyperlink></w:p><w:bookmarkEnd w:id="1"/>`);
+  const snapshot = doc.getSnapshot();
+  assert.equal(snapshot.hyperlinks.length, 1);
+  assert.equal(snapshot.bookmarks.length, 1);
 });
 
 test('paragraph tabs/borders/shading read shape can be written back', () => {

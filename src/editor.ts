@@ -105,7 +105,7 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): vo
   }
 }
 
-function applyRunStyle(span: HTMLSpanElement, run: RunInfo): void {
+function applyRunStyle(span: HTMLElement, run: RunInfo): void {
   const effective = run.effective ?? run;
   if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
   if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
@@ -166,6 +166,27 @@ export class DocxEditor {
   private renderAfterComposition = false;
   private destroyed = false;
   private readonly metrics: CanvasRenderingContext2D | null;
+
+  private dispatchLinkClick(target: HTMLElement): void {
+    const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+    if (!EventClass) return;
+    this.root.dispatchEvent(new EventClass('docx-linkclick', {
+      bubbles: true,
+      detail: {
+        url: target.dataset.docxUrl,
+        anchor: target.dataset.docxAnchor,
+        unsafe: target.dataset.docxUnsafe === 'true',
+      },
+    }));
+  }
+
+  private linkTargetFromSelection(): HTMLElement | null {
+    const node = this.root.ownerDocument.getSelection()?.anchorNode;
+    if (!node || !this.root.contains(node)) return null;
+    const element = node.nodeType === 1 ? node as Element : node.parentElement;
+    const target = element?.closest<HTMLElement>('[data-docx-link="1"]');
+    return target && this.root.contains(target) ? target : null;
+  }
 
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
@@ -581,6 +602,14 @@ export class DocxEditor {
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     content.addEventListener('drop', (event) => { event.preventDefault(); });
     content.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        const target = this.linkTargetFromSelection();
+        if (target) {
+          event.preventDefault();
+          this.dispatchLinkClick(target);
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.isComposing && !this.composing) {
         event.preventDefault();
         this.insertText(content, '\n');
@@ -615,6 +644,13 @@ export class DocxEditor {
       if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
         event.preventDefault();
       }
+    });
+    content.addEventListener('click', (event) => {
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-link="1"]');
+      if (!target || !this.root.contains(target)) return;
+      event.preventDefault();
+      if (!(event.ctrlKey || event.metaKey)) return;
+      this.dispatchLinkClick(target);
     });
     content.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
@@ -716,7 +752,33 @@ export class DocxEditor {
     defaultTabStopTwips: number,
     currentLineOffsetPx: number,
   ): number {
-    const runSpan = this.root.ownerDocument.createElement('span');
+    const unsafe = run.hyperlink?.unsafe ?? false;
+    const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
+    const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
+    if (hasSafeLink && run.hyperlink) {
+      const link = runSpan as HTMLAnchorElement;
+      runSpan.dataset.docxLink = '1';
+      runSpan.dataset.docxUnsafe = 'false';
+      if (run.hyperlink.url) {
+        link.href = run.hyperlink.url;
+        runSpan.dataset.docxUrl = run.hyperlink.url;
+      } else if (run.hyperlink.anchor) {
+        link.href = `#${run.hyperlink.anchor}`;
+      }
+      if (run.hyperlink.anchor) runSpan.dataset.docxAnchor = run.hyperlink.anchor;
+      if (run.hyperlink.tooltip) runSpan.title = run.hyperlink.tooltip;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      runSpan.style.color = '#0563C1';
+      runSpan.style.textDecoration = 'underline';
+    } else if (run.hyperlink) {
+      runSpan.dataset.docxLink = '1';
+      runSpan.dataset.docxUnsafe = String(unsafe);
+      if (run.hyperlink.url) runSpan.dataset.docxUrl = run.hyperlink.url;
+      if (run.hyperlink.anchor) runSpan.dataset.docxAnchor = run.hyperlink.anchor;
+      if (run.hyperlink.tooltip) runSpan.title = run.hyperlink.tooltip;
+      if (unsafe) runSpan.style.textDecoration = 'underline wavy red';
+    }
     applyRunStyle(runSpan, run);
     const segments = run.text.split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {

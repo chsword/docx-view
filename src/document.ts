@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, NumberingDefinition, NumberingInfo,
+  AgentRequest, BookmarkInfo, CellFormat, DocumentBlock, DocumentSnapshot, HyperlinkInfo, ImageInfo, NumberingDefinition, NumberingInfo,
   ParagraphFormat, ParagraphInfo, RowFormat, RunFormat, RunInfo, Shading, StyleInfo, TableFormat, TableInfo, TabStop,
   PageSetup, SectionInfo, SectionType,
 } from './types.js';
@@ -40,6 +40,12 @@ import {
   type StylesContext,
 } from './styles.js';
 import { cellSpan, parseCellFormat, parseTableFormat, readTable, rowCells, tableGrid } from './table.js';
+import {
+  assertHyperlinkInput,
+  isInternalBookmark,
+  isUnsafeHyperlink,
+  parseFldSimpleHyperlink,
+} from './hyperlink.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
 const MAX_PART = 16 * 1024 * 1024;
@@ -62,6 +68,7 @@ const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessin
 const THEME_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const encoder = new TextEncoder();
 const IMAGE_LIMIT = 16 * 1024 * 1024;
+const HYPERLINK_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
 const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 
 function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
@@ -451,6 +458,44 @@ function ownRuns(paragraph: Element): Element[] {
   });
 }
 
+function relationshipIdOf(hyperlink: Element): string | undefined {
+  return hyperlink.getAttributeNS(OFFICE_REL_NS, 'id') ?? hyperlink.getAttribute('r:id') ?? undefined;
+}
+
+function isDescendantOfWithin(node: Node, ancestor: Node, stopAt: Node): boolean {
+  let current: Node | null = node;
+  while (current && current !== stopAt) {
+    if (current === ancestor) return true;
+    current = current.parentNode;
+  }
+  return false;
+}
+
+function runHyperlinkInfo(run: Element, paragraph: Element, relationships?: Map<string, RelationshipTarget>): RunInfo['hyperlink'] {
+  let parent = run.parentNode;
+  while (parent && parent !== paragraph) {
+    if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS &&
+        (parent as Element).localName === 'hyperlink') {
+      const hyperlink = parent as Element;
+      const relationshipId = relationshipIdOf(hyperlink);
+      const relation = relationshipId ? relationships?.get(relationshipId) : undefined;
+      const url = relation?.mode === 'External' ? relation.target : undefined;
+      const anchor = hyperlink.getAttributeNS(WORD_NS, 'anchor') ?? hyperlink.getAttribute('w:anchor') ?? undefined;
+      const tooltip = hyperlink.getAttributeNS(WORD_NS, 'tooltip') ?? hyperlink.getAttribute('w:tooltip') ?? undefined;
+      return { url, anchor, tooltip, unsafe: isUnsafeHyperlink({ url, anchor }) };
+    }
+    if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS &&
+        (parent as Element).localName === 'fldSimple') {
+      const fld = parent as Element;
+      const instruction = fld.getAttributeNS(WORD_NS, 'instr') ?? fld.getAttribute('w:instr') ?? '';
+      const parsed = parseFldSimpleHyperlink(instruction);
+      if (parsed) return { ...parsed, unsafe: isUnsafeHyperlink(parsed) };
+    }
+    parent = parent.parentNode;
+  }
+  return undefined;
+}
+
 interface ImageReadContext {
   relationships: Map<string, RelationshipTarget>;
   getContentType: (path: string) => string | undefined;
@@ -468,6 +513,7 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
     text: textOf(run),
     ...direct,
     effective: computeEffectiveRunFormat(styles, paragraph, run),
+    hyperlink: runHyperlinkInfo(run, paragraph, imageContext?.relationships),
     images,
     image: images[0],
   };
@@ -1167,6 +1213,46 @@ function paragraphDirectChild(paragraph: Element, node: Node): Node {
   return current;
 }
 
+function nearestParagraph(node: Node | null): Element | null {
+  let current = node;
+  while (current) {
+    if (current.nodeType === 1 && (current as Element).namespaceURI === WORD_NS && (current as Element).localName === 'p') {
+      return current as Element;
+    }
+    current = current.parentNode;
+  }
+  return null;
+}
+
+function textRangeLength(paragraph: Element, start: number, end: number): void {
+  const size = textOf(paragraph).length;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > size) {
+    throw new Error(`Range [${start}, ${end}) is out of bounds for paragraph text length ${size}.`);
+  }
+}
+
+function fieldInstruction(link: { url?: string; anchor?: string }): string {
+  const escapeFieldText = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const chunks = ['HYPERLINK'];
+  if (link.url) chunks.push(`"${escapeFieldText(link.url)}"`);
+  if (link.anchor) chunks.push(`\\l "${escapeFieldText(link.anchor)}"`);
+  return chunks.join(' ');
+}
+
+function preOrderElements(root: Element): Element[] {
+  const result: Element[] = [];
+  const walk = (node: Node): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      result.push(element);
+      walk(element);
+    }
+  };
+  walk(root);
+  return result;
+}
+
 function updateStyleLength(style: string | null, name: string, points: number): string {
   const normalized = (style ?? '').trim();
   const declaration = `${name}:${Math.max(0, points)}pt`;
@@ -1466,6 +1552,14 @@ export class DocxDocument {
 
   getPartXml(path: string): string { return decodeXml(this.getPartBytes(path)); }
 
+  private partDocumentOrUndefined(path: string): Document | undefined {
+    try {
+      return this.getPartDocument(path);
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Returns a detached DOM; use updatePartXml to persist changes. */
   getPartDocument(path: string): Document {
     return parseXml(serializeXml(this.getCachedPartDocument(path)));
@@ -1561,6 +1655,21 @@ export class DocxDocument {
       this.restoreState(previous);
       throw error;
     }
+  }
+
+  private withDraft<T>(update: (draft: DocxDocument) => T): T {
+    const draft = new DocxDocument(new Map(this.parts));
+    const result = update(draft);
+    this.parts = draft.parts;
+    this.documents = draft.documents;
+    this.dirtyPartXml = draft.dirtyPartXml;
+    this.dirtyPartSizes = draft.dirtyPartSizes;
+    this.mainPath = draft.mainPath;
+    this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.imageDataUrls.clear();
+    return result;
   }
 
   private validatePackage(): string {
@@ -1872,6 +1981,8 @@ export class DocxDocument {
       blocks: this.buildBlocksFrom(document, paragraphs),
       parts: this.listParts(),
       styles: stylesContext.styles.map(cloneStyleInfo),
+      hyperlinks: this.getHyperlinks(),
+      bookmarks: this.getBookmarks(),
     };
   }
 
@@ -1901,6 +2012,437 @@ export class DocxDocument {
     const runElement = ownRuns(paragraphElement)[run];
     if (!runElement) throw new Error(`Run ${run} does not exist.`);
     return computeEffectiveRunFormat(this.getStylesContext(), paragraphElement, runElement);
+  }
+
+  getHyperlinks(): HyperlinkInfo[] {
+    const main = this.getPartDocument(this.mainPath);
+    const body = bodyOf(main);
+    const paragraphs = descendants(body, 'p');
+    const relationships = this.relationshipsFor(this.mainPath);
+    const result: HyperlinkInfo[] = [];
+    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    for (const paragraph of paragraphs) {
+      const runs = ownRuns(paragraph);
+      for (const hyperlink of descendants(paragraph, 'hyperlink')) {
+        const linkedRuns = runs.flatMap((run, index) =>
+          isDescendantOfWithin(run, hyperlink, paragraph) ? [index] : []);
+        if (!linkedRuns.length) continue;
+        const relationshipId = relationshipIdOf(hyperlink);
+        const relation = relationshipId ? relationships.get(relationshipId) : undefined;
+        const url = relation?.mode === 'External' ? relation.target : undefined;
+        const anchor = hyperlink.getAttributeNS(WORD_NS, 'anchor') ?? hyperlink.getAttribute('w:anchor') ?? undefined;
+        const tooltip = hyperlink.getAttributeNS(WORD_NS, 'tooltip') ?? hyperlink.getAttribute('w:tooltip') ?? undefined;
+        result.push({
+          paragraph: paragraphIndex.get(paragraph)!,
+          runs: linkedRuns,
+          text: textOf(hyperlink),
+          url,
+          anchor,
+          tooltip,
+          isExternal: Boolean(url),
+          unsafe: isUnsafeHyperlink({ url, anchor }),
+          relationshipId,
+        });
+      }
+      for (const field of descendants(paragraph, 'fldSimple')) {
+        const instruction = field.getAttributeNS(WORD_NS, 'instr') ?? field.getAttribute('w:instr') ?? '';
+        const parsed = parseFldSimpleHyperlink(instruction);
+        if (!parsed) continue;
+        const tooltip = field.getAttributeNS(WORD_NS, 'tooltip') ?? field.getAttribute('w:tooltip') ?? undefined;
+        const linkedRuns = runs.flatMap((run, index) =>
+          isDescendantOfWithin(run, field, paragraph) ? [index] : []);
+        if (!linkedRuns.length) continue;
+        result.push({
+          paragraph: paragraphIndex.get(paragraph)!,
+          runs: linkedRuns,
+          text: textOf(field),
+          ...parsed,
+          tooltip,
+          isExternal: Boolean(parsed.url),
+          unsafe: isUnsafeHyperlink(parsed),
+        });
+      }
+    }
+    return result;
+  }
+
+  getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    const paragraphs = descendants(body, 'p');
+    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    const order = preOrderElements(body);
+    const paragraphFromNode = (node: Element): number | undefined => {
+      const paragraph = nearestParagraph(node);
+      if (paragraph) return paragraphIndex.get(paragraph);
+      const offset = order.indexOf(node);
+      if (offset === -1) return undefined;
+      for (let index = offset + 1; index < order.length; index++) {
+        const candidate = order[index];
+        if (candidate?.localName === 'p' && candidate.namespaceURI === WORD_NS) {
+          return paragraphIndex.get(candidate);
+        }
+      }
+      return paragraphs.length ? paragraphs.length - 1 : 0;
+    };
+    const starts = new Map<number, { name: string; paragraph: number }>();
+    const ends = new Map<number, number>();
+    for (const start of descendants(body, 'bookmarkStart')) {
+      const id = Number(start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
+      const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name') ?? '';
+      const startParagraph = paragraphFromNode(start);
+      if (!Number.isSafeInteger(id) || startParagraph === undefined || !name) continue;
+      starts.set(id, { name, paragraph: startParagraph });
+    }
+    for (const end of descendants(body, 'bookmarkEnd')) {
+      const id = Number(end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id'));
+      const endParagraph = paragraphFromNode(end);
+      if (!Number.isSafeInteger(id) || endParagraph === undefined) continue;
+      ends.set(id, endParagraph);
+    }
+    return [...starts.entries()]
+      .map(([id, start]) => ({
+        id,
+        name: start.name,
+        startParagraph: start.paragraph,
+        endParagraph: ends.get(id) ?? start.paragraph,
+        isInternal: isInternalBookmark(start.name),
+      }))
+      .filter(bookmark => options.includeInternal || !bookmark.isInternal);
+  }
+
+  private hyperlinkNode(hyperlink: HyperlinkInfo, document: Document): Element {
+    const paragraph = paragraphAt(document, hyperlink.paragraph);
+    const run = ownRuns(paragraph)[hyperlink.runs[0]!] ?? null;
+    let node: Node | null = run;
+    while (node && node !== paragraph) {
+      if (node.nodeType === 1 && (node as Element).namespaceURI === WORD_NS &&
+          ['hyperlink', 'fldSimple'].includes((node as Element).localName ?? '')) {
+        return node as Element;
+      }
+      node = node.parentNode;
+    }
+    throw new Error('Hyperlink node was not found.');
+  }
+
+  private resolveHyperlink(reference: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string }): HyperlinkInfo {
+    const hyperlinks = this.getHyperlinks();
+    if (typeof reference === 'number') {
+      const hyperlink = hyperlinks[reference];
+      if (!hyperlink) throw new Error('Hyperlink does not exist.');
+      return hyperlink;
+    }
+    if (!reference || typeof reference !== 'object' || !Number.isSafeInteger(reference.paragraph) ||
+        !Array.isArray(reference.runs) || !reference.runs.every(run => Number.isSafeInteger(run) && run >= 0) ||
+        typeof reference.text !== 'string') {
+      throw new Error('hyperlink must be a hyperlink index or object with paragraph, runs and text.');
+    }
+    const hyperlink = hyperlinks.find(item => item.paragraph === reference.paragraph &&
+      item.runs[0] === reference.runs[0] && item.text === reference.text);
+    if (!hyperlink) throw new Error('Hyperlink does not exist.');
+    return hyperlink;
+  }
+
+  private splitRunAtOffset(paragraph: Element, offset: number): void {
+    const runs = ownRuns(paragraph);
+    let cursor = 0;
+    for (const run of runs) {
+      const value = textOf(run);
+      const next = cursor + value.length;
+      if (offset <= cursor || offset >= next || !value.length) {
+        cursor = next;
+        continue;
+      }
+      const left = value.slice(0, offset - cursor);
+      const right = value.slice(offset - cursor);
+      const rightRun = run.cloneNode(true) as Element;
+      const leftElements = textElements(run);
+      for (const element of leftElements) (element.parentNode as Element).removeChild(element);
+      appendText(run, left);
+      const rightElements = textElements(rightRun);
+      for (const element of rightElements) (element.parentNode as Element).removeChild(element);
+      appendText(rightRun, right);
+      run.parentNode!.insertBefore(rightRun, run.nextSibling);
+      return;
+    }
+  }
+
+  insertHyperlink(
+    target: { paragraph: number; start: number; end: number },
+    link: { url?: string; anchor?: string; tooltip?: string },
+  ): HyperlinkInfo {
+    assertIndex(target.paragraph);
+    assertIndex(target.start);
+    assertIndex(target.end);
+    assertHyperlinkInput(link);
+    return this.withDraft(draft => {
+      let createdId: string | undefined;
+      let createdMarker: { paragraph: number; run: number; text: string } | undefined;
+      let relationshipPath: string | undefined;
+      let relationships: Document | undefined;
+      if (link.url) {
+        relationshipPath = resolveRelationshipsPath(draft.mainPath);
+        relationships = draft.hasPart(relationshipPath)
+          ? draft.getPartDocument(relationshipPath)
+          : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+        createdId = draft.nextRelationshipId(relationships);
+        const relationship = relationships.createElementNS(REL_NS, 'Relationship');
+        relationship.setAttribute('Id', createdId);
+        relationship.setAttribute('Type', HYPERLINK_REL);
+        relationship.setAttribute('Target', link.url);
+        relationship.setAttribute('TargetMode', 'External');
+        relationships.documentElement!.appendChild(relationship);
+      }
+      draft.updatePartXml(draft.mainPath, document => {
+        const setHyperlinkAttributes = (node: Element): void => {
+          if (createdId) node.setAttributeNS(OFFICE_REL_NS, 'r:id', createdId);
+          else { node.removeAttributeNS(OFFICE_REL_NS, 'id'); node.removeAttribute('r:id'); }
+          if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+          else removeWordAttribute(node, 'anchor');
+          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+          else removeWordAttribute(node, 'tooltip');
+        };
+        const paragraph = paragraphAt(document, target.paragraph);
+        textRangeLength(paragraph, target.start, target.end);
+        draft.splitRunAtOffset(paragraph, target.end);
+        draft.splitRunAtOffset(paragraph, target.start);
+        const runs = ownRuns(paragraph);
+        let cursor = 0;
+        const selected: Element[] = [];
+        for (const run of runs) {
+          const text = textOf(run);
+          const next = cursor + text.length;
+          if (target.start < next && target.end > cursor) selected.push(run);
+          cursor = next;
+        }
+        if (!selected.length) throw new Error('Hyperlink range must include text.');
+        const firstParent = selected[0]!.parentNode as Element;
+        if (selected.some(run => run.parentNode !== firstParent)) {
+          throw new Error('Hyperlink range cannot cross different run containers.');
+        }
+        let hyperlink: Element;
+        if (firstParent.namespaceURI === WORD_NS && firstParent.localName === 'hyperlink') {
+          const original = firstParent;
+          const selectedSet = new Set<Node>(selected);
+          const beforeNodes: Node[] = [];
+          const selectedNodes: Node[] = [];
+          const afterNodes: Node[] = [];
+          let phase: 'before' | 'selected' | 'after' = 'before';
+          for (const child of Array.from(original.childNodes)) {
+            if (selectedSet.has(child)) {
+              if (phase === 'after') {
+                throw new Error('Hyperlink range must map to a contiguous segment inside an existing hyperlink.');
+              }
+              phase = 'selected';
+              selectedNodes.push(child);
+            } else if (phase === 'before') {
+              beforeNodes.push(child);
+            } else {
+              phase = 'after';
+              afterNodes.push(child);
+            }
+          }
+          if (!selectedNodes.length) throw new Error('Hyperlink range must include text.');
+          if (!beforeNodes.length && !afterNodes.length) {
+            hyperlink = original;
+            setHyperlinkAttributes(hyperlink);
+          } else {
+            const parent = original.parentNode as Element | null;
+            if (!parent) throw new Error('Hyperlink container is detached.');
+            const selectedLink = original.cloneNode(false) as Element;
+            setHyperlinkAttributes(selectedLink);
+            for (const node of selectedNodes) selectedLink.appendChild(node);
+            const beforeLink = beforeNodes.length ? original.cloneNode(false) as Element : undefined;
+            const afterLink = afterNodes.length ? original.cloneNode(false) as Element : undefined;
+            if (beforeLink) for (const node of beforeNodes) beforeLink.appendChild(node);
+            if (afterLink) for (const node of afterNodes) afterLink.appendChild(node);
+            parent.insertBefore(beforeLink ?? selectedLink, original);
+            if (beforeLink) parent.insertBefore(selectedLink, original);
+            if (afterLink) parent.insertBefore(afterLink, original);
+            parent.removeChild(original);
+            hyperlink = selectedLink;
+          }
+        } else {
+          hyperlink = wordElement(document, 'hyperlink');
+          setHyperlinkAttributes(hyperlink);
+          firstParent.insertBefore(hyperlink, selected[0]!);
+          for (const run of selected) hyperlink.appendChild(run);
+        }
+        const firstHyperlinkRun = descendants(hyperlink, 'r')[0];
+        if (!firstHyperlinkRun) throw new Error('Inserted hyperlink does not contain runs.');
+        const props = properties(firstHyperlinkRun, 'rPr');
+        if (!children(props, 'rStyle').length) setWordValue(property(props, 'rStyle'), 'Hyperlink');
+        if (!children(props, 'color').length) setWordValue(property(props, 'color'), '0563C1');
+        if (!children(props, 'u').length) setWordValue(property(props, 'u'), 'single');
+        const firstRun = ownRuns(paragraph).findIndex(run => run === firstHyperlinkRun);
+        if (firstRun < 0) throw new Error('Inserted hyperlink run index could not be resolved.');
+        createdMarker = { paragraph: target.paragraph, run: firstRun, text: textOf(hyperlink) };
+      });
+      if (relationshipPath && relationships) {
+        if (draft.hasPart(relationshipPath)) {
+          draft.setPartXml(relationshipPath, serializeXml(relationships));
+        } else {
+          draft.addPart(relationshipPath, encodeXml(serializeXml(relationships)), 'application/vnd.openxmlformats-package.relationships+xml');
+        }
+      }
+      const created = draft.getHyperlinks().find(item => item.paragraph === createdMarker?.paragraph &&
+        item.runs[0] === createdMarker?.run && item.text === createdMarker?.text &&
+        item.url === link.url && item.anchor === link.anchor);
+      if (!created) throw new Error('Inserted hyperlink could not be resolved.');
+      return created;
+    });
+  }
+
+  updateHyperlink(
+    hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
+    link: { url?: string; anchor?: string; tooltip?: string },
+  ): void {
+    assertHyperlinkInput(link);
+    const current = this.resolveHyperlink(hyperlink);
+    const currentNodeName = this.hyperlinkNode(current, this.getPartDocument(this.mainPath)).localName;
+    this.withDraft((draft) => {
+      let nextRelationshipId = current.relationshipId;
+      const currentRelationshipUsers = current.relationshipId
+        ? draft.getHyperlinks().filter(item => item.relationshipId === current.relationshipId).length
+        : 0;
+      if (currentNodeName !== 'fldSimple' && link.url && link.url !== current.url) {
+        const relPath = resolveRelationshipsPath(draft.mainPath);
+        const rels = draft.hasPart(relPath) ? draft.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+        const canReuse = Boolean(current.relationshipId && currentRelationshipUsers <= 1);
+        nextRelationshipId = canReuse ? current.relationshipId : draft.nextRelationshipId(rels);
+        const existing = canReuse
+          ? children(rels.documentElement!, 'Relationship', REL_NS)
+            .find(item => item.getAttribute('Id') === nextRelationshipId)
+          : undefined;
+        const relationship = existing ?? rels.createElementNS(REL_NS, 'Relationship');
+        relationship.setAttribute('Id', nextRelationshipId!);
+        relationship.setAttribute('Type', HYPERLINK_REL);
+        relationship.setAttribute('Target', link.url);
+        relationship.setAttribute('TargetMode', 'External');
+        if (!existing) rels.documentElement!.appendChild(relationship);
+        if (draft.hasPart(relPath)) {
+          draft.setPartXml(relPath, serializeXml(rels));
+        } else {
+          draft.addPart(relPath, encodeXml(serializeXml(rels)), 'application/vnd.openxmlformats-package.relationships+xml');
+        }
+      }
+      draft.updatePartXml(draft.mainPath, document => {
+        const node = draft.hyperlinkNode(current, document);
+        if (node.localName === 'fldSimple') {
+          node.setAttributeNS(WORD_NS, 'w:instr', fieldInstruction(link));
+          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+          else removeWordAttribute(node, 'tooltip');
+        } else {
+          if (link.url) node.setAttributeNS(OFFICE_REL_NS, 'r:id', nextRelationshipId!);
+          else { node.removeAttributeNS(OFFICE_REL_NS, 'id'); node.removeAttribute('r:id'); }
+          if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+          else removeWordAttribute(node, 'anchor');
+          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+          else removeWordAttribute(node, 'tooltip');
+        }
+      });
+      if (current.relationshipId && (!link.url || current.relationshipId !== nextRelationshipId)) {
+        const stillUsed = draft.getHyperlinks().some(item => item.relationshipId === current.relationshipId);
+        if (!stillUsed) {
+          const relPath = resolveRelationshipsPath(draft.mainPath);
+          if (draft.hasPart(relPath)) {
+            draft.updatePartXml(relPath, rels => {
+              for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
+                if (relationship.getAttribute('Id') === current.relationshipId) {
+                  rels.documentElement!.removeChild(relationship);
+                  break;
+                }
+              }
+            });
+          }
+        }
+      }
+    });
+  }
+
+  removeHyperlink(
+    hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
+    options: { keepText?: boolean } = {},
+  ): void {
+    const link = this.resolveHyperlink(hyperlink);
+    this.withDraft((draft) => {
+      draft.updatePartXml(draft.mainPath, document => {
+        const node = draft.hyperlinkNode(link, document);
+        const parent = node.parentNode as Element;
+        if (options.keepText === false) parent.removeChild(node);
+        else {
+          while (node.firstChild) parent.insertBefore(node.firstChild, node);
+          parent.removeChild(node);
+        }
+      });
+      if (link.relationshipId) {
+        const stillUsed = draft.getHyperlinks().some(item => item.relationshipId === link.relationshipId);
+        if (!stillUsed) {
+          const relPath = resolveRelationshipsPath(draft.mainPath);
+          if (draft.hasPart(relPath)) {
+            draft.updatePartXml(relPath, rels => {
+              for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
+                if (relationship.getAttribute('Id') === link.relationshipId) {
+                  rels.documentElement!.removeChild(relationship);
+                  break;
+                }
+              }
+            });
+          }
+        }
+      }
+    });
+  }
+
+  insertBookmark(name: string, range: { startParagraph: number; endParagraph?: number }): BookmarkInfo {
+    assertText(name, 'name');
+    assertIndex(range.startParagraph);
+    if (range.endParagraph !== undefined) assertIndex(range.endParagraph);
+    if (range.endParagraph !== undefined && range.endParagraph < range.startParagraph) {
+      throw new Error('range.endParagraph must be >= range.startParagraph.');
+    }
+    if (!name) throw new Error('name must not be empty.');
+    if (this.getBookmarks({ includeInternal: true }).some(bookmark => bookmark.name === name)) {
+      throw new Error(`Bookmark "${name}" already exists.`);
+    }
+    let bookmark: BookmarkInfo | undefined;
+    this.updatePartXml(this.mainPath, document => {
+      const start = paragraphAt(document, range.startParagraph);
+      const end = paragraphAt(document, range.endParagraph ?? range.startParagraph);
+      const ids = descendants(bodyOf(document), 'bookmarkStart')
+        .map(item => Number(item.getAttributeNS(WORD_NS, 'id') ?? item.getAttribute('w:id')))
+        .filter(value => Number.isSafeInteger(value));
+      const id = (ids.length ? Math.max(...ids) : 0) + 1;
+      const startMark = wordElement(document, 'bookmarkStart');
+      startMark.setAttributeNS(WORD_NS, 'w:id', String(id));
+      startMark.setAttributeNS(WORD_NS, 'w:name', name);
+      start.insertBefore(startMark, children(start, 'pPr')[0]?.nextSibling ?? start.firstChild);
+      const endMark = wordElement(document, 'bookmarkEnd');
+      endMark.setAttributeNS(WORD_NS, 'w:id', String(id));
+      end.appendChild(endMark);
+      bookmark = {
+        id,
+        name,
+        startParagraph: range.startParagraph,
+        endParagraph: range.endParagraph ?? range.startParagraph,
+        isInternal: isInternalBookmark(name),
+      };
+    });
+    return bookmark!;
+  }
+
+  deleteBookmark(name: string): void {
+    assertText(name, 'name');
+    this.updatePartXml(this.mainPath, document => {
+      const starts = descendants(bodyOf(document), 'bookmarkStart')
+        .filter(start => (start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name')) === name);
+      if (!starts.length) throw new Error(`Bookmark "${name}" does not exist.`);
+      const ids = starts.map(start => start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
+      for (const start of starts) start.parentNode!.removeChild(start);
+      for (const end of descendants(bodyOf(document), 'bookmarkEnd')) {
+        const id = end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id');
+        if (ids.includes(id)) end.parentNode!.removeChild(end);
+      }
+    });
   }
 
   setParagraphNumbering(index: number, numId: number, level = 0): void {
@@ -3267,6 +3809,11 @@ export class DocxDocument {
         case 'formatTableRow': draft.formatTableRow(operation.table, operation.row, operation.format); break;
         case 'formatCell': draft.formatCell(operation.table, operation.row, operation.col, operation.format); break;
         case 'setCellText': draft.setCellText(operation.table, operation.row, operation.col, operation.text); break;
+        case 'insertHyperlink': draft.insertHyperlink(operation.target, operation.link); break;
+        case 'updateHyperlink': draft.updateHyperlink(operation.hyperlink, operation.link); break;
+        case 'removeHyperlink': draft.removeHyperlink(operation.hyperlink, operation.options); break;
+        case 'insertBookmark': draft.insertBookmark(operation.name, operation.range); break;
+        case 'deleteBookmark': draft.deleteBookmark(operation.name); break;
         case 'insertImage': draft.insertImage({
           bytes: decodeBase64(operation.bytes),
           contentType: operation.contentType,
