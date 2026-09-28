@@ -20,7 +20,8 @@
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "build:examples": "vite build",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:perf": "npm run build && node --test test/perf.mjs"
   },
   "repository": {
     "type": "git",
