@@ -16,6 +16,27 @@ function makeFlushEditor({ text, elementText = text, previous = '', options = {}
   return { editor, element, content, document };
 }
 
+function makeSelectionEditor(cellByParagraph = {}) {
+  const editor = Object.create(DocxEditor.prototype);
+  const events = [];
+  class FakeCustomEvent {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail;
+      this.bubbles = init.bubbles;
+    }
+  }
+  editor.selected = null;
+  editor.selectedImageInfo = null;
+  editor.selectedTableCellInfo = null;
+  editor.document = { getTableCellAt: (index) => cellByParagraph[index] ?? null };
+  editor.root = {
+    ownerDocument: { defaultView: { CustomEvent: FakeCustomEvent } },
+    dispatchEvent: (event) => { events.push(event); return true; },
+  };
+  return { editor, events };
+}
+
 test('flush sanitizes disallowed control characters before commit', () => {
   const { editor, document } = makeFlushEditor({ text: 'a\u0001b' });
   assert.doesNotThrow(() => editor.flush());
@@ -208,6 +229,50 @@ test('insertText sanitizes invalid paste-like input before insertion', () => {
   const element = { contains: () => true };
   assert.doesNotThrow(() => editor.insertText(element, 'a\u0001b\ud800c\r\nd'));
   assert.equal(inserted, 'abc\nd');
+});
+
+test('selectedTableCell getter and event update when selection enters a table cell', () => {
+  const cell = { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 3, nested: false };
+  const { editor, events } = makeSelectionEditor({ 4: cell });
+  editor.selectParagraph(4);
+  assert.equal(editor.selectedParagraph, 4);
+  assert.deepEqual(editor.selectedTableCell, cell);
+  assert.deepEqual(events.map((event) => [event.type, event.detail]), [
+    ['docx-selectionchange', { index: 4 }],
+    ['docx-tablecellchange', { cell }],
+  ]);
+});
+
+test('table cell change dispatch is debounced within the same table cell but getter still refreshes', () => {
+  const first = { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false };
+  const second = { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 1, nested: false };
+  const { editor, events } = makeSelectionEditor({ 1: first, 2: second });
+  editor.selectParagraph(1);
+  editor.selectParagraph(2);
+  assert.deepEqual(editor.selectedTableCell, second);
+  assert.deepEqual(events.map((event) => event.type), [
+    'docx-selectionchange',
+    'docx-tablecellchange',
+    'docx-selectionchange',
+  ]);
+});
+
+test('table cell change dispatch fires when selection crosses table cells and when it leaves tables', () => {
+  const a = { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false };
+  const b = { table: 0, row: 0, col: 1, rowSpan: 1, colSpan: 1, nested: false };
+  const { editor, events } = makeSelectionEditor({ 0: a, 1: b, 2: null });
+  editor.selectParagraph(0);
+  editor.selectParagraph(1);
+  editor.selectParagraph(2);
+  assert.equal(editor.selectedTableCell, null);
+  assert.deepEqual(events.map((event) => [event.type, event.detail]), [
+    ['docx-selectionchange', { index: 0 }],
+    ['docx-tablecellchange', { cell: a }],
+    ['docx-selectionchange', { index: 1 }],
+    ['docx-tablecellchange', { cell: b }],
+    ['docx-selectionchange', { index: 2 }],
+    ['docx-tablecellchange', null],
+  ]);
 });
 
 test('readText skips non-editable decorations unless explicitly marked as document content', () => {

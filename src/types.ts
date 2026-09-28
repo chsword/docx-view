@@ -237,6 +237,15 @@ export interface TableInfo {
   grid: number[];
 }
 
+export interface TableCellLocation {
+  table: number;
+  row: number;
+  col: number;
+  rowSpan: number;
+  colSpan: number;
+  nested: boolean;
+}
+
 export interface ImageInfo {
   id: string;
   paragraph: number;

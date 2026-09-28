@@ -6,6 +6,7 @@ import type {
   DocumentProperties, DocumentProtection, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  TableCellLocation,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -212,6 +213,10 @@ function equalPartMap(a: Map<string, Uint8Array>, b: Map<string, Uint8Array>): b
     if (!next || !equalBytes(bytes, next)) return false;
   }
   return true;
+}
+
+function cloneTableCellLocation(location: TableCellLocation): TableCellLocation {
+  return { ...location };
 }
 
 function dirname(path: string): string {
@@ -2403,6 +2408,7 @@ export class DocxDocument {
   private commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
   private revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
   private reviewerInfoCache?: { revision: number; reviewers: ReviewerInfo[] };
+  private tableCellLocationCache?: { revision: number; locations: Map<number, TableCellLocation> };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
   private undoHistory: HistoryState[] = [];
   private redoHistory: HistoryState[] = [];
@@ -2498,6 +2504,7 @@ export class DocxDocument {
     result.revisionInfoCache = undefined;
     result.reviewerInfoCache = undefined;
     result.outlineCache = undefined;
+    result.tableCellLocationCache = undefined;
     result.imageDataUrls.clear();
     result.suppressHistory = false;
     return result;
@@ -2531,6 +2538,7 @@ export class DocxDocument {
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
     this.reviewerInfoCache = undefined;
+    this.tableCellLocationCache = undefined;
     this.imageDataUrls.clear();
     this.pushRedoState({ ...current, action: step.action });
     this.nextHistoryLabel = undefined;
@@ -2553,6 +2561,7 @@ export class DocxDocument {
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
     this.reviewerInfoCache = undefined;
+    this.tableCellLocationCache = undefined;
     this.imageDataUrls.clear();
     this.pushUndoState({ ...current, action: step.action });
     this.enforceHistoryLimits();
@@ -2831,6 +2840,7 @@ export class DocxDocument {
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
       this.reviewerInfoCache = undefined;
+      this.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       else this.applyPendingMergedHistory();
@@ -2888,6 +2898,7 @@ export class DocxDocument {
     commentStateCache: { revision: number; comments: CommentInfo[] } | undefined;
     revisionInfoCache: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] } | undefined;
     reviewerInfoCache: { revision: number; reviewers: ReviewerInfo[] } | undefined;
+    tableCellLocationCache: { revision: number; locations: Map<number, TableCellLocation> } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -2904,6 +2915,7 @@ export class DocxDocument {
       commentStateCache: this.commentStateCache,
       revisionInfoCache: this.revisionInfoCache,
       reviewerInfoCache: this.reviewerInfoCache,
+      tableCellLocationCache: this.tableCellLocationCache,
       imageDataUrls: new Map(this.imageDataUrls),
     };
   }
@@ -2922,6 +2934,7 @@ export class DocxDocument {
     this.commentStateCache = state.commentStateCache;
     this.revisionInfoCache = state.revisionInfoCache;
     this.reviewerInfoCache = state.reviewerInfoCache;
+    this.tableCellLocationCache = state.tableCellLocationCache;
     this.imageDataUrls = state.imageDataUrls;
   }
 
@@ -3127,6 +3140,7 @@ export class DocxDocument {
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
     this.reviewerInfoCache = undefined;
+    this.tableCellLocationCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -3744,6 +3758,78 @@ export class DocxDocument {
     const styles = this.getStylesContext();
     const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.mainPath, this.getNoteState());
     return this.buildBlocksFrom(document, paragraphs);
+  }
+
+  private getTableCellLocationIndex(): Map<number, TableCellLocation> {
+    if (this.tableCellLocationCache?.revision === this.revision) return this.tableCellLocationCache.locations;
+    const locations = new Map<number, TableCellLocation>();
+    let tableIndex = 0;
+    const walkNestedBlocks = (blocks: DocumentBlock[], location: TableCellLocation, nested: boolean): void => {
+      for (const block of blocks) {
+        if (block.type === 'paragraph') {
+          locations.set(block.paragraph.index, { ...location, nested });
+          continue;
+        }
+        if (block.type !== 'table') continue;
+        for (const row of block.rows) {
+          for (const cell of row.cells) walkNestedBlocks(cell.blocks, location, true);
+        }
+      }
+    };
+    for (const block of this.getBlocks()) {
+      if (block.type !== 'table') continue;
+      const activeVertical = new Map<number, { end: number; location: TableCellLocation }>();
+      for (const [rowIndex, row] of block.rows.entries()) {
+        const nextActive = new Map<number, { end: number; location: TableCellLocation }>();
+        let colIndex = 0;
+        let activeHorizontalEnd: number | null = null;
+        let activeHorizontalLocation: TableCellLocation | null = null;
+        for (const cell of row.cells) {
+          const col = colIndex;
+          const colSpan = Math.max(1, cell.colSpan);
+          colIndex += colSpan;
+          let location: TableCellLocation = {
+            table: tableIndex,
+            row: rowIndex,
+            col,
+            rowSpan: Math.max(1, cell.rowSpan),
+            colSpan,
+            nested: false,
+          };
+          const vertical = activeVertical.get(col);
+          if (cell.isMergeContinuation) {
+            if (cell.rowSpan === 0 && vertical?.end === col + colSpan) {
+              location = vertical.location;
+              nextActive.set(col, vertical);
+            } else if (activeHorizontalLocation && activeHorizontalEnd === col) {
+              location = activeHorizontalLocation;
+              activeHorizontalEnd = col + colSpan;
+              activeHorizontalLocation = location;
+            } else {
+              activeHorizontalEnd = col + colSpan;
+              activeHorizontalLocation = location;
+              if (cell.rowSpan > 1) nextActive.set(col, { end: col + colSpan, location });
+            }
+          } else {
+            activeHorizontalEnd = col + colSpan;
+            activeHorizontalLocation = location;
+            if (cell.rowSpan > 1) nextActive.set(col, { end: col + colSpan, location });
+          }
+          walkNestedBlocks(cell.blocks, location, false);
+        }
+        activeVertical.clear();
+        for (const [start, merge] of nextActive) activeVertical.set(start, merge);
+      }
+      tableIndex++;
+    }
+    this.tableCellLocationCache = { revision: this.revision, locations };
+    return locations;
+  }
+
+  getTableCellAt(paragraphIndex: number): TableCellLocation | null {
+    if (!Number.isSafeInteger(paragraphIndex) || paragraphIndex < 0) return null;
+    const location = this.getTableCellLocationIndex().get(paragraphIndex);
+    return location ? cloneTableCellLocation(location) : null;
   }
 
   getComments(filter: { authors?: string[]; resolved?: boolean } = {}): CommentInfo[] {
@@ -7524,6 +7610,7 @@ export class DocxDocument {
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
       this.reviewerInfoCache = undefined;
+      this.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return result;
@@ -8419,6 +8506,7 @@ export class DocxDocument {
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
       this.reviewerInfoCache = undefined;
+      this.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return { ...snapshot, revision: this.revision };

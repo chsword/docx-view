@@ -72,6 +72,40 @@ function measureBatchSetParagraphText(count) {
   });
 }
 
+function buildTableLookupDoc(tableCount) {
+  const doc = DocxDocument.create();
+  for (let i = 0; i < tableCount; i++) {
+    doc.insertTable([
+      [`${i}-0`, `${i}-1`, `${i}-2`],
+      [`${i}-3`, `${i}-4`, `${i}-5`],
+    ]);
+    doc.insertParagraph(`after-${i}`);
+  }
+  return doc;
+}
+
+function measureTableCellSwitches(tableCount) {
+  for (let i = 0; i < WARMUPS; i++) {
+    const doc = buildTableLookupDoc(tableCount);
+    const indices = doc.getBlocks()
+      .filter((block) => block.type === 'table')
+      .flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.blocks[0].paragraph.index)));
+    doc.getTableCellAt(indices[0]);
+    for (let index = 0; index < 100; index++) doc.getTableCellAt(indices[index % indices.length]);
+  }
+  const samples = Array.from({ length: ROUNDS }, () => {
+    const doc = buildTableLookupDoc(tableCount);
+    const indices = doc.getBlocks()
+      .filter((block) => block.type === 'table')
+      .flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.blocks[0].paragraph.index)));
+    doc.getTableCellAt(indices[0]);
+    return elapsedMs(() => {
+      for (let index = 0; index < 100; index++) doc.getTableCellAt(indices[index % indices.length]);
+    });
+  });
+  return { median: median(samples), samples };
+}
+
 test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
   const inserts = measureSingleInsert(200, 200);
   const sets = measureSetParagraphText(200);
@@ -104,5 +138,16 @@ test('performance regression: batched 1000-paragraph updates scale near-linearly
     `1000-paragraph update ratio exceeded threshold 4.00 (actual ${ratio.toFixed(2)})`,
     formatMeasurement('batch setParagraphText x500', t500),
     formatMeasurement('batch setParagraphText x1000', t1000),
+  ].join('\n'));
+});
+
+test('performance regression: cached getTableCellAt lookups do not scale linearly with table count', () => {
+  const small = measureTableCellSwitches(12);
+  const large = measureTableCellSwitches(36);
+  const ratio = large.median / small.median;
+  assert.ok(ratio < 2.2, [
+    `getTableCellAt lookup ratio exceeded threshold 2.20 (actual ${ratio.toFixed(2)})`,
+    formatMeasurement('cached getTableCellAt x100 over 12 tables', small),
+    formatMeasurement('cached getTableCellAt x100 over 36 tables', large),
   ].join('\n'));
 });

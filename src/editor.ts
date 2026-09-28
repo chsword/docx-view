@@ -15,6 +15,7 @@ import type {
   RunInfo,
   SectionInfo,
   TabStop,
+  TableCellLocation,
   TableFormat,
   TableRowInfo,
   WidthFormat,
@@ -266,6 +267,7 @@ export class DocxEditor {
   private footerKind: 'default' | 'first' | 'even' = 'default';
   private selected: number | null = null;
   private selectedImageInfo: ImageInfo | null = null;
+  private selectedTableCellInfo: TableCellLocation | null = null;
   private selectedRangeInfo: { range: DocumentRange; format: RunFormat } | null = null;
   private composing = false;
   private renderAfterComposition = false;
@@ -335,6 +337,10 @@ export class DocxEditor {
     return this.selectedImageInfo;
   }
 
+  get selectedTableCell(): TableCellLocation | null {
+    return this.selectedTableCellInfo ? { ...this.selectedTableCellInfo } : null;
+  }
+
   get selectedRange(): DocumentRange | null {
     return this.selectedRangeInfo ? {
       start: { ...this.selectedRangeInfo.range.start },
@@ -383,6 +389,7 @@ export class DocxEditor {
     this.document = document;
     this.selected = null;
     this.selectedImageInfo = null;
+    this.selectedTableCellInfo = null;
     this.selectedRangeInfo = null;
     this.composing = false;
     this.renderAfterComposition = false;
@@ -1992,10 +1999,27 @@ export class DocxEditor {
   }
 
   private selectParagraph(index: number): void {
-    if (this.selected === index) return;
+    const cell = this.document.getTableCellAt(index);
+    const previous = this.selectedTableCellInfo;
+    const paragraphChanged = this.selected !== index;
+    const tableCellChanged =
+      (previous === null) !== (cell === null)
+      || (previous !== null && cell !== null && (
+        previous.table !== cell.table || previous.row !== cell.row || previous.col !== cell.col
+      ));
+    if (!paragraphChanged && !tableCellChanged) return;
     this.selected = index;
+    this.selectedTableCellInfo = cell;
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
-    if (EventClass) this.root.dispatchEvent(new EventClass('docx-selectionchange', { bubbles: true, detail: { index } }));
+    if (EventClass && paragraphChanged) {
+      this.root.dispatchEvent(new EventClass('docx-selectionchange', { bubbles: true, detail: { index } }));
+    }
+    if (EventClass && tableCellChanged) {
+      this.root.dispatchEvent(new EventClass('docx-tablecellchange', {
+        bubbles: true,
+        detail: cell ? { cell: this.selectedTableCell } : null,
+      }));
+    }
   }
 
   private selectImage(image: ImageInfo | null): void {
