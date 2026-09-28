@@ -3206,7 +3206,7 @@ export class DocxDocument {
     if (options.alt !== undefined) assertText(options.alt, 'alt');
     const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
-    const main = this.getCachedPartDocument(this.mainPath);
+    const main = this.getPartDocument(this.mainPath);
     const paragraphs = descendants(bodyOf(main), 'p');
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
@@ -3219,7 +3219,7 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(this.mainPath);
     const next = this.ensureMediaContentType(partPath, options.contentType);
     next.set(partPath, Uint8Array.from(options.bytes));
-    const rels = this.hasPart(relPath) ? this.getCachedPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const rels = this.hasPart(relPath) ? this.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const relationshipId = this.nextRelationshipId(rels);
     const relationship = rels.createElementNS(REL_NS, 'Relationship');
     relationship.setAttribute('Id', relationshipId);

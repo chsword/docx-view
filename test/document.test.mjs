@@ -528,6 +528,42 @@ test('undo/redo restores binary image bytes', () => {
   assert.deepEqual(doc.getImageBytes(doc.getImages()[0]), GIF_BYTES);
 });
 
+test('undo across insertImage keeps document.xml/media/rels consistent without probe reads', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, '一');
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0, widthEmu: 914400, heightEmu: 914400 });
+  doc.insertParagraph('二');
+
+  doc.undo();
+  const afterFirstUndoImage = doc.getImages()[0];
+  assert.ok(afterFirstUndoImage);
+  assert.deepEqual(doc.getImageBytes(afterFirstUndoImage), PNG_BYTES);
+
+  doc.undo();
+  assert.equal(doc.getImages().length, 0);
+  assert.equal(doc.listParts().filter((path) => path.startsWith('word/media/')).length, 0);
+  assert.equal(doc.listParts().includes('word/_rels/document.xml.rels'), false);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:drawing[\s>]/);
+});
+
+test('redo across insertImage restores image bytes and relationships exactly', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, '一');
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0, widthEmu: 914400, heightEmu: 914400 });
+  doc.insertParagraph('二');
+
+  doc.undo();
+  doc.undo();
+  doc.redo();
+  doc.redo();
+
+  const image = doc.getImages()[0];
+  assert.ok(image);
+  assert.deepEqual(doc.getImageBytes(image), PNG_BYTES);
+  assert.ok(doc.listParts().includes('word/_rels/document.xml.rels'));
+  assert.equal(doc.listParts().filter((path) => path.startsWith('word/media/')).length, 1);
+});
+
 test('history cap drops oldest steps', () => {
   const doc = DocxDocument.create();
   for (let i = 0; i < 55; i++) doc.formatRun(0, 0, { bold: i % 2 === 0 });
