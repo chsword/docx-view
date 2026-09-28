@@ -2009,7 +2009,7 @@ export class DocxEditor {
       ));
     if (!paragraphChanged && !tableCellChanged) return;
     this.selected = index;
-    this.selectedTableCellInfo = cell;
+    if (tableCellChanged) this.selectedTableCellInfo = cell;
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
     if (EventClass && paragraphChanged) {
       this.root.dispatchEvent(new EventClass('docx-selectionchange', { bubbles: true, detail: { index } }));

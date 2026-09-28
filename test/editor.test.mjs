@@ -243,13 +243,13 @@ test('selectedTableCell getter and event update when selection enters a table ce
   ]);
 });
 
-test('table cell change dispatch is debounced within the same table cell but getter still refreshes', () => {
+test('table cell change dispatch is debounced within the same table cell and keeps the prior exposed cell state', () => {
   const first = { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false };
   const second = { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 1, nested: false };
   const { editor, events } = makeSelectionEditor({ 1: first, 2: second });
   editor.selectParagraph(1);
   editor.selectParagraph(2);
-  assert.deepEqual(editor.selectedTableCell, second);
+  assert.deepEqual(editor.selectedTableCell, first);
   assert.deepEqual(events.map((event) => event.type), [
     'docx-selectionchange',
     'docx-tablecellchange',
