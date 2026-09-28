@@ -4412,7 +4412,7 @@ export class DocxDocument {
       const movePairs = pairMoveRevisionMarkers(markers);
       if (!authors) {
         const processed = new Set<Element>();
-        for (const marker of markers.reverse()) {
+        for (const marker of [...markers].reverse()) {
           if (processed.has(marker) || !marker.parentNode) continue;
           if (isMoveRevisionMarker(marker)) {
             const paired = movePairs.get(marker);
@@ -4450,7 +4450,7 @@ export class DocxDocument {
         if (matchesAuthor(marker)) selected.add(marker);
       }
       const processed = new Set<Element>();
-      for (const marker of markers.reverse()) {
+      for (const marker of [...markers].reverse()) {
         if (!selected.has(marker) || processed.has(marker) || !marker.parentNode) continue;
         if (isMoveRevisionMarker(marker)) {
           const paired = movePairs.get(marker);
