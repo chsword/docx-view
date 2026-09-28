@@ -371,6 +371,27 @@ export interface HistoryEntry {
   at: number;
 }
 
+export interface DocumentProperties {
+  title?: string;
+  subject?: string;
+  creator?: string;
+  lastModifiedBy?: string;
+  keywords?: string;
+  description?: string;
+  category?: string;
+  created?: string;
+  modified?: string;
+  revisionNumber?: number;
+  company?: string;
+  manager?: string;
+}
+
+export interface DocumentProtection {
+  enabled: boolean;
+  edit?: 'readOnly' | 'comments' | 'trackedChanges' | 'forms' | 'none';
+  enforced?: boolean;
+}
+
 export interface NoteSettingsValue {
   pos?: 'pageBottom' | 'beneathText' | 'sectEnd' | 'docEnd';
   numFmt?: string;
