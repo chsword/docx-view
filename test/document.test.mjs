@@ -3698,6 +3698,25 @@ test('compare can apply insertion and run-format change in the same paragraph', 
   assert.equal(rejected.getParagraphs()[0].runs[0].bold, undefined);
 });
 
+test('compare degrades zero-length formatted runs to coarse paragraph replacement', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr></w:r><w:r><w:t>A</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'runFormatChange'), false);
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'insertion'), true);
+  assert.deepEqual(paragraphTexts(accepted), ['A']);
+  assert.deepEqual(paragraphTexts(rejected), ['A']);
+});
+
+test('compare preserves marker-only wrapper content when deleting a no-run paragraph', () => {
+  const base = withBody('<w:p><w:sdt><w:sdtPr/><w:sdtContent><w:bookmarkStart w:id="1" w:name="keep"/><w:bookmarkEnd w:id="1"/></w:sdtContent></w:sdt></w:p><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const compared = DocxDocument.compare(base, revised, { author: 'Alice' });
+  const xml = compared.getPartXml(compared.mainDocumentPath);
+  assert.match(xml, /bookmarkStart/);
+  assert.match(xml, /bookmarkEnd/);
+});
+
 test('compare validates compare options through assertText', () => {
   assert.throws(
     () => DocxDocument.compare(withBody('<w:p/>'), withBody('<w:p/>'), { author: 'bad\u0000' }),

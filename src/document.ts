@@ -1817,11 +1817,28 @@ function hasOpaqueParagraphContent(paragraph: Element): boolean {
     descendants(paragraph, 'object').length > 0;
 }
 
+function hasUnalignableCompareRuns(paragraph: Element): boolean {
+  return ownRuns(paragraph).some((run) => {
+    if (textOf(run).length !== 0) return false;
+    return children(run, 'rPr').length > 0 || children(run).some((child) => child.localName !== 'rPr');
+  });
+}
+
+function preservesParagraphMarkers(node: Element): boolean {
+  if (isParagraphAnchorMarker(node)) return true;
+  if (node.namespaceURI !== WORD_NS) return false;
+  if (node.localName === 'sdt') {
+    return children(node).every((child) => ['sdtPr', 'sdtEndPr'].includes(child.localName ?? '') || preservesParagraphMarkers(child));
+  }
+  if (!isTransparentWordWrapper(node)) return false;
+  return children(node).every((child) => preservesParagraphMarkers(child));
+}
+
 function buildCompareBlocks(body: Element): CompareBlockInfo[] {
   return blockElements(body).map((element) => ({
     kind: element.localName === 'tbl' ? 'table' : 'paragraph',
     text: element.localName === 'p' ? textOf(element) : '',
-    opaque: element.localName === 'tbl' || hasOpaqueParagraphContent(element),
+    opaque: element.localName === 'tbl' || hasOpaqueParagraphContent(element) || hasUnalignableCompareRuns(element),
     exactKey: element.toString(),
     element,
   }));
@@ -2272,20 +2289,22 @@ export class DocxDocument {
     if (Object.keys(options).some((key) => !['author', 'date'].includes(key))) throw new Error('Unknown compare option.');
     if (options.author !== undefined) assertText(options.author, 'author');
     if (options.date !== undefined) assertText(options.date, 'date');
-    const baseParagraphs = base.getParagraphs();
-    const revisedParagraphs = revised.getParagraphs();
-    if (baseParagraphs.length > COMPARE_MAX_PARAGRAPHS || revisedParagraphs.length > COMPARE_MAX_PARAGRAPHS) {
+    const baseBody = bodyOf(base.getCachedPartDocument(base.mainPath));
+    const revisedBody = bodyOf(revised.getCachedPartDocument(revised.mainPath));
+    const baseParagraphCount = descendants(baseBody, 'p').length;
+    const revisedParagraphCount = descendants(revisedBody, 'p').length;
+    if (baseParagraphCount > COMPARE_MAX_PARAGRAPHS || revisedParagraphCount > COMPARE_MAX_PARAGRAPHS) {
       throw new Error(
         `DocxDocument.compare() supports at most ${COMPARE_MAX_PARAGRAPHS} main-document paragraphs per input document ` +
-        `(received ${baseParagraphs.length} and ${revisedParagraphs.length}).`,
+        `(received ${baseParagraphCount} and ${revisedParagraphCount}).`,
       );
     }
     const result = new DocxDocument(new Map(base.parts));
     result.suppressHistory = true;
     result.revisionAuthor = options.author;
     result.setTrackChangesDirect(true);
-    const baseBlocks = buildCompareBlocks(bodyOf(base.getCachedPartDocument(base.mainPath)));
-    const revisedBlocks = buildCompareBlocks(bodyOf(revised.getCachedPartDocument(revised.mainPath)));
+    const baseBlocks = buildCompareBlocks(baseBody);
+    const revisedBlocks = buildCompareBlocks(revisedBody);
     result.applyComparedBlocks(alignCompareBlocks(baseBlocks, revisedBlocks), revisedBlocks, revised.getStylesContext(), options.author, options.date);
     result.materializeAllParts();
     result.currentRevision = 0;
@@ -4416,14 +4435,12 @@ export class DocxDocument {
 
   private markComparedBlockDeleted(block: Element, author?: string, date?: string): void {
     if (block.localName === 'p') {
-      if (children(block, 'pPr').some(props => children(props, 'sectPr').length)) {
-        throw new Error('DocxDocument.compare() does not support deleting section-break paragraphs.');
-      }
+      if (children(block, 'pPr').some(props => children(props, 'sectPr').length)) return;
       const runs = ownRuns(block);
       if (runs.length) wrapRunsWithRevision(block, runs, 'del', this.trackedRevisionAuthor(author), date);
       else {
         for (const child of [...children(block)]) {
-          if (child.localName === 'pPr' || isParagraphAnchorMarker(child)) continue;
+          if (child.localName === 'pPr' || preservesParagraphMarkers(child)) continue;
           block.removeChild(child);
         }
       }
@@ -4442,6 +4459,9 @@ export class DocxDocument {
     author?: string,
     date?: string,
   ): void {
+    const baseTheme = this.getStylesContext().theme;
+    const baseParagraphFormat = directParagraphFormatOf(paragraph);
+    const baseParagraphClone = paragraph.cloneNode(true) as Element;
     const old = textOf(paragraph);
     const revisedText = textOf(revisedParagraph);
     let start = 0;
@@ -4456,7 +4476,7 @@ export class DocxDocument {
     if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
     if (old !== revisedText) this.replaceSpanTracked(paragraph, start, end, revisedText.slice(start, replacementEnd), author, date);
     const paragraphPatch = buildFormatPatch(
-      directParagraphFormatOf(paragraph),
+      baseParagraphFormat,
       directParagraphFormatOf(revisedParagraph),
       PARAGRAPH_FORMAT_FIELDS,
     ) as ParagraphFormat;
@@ -4479,18 +4499,49 @@ export class DocxDocument {
         currentVisibleRuns.some((entry, index) => entry.text !== revisedVisibleRuns[index]!.text)) {
       return;
     }
-    for (let index = 0; index < currentVisibleRuns.length; index++) {
+    for (let index = 0, runOffset = 0; index < currentVisibleRuns.length; index++) {
       const currentRun = currentVisibleRuns[index]!.run;
       const revisedRun = revisedVisibleRuns[index]!.run;
+      const runStart = runOffset;
+      const runEnd = runStart + currentVisibleRuns[index]!.text.length;
+      runOffset = runEnd;
+      const originalFormat = this.originalComparedRunFormat(baseParagraphClone, baseTheme, runStart, runEnd, start, end, replacementEnd);
       const runPatch = buildFormatPatch(
-        directRunFormatOf(currentRun, this.getStylesContext().theme),
+        originalFormat ?? directRunFormatOf(currentRun, baseTheme),
         directRunFormatOf(revisedRun, revisedStyles.theme),
         RUN_FORMAT_FIELDS,
       ) as RunFormat;
       if (!Object.keys(runPatch).length) continue;
-      if (!this.runInsideInsertion(currentRun, paragraph)) this.trackRunFormatChange(currentRun, author, date);
+      if (!this.runInsideInsertion(currentRun, paragraph) && originalFormat) this.trackRunFormatChange(currentRun, author, date);
       applyRunFormatTo(properties(currentRun, 'rPr'), runPatch);
     }
+  }
+
+  private originalComparedRunFormat(
+    baseParagraph: Element,
+    theme: StylesContext['theme'],
+    revisedStart: number,
+    revisedEnd: number,
+    replaceStart: number,
+    baseReplaceEnd: number,
+    revisedReplaceEnd: number,
+  ): RunFormat | undefined {
+    let baseStart = revisedStart;
+    let baseEnd = revisedEnd;
+    if (revisedEnd <= replaceStart) {
+      baseStart = revisedStart;
+      baseEnd = revisedEnd;
+    } else if (revisedStart >= revisedReplaceEnd) {
+      baseStart = revisedStart - revisedReplaceEnd + baseReplaceEnd;
+      baseEnd = revisedEnd - revisedReplaceEnd + baseReplaceEnd;
+    } else {
+      return undefined;
+    }
+    this.splitRunAtOffset(baseParagraph, baseEnd);
+    this.splitRunAtOffset(baseParagraph, baseStart);
+    const originalRuns = this.runsInRange(baseParagraph, baseStart, baseEnd);
+    if (originalRuns.length !== 1) return undefined;
+    return directRunFormatOf(originalRuns[0]!, theme);
   }
 
   private runInsideInsertion(run: Element, paragraph: Element): boolean {
