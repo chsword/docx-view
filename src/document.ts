@@ -1,7 +1,8 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
+  CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
@@ -16,7 +17,7 @@ import {
 import type { RelationshipTarget } from './drawing.js';
 import {
   assertText, children, childrenThroughTransparent, CONTENT_TYPES_NS, descendants, isTransparentWordWrapper,
-  isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath,
+  isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, sanitizeText, serializeXml, setWordValue, validatePath,
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import {
@@ -106,6 +107,10 @@ const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 const HISTORY_MAX_ENTRIES = 50;
 const HISTORY_MAX_BYTES = 64 * 1024 * 1024;
 const HISTORY_MERGE_WINDOW_MS = 500;
+const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
+const CLIPBOARD_MAX_RUNS = 10_000;
+const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
+const CLIPBOARD_MAX_IMAGES = 200;
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -150,6 +155,19 @@ function decodeXml(bytes: Uint8Array): string {
 
 function encodeXml(xml: string): Uint8Array {
   return encoder.encode(xml.replace(/^(<\?xml\b[^?]*\bencoding\s*=\s*)(["'])[^"']*\2/i, '$1"UTF-8"'));
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  const NodeBuffer = (globalThis as { Buffer?: { from(bytes: ArrayBufferLike, byteOffset?: number, length?: number): { toString(encoding: 'base64'): string } } }).Buffer;
+  if (NodeBuffer) {
+    return NodeBuffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function dirname(path: string): string {
@@ -3579,6 +3597,393 @@ export class DocxDocument {
     return merged;
   }
 
+  private directRunFormat(run: RunInfo): RunFormat {
+    const format: RunFormat = {};
+    for (const field of RUN_FORMAT_FIELDS) {
+      const value = run[field];
+      if (value !== undefined) (format as Record<string, unknown>)[field] = cloneRunFormatValue(value);
+    }
+    return format;
+  }
+
+  private directParagraphFormat(paragraph: ParagraphInfo): ParagraphFormat {
+    const format: ParagraphFormat = {};
+    for (const key of [
+      'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
+      'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
+      'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
+      'outlineLevel', 'tabs', 'borders', 'shading',
+    ] as const) {
+      const value = paragraph[key];
+      if (value !== undefined) (format as Record<string, unknown>)[key] = cloneRunFormatValue(value);
+    }
+    return format;
+  }
+
+  private normalizeClipboardParagraph(input: ClipboardParagraph, counters: { paragraphs: number; runs: number; images: number }): ClipboardParagraph {
+    if (!input || typeof input !== 'object' || !Array.isArray(input.runs)) throw new Error('clipboard paragraph must include runs.');
+    counters.paragraphs++;
+    if (counters.paragraphs > CLIPBOARD_MAX_PARAGRAPHS) throw new Error(`clipboard paragraph count exceeds ${CLIPBOARD_MAX_PARAGRAPHS}.`);
+    if (input.format !== undefined) validateParagraphFormat(input.format);
+    if (input.numbering !== undefined) {
+      const numbering = input.numbering;
+      if (!numbering || typeof numbering !== 'object' || !['bullet', 'decimal'].includes(numbering.kind)) {
+        throw new Error('clipboard paragraph numbering.kind must be bullet or decimal.');
+      }
+      if (numbering.level !== undefined && (!Number.isSafeInteger(numbering.level) || numbering.level < 0 || numbering.level > 8)) {
+        throw new Error('clipboard paragraph numbering.level must be an integer between 0 and 8.');
+      }
+      if (numbering.listId !== undefined && !Number.isSafeInteger(numbering.listId)) {
+        throw new Error('clipboard paragraph numbering.listId must be a safe integer.');
+      }
+    }
+    const runs: ClipboardRun[] = [];
+    for (const run of input.runs) {
+      if (!run || typeof run !== 'object') throw new Error('clipboard run must be an object.');
+      counters.runs++;
+      if (counters.runs > CLIPBOARD_MAX_RUNS) throw new Error(`clipboard run count exceeds ${CLIPBOARD_MAX_RUNS}.`);
+      const normalized: ClipboardRun = {};
+      if (run.text !== undefined) {
+        const sanitized = sanitizeText(run.text);
+        assertText(sanitized, 'clipboard run.text');
+        if (sanitized.length > CLIPBOARD_MAX_RUN_TEXT_LENGTH) {
+          throw new Error(`clipboard run.text exceeds ${CLIPBOARD_MAX_RUN_TEXT_LENGTH} characters.`);
+        }
+        if (sanitized) normalized.text = sanitized;
+      }
+      if (run.format !== undefined) {
+        validateRunFormat(run.format);
+        normalized.format = cloneRunFormatValue(run.format);
+      }
+      if (run.hyperlink !== undefined) {
+        assertHyperlinkInput(run.hyperlink);
+        normalized.hyperlink = { ...run.hyperlink };
+      }
+      if (run.images !== undefined) {
+        if (!Array.isArray(run.images)) throw new Error('clipboard run.images must be an array.');
+        normalized.images = [];
+        for (const image of run.images) {
+          if (!image || typeof image !== 'object') throw new Error('clipboard image must be an object.');
+          if (typeof image.bytes !== 'string' || typeof image.contentType !== 'string') {
+            throw new Error('clipboard image requires bytes and contentType.');
+          }
+          assertText(image.contentType, 'clipboard image.contentType');
+          const bytes = decodeBase64(image.bytes);
+          if (bytes.byteLength > IMAGE_LIMIT) throw new Error(`clipboard image exceeds ${IMAGE_LIMIT} bytes.`);
+          counters.images++;
+          if (counters.images > CLIPBOARD_MAX_IMAGES) throw new Error(`clipboard image count exceeds ${CLIPBOARD_MAX_IMAGES}.`);
+          normalized.images.push({
+            bytes: image.bytes,
+            contentType: image.contentType,
+            ...(image.widthEmu !== undefined ? { widthEmu: image.widthEmu } : {}),
+            ...(image.heightEmu !== undefined ? { heightEmu: image.heightEmu } : {}),
+            ...(image.alt !== undefined ? { alt: sanitizeText(image.alt) } : {}),
+            ...(image.placement !== undefined ? { placement: image.placement } : {}),
+          });
+        }
+      }
+      if (normalized.text || normalized.images?.length) runs.push(normalized);
+    }
+    return {
+      runs,
+      ...(input.format !== undefined ? { format: cloneRunFormatValue(input.format) } : {}),
+      ...(input.numbering !== undefined ? { numbering: { ...input.numbering } } : {}),
+    };
+  }
+
+  private normalizeClipboardBlocks(fragment: ClipboardFragment): ClipboardBlock[] {
+    const counters = { paragraphs: 0, runs: 0, images: 0 };
+    const fromParagraphs = (): ClipboardBlock[] => {
+      if (!Array.isArray(fragment.paragraphs)) throw new Error('clipboard paragraphs must be an array.');
+      return fragment.paragraphs
+        .map((paragraph) => this.normalizeClipboardParagraph(paragraph, counters))
+        .filter((paragraph) => paragraph.runs.length)
+        .map((paragraph) => ({ type: 'paragraph', paragraph } satisfies ClipboardBlock));
+    };
+    if (!fragment.blocks?.length) return fromParagraphs();
+    const blocks: ClipboardBlock[] = [];
+    for (const block of fragment.blocks) {
+      if (!block || typeof block !== 'object') throw new Error('clipboard block must be an object.');
+      if (block.type === 'paragraph') {
+        const paragraph = this.normalizeClipboardParagraph(block.paragraph, counters);
+        if (paragraph.runs.length) blocks.push({ type: 'paragraph', paragraph });
+        continue;
+      }
+      if (block.type === 'table') {
+        const rows = block.table?.rows;
+        if (!Array.isArray(rows) || !rows.length) throw new Error('clipboard table.rows must be a non-empty array.');
+        const normalizedRows = rows.map((row) => {
+          if (!Array.isArray(row) || !row.length) throw new Error('clipboard table row must be a non-empty array.');
+          return row.map((cell) => this.normalizeClipboardParagraph(cell, counters));
+        });
+        blocks.push({ type: 'table', table: { rows: normalizedRows } });
+        continue;
+      }
+      throw new Error(`Unsupported clipboard block type: ${(block as { type?: unknown }).type as string}`);
+    }
+    return blocks;
+  }
+
+  copyClipboardFragment(range: DocumentRange): ClipboardFragment {
+    const preview = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preview, range);
+    const paragraphs = this.getParagraphs();
+    const byIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+    const textChunks: string[] = [];
+    const result: ClipboardParagraph[] = [];
+    for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
+      const paragraph = byIndex.get(index);
+      if (!paragraph) continue;
+      const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
+      const end = index === normalized.end.paragraph ? normalized.end.offset : paragraph.text.length;
+      if (start >= end) {
+        if (index < normalized.end.paragraph) textChunks.push('');
+        continue;
+      }
+      const runs: ClipboardRun[] = [];
+      let cursor = 0;
+      for (const run of paragraph.runs) {
+        const runStart = cursor;
+        const runEnd = cursor + run.text.length;
+        const overlapStart = Math.max(start, runStart);
+        const overlapEnd = Math.min(end, runEnd);
+        cursor = runEnd;
+        if (overlapStart >= overlapEnd && !(run.images?.length && start <= runStart && end >= runStart)) continue;
+        const text = overlapStart < overlapEnd ? run.text.slice(overlapStart - runStart, overlapEnd - runStart) : '';
+        const images: ClipboardImage[] = (run.images ?? []).flatMap((image) => {
+          if (image.isExternal || !image.partPath) return [];
+          try {
+            return [{
+              bytes: encodeBase64(this.getImageBytes(image)),
+              contentType: image.contentType ?? this.getContentType(image.partPath) ?? 'image/png',
+              widthEmu: image.widthEmu,
+              heightEmu: image.heightEmu,
+              alt: image.alt,
+              placement: image.placement,
+            }];
+          } catch {
+            return [];
+          }
+        });
+        if (!text && !images.length) continue;
+        runs.push({
+          ...(text ? { text } : {}),
+          format: this.directRunFormat(run),
+          ...(run.hyperlink ? { hyperlink: { ...run.hyperlink } } : {}),
+          ...(images.length ? { images } : {}),
+        });
+      }
+      const paragraphText = paragraph.text.slice(start, end);
+      textChunks.push(paragraphText);
+      if (runs.length) {
+        result.push({
+          runs,
+          format: this.directParagraphFormat(paragraph),
+          ...(paragraph.numbering ? {
+            numbering: {
+              kind: paragraph.numbering.isBullet ? 'bullet' : 'decimal',
+              level: paragraph.numbering.level,
+              listId: paragraph.numbering.numId,
+            },
+          } : {}),
+        });
+      }
+    }
+    return {
+      version: 1,
+      text: textChunks.join('\n'),
+      paragraphs: result,
+      blocks: result.map((paragraph) => ({ type: 'paragraph', paragraph })),
+    };
+  }
+
+  pasteClipboardFragment(range: DocumentRange, fragment: ClipboardFragment): boolean {
+    if (!fragment || fragment.version !== 1 || typeof fragment.text !== 'string' || !Array.isArray(fragment.paragraphs)) {
+      throw new Error('Invalid clipboard fragment.');
+    }
+    const blocks = this.normalizeClipboardBlocks(fragment);
+    const preview = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preview, range);
+    if (normalized.start.paragraph !== normalized.end.paragraph) return false;
+    if (!blocks.length && !fragment.text && normalized.start.offset === normalized.end.offset) return false;
+    this.withDraft((draft) => {
+      const listNumbering = new Map<string, number>();
+      for (const block of blocks) {
+        if (block.type !== 'paragraph' || !block.paragraph.numbering) continue;
+        const numbering = block.paragraph.numbering;
+        const key = `${numbering.kind}:${numbering.listId ?? 0}`;
+        if (!listNumbering.has(key)) listNumbering.set(key, draft.createNumbering(numbering.kind));
+      }
+      draft.materializeAllParts();
+      let next = new Map(draft.parts);
+      const main = parseXml(decodeXml(next.get(draft.mainPath)!));
+      const paragraph = paragraphAt(main, normalized.start.paragraph);
+      const sourcePartPath = draft.mainPath;
+      draft.splitRunAtOffset(paragraph, normalized.end.offset);
+      draft.splitRunAtOffset(paragraph, normalized.start.offset);
+      const selected = draft.runsInRange(paragraph, normalized.start.offset, normalized.end.offset);
+      let marker: Node;
+      if (selected.length) {
+        const firstChild = paragraphDirectChild(paragraph, selected[0]!);
+        marker = main.createTextNode('');
+        paragraph.insertBefore(marker, firstChild);
+        for (const run of selected) {
+          const parent = run.parentNode as Element | null;
+          if (!parent) continue;
+          parent.removeChild(run);
+          if (parent !== paragraph && !children(parent, 'r').length && !children(parent, 'proofErr').length) parent.parentNode?.removeChild(parent);
+        }
+      } else {
+        const runs = ownRuns(paragraph);
+        let cursor = 0;
+        let before: Node | null = null;
+        for (const run of runs) {
+          const nextCursor = cursor + textOf(run).length;
+          if (normalized.start.offset <= cursor || normalized.start.offset < nextCursor) {
+            before = paragraphDirectChild(paragraph, run);
+            break;
+          }
+          cursor = nextCursor;
+        }
+        marker = main.createTextNode('');
+        paragraph.insertBefore(marker, before);
+      }
+      const relPath = resolveRelationshipsPath(sourcePartPath);
+      let rels: Document | undefined;
+      const hyperlinkRelationByUrl = new Map<string, string>();
+      const ensureRels = (): Document => {
+        if (rels) return rels;
+        const bytes = next.get(relPath);
+        rels = bytes ? parseXml(decodeXml(bytes)) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+        return rels;
+      };
+      const suffix: Node[] = [];
+      for (let current = marker.nextSibling; current; ) {
+        const nextNode = current.nextSibling;
+        suffix.push(current);
+        paragraph.removeChild(current);
+        current = nextNode;
+      }
+      marker.parentNode?.removeChild(marker);
+      const trackChanges = draft.trackChangesEnabled();
+      const trackedAuthor = trackChanges ? draft.trackedRevisionAuthor() : undefined;
+      const buildRunNode = (runFragment: ClipboardRun): { node: Node; trackedRuns: Element[] } | null => {
+        const run = wordElement(main, 'r');
+        if (runFragment.format) applyRunFormatTo(properties(run, 'rPr'), runFragment.format);
+        if (runFragment.text) appendText(run, runFragment.text);
+        for (const image of runFragment.images ?? []) {
+          const bytes = decodeBase64(image.bytes);
+          const size = draft.inferImageSize(bytes, image.contentType, image.widthEmu, image.heightEmu);
+          const partPath = draft.nextImagePartPath(image.contentType);
+          next = draft.ensureMediaContentType(partPath, image.contentType, next);
+          next.set(partPath, Uint8Array.from(bytes));
+          const relsDocument = ensureRels();
+          const relationshipId = draft.nextRelationshipId(relsDocument);
+          const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
+          relationship.setAttribute('Id', relationshipId);
+          relationship.setAttribute('Type', IMAGE_REL);
+          relationship.setAttribute('Target', relativeTargetPath(sourcePartPath, partPath));
+          relsDocument.documentElement!.appendChild(relationship);
+          run.appendChild(createDrawingElement(main, relationshipId, size, {
+            alt: image.alt,
+            title: image.alt,
+            placement: image.placement ?? 'inline',
+            docPrId: draft.nextDocPrId(main),
+          }));
+        }
+        if (!run.firstChild) return null;
+        const link = runFragment.hyperlink;
+        if (link && (link.url || link.anchor)) {
+          const hyperlink = wordElement(main, 'hyperlink');
+          if (link.url) {
+            const key = link.url;
+            let relationshipId = hyperlinkRelationByUrl.get(key);
+            if (!relationshipId) {
+              const relsDocument = ensureRels();
+              relationshipId = draft.nextRelationshipId(relsDocument);
+              const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
+              relationship.setAttribute('Id', relationshipId);
+              relationship.setAttribute('Type', HYPERLINK_REL);
+              relationship.setAttribute('Target', link.url);
+              relationship.setAttribute('TargetMode', 'External');
+              relsDocument.documentElement!.appendChild(relationship);
+              hyperlinkRelationByUrl.set(key, relationshipId);
+            }
+            hyperlink.setAttributeNS(OFFICE_REL_NS, 'r:id', relationshipId);
+          }
+          if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+          if (link.tooltip) hyperlink.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+          hyperlink.appendChild(run);
+          return { node: hyperlink, trackedRuns: [run] };
+        }
+        return { node: run, trackedRuns: [run] };
+      };
+      const createParagraph = (): Element => wordElement(main, 'p');
+      const applyParagraphMeta = (targetParagraph: Element, paragraphFragment: ClipboardParagraph): void => {
+        if (paragraphFragment.format) applyParagraphFormatTo(properties(targetParagraph, 'pPr'), paragraphFragment.format);
+        if (paragraphFragment.numbering) {
+          const key = `${paragraphFragment.numbering.kind}:${paragraphFragment.numbering.listId ?? 0}`;
+          const numId = listNumbering.get(key);
+          if (numId !== undefined) {
+            const numPr = property(properties(targetParagraph, 'pPr'), 'numPr');
+            setWordValue(numberingProperty(numPr, 'numId'), String(numId));
+            setWordValue(numberingProperty(numPr, 'ilvl'), String(paragraphFragment.numbering.level ?? 0));
+          }
+        }
+      };
+      const blockParent = paragraph.parentNode as Element;
+      const blockAnchor = paragraph.nextSibling;
+      const stagedBlocks = main.createDocumentFragment();
+      let paragraphTarget: Element | null = null;
+      let firstParagraphPlaced = false;
+      for (const block of blocks) {
+        if (block.type === 'paragraph') {
+          const targetParagraph = firstParagraphPlaced ? createParagraph() : paragraph;
+          if (firstParagraphPlaced) {
+            stagedBlocks.appendChild(targetParagraph);
+          } else {
+            firstParagraphPlaced = true;
+          }
+          applyParagraphMeta(targetParagraph, block.paragraph);
+          const trackedRuns: Element[] = [];
+          for (const runFragment of block.paragraph.runs) {
+            const built = buildRunNode(runFragment);
+            if (!built) continue;
+            targetParagraph.appendChild(built.node);
+            trackedRuns.push(...built.trackedRuns);
+          }
+          if (trackChanges && trackedRuns.length) wrapRunsWithRevision(targetParagraph, trackedRuns, 'ins', trackedAuthor);
+          paragraphTarget = targetParagraph;
+          continue;
+        }
+        const rows = block.table.rows.map((row) => row.map((cell) =>
+          cell.runs.map((run) => run.text ?? '').join('')));
+        const table = buildTable(main, rows.length, Math.max(...rows.map((row) => row.length)), undefined, rows);
+        stagedBlocks.appendChild(table);
+        paragraphTarget = null;
+      }
+      if (stagedBlocks.firstChild) blockParent.insertBefore(stagedBlocks, blockAnchor);
+      const suffixTarget = paragraphTarget ?? ((blocks.length || fragment.text) ? (() => {
+        const tail = createParagraph();
+        blockParent.insertBefore(tail, blockAnchor);
+        return tail;
+      })() : paragraph);
+      for (const node of suffix) suffixTarget.appendChild(node);
+      if (!blocks.length && fragment.text) {
+        const fallback = sanitizeText(fragment.text);
+        if (fallback) {
+          const run = wordElement(main, 'r');
+          appendText(run, fallback);
+          suffixTarget.appendChild(run);
+        }
+      }
+      next.set(draft.mainPath, encodeXml(serializeXml(main)));
+      if (rels) next.set(relPath, encodeXml(serializeXml(rels)));
+      draft.commitParts(next);
+    });
+    return true;
+  }
+
   insertHyperlink(
     target: { paragraph: number; start: number; end: number },
     link: { url?: string; anchor?: string; tooltip?: string },
@@ -4799,6 +5204,10 @@ export class DocxDocument {
     return this.mergeRangeFormats(this.rangeRunFormats(document, range, theme));
   }
 
+  copyFormat(range: TextRange): RunFormat {
+    return this.getRangeFormat(range);
+  }
+
   clearRangeFormat(range: TextRange, fields?: (keyof RunFormat)[]): void {
     const targets = this.validateRangeFields(fields);
     if (!targets.length) return;
@@ -4860,6 +5269,10 @@ export class DocxDocument {
       formats.push(...rangeFormats);
     }
     return this.mergeRangeFormats(formats);
+  }
+
+  applyFormat(range: DocumentRange, format: RunFormat): void {
+    this.formatDocumentRange(range, format);
   }
 
   setParagraphTabs(index: number, tabs: TabStop[]): void {

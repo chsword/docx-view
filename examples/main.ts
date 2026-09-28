@@ -40,6 +40,8 @@ let imageAction: 'insert' | 'replace' = 'insert';
 let selectedRange: DocumentRange | null = null;
 let selectedRangeFormat: RunFormat | null = null;
 let selectedCommentId: number | null = null;
+let formatPainter: { format: RunFormat; locked: boolean } | null = null;
+let applyingFormatPainter = false;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
@@ -166,6 +168,9 @@ function updateSelection(): void {
     button.disabled = !paragraph && !hasRange;
     button.setAttribute('aria-pressed', String(Boolean(selectedRangeFormat?.[key])));
   }
+  const painter = element<HTMLButtonElement>('format-painter');
+  painter.disabled = !paragraph && !hasRange;
+  painter.setAttribute('aria-pressed', String(Boolean(formatPainter)));
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
   const style = element<HTMLSelectElement>('paragraph-style');
@@ -304,6 +309,33 @@ function formatRuns(format: RunFormat): void {
   message('已更新文字格式。');
 }
 
+function selectedTextRange() {
+  const range = selectedRange;
+  if (range && range.start.paragraph === range.end.paragraph) {
+    const converted = toDocumentRange(range);
+    return { paragraph: converted.start.paragraph, start: converted.start.offset, end: converted.end.offset };
+  }
+  const index = selectedIndex();
+  const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
+  return { paragraph: index, start: 0, end: paragraph.text.length };
+}
+
+function activateFormatPainter(locked: boolean): void {
+  const range = selectedTextRange();
+  const format = doc.copyFormat(range);
+  if (!Object.keys(format).length) throw new Error('当前选区没有可复制的直接文字格式。');
+  formatPainter = { format, locked };
+  updateSelection();
+  message(locked ? '格式刷已锁定，连续点击可多次应用；按 Esc 取消。' : '格式刷已启用，下一次选区应用后自动关闭。');
+}
+
+function cancelFormatPainter(silent = false): void {
+  if (!formatPainter) return;
+  formatPainter = null;
+  updateSelection();
+  if (!silent) message('已取消格式刷。');
+}
+
 function loadXmlParts(): void {
   const previous = xmlPart.value;
   xmlPart.replaceChildren(...doc.listParts().filter((path) => /\.(xml|rels)$/i.test(path)).map((path) => {
@@ -352,6 +384,24 @@ host.addEventListener('docx-rangechange', (event) => {
   const detail = (event as CustomEvent<{ range: DocumentRange; format: RunFormat } | null>).detail;
   selectedRange = detail?.range ?? null;
   selectedRangeFormat = detail?.format ?? null;
+  if (formatPainter && detail?.range && !applyingFormatPainter) {
+    const converted = toDocumentRange(detail.range);
+    applyingFormatPainter = true;
+    try {
+      doc.beginHistoryGroup('format painter');
+      try {
+        doc.applyFormat(converted, formatPainter.format);
+      } finally {
+        doc.endHistoryGroup();
+      }
+      editor.render();
+      refresh();
+      message(formatPainter.locked ? '已应用格式（锁定模式）。' : '已应用格式。');
+      if (!formatPainter.locked) formatPainter = null;
+    } finally {
+      applyingFormatPainter = false;
+    }
+  }
   updateSelection();
 });
 host.addEventListener('docx-imageselectionchange', updateImageSelection);
@@ -403,6 +453,15 @@ for (const key of ['bold', 'italic', 'underline'] as const) {
     formatRuns({ [key]: !selectedRangeFormat?.[key] });
   }));
 }
+element('format-painter').addEventListener('click', () => run(() => activateFormatPainter(false)));
+element('format-painter').addEventListener('dblclick', (event) => run(() => {
+  event.preventDefault();
+  activateFormatPainter(true);
+}));
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  cancelFormatPainter();
+});
 element<HTMLSelectElement>('font-size').addEventListener('change', (event) => {
   const value = (event.target as HTMLSelectElement).value;
   if (value) run(() => formatRuns({ fontSize: Number(value) }));

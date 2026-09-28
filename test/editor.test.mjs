@@ -318,3 +318,239 @@ test('handleHistoryShortcut maps Cmd+Shift+Z and Ctrl+Y to redo', () => {
   assert.equal(editor.handleHistoryShortcut(ctrlY), true);
   assert.deepEqual(calls, ['prevent:z', 'redo', 'prevent:y', 'redo']);
 });
+
+test('parseClipboardFragment validates payload shape', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const valid = editor.parseClipboardFragment('{"version":1,"text":"x","paragraphs":[{"runs":[{"text":"x"}]}]}');
+  const invalid = editor.parseClipboardFragment('{"version":2}');
+  assert.equal(valid.version, 1);
+  assert.equal(invalid, null);
+});
+
+test('writeClipboardFragment writes custom mime, plain html text, and plain text', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const written = new Map();
+  const transfer = { setData: (type, value) => written.set(type, value) };
+  const ok = editor.writeClipboardFragment(transfer, { version: 1, text: 'hello', paragraphs: [{ runs: [{ text: 'hello' }] }] });
+  assert.equal(ok, true);
+  assert.equal(written.get('application/x-docx-view+json').includes('"version":1'), true);
+  assert.equal(written.get('text/plain'), 'hello');
+  assert.equal(written.get('text/html'), 'hello');
+});
+
+test('mapExternalHtmlFragment strips unsafe href and external images', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value, childNodes: [] });
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            return {
+              body: {
+                childNodes: [
+                  element('DIV', {}, [
+                    element('A', { href: 'javascript:alert(1)' }, [text('bad link')]),
+                    element('IMG', { src: 'https://example.com/x.png', alt: 'ext' }, []),
+                  ]),
+                ],
+                textContent: 'bad link',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<div/>', 'fallback');
+  assert.equal(fragment.paragraphs[0].runs.some((run) => run.hyperlink?.url), false);
+  assert.equal(fragment.paragraphs[0].runs.some((run) => (run.images?.length ?? 0) > 0), false);
+});
+
+test('mapExternalHtmlFragment keeps data-image URIs as images', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            return {
+              body: {
+                childNodes: [
+                  element('DIV', {}, [
+                    element('IMG', { src: 'data:image/png;base64,AAAA', alt: 'ok' }, []),
+                  ]),
+                ],
+                textContent: '',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<div/>', '');
+  assert.equal(fragment.paragraphs[0].runs.some((run) => (run.images?.length ?? 0) === 1), true);
+});
+
+test('mapExternalHtmlFragment does not inject list marker text into document runs', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value, childNodes: [] });
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            const li = element('LI', {}, [text('item')]);
+            return {
+              body: {
+                childNodes: [element('UL', {}, [li])],
+                textContent: 'item',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<ul><li>item</li></ul>', 'item');
+  assert.equal(fragment.paragraphs[0].runs.map((run) => run.text ?? '').join(''), 'item');
+  assert.deepEqual(fragment.paragraphs[0].numbering, { kind: 'bullet', level: 0, listId: 1 });
+});
+
+test('mapExternalHtmlFragment maps html tables into table blocks', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value, childNodes: [] });
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            return {
+              body: {
+                childNodes: [element('TABLE', {}, [
+                  element('TR', {}, [
+                    element('TD', {}, [text('A')]),
+                    element('TD', {}, [text('B')]),
+                  ]),
+                ])],
+                textContent: 'A B',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<table><tr><td>A</td><td>B</td></tr></table>', '');
+  assert.equal(fragment.blocks[0].type, 'table');
+  assert.equal(fragment.blocks[0].table.rows[0][0].runs[0].text, 'A');
+  assert.equal(fragment.blocks[0].table.rows[0][1].runs[0].text, 'B');
+});
+
+test('handleClipboardPaste prefers internal rich fragment and re-renders once', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.root = { ownerDocument: {}, contains: () => true };
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 0 } });
+  editor.documentRange = (range) => range;
+  editor.document = {
+    revision: 1,
+    pasteClipboardFragment: function () { this.revision = 2; return true; },
+    getSnapshot: () => ({ revision: 2 }),
+  };
+  editor.parseClipboardFragment = () => ({ version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] });
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  const event = {
+    clipboardData: { getData: () => '' },
+    preventDefault: () => calls.push('prevent'),
+  };
+  editor.handleClipboardPaste(event, {});
+  assert.deepEqual(calls, ['prevent', 'render', 'change']);
+});
+
+test('handleClipboardPaste does not trust HTML marker without custom mime payload', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.root = { ownerDocument: {}, contains: () => true };
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 0 } });
+  editor.documentRange = (range) => range;
+  editor.document = { revision: 1, pasteClipboardFragment: () => false, getSnapshot: () => ({ revision: 1 }) };
+  editor.insertText = (_content, text) => calls.push(`plain:${text}`);
+  editor.parseClipboardFragment = () => null;
+  editor.mapExternalHtmlFragment = (html) => {
+    calls.push(`html:${html.includes('data-docx-clip="1"')}`);
+    return { version: 1, text: 'safe', paragraphs: [{ runs: [{ text: 'safe' }] }] };
+  };
+  const event = {
+    clipboardData: {
+      getData: (type) => type === 'text/plain' ? 'plain' : type === 'text/html' ? '<div data-docx-clip="1" data-docx-payload="..."></div>' : '',
+    },
+    preventDefault: () => calls.push('prevent'),
+  };
+  editor.handleClipboardPaste(event, {});
+  assert.deepEqual(calls, ['html:true', 'prevent', 'plain:plain']);
+});
+
+test('handleClipboardCut wraps deletion in one history group', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.root = { ownerDocument: {}, contains: () => true };
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 2 } });
+  editor.documentRange = (range) => range;
+  editor.document = {
+    revision: 3,
+    copyClipboardFragment: () => ({ version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] }),
+    beginHistoryGroup: (label) => calls.push(`begin:${label}`),
+    pasteClipboardFragment: function () { this.revision = 4; return true; },
+    endHistoryGroup: () => calls.push('end'),
+    getSnapshot: () => ({ revision: 4 }),
+  };
+  editor.writeClipboardFragment = () => true;
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.handleClipboardCut({ clipboardData: {}, preventDefault: () => calls.push('prevent') }, {});
+  assert.deepEqual(calls, ['begin:cut', 'end', 'prevent', 'render', 'change']);
+});
+
+test('handleClipboardCut prevents default for unsupported multi-paragraph ranges', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  let prevented = false;
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 1, offset: 0 } });
+  editor.documentRange = (range) => range;
+  editor.handleClipboardCut({ preventDefault: () => { prevented = true; } }, {});
+  assert.equal(prevented, true);
+});

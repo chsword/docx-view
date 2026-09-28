@@ -94,7 +94,9 @@ console.log(reopened.getSnapshot());
 | `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段；将某个字段设为 `null` 可回退到继承样式 |
 | `formatRange(range, format)` / `clearRangeFormat(range, fields?)` | 按段落内字符偏移格式化任意文本范围，支持清除全部或指定 run 直接格式字段 |
 | `getRangeFormat(range)` | 读取字符范围内一致的 run 直接格式；同一字段在范围内不一致时返回 `undefined` |
+| `copyFormat(range)` / `applyFormat(range, format)` | 格式刷 API：复制段落内范围的 run 直接格式，并应用到跨段落选区 |
 | `formatDocumentRange(range, format)` / `getDocumentRangeFormat(range)` | 支持跨段落选区：首段部分 + 中间整段 + 末段部分 |
+| `copyClipboardFragment(range)` / `pasteClipboardFragment(range, fragment)` | 内部富文本剪贴板 API（run 直接格式、超链接、内嵌图片），图片按目标文档关系与 media 部件重建（不复用源 `rId`） |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `getRevisions(filter?)` | 扁平读取主文档中的插入、删除、格式修订和表格/行/单元格属性修订；`moveFrom` / `moveTo` 当前按删除 / 插入降级返回 |
@@ -233,6 +235,6 @@ console.log(tool, result.revision);
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
 
-XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；粘贴仅接受纯文本，`r:link` 外部图片只显示占位框、**不会主动请求外部 URL**。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
+XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:image/*;base64`，**不会主动请求外部 URL**。内部剪贴板跨文档粘贴时样式按“直接格式”降级应用，不自动迁移样式定义。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
 测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、样式链与主题解析、编号解析与创建、多级编号、style `numPr`、legal numbering、表格跨度解析、行列编辑、单元格合并 / 拆分、显式表格格式、分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。

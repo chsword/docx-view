@@ -3009,3 +3009,199 @@ test('applyOperations validates new formatting operations', () => {
   ] });
   assert.equal(snapshot.revision, doc.revision);
 });
+
+test('copyFormat mirrors getRangeFormat', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>abc</w:t></w:r></w:p>');
+  assert.deepEqual(doc.copyFormat({ paragraph: 0, start: 0, end: 3 }), doc.getRangeFormat({ paragraph: 0, start: 0, end: 3 }));
+});
+
+test('applyFormat mirrors formatDocumentRange', () => {
+  const doc = withBody('<w:p><w:r><w:t>abc</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.applyFormat({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 3 } }, { italic: true });
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].runs.some((run) => run.italic), true);
+});
+
+test('copyClipboardFragment includes direct formatting, hyperlinks, and images', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'hello world');
+  doc.formatRange({ paragraph: 0, start: 0, end: 5 }, { bold: true, color: 'FF0000' });
+  doc.insertHyperlink({ paragraph: 0, start: 6, end: 11 }, { url: 'https://example.com' });
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+  const fragment = doc.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 11 } });
+  const runs = fragment.paragraphs.flatMap((paragraph) => paragraph.runs);
+  assert.equal(fragment.text, 'hello world');
+  assert.equal(runs.some((run) => run.format?.bold), true);
+  assert.equal(runs.some((run) => run.hyperlink?.url === 'https://example.com'), true);
+  assert.equal(runs.some((run) => (run.images?.length ?? 0) > 0), true);
+});
+
+test('pasteClipboardFragment inserts rich runs and bumps revision once', () => {
+  const doc = withBody('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  const fragment = {
+    version: 1,
+    text: 'A B',
+    paragraphs: [{
+      runs: [
+        { text: 'A', format: { bold: true } },
+        { text: ' ', format: {} },
+        { text: 'B', hyperlink: { url: 'https://example.com' }, format: { underline: true } },
+      ],
+    }],
+  };
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } }, fragment), true);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text.includes('A B'), true);
+  assert.equal(doc.getHyperlinks().some((item) => item.url === 'https://example.com'), true);
+});
+
+test('pasteClipboardFragment imports image bytes into a new media part in target docs', () => {
+  const source = DocxDocument.create();
+  source.setParagraphText(0, 'img');
+  source.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 } });
+  const target = DocxDocument.create();
+  target.setParagraphText(0, 'X');
+  const beforeSourceParts = source.listParts();
+  assert.equal(target.pasteClipboardFragment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 } }, fragment), true);
+  assert.equal(target.getImages().length > 0, true);
+  assert.equal(target.listParts().some((path) => /^word\/media\/image\d+\./.test(path)), true);
+  assert.deepEqual(source.listParts(), beforeSourceParts);
+});
+
+test('copy/paste rich image works when source relationship target uses a nonstandard media path', () => {
+  const source = withImageDoc(
+    '<w:p><w:r><w:t>x</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx="19050" cy="19050"/><wp:docPr id="1" name="x"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="x"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId9"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="19050" cy="19050"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+    '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="assets/custom-image.png"/>',
+    [{ path: 'word/assets/custom-image.png', bytes: PNG_BYTES, type: 'image/png' }],
+  );
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } });
+  const target = DocxDocument.create();
+  target.setParagraphText(0, 'A');
+  assert.equal(target.pasteClipboardFragment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 } }, fragment), true);
+  assert.equal(target.getImages().length, 1);
+  assert.equal(target.listParts().some((path) => /^word\/media\/image\d+\.png$/.test(path)), true);
+});
+
+test('copy/paste rich image degrades safely when source image target is malformed/encoded', () => {
+  const source = withImageDoc(
+    '<w:p><w:r><w:t>x</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx="19050" cy="19050"/><wp:docPr id="1" name="x"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="x"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId9"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="19050" cy="19050"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+    '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="bad%ZZ.png"/>',
+  );
+  const target = DocxDocument.create();
+  target.setParagraphText(0, 'A');
+  assert.doesNotThrow(() => {
+    const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } });
+    target.pasteClipboardFragment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 } }, fragment);
+  });
+});
+
+test('pasteClipboardFragment returns false for cross-paragraph targets', () => {
+  const doc = withBody('<w:p><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p>');
+  const fragment = { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] };
+  const revision = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 1, offset: 1 } }, fragment), false);
+  assert.equal(doc.revision, revision);
+});
+
+test('pasteClipboardFragment with empty fragment removes selected text', () => {
+  const doc = withBody('<w:p><w:r><w:t>abcdef</w:t></w:r></w:p>');
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 2 }, end: { paragraph: 0, offset: 4 } },
+    { version: 1, text: '', paragraphs: [] },
+  ), true);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text, 'abef');
+});
+
+test('pasteClipboardFragment applies 100-paragraph payload in one transaction', () => {
+  const doc = withBody('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  const fragment = {
+    version: 1,
+    text: Array.from({ length: 100 }, (_, index) => `p${index}`).join('\n'),
+    paragraphs: Array.from({ length: 100 }, (_, index) => ({ runs: [{ text: `p${index}` }] })),
+  };
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } }, fragment), true);
+  assert.equal(doc.revision, before + 1);
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs.length >= 100, true);
+  assert.equal(paragraphs[0].text, 'p0');
+  assert.equal(paragraphs[99].text, 'p99');
+});
+
+test('pasteClipboardFragment sanitizes clipboard run text', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.equal(doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'a\u0000b', paragraphs: [{ runs: [{ text: 'a\u0000b' }] }] },
+  ), true);
+  assert.equal(doc.getParagraphs()[0].text, 'ab');
+});
+
+test('pasteClipboardFragment validates run format payload', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x', format: { color: 'BAD' } }] }] },
+  ), /color must be six hexadecimal digits/);
+});
+
+test('pasteClipboardFragment rejects unsafe hyperlink urls', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'bad', paragraphs: [{ runs: [{ text: 'bad', hyperlink: { url: 'javascript:alert(1)' } }] }] },
+  ), /link\.url must use http, https or mailto/);
+});
+
+test('pasteClipboardFragment enforces paragraph count limit', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const paragraphs = Array.from({ length: 1001 }, () => ({ runs: [{ text: 'x' }] }));
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: '', paragraphs },
+  ), /clipboard paragraph count exceeds 1000/);
+});
+
+test('pasteClipboardFragment enforces run count limit', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const runs = Array.from({ length: 10001 }, () => ({ text: 'x' }));
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: '', paragraphs: [{ runs }] },
+  ), /clipboard run count exceeds 10000/);
+});
+
+test('pasteClipboardFragment wraps inserted runs with revisions when track changes is enabled', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 4 }, end: { paragraph: 0, offset: 4 } },
+    { version: 1, text: 'X', paragraphs: [{ runs: [{ text: 'X' }] }] },
+  );
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:t(?: xml:space="preserve")?>X<\/w:t><\/w:r><\/w:ins>/);
+});
+
+test('clipboard copy/paste round-trip keeps richer direct run format fields', () => {
+  const source = withBody('<w:p><w:r><w:t>format</w:t></w:r></w:p>');
+  source.formatRange({ paragraph: 0, start: 0, end: 6 }, {
+    strike: true,
+    underline: true,
+    underlineStyle: 'dotted',
+    fontFamily: 'Arial',
+    highlight: 'yellow',
+  });
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 6 } });
+  const target = withBody('<w:p><w:r><w:t>xxxxxx</w:t></w:r></w:p>');
+  target.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 6 } }, fragment);
+  const run = target.getParagraphs()[0].runs.find((item) => item.text === 'format');
+  assert.equal(run?.strike, true);
+  assert.equal(run?.underline, true);
+  assert.equal(run?.underlineStyle, 'dotted');
+  assert.equal(run?.fontFamily, 'Arial');
+  assert.equal(run?.highlight, 'yellow');
+});
