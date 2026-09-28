@@ -16,6 +16,55 @@ function makeFlushEditor({ text, elementText = text, previous = '', options = {}
   return { editor, element, content, document };
 }
 
+function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } = {}) {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.reviewFilter = { showRevisions, showComments: true, revisionView };
+  editor.options = { showFormattingMarks: false };
+  editor.commentParagraphIds = new Map();
+  editor.commentRunIds = new Map();
+  editor.revisionRunIds = new Map();
+  const createElement = (tagName) => {
+    const element = {
+      nodeType: 1,
+      tagName: tagName.toUpperCase(),
+      dataset: {},
+      style: {},
+      childNodes: [],
+      className: '',
+      attributes: new Map(),
+      append(child) { this.childNodes.push(child); },
+      setAttribute(name, value) { this.attributes.set(name, value); },
+    };
+    element.classList = {
+      add: (...names) => {
+        for (const name of names) {
+          if (!name) continue;
+          element.className = element.className ? `${element.className} ${name}` : name;
+        }
+      },
+    };
+    return element;
+  };
+  editor.root = {
+    ownerDocument: {
+      createElement,
+      createTextNode: (text) => ({ nodeType: 3, textContent: text }),
+    },
+  };
+  return editor;
+}
+
+function appendRunToParagraph(editor, {
+  paragraphIndex = 0,
+  run,
+  reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() },
+} = {}) {
+  const paragraphElement = editor.root.ownerDocument.createElement('span');
+  const paragraph = { index: paragraphIndex };
+  const offset = editor.appendRun(paragraphElement, paragraph, run, reviewContext, 720, 0);
+  return { paragraphElement, runSpan: paragraphElement.childNodes[0], offset };
+}
+
 test('flush sanitizes disallowed control characters before commit', () => {
   const { editor, document } = makeFlushEditor({ text: 'a\u0001b' });
   assert.doesNotThrow(() => editor.flush());
@@ -995,6 +1044,109 @@ test('setActiveRevision toggles docx-revision-active class by id membership', ()
   editor.setActiveRevision(2);
   editor.setActiveRevision(3);
   assert.deepEqual(states, [true, false]);
+});
+
+test('appendRun writes data-docx-run for runs without revisions', () => {
+  const editor = makeRunRenderEditor();
+  const { runSpan } = appendRunToParagraph(editor, { run: { index: 2, text: 'plain' } });
+  assert.equal(runSpan.dataset.docxRun, '2');
+  assert.equal('docxRevisionIds' in runSpan.dataset, false);
+});
+
+test('appendRun omits data-docx-revision-ids for empty revision arrays', () => {
+  const editor = makeRunRenderEditor();
+  const { runSpan } = appendRunToParagraph(editor, { run: { index: 1, text: 'plain', revisions: [] } });
+  assert.equal(runSpan.dataset.docxRun, '1');
+  assert.equal('docxRevisionIds' in runSpan.dataset, false);
+});
+
+test('appendRun preserves hyperlink and comment datasets alongside run dataset', () => {
+  const editor = makeRunRenderEditor();
+  editor.commentParagraphIds.set(0, [5]);
+  editor.commentRunIds.set('0:3', [7, 5]);
+  const { runSpan } = appendRunToParagraph(editor, {
+    run: {
+      index: 3,
+      text: 'link',
+      hyperlink: { url: 'https://example.com' },
+    },
+  });
+  assert.equal(runSpan.dataset.docxRun, '3');
+  assert.equal(runSpan.dataset.docxLink, '1');
+  assert.equal(runSpan.dataset.docxUrl, 'https://example.com');
+  assert.equal(runSpan.dataset.docxCommentIds, '5,7');
+});
+
+test('appendRun writes distinct revision ids for different runs in the same paragraph', () => {
+  const editor = makeRunRenderEditor();
+  const paragraphElement = editor.root.ownerDocument.createElement('span');
+  const paragraph = { index: 0 };
+  const context = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  editor.appendRun(paragraphElement, paragraph, { index: 0, text: 'A', revisions: [{ id: 11, kind: 'insertion' }] }, context, 720, 0);
+  editor.appendRun(paragraphElement, paragraph, { index: 1, text: 'B', revisions: [{ id: 22, kind: 'deletion' }] }, context, 720, 0);
+  assert.equal(paragraphElement.childNodes[0].dataset.docxRevisionIds, '11');
+  assert.equal(paragraphElement.childNodes[1].dataset.docxRevisionIds, '22');
+  assert.equal(paragraphElement.childNodes[0].dataset.docxRun, '0');
+  assert.equal(paragraphElement.childNodes[1].dataset.docxRun, '1');
+});
+
+test('appendRun writes all revision ids for a run with multiple revisions', () => {
+  const editor = makeRunRenderEditor();
+  const { runSpan } = appendRunToParagraph(editor, {
+    run: {
+      index: 4,
+      text: 'AB',
+      revisions: [
+        { id: 31, kind: 'insertion', author: 'Alice' },
+        { id: 32, kind: 'move', author: 'Bob', move: { name: 'm', side: 'to', pairedId: 33 } },
+      ],
+    },
+  });
+  assert.equal(runSpan.dataset.docxRevisionIds, '31,32');
+  assert.equal(runSpan.dataset.docxRun, '4');
+});
+
+test('appendRun exposes revision ids even when revision markup is hidden', () => {
+  const editor = makeRunRenderEditor({ showRevisions: false });
+  const { runSpan } = appendRunToParagraph(editor, {
+    run: { index: 0, text: 'A', revisions: [{ id: 41, kind: 'insertion' }] },
+  });
+  assert.equal(runSpan.dataset.docxRevisionIds, '41');
+  assert.equal(editor.revisionRunIds.size, 0);
+});
+
+test('appendRun exposes revision ids in final view', () => {
+  const editor = makeRunRenderEditor({ revisionView: 'final' });
+  const { runSpan } = appendRunToParagraph(editor, {
+    run: { index: 6, text: 'A', revisions: [{ id: 51, kind: 'deletion' }] },
+  });
+  assert.equal(runSpan.dataset.docxRevisionIds, '51');
+  assert.equal(runSpan.dataset.docxRun, '6');
+});
+
+test('appendRun refreshes data-docx-run after rerendered run insertion', () => {
+  const editor = makeRunRenderEditor();
+  const initial = appendRunToParagraph(editor, { run: { index: 0, text: 'A' } });
+  const rerenderedParagraph = editor.root.ownerDocument.createElement('span');
+  const paragraph = { index: 0 };
+  const context = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  editor.appendRun(rerenderedParagraph, paragraph, { index: 0, text: 'X' }, context, 720, 0);
+  editor.appendRun(rerenderedParagraph, paragraph, { index: 1, text: 'A' }, context, 720, 0);
+  assert.equal(initial.runSpan.dataset.docxRun, '0');
+  assert.equal(rerenderedParagraph.childNodes[0].dataset.docxRun, '0');
+  assert.equal(rerenderedParagraph.childNodes[1].dataset.docxRun, '1');
+});
+
+test('appendRun refreshes data-docx-run after rerendered run deletion', () => {
+  const editor = makeRunRenderEditor();
+  const initialParagraph = editor.root.ownerDocument.createElement('span');
+  const paragraph = { index: 0 };
+  const context = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  editor.appendRun(initialParagraph, paragraph, { index: 0, text: 'A' }, context, 720, 0);
+  editor.appendRun(initialParagraph, paragraph, { index: 1, text: 'B' }, context, 720, 0);
+  const rerendered = appendRunToParagraph(editor, { run: { index: 0, text: 'B' } });
+  assert.equal(initialParagraph.childNodes[1].dataset.docxRun, '1');
+  assert.equal(rerendered.runSpan.dataset.docxRun, '0');
 });
 
 test('appendDeletedRunVisualization + readText keeps deleted visualization text out of writeback text', () => {
