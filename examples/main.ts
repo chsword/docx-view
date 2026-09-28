@@ -5,6 +5,9 @@ import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
+const UNATTRIBUTED_REVIEWER = '(unattributed)';
+const EMPTY_REVIEWER = '(empty author)';
+const BLANK_REVIEWER = '(blank author)';
 
 function element<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -42,12 +45,35 @@ let selectedRangeFormat: RunFormat | null = null;
 let selectedCommentId: number | null = null;
 let formatPainter: { format: RunFormat; locked: boolean } | null = null;
 let applyingFormatPainter = false;
+let selectedReviewerAuthors: string[] | undefined;
+let reviewRevisionView: 'final' | 'original' | 'markup' = 'markup';
+let reviewShowRevisions = true;
+let reviewShowComments = true;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
 const xmlInput = element<HTMLTextAreaElement>('xml-input');
 const xmlPart = element<HTMLSelectElement>('xml-part');
-const editor = new DocxEditor(host, doc, { onChange: refresh });
+const editor = new DocxEditor(host, doc, {
+  onChange: refresh,
+  reviewFilter: { revisionView: reviewRevisionView, showComments: reviewShowComments, showRevisions: reviewShowRevisions },
+});
+
+function reviewerBucketOf(author: string | undefined): string {
+  if (author === undefined) return UNATTRIBUTED_REVIEWER;
+  if (author === '') return EMPTY_REVIEWER;
+  if (!author.trim()) return BLANK_REVIEWER;
+  return author;
+}
+
+function applyReviewFilter(): void {
+  editor.setReviewFilter({
+    ...(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {}),
+    showComments: reviewShowComments,
+    showRevisions: reviewShowRevisions,
+    revisionView: reviewRevisionView,
+  });
+}
 
 function createSample(): DocxDocument {
   const sample = DocxDocument.create();
@@ -131,6 +157,7 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   loadStyleOptions();
   updateSelection();
   updateImageSelection();
+  refreshReviewers();
   refreshComments(snapshot);
 }
 
@@ -206,7 +233,9 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   const authorFilter = element<HTMLInputElement>('comment-author-filter').value.trim();
   const resolvedFilter = element<HTMLSelectElement>('comment-resolved-filter').value;
   const list = element<HTMLUListElement>('comment-list');
-  const comments = snapshot.comments.filter((comment) => {
+  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors) : undefined;
+  const comments = (reviewShowComments ? snapshot.comments : []).filter((comment) => {
+    if (selectedAuthors && !selectedAuthors.has(reviewerBucketOf(comment.author))) return false;
     if (authorFilter && !(comment.author ?? '').includes(authorFilter)) return false;
     if (resolvedFilter === 'resolved' && comment.resolved !== true) return false;
     if (resolvedFilter === 'open' && comment.resolved === true) return false;
@@ -234,6 +263,43 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element<HTMLButtonElement>('reply-comment').disabled = selectedCommentId === null;
   element<HTMLButtonElement>('resolve-comment').disabled = selectedCommentId === null;
   element<HTMLButtonElement>('delete-comment').disabled = selectedCommentId === null;
+}
+
+function refreshReviewers(): void {
+  const reviewers = doc.getReviewers();
+  const list = element<HTMLUListElement>('reviewer-list');
+  const previousSelection = JSON.stringify(selectedReviewerAuthors ?? null);
+  const available = new Set(reviewers.map((reviewer) => reviewer.author));
+  if (selectedReviewerAuthors?.length) {
+    selectedReviewerAuthors = selectedReviewerAuthors.filter((author) => available.has(author));
+    if (!selectedReviewerAuthors.length) selectedReviewerAuthors = undefined;
+  }
+  if (previousSelection !== JSON.stringify(selectedReviewerAuthors ?? null)) applyReviewFilter();
+  const selected = new Set(selectedReviewerAuthors ?? reviewers.map((reviewer) => reviewer.author));
+  list.replaceChildren(...reviewers.map((reviewer) => {
+    const item = document.createElement('li');
+    const label = document.createElement('label');
+    label.className = 'reviewer-item';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = selected.has(reviewer.author);
+    checkbox.addEventListener('change', () => {
+      const set = new Set(selectedReviewerAuthors ?? reviewers.map((entry) => entry.author));
+      if (checkbox.checked) set.add(reviewer.author);
+      else set.delete(reviewer.author);
+      selectedReviewerAuthors = set.size === reviewers.length ? undefined : [...set];
+      applyReviewFilter();
+      refreshComments();
+    });
+    const name = document.createElement('span');
+    name.textContent = `${reviewer.author}${reviewer.initials ? ` (${reviewer.initials})` : ''}`;
+    const count = document.createElement('span');
+    count.className = 'reviewer-count';
+    count.textContent = `修订 ${reviewer.revisionCount} · 批注 ${reviewer.commentCount} · 未解决 ${reviewer.unresolvedCommentCount}`;
+    label.append(checkbox, name, count);
+    item.append(label);
+    return item;
+  }));
 }
 
 function selectedIndex(): number {
@@ -412,6 +478,31 @@ host.addEventListener('docx-commentclick', (event) => {
 });
 element<HTMLInputElement>('toggle-comments').addEventListener('change', (event) => {
   host.classList.toggle('comments-hidden', !(event.target as HTMLInputElement).checked);
+});
+element<HTMLSelectElement>('review-revision-view').addEventListener('change', (event) => {
+  reviewRevisionView = (event.target as HTMLSelectElement).value as 'final' | 'original' | 'markup';
+  applyReviewFilter();
+});
+element<HTMLInputElement>('review-show-revisions').addEventListener('change', (event) => {
+  reviewShowRevisions = (event.target as HTMLInputElement).checked;
+  applyReviewFilter();
+});
+element<HTMLInputElement>('review-show-comments').addEventListener('change', (event) => {
+  reviewShowComments = (event.target as HTMLInputElement).checked;
+  applyReviewFilter();
+  refreshComments();
+});
+element('review-select-all').addEventListener('click', () => {
+  selectedReviewerAuthors = undefined;
+  applyReviewFilter();
+  refreshReviewers();
+  refreshComments();
+});
+element('review-clear-authors').addEventListener('click', () => {
+  selectedReviewerAuthors = [];
+  applyReviewFilter();
+  refreshReviewers();
+  refreshComments();
 });
 element('comment-author-filter').addEventListener('input', () => refreshComments());
 element('comment-resolved-filter').addEventListener('change', () => refreshComments());
@@ -756,6 +847,10 @@ for (const [index, name] of tabs.entries()) {
   });
 }
 
+element<HTMLSelectElement>('review-revision-view').value = reviewRevisionView;
+element<HTMLInputElement>('review-show-revisions').checked = reviewShowRevisions;
+element<HTMLInputElement>('review-show-comments').checked = reviewShowComments;
+applyReviewFilter();
 refresh();
 loadXmlParts();
 resetAgent();
