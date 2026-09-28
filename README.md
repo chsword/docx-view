@@ -165,7 +165,21 @@ console.log(reopened.getSnapshot());
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
 注释（脚注/尾注）`blocks` 里的段落 `index` 固定为 `-1`，不属于正文索引命名空间；注释内容请使用 `setNoteText(kind, id, text)` 编辑。`insertFootnote` / `insertEndnote` 为匹配 Word 常见显示，会在标记后以保留空格写入正文文本 run（例如读回 `" 内容"`）。
 批注锚点通过 `CommentInfo.anchor.sourcePartPath` 指明所属部件；`paragraph` / `startParagraph` / `endParagraph` 都是该部件内部的局部顺序，不可直接拿去调用正文 `setParagraphText()` 之类的 API。回复批注会复用父批注锚点；没有正文锚点或没有 `comments.xml` 条目的记录会被标记为 `isOrphan: true`。
-当前写入型批注 API（`addComment` / `replyComment` / `setCommentResolved` / `setCommentText` / `deleteComment`）以主文档为编辑入口；`getComments()` 会同时读出正文、页眉、页脚、脚注和尾注中的批注锚点。`getReviewers()` 返回原始 `author`（可为 `undefined` / `''` / 空白字符串）+ `kind` 判别字段，不再用字符串哨兵替代作者值；修订与批注两侧都会按同一规则产出 `named` / `unattributed` / `empty` / `blank`，其中 `named` 会按 `trim()` 归一作者身份（`' Alice '` 与 `'Alice'` 合并为同一审阅者），因此真实作者名即使等于 `"(unattributed)"` / `"(empty author)"` / `"(blank author)"` 也不会与缺失/空串/空白作者合并。同一作者出现多个 `initials` 时，取出现次数最多的值，若并列则取最早出现的值（`initials` 仅来自批注；仅有修订而没有批注的作者不会带 `initials`）。对成对的移动修订（`moveFrom` + `moveTo`），`getReviewers().revisionCount` 按 1 条计数。`DocxEditor.setReviewFilter({ authors })` 也同步改为传 `ReviewerFilterAuthor[]`：`named` 必须带非空 `author`，`unattributed` 不带 `author`，`empty` 必须传 `author: ''`，`blank` 必须传仅空白的 `author`。旧的字符串数组写法需迁移。当前 `getReviewers()` 只统计主文档修订与主文档锚点批注，页眉/页脚/脚注/尾注锚点的批注不计入。
+**批注的读写范围**
+
+- 当前写入型批注 API（`addComment` / `replyComment` / `setCommentResolved` / `setCommentText` / `deleteComment`）以主文档为编辑入口；`getComments()` 会同时读出正文、页眉、页脚、脚注和尾注中的批注锚点。
+
+**审阅者聚合**
+
+- `getReviewers()` 返回原始 `author`（可为 `undefined` / `''` / 空白字符串）+ `kind` 判别字段，不再用字符串哨兵替代作者值；修订与批注两侧都会按同一规则产出 `named` / `unattributed` / `empty` / `blank`，其中 `named` 会按 `trim()` 归一作者身份（`' Alice '` 与 `'Alice'` 合并为同一审阅者），因此真实作者名即使等于 `"(unattributed)"` / `"(empty author)"` / `"(blank author)"` 也不会与缺失/空串/空白作者合并。
+- 同一作者出现多个 `initials` 时，取出现次数最多的值，若并列则取最早出现的值（`initials` 仅来自批注；仅有修订而没有批注的作者不会带 `initials`）。
+- 对成对的移动修订（`moveFrom` + `moveTo`），`getReviewers().revisionCount` 按 1 条计数。
+- 当前 `getReviewers()` 只统计主文档修订与主文档锚点批注，页眉/页脚/脚注/尾注锚点的批注不计入。
+
+**筛选入参（破坏性变更）**
+
+- `DocxEditor.setReviewFilter({ authors })` 也同步改为传 `ReviewerFilterAuthor[]`：`named` 必须带非空 `author`，`unattributed` 不带 `author`，`empty` 必须传 `author: ''`，`blank` 必须传仅空白的 `author`。
+- 旧的字符串数组写法需迁移。
 逐次调用公开方法会按次记录历史（每步一次快照），连续编辑同一段落的文字会在短时间窗口内合并为一步；批量修改请走 `applyOperations`，一个批次只记录一步、也只拍一次快照——实测 600 次逐个 `insertParagraph` 明显慢于同样内容的单批操作，大批量场景请优先使用批次接口。若一次写入调用（包括非空 `applyOperations` 批次）最终没有产生任何部件字节变化，则该调用视为 no-op：不会推进 `revision`、不会新增撤销历史。撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
 
 ### 可视化组件
@@ -191,7 +205,21 @@ editor.render();
 
 输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号和脚注/尾注引用标记会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。注意：`flush()` 仅在 `revisionView: 'markup'` 时提交文本，在 `'final'` / `'original'` 只读预览视图下会跳过提交。
 
-组件还提供 `selectedParagraph`、`selectedRange`、`setDocument(doc)`、`setReviewFilter(filter)`、`acceptRevision(id)`、`rejectRevision(id)`、`acceptAllRevisions(filter?)`、`rejectAllRevisions(filter?)`、`focusRevision(id)`、`focusNextRevision()`、`focusPreviousRevision()` 和 `destroy()`。`reviewFilter` / `setReviewFilter()` 支持按作者过滤审阅内容，并切换 `showRevisions`、`showComments`、`revisionView: 'final' | 'original' | 'markup'`（纯渲染状态，不修改文档）。其中 `revisionView: 'final' | 'original'` 为只读预览模式；需要直接编辑正文文字时请切回 `'markup'`。接受/拒绝修订会直接修改文档，因此在 `'final'` / `'original'` 视图下同样可用（与可编辑正文无关）。当前 `'original'` / `'final'` 视图除插入/删除外，也会对移动修订显示对应一侧（`original` 显示 `moveFrom`，`final` 显示 `moveTo`）；`'original'` 仍不还原 `rPrChange` / `pPrChange` 的格式快照。`docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引；`docx-rangechange` 的 `detail` 包含 `{ range, format }`（跨段落 `DocumentRange` 与 `getDocumentRangeFormat` 结果，可用于三态工具栏）。当选区跨越不同容器（如正文与表格单元格）时，`format` 会降级为空对象 `{}`。
+**组件成员**
+
+- 组件还提供 `selectedParagraph`、`selectedRange`、`setDocument(doc)`、`setReviewFilter(filter)`、`acceptRevision(id)`、`rejectRevision(id)`、`acceptAllRevisions(filter?)`、`rejectAllRevisions(filter?)`、`focusRevision(id)`、`focusNextRevision()`、`focusPreviousRevision()` 和 `destroy()`。
+
+**审阅筛选与视图**
+
+- `reviewFilter` / `setReviewFilter()` 支持按作者过滤审阅内容，并切换 `showRevisions`、`showComments`、`revisionView: 'final' | 'original' | 'markup'`（纯渲染状态，不修改文档）。
+- 其中 `revisionView: 'final' | 'original'` 为只读预览模式；需要直接编辑正文文字时请切回 `'markup'`。
+- 接受/拒绝修订会直接修改文档，因此在 `'final'` / `'original'` 视图下同样可用（与可编辑正文无关）。
+- 当前 `'original'` / `'final'` 视图除插入/删除外，也会对移动修订显示对应一侧（`original` 显示 `moveFrom`，`final` 显示 `moveTo`）；`'original'` 仍不还原 `rPrChange` / `pPrChange` 的格式快照。
+
+**选区事件**
+
+- `docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引；`docx-rangechange` 的 `detail` 包含 `{ range, format }`（跨段落 `DocumentRange` 与 `getDocumentRangeFormat` 结果，可用于三态工具栏）。
+- 当选区跨越不同容器（如正文与表格单元格）时，`format` 会降级为空对象 `{}`。
 
 组件使用 `.docx-editor`、`.docx-paragraph`、`.docx-table`、`.docx-image` 类名，不强制注入全局 CSS；宿主可以自行设置纸张外观、表格边框等，参考 `examples/style.css`。视图优先使用样式解析后的**有效格式**渲染常用字体、字号、颜色、加粗 / 斜体 / 下划线 / 删除线、上下标、大小写、高亮、字间距及段落缩进 / 间距 / 行距 / 对齐；图片的尺寸、旋转、翻转和裁剪也由组件渲染，浮动环绕采用简化布局。
 
@@ -269,10 +297,39 @@ console.log(tool, result.revision);
 
 ## 支持范围与安全边界
 
-当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；**不承诺与 Word 像素级一致或精确分页**。列表计数只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。表格样式参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，其余条件样式尚未实现。浮动图片使用简化的浏览器布局：四周型 / 紧密型 / 穿越型映射为浮动，`topAndBottom` 映射为块级，`wrapNone` 映射为绝对定位；外部链接图片显示占位框且不会主动联网加载。当前已支持读取修订（插入、删除、`rPrChange` / `pPrChange` / `tblPrChange` / `trPrChange` / `tcPrChange`）、`trackChanges` 开关，以及常见文本 / 段落 / 图片 / 表格行编辑自动写入修订；这些部件 / XML 会尽量保留。尚未支持接受 / 拒绝修订或完整域值计算，低层 API 仍可操作。
+**视图支持范围**
+
+- 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；**不承诺与 Word 像素级一致或精确分页**。
+
+**列表与表格**
+
+- 列表计数只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。
+- 表格样式参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，其余条件样式尚未实现。
+
+**图片布局**
+
+- 浮动图片使用简化的浏览器布局：四周型 / 紧密型 / 穿越型映射为浮动，`topAndBottom` 映射为块级，`wrapNone` 映射为绝对定位；外部链接图片显示占位框且不会主动联网加载。
+
+**修订与域**
+
+- 当前已支持读取修订（插入、删除、`rPrChange` / `pPrChange` / `tblPrChange` / `trPrChange` / `tcPrChange`）、`trackChanges` 开关，以及常见文本 / 段落 / 图片 / 表格行编辑自动写入修订；这些部件 / XML 会尽量保留。
+- 接受 / 拒绝修订已支持（逐条、批量、按作者筛选，移动修订成对处理）；域值计算仍不完整——目前只读取 `w:fldSimple` 形式的超链接域、写入 `PAGE` / `NUMPAGES`，没有通用域模型与目录，低层 API 仍可直接操作。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 中 Pages / Words / Characters / Lines / Paragraphs 等统计值不会自动重算。
 
-XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:` 形式的 PNG / JPEG / GIF / BMP（其余类型跳过该图，不影响同段其余内容），**不会主动请求外部 URL**。超链接一律经 `isSafeHyperlinkUrl()` 白名单（仅 http / https / mailto），编辑器与 `pasteClipboardFragment()` 公开 API 共用同一道校验。内部剪贴板携带段落的**样式 ID**但不迁移样式定义：跨文档粘贴时若目标文档未定义该样式，样式引用会悬空、显示回落到默认格式（run 的直接格式不受影响）；需要保真时请先在目标文档 `defineStyle()`。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
+**解析边界**
+
+- XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。
+
+**渲染与剪贴板**
+
+- 视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:` 形式的 PNG / JPEG / GIF / BMP（其余类型跳过该图，不影响同段其余内容），**不会主动请求外部 URL**。
+- 超链接一律经 `isSafeHyperlinkUrl()` 白名单（仅 http / https / mailto），编辑器与 `pasteClipboardFragment()` 公开 API 共用同一道校验。
+- 内部剪贴板携带段落的**样式 ID**但不迁移样式定义：跨文档粘贴时若目标文档未定义该样式，样式引用会悬空、显示回落到默认格式（run 的直接格式不受影响）；需要保真时请先在目标文档 `defineStyle()`。
+
+**使用者的责任**
+
+- 保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。
+- 大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
 测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、样式链与主题解析、编号解析与创建、多级编号、style `numPr`、legal numbering、表格跨度解析、行列编辑、单元格合并 / 拆分、显式表格格式、分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。
