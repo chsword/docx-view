@@ -3447,7 +3447,7 @@ export class DocxDocument {
     const runs = ownRuns(paragraph);
     let cursor = 0;
     let parent = paragraph;
-    let anchor: Element | undefined;
+    let reference: Node | null = null;
     let previous: Element | undefined;
     for (const candidate of runs) {
       const length = textOf(candidate).length;
@@ -3458,16 +3458,24 @@ export class DocxDocument {
       }
       if (start <= cursor || start < next) {
         parent = candidate.parentNode?.nodeType === 1 ? candidate.parentNode as Element : paragraph;
-        anchor = candidate;
+        reference = candidate;
         break;
       }
       cursor = next;
       previous = candidate;
     }
-    if (!anchor && previous?.parentNode?.nodeType === 1) {
-      parent = previous.parentNode as Element;
+    if (!reference && previous) {
+      let node: Node = previous;
+      let container: Node | null = node.parentNode;
+      while (container?.nodeType === 1 && container !== paragraph && !node.nextSibling) {
+        node = container;
+        container = node.parentNode;
+      }
+      if (container?.nodeType === 1) {
+        parent = container as Element;
+        reference = node.nextSibling;
+      }
     }
-    const reference = anchor ?? (previous?.parentNode === parent ? previous.nextSibling : null);
     const run = wordElement(parent.ownerDocument!, 'r');
     appendText(run, text);
     const wrapper = markRevision(parent, 'ins', this.trackedRevisionAuthor());
@@ -4643,8 +4651,14 @@ export class DocxDocument {
           throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
         }
         const runs = ownRuns(paragraph);
-        if (runs.length) wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
-        else clearParagraphContent(paragraph);
+        if (runs.length) {
+          wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+          for (const child of [...children(paragraph)]) {
+            if (child.localName === 'pPr') continue;
+            if (child.localName === 'del' || descendants(child, 'del').length) continue;
+            paragraph.removeChild(child);
+          }
+        } else clearParagraphContent(paragraph);
         markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor());
         return;
       }

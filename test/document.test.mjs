@@ -2745,6 +2745,12 @@ test('tracked setParagraphText writes inserted text inside w:ins', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:t xml:space="preserve"> world<\/w:t><\/w:r><\/w:ins>/);
 });
 
+test('tracked setParagraphText inserts after a hyperlink boundary instead of inside the hyperlink', () => {
+  const doc = trackedDoc(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>link</w:t></w:r></w:hyperlink></w:p>`);
+  doc.setParagraphText(0, 'link!');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<\/w:hyperlink><w:ins w:id="\d+" w:author="docx-view"><w:r><w:t(?: xml:space="preserve")?>!<\/w:t><\/w:r><\/w:ins>/);
+});
+
 test('tracked setParagraphText keeps replacement markup inside a hyperlink container', () => {
   const doc = trackedDoc(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:r><w:t> tail</w:t></w:r></w:p>`);
   doc.setParagraphText(0, 'LINK tail');
@@ -2814,6 +2820,15 @@ test('tracked deleteParagraph keeps the paragraph node and marks deletion', () =
   assert.equal(doc.getParagraphs().length, 2);
   assert.equal(doc.getParagraphs()[0].text, '');
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:p><w:pPr><w:rPr><w:del w:id="\d+" w:author="docx-view"\/><\/w:rPr><\/w:pPr><w:del w:id="\d+" w:author="docx-view"><w:r><w:delText[^>]*>first<\/w:delText><\/w:r><\/w:del><\/w:p>/);
+});
+
+test('tracked deleteParagraph clears non-run direct children while preserving deleted runs', () => {
+  const doc = trackedDoc('<w:p><w:bookmarkStart w:id="1" w:name="b"/><w:r><w:t>first</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>');
+  doc.deleteParagraph(0);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /bookmarkStart/);
+  assert.doesNotMatch(xml, /bookmarkEnd/);
+  assert.match(xml, /<w:del w:id="\d+" w:author="docx-view"><w:r><w:delText[^>]*>first<\/w:delText><\/w:r><\/w:del>/);
 });
 
 test('tracked deleteParagraph still rejects section-break paragraphs', () => {
