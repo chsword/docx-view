@@ -96,7 +96,7 @@ console.log(reopened.getSnapshot());
 | `getRangeFormat(range)` | 读取字符范围内一致的 run 直接格式；同一字段在范围内不一致时返回 `undefined` |
 | `copyFormat(range)` / `applyFormat(range, format)` | 格式刷 API：复制段落内范围的 run 直接格式，并应用到跨段落选区 |
 | `formatDocumentRange(range, format)` / `getDocumentRangeFormat(range)` | 支持跨段落选区：首段部分 + 中间整段 + 末段部分 |
-| `copyClipboardFragment(range)` / `pasteClipboardFragment(range, fragment)` | 内部富文本剪贴板 API（run 直接格式、超链接、内嵌图片），图片按目标文档关系与 media 部件重建（不复用源 `rId`） |
+| `copyClipboardFragment(range)` / `pasteClipboardFragment(range, fragment)` | 内部富文本剪贴板 API：run 直接格式、超链接、内嵌图片、段落格式与样式引用、编号（含多级）和表格；粘贴按落点切分段落，图片按目标文档关系与 media 部件重建（不复用源 `rId`） |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `getRevisions(filter?)` | 扁平读取主文档中的插入、删除、格式修订和表格/行/单元格属性修订；`moveFrom` / `moveTo` 当前按删除 / 插入降级返回 |
@@ -233,8 +233,8 @@ console.log(tool, result.revision);
 
 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；**不承诺与 Word 像素级一致或精确分页**。列表计数只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。表格样式参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，其余条件样式尚未实现。浮动图片使用简化的浏览器布局：四周型 / 紧密型 / 穿越型映射为浮动，`topAndBottom` 映射为块级，`wrapNone` 映射为绝对定位；外部链接图片显示占位框且不会主动联网加载。当前已支持读取修订（插入、删除、`rPrChange` / `pPrChange` / `tblPrChange` / `trPrChange` / `tcPrChange`）、`trackChanges` 开关，以及常见文本 / 段落 / 图片 / 表格行编辑自动写入修订；这些部件 / XML 会尽量保留。尚未支持接受 / 拒绝修订或完整域值计算，低层 API 仍可操作。
 
-支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。
+支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。
 
-XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:image/*;base64`，**不会主动请求外部 URL**。内部剪贴板跨文档粘贴时样式按“直接格式”降级应用，不自动迁移样式定义。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
+XML 禁止 DTD / 自定义实体声明，ZIP 路径禁止目录穿越。视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:` 形式的 PNG / JPEG / GIF / BMP（其余类型跳过该图，不影响同段其余内容），**不会主动请求外部 URL**。超链接一律经 `isSafeHyperlinkUrl()` 白名单（仅 http / https / mailto），编辑器与 `pasteClipboardFragment()` 公开 API 共用同一道校验。内部剪贴板携带段落的**样式 ID**但不迁移样式定义：跨文档粘贴时若目标文档未定义该样式，样式引用会悬空、显示回落到默认格式（run 的直接格式不受影响）；需要保真时请先在目标文档 `defineStyle()`。保留原始部件**不等于清除恶意内容**；下载文件中的外部链接、嵌入对象等仍需使用者按来源谨慎处理。大文档或不可信输入建议在 Web Worker / 隔离服务中处理。
 
 测试覆盖 DOCX 往返、未修改部件保留、跨 run 替换、Unicode、样式链与主题解析、编号解析与创建、多级编号、style `numPr`、legal numbering、表格跨度解析、行列编辑、单元格合并 / 拆分、显式表格格式、分节、格式顺序、DOM 编辑、事务回滚、版本冲突、XML 校验、UTF-16、非标准主文档路径和 ZIP 解压限制。
