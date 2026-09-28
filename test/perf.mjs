@@ -28,9 +28,14 @@ function formatMeasurement(label, measurement) {
   return `${label}: median=${measurement.median.toFixed(1)}ms samples=[${measurement.samples.map((value) => value.toFixed(1)).join(', ')}]`;
 }
 
-function measureSingleInsert(count) {
+function measureSingleInsert(count, seedCount = 0) {
   return measureMedian(() => {
     const doc = DocxDocument.create();
+    if (seedCount > 0) {
+      doc.applyOperations({
+        operations: Array.from({ length: seedCount - 1 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
+      });
+    }
     for (let i = 0; i < count; i++) doc.insertParagraph(`段落内容 ${i}`);
   });
 }
@@ -67,14 +72,14 @@ function measureBatchSetParagraphText(count) {
 }
 
 test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
-  const inserts = measureSingleInsert(300);
+  const inserts = measureSingleInsert(200, 200);
   const sets = measureSetParagraphText(200);
-  const perOpInsert = inserts.median / 300;
+  const perOpInsert = inserts.median / 200;
   const perOpSet = sets.median / 200;
   const ratio = perOpInsert / perOpSet;
   assert.ok(ratio < 4, [
     `insertParagraph cost ratio exceeded threshold 4.00 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('single insert x300', inserts),
+    formatMeasurement('single insert x200 after 200 seeded paragraphs', inserts),
     formatMeasurement('setParagraphText x200', sets),
   ].join('\n'));
 });
