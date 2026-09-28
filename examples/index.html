@@ -113,6 +113,29 @@
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
             </section>
             <section class="comment-panel" aria-label="批注面板">
+              <div class="review-panel">
+                <div class="comment-panel-header">
+                  <div><strong>审阅筛选</strong><p class="hint">作者筛选与视图切换仅影响渲染，不改文档内容。</p></div>
+                </div>
+                <div class="comment-filters">
+                  <label class="sr-only" for="review-revision-view">修订视图</label>
+                  <select id="review-revision-view" aria-label="修订视图">
+                    <option value="markup">标记视图</option>
+                    <option value="final">最终视图</option>
+                    <option value="original">原始视图</option>
+                  </select>
+                  <fieldset>
+                    <legend class="sr-only">审阅显示选项</legend>
+                    <label><input id="review-show-revisions" type="checkbox" checked /> 显示修订</label>
+                    <label><input id="review-show-comments" type="checkbox" checked /> 显示批注</label>
+                  </fieldset>
+                </div>
+                <div class="comment-panel-actions">
+                  <button id="review-select-all" type="button" class="button subtle">全选作者</button>
+                  <button id="review-clear-authors" type="button" class="button subtle">清空作者筛选</button>
+                </div>
+                <ul id="reviewer-list" class="comment-list"></ul>
+              </div>
               <div class="comment-panel-header">
                 <div><strong>批注</strong><p class="hint">点击高亮区域或下面的列表查看；回复与解决状态会写回 DOCX。</p></div>
                 <label><input id="toggle-comments" type="checkbox" checked /> 显示高亮</label>

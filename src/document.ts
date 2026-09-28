@@ -4,7 +4,7 @@ import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
+  NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
@@ -111,10 +111,16 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
+<<<<<<< HEAD
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const REVISION_ELEMENT_NAMES = new Set([
   'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
 ]);
+=======
+const UNATTRIBUTED_REVIEWER = '(unattributed)';
+const EMPTY_REVIEWER = '(empty author)';
+const BLANK_REVIEWER = '(blank author)';
+>>>>>>> origin/main
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -1778,9 +1784,20 @@ function cloneCommentInfo(comment: CommentInfo): CommentInfo {
   return JSON.parse(JSON.stringify(comment)) as CommentInfo;
 }
 
+function cloneReviewerInfo(reviewer: ReviewerInfo): ReviewerInfo {
+  return JSON.parse(JSON.stringify(reviewer)) as ReviewerInfo;
+}
+
 function normalizeCommentDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function reviewerBucketOf(author: string | undefined): string {
+  if (author === undefined) return UNATTRIBUTED_REVIEWER;
+  if (author === '') return EMPTY_REVIEWER;
+  if (!author.trim()) return BLANK_REVIEWER;
+  return author;
 }
 
 function updateStyleLength(style: string | null, name: string, points: number): string {
@@ -1988,6 +2005,7 @@ export class DocxDocument {
   private contentPartPathsCache?: { revision: number; paths: string[] };
   private commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
   private revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
+  private reviewerInfoCache?: { revision: number; reviewers: ReviewerInfo[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
   private undoHistory: HistoryState[] = [];
   private redoHistory: HistoryState[] = [];
@@ -2066,6 +2084,7 @@ export class DocxDocument {
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
+    this.reviewerInfoCache = undefined;
     this.imageDataUrls.clear();
     this.pushRedoState({ ...current, action: step.action });
     this.nextHistoryLabel = undefined;
@@ -2086,6 +2105,7 @@ export class DocxDocument {
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
+    this.reviewerInfoCache = undefined;
     this.imageDataUrls.clear();
     this.pushUndoState({ ...current, action: step.action });
     this.enforceHistoryLimits();
@@ -2331,6 +2351,7 @@ export class DocxDocument {
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
+      this.reviewerInfoCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       else this.applyPendingMergedHistory();
@@ -2386,6 +2407,7 @@ export class DocxDocument {
     noteStateCache: { revision: number; state: NoteState } | undefined;
     commentStateCache: { revision: number; comments: CommentInfo[] } | undefined;
     revisionInfoCache: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] } | undefined;
+    reviewerInfoCache: { revision: number; reviewers: ReviewerInfo[] } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -2400,6 +2422,7 @@ export class DocxDocument {
       noteStateCache: this.noteStateCache,
       commentStateCache: this.commentStateCache,
       revisionInfoCache: this.revisionInfoCache,
+      reviewerInfoCache: this.reviewerInfoCache,
       imageDataUrls: new Map(this.imageDataUrls),
     };
   }
@@ -2416,6 +2439,7 @@ export class DocxDocument {
     this.noteStateCache = state.noteStateCache;
     this.commentStateCache = state.commentStateCache;
     this.revisionInfoCache = state.revisionInfoCache;
+    this.reviewerInfoCache = state.reviewerInfoCache;
     this.imageDataUrls = state.imageDataUrls;
   }
 
@@ -2619,6 +2643,7 @@ export class DocxDocument {
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
+    this.reviewerInfoCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -3181,6 +3206,92 @@ export class DocxDocument {
     }
     if (filter.resolved !== undefined) comments = comments.filter((comment) => comment.resolved === filter.resolved);
     return comments.map(cloneCommentInfo);
+  }
+
+  getReviewers(): ReviewerInfo[] {
+    if (this.reviewerInfoCache?.revision === this.revision) return this.reviewerInfoCache.reviewers.map(cloneReviewerInfo);
+    const revisions = this.getRevisions();
+    const comments = this.getComments().filter((comment) =>
+      comment.anchor?.sourcePartPath === this.mainDocumentPath);
+    if (!revisions.length && !comments.length) {
+      this.reviewerInfoCache = { revision: this.revision, reviewers: [] };
+      return [];
+    }
+    type Aggregate = ReviewerInfo & {
+      firstDateMs?: number;
+      lastDateMs?: number;
+      initialsCount: Map<string, number>;
+      initialsSeenOrder: Map<string, number>;
+      initialsOrderSeed: number;
+    };
+    const byAuthor = new Map<string, Aggregate>();
+    const dateUpdate = (entry: Aggregate, value: string | undefined): void => {
+      if (!value) return;
+      const ms = Date.parse(value);
+      if (!Number.isFinite(ms)) return;
+      if (entry.firstDateMs === undefined || ms < entry.firstDateMs) {
+        entry.firstDateMs = ms;
+        entry.firstDate = value;
+      }
+      if (entry.lastDateMs === undefined || ms > entry.lastDateMs) {
+        entry.lastDateMs = ms;
+        entry.lastDate = value;
+      }
+    };
+    const aggregateFor = (author: string): Aggregate => {
+      const existing = byAuthor.get(author);
+      if (existing) return existing;
+      const created: Aggregate = {
+        author,
+        revisionCount: 0,
+        commentCount: 0,
+        unresolvedCommentCount: 0,
+        initialsCount: new Map(),
+        initialsSeenOrder: new Map(),
+        initialsOrderSeed: 0,
+      };
+      byAuthor.set(author, created);
+      return created;
+    };
+    for (const revision of revisions) {
+      const entry = aggregateFor(reviewerBucketOf(revision.author));
+      entry.revisionCount++;
+      dateUpdate(entry, revision.date);
+    }
+    for (const comment of comments) {
+      const entry = aggregateFor(reviewerBucketOf(comment.author));
+      entry.commentCount++;
+      if (comment.resolved !== true) entry.unresolvedCommentCount++;
+      dateUpdate(entry, comment.date);
+      const initials = comment.initials?.trim();
+      if (!initials) continue;
+      entry.initialsCount.set(initials, (entry.initialsCount.get(initials) ?? 0) + 1);
+      if (!entry.initialsSeenOrder.has(initials)) {
+        entry.initialsSeenOrder.set(initials, entry.initialsOrderSeed++);
+      }
+    }
+    const reviewers = [...byAuthor.values()].map((entry): ReviewerInfo => {
+      const initials = [...entry.initialsCount.entries()]
+        .sort((a, b) =>
+          b[1] - a[1] ||
+          (entry.initialsSeenOrder.get(a[0]) ?? Number.MAX_SAFE_INTEGER) - (entry.initialsSeenOrder.get(b[0]) ?? Number.MAX_SAFE_INTEGER) ||
+          a[0].localeCompare(b[0]))[0]?.[0];
+      return {
+        author: entry.author,
+        ...(initials !== undefined ? { initials } : {}),
+        revisionCount: entry.revisionCount,
+        commentCount: entry.commentCount,
+        unresolvedCommentCount: entry.unresolvedCommentCount,
+        ...(entry.firstDate !== undefined ? { firstDate: entry.firstDate } : {}),
+        ...(entry.lastDate !== undefined ? { lastDate: entry.lastDate } : {}),
+      };
+    }).sort((a, b) =>
+      b.revisionCount - a.revisionCount ||
+      b.commentCount - a.commentCount ||
+      b.unresolvedCommentCount - a.unresolvedCommentCount ||
+      a.author.localeCompare(b.author));
+    this.reviewerInfoCache = { revision: this.revision, reviewers };
+    return reviewers.map(cloneReviewerInfo);
   }
 
   getSnapshot(): DocumentSnapshot {
@@ -6109,6 +6220,7 @@ export class DocxDocument {
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
+      this.reviewerInfoCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return result;
@@ -6921,6 +7033,7 @@ export class DocxDocument {
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
+      this.reviewerInfoCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return { ...snapshot, revision: this.revision };
