@@ -313,6 +313,7 @@ export interface DocumentSnapshot {
   blocks: DocumentBlock[];
   footnotes: NoteInfo[];
   endnotes: NoteInfo[];
+  comments: CommentInfo[];
   parts: string[];
   styles: StyleInfo[];
   hyperlinks: HyperlinkInfo[];
@@ -341,12 +342,31 @@ export interface NoteInfo {
   reference: { paragraph: number; run: number };
 }
 
+export type CommentAnchor =
+  | { sourcePartPath: string; paragraph: number; runs: number[] }
+  | { sourcePartPath: string; startParagraph: number; endParagraph: number };
+
+export interface CommentInfo {
+  id: number;
+  author?: string;
+  initials?: string;
+  date?: string;
+  text: string;
+  blocks?: DocumentBlock[];
+  anchor?: CommentAnchor;
+  parentId?: number;
+  resolved?: boolean;
+  isOrphan: boolean;
+}
+
+/** Character offsets in the main-document paragraph namespace. */
 export interface TextRange {
   paragraph: number;
   start: number;
   end: number;
 }
 
+/** Cross-paragraph offsets in the main-document paragraph namespace. */
 export interface DocumentRange {
   start: { paragraph: number; offset: number };
   end: { paragraph: number; offset: number };
@@ -401,7 +421,12 @@ export type AgentOperation =
   | { type: 'insertEndnote'; paragraph: number; run: number; text: string; customMark?: string }
   | { type: 'setNoteText'; kind: 'footnote' | 'endnote'; id: number; text: string }
   | { type: 'deleteNote'; kind: 'footnote' | 'endnote'; id: number }
-  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number };
+  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number }
+  | { type: 'addComment'; range: TextRange | DocumentRange; comment: { author?: string; initials?: string; text: string } }
+  | { type: 'replyComment'; parentId: number; comment: { author?: string; initials?: string; text: string } }
+  | { type: 'setCommentResolved'; id: number; resolved: boolean }
+  | { type: 'setCommentText'; id: number; text: string }
+  | { type: 'deleteComment'; id: number; options?: { withReplies?: boolean } };
 
 export interface AgentRequest {
   expectedRevision?: number;

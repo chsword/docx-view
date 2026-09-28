@@ -39,6 +39,7 @@ let xmlRevision = -1;
 let imageAction: 'insert' | 'replace' = 'insert';
 let selectedRange: DocumentRange | null = null;
 let selectedRangeFormat: RunFormat | null = null;
+let selectedCommentId: number | null = null;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
@@ -128,6 +129,7 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   loadStyleOptions();
   updateSelection();
   updateImageSelection();
+  refreshComments(snapshot);
 }
 
 function loadStyleOptions(): void {
@@ -195,6 +197,40 @@ function updateImageSelection(): void {
   element<HTMLButtonElement>('delete-image').disabled = !image;
 }
 
+function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
+  const authorFilter = element<HTMLInputElement>('comment-author-filter').value.trim();
+  const resolvedFilter = element<HTMLSelectElement>('comment-resolved-filter').value;
+  const list = element<HTMLUListElement>('comment-list');
+  const comments = snapshot.comments.filter((comment) => {
+    if (authorFilter && !(comment.author ?? '').includes(authorFilter)) return false;
+    if (resolvedFilter === 'resolved' && comment.resolved !== true) return false;
+    if (resolvedFilter === 'open' && comment.resolved === true) return false;
+    return true;
+  });
+  if (selectedCommentId !== null && !comments.some((comment) => comment.id === selectedCommentId)) selectedCommentId = null;
+  list.replaceChildren(...comments.map((comment) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.className = selectedCommentId === comment.id ? 'active' : '';
+    button.addEventListener('click', () => {
+      selectedCommentId = comment.id;
+      refreshComments();
+    });
+    const meta = document.createElement('div');
+    meta.className = 'comment-meta';
+    meta.textContent = `${comment.author ?? '匿名'} · #${comment.id}${comment.resolved ? ' · 已解决' : ''}${comment.parentId ? ` · 回复 #${comment.parentId}` : ''}`;
+    const body = document.createElement('div');
+    body.className = 'comment-body';
+    body.textContent = comment.text || '(空批注)';
+    button.append(meta, body);
+    item.append(button);
+    return item;
+  }));
+  element<HTMLButtonElement>('reply-comment').disabled = selectedCommentId === null;
+  element<HTMLButtonElement>('resolve-comment').disabled = selectedCommentId === null;
+  element<HTMLButtonElement>('delete-comment').disabled = selectedCommentId === null;
+}
+
 function selectedIndex(): number {
   editor.flush();
   const index = editor.selectedParagraph;
@@ -202,6 +238,13 @@ function selectedIndex(): number {
     throw new Error('请先点击正文中的一个段落，再使用格式工具。');
   }
   return index;
+}
+
+function selectedCommentRange() {
+  if (selectedRange) return toDocumentRange(selectedRange);
+  const index = selectedIndex();
+  const text = doc.getParagraphs().find((paragraph) => paragraph.index === index)?.text ?? '';
+  return { paragraph: index, start: 0, end: text.length };
 }
 
 function selectedCell(): { table: number; row: number; col: number; rowSpan: number; colSpan: number } {
@@ -295,6 +338,7 @@ function setDocument(next: DocxDocument, name: string): void {
   doc = next;
   selectedRange = null;
   selectedRangeFormat = null;
+  selectedCommentId = null;
   recentNumbering.clear();
   filename = name;
   element('document-name').textContent = filename;
@@ -311,6 +355,49 @@ host.addEventListener('docx-rangechange', (event) => {
   updateSelection();
 });
 host.addEventListener('docx-imageselectionchange', updateImageSelection);
+host.addEventListener('docx-commentclick', (event) => {
+  const ids = (event as CustomEvent<{ ids: number[] }>).detail?.ids ?? [];
+  selectedCommentId = ids[0] ?? null;
+  refreshComments();
+});
+element<HTMLInputElement>('toggle-comments').addEventListener('change', (event) => {
+  host.classList.toggle('comments-hidden', !(event.target as HTMLInputElement).checked);
+});
+element('comment-author-filter').addEventListener('input', () => refreshComments());
+element('comment-resolved-filter').addEventListener('change', () => refreshComments());
+element('new-comment').addEventListener('click', () => run(() => {
+  const text = window.prompt('输入批注内容');
+  if (text === null) return;
+  const id = doc.addComment(selectedCommentRange(), { text });
+  selectedCommentId = id;
+  editor.render();
+  refresh();
+  message('已添加批注。');
+}));
+element('reply-comment').addEventListener('click', () => run(() => {
+  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
+  const text = window.prompt('输入回复内容');
+  if (text === null) return;
+  selectedCommentId = doc.replyComment(selectedCommentId, { text });
+  refresh();
+  message('已添加回复。');
+}));
+element('resolve-comment').addEventListener('click', () => run(() => {
+  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
+  const current = doc.getComments().find((comment) => comment.id === selectedCommentId);
+  if (!current) throw new Error('找不到当前批注。');
+  doc.setCommentResolved(current.id, !current.resolved);
+  refresh();
+  message(current.resolved ? '已取消解决状态。' : '已标记为解决。');
+}));
+element('delete-comment').addEventListener('click', () => run(() => {
+  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
+  doc.deleteComment(selectedCommentId);
+  selectedCommentId = null;
+  editor.render();
+  refresh();
+  message('已删除批注。');
+}));
 for (const key of ['bold', 'italic', 'underline'] as const) {
   element(`format-${key}`).addEventListener('click', () => run(() => {
     formatRuns({ [key]: !selectedRangeFormat?.[key] });

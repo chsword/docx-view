@@ -308,6 +308,14 @@ function validateHyperlinkReference(value: unknown): void {
   assertText(value.text, 'hyperlink.text');
 }
 
+function validateCommentInput(value: unknown, name = 'comment'): void {
+  object(value);
+  keys(value, ['author', 'initials', 'text']);
+  if ('author' in value && value.author !== undefined) assertText(value.author, `${name}.author`);
+  if ('initials' in value && value.initials !== undefined) assertText(value.initials, `${name}.initials`);
+  assertText(value.text, `${name}.text`);
+}
+
 export function validateRequest(value: unknown): asserts value is AgentRequest {
   object(value);
   keys(value, ['expectedRevision', 'operations']);
@@ -517,6 +525,39 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         if (!['footnote', 'endnote'].includes(String(op.kind))) throw new Error('Invalid note kind.');
         assertIndex(op.id);
         break;
+      case 'addComment':
+        keys(op, ['type', 'range', 'comment']);
+        object(op.range);
+        if ('paragraph' in op.range) validateTextRange(op.range);
+        else validateDocumentRange(op.range);
+        validateCommentInput(op.comment);
+        break;
+      case 'replyComment':
+        keys(op, ['type', 'parentId', 'comment']);
+        assertIndex(op.parentId);
+        validateCommentInput(op.comment);
+        break;
+      case 'setCommentResolved':
+        keys(op, ['type', 'id', 'resolved']);
+        assertIndex(op.id);
+        if (typeof op.resolved !== 'boolean') throw new Error('resolved must be boolean.');
+        break;
+      case 'setCommentText':
+        keys(op, ['type', 'id', 'text']);
+        assertIndex(op.id);
+        assertText(op.text, 'text');
+        break;
+      case 'deleteComment':
+        keys(op, ['type', 'id', 'options']);
+        assertIndex(op.id);
+        if ('options' in op) {
+          object(op.options);
+          keys(op.options, ['withReplies']);
+          if ('withReplies' in op.options && typeof op.options.withReplies !== 'boolean') {
+            throw new Error('options.withReplies must be boolean.');
+          }
+        }
+        break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
     }
   }
@@ -552,6 +593,7 @@ const runFormatField = {
   enum: [...RUN_FORMAT_FIELDS],
 };
 const hyperlinkLink = shape({ url: text, anchor: text, tooltip: text }, []);
+const commentInput = shape({ author: text, initials: text, text }, ['text']);
 const hyperlinkRef = {
   anyOf: [
     index,
@@ -795,6 +837,11 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setNoteText', { kind: { enum: ['footnote', 'endnote'] }, id: index, text }),
           operation('deleteNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
           operation('convertNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
+          operation('addComment', { range: { anyOf: [textRange, documentRange] }, comment: commentInput }),
+          operation('replyComment', { parentId: index, comment: commentInput }),
+          operation('setCommentResolved', { id: index, resolved: { type: 'boolean' } }),
+          operation('setCommentText', { id: index, text }),
+          operation('deleteComment', { id: index, options: shape({ withReplies: { type: 'boolean' } }, []) }, ['id']),
         ],
       },
     },

@@ -169,6 +169,8 @@ export class DocxEditor {
   private renderAfterComposition = false;
   private destroyed = false;
   private readonly metrics: CanvasRenderingContext2D | null;
+  private commentRunIds = new Map<string, number[]>();
+  private commentParagraphIds = new Map<number, number[]>();
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -180,6 +182,20 @@ export class DocxEditor {
         anchor: target.dataset.docxAnchor,
         unsafe: target.dataset.docxUnsafe === 'true',
       },
+    }));
+  }
+
+  private dispatchCommentClick(target: HTMLElement): void {
+    const ids = (target.dataset.docxCommentIds ?? '')
+      .split(',')
+      .map((value) => Number(value))
+      .filter((value) => Number.isSafeInteger(value) && value >= 0);
+    if (!ids.length) return;
+    const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+    if (!EventClass) return;
+    this.root.dispatchEvent(new EventClass('docx-commentclick', {
+      bubbles: true,
+      detail: { ids },
     }));
   }
 
@@ -275,6 +291,27 @@ export class DocxEditor {
     this.flush();
     this.applyPageSetup();
     this.paragraphs.clear();
+    this.commentRunIds ??= new Map();
+    this.commentParagraphIds ??= new Map();
+    this.commentRunIds.clear();
+    this.commentParagraphIds.clear();
+    for (const comment of this.document.getComments()) {
+      if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
+      if ('runs' in comment.anchor) {
+        for (const run of comment.anchor.runs) {
+          const key = `${comment.anchor.paragraph}:${run}`;
+          const ids = this.commentRunIds.get(key) ?? [];
+          if (!ids.includes(comment.id)) ids.push(comment.id);
+          this.commentRunIds.set(key, ids);
+        }
+      } else {
+        for (let paragraph = comment.anchor.startParagraph; paragraph <= comment.anchor.endParagraph; paragraph++) {
+          const ids = this.commentParagraphIds.get(paragraph) ?? [];
+          if (!ids.includes(comment.id)) ids.push(comment.id);
+          this.commentParagraphIds.set(paragraph, ids);
+        }
+      }
+    }
     const fragment = this.root.ownerDocument.createDocumentFragment();
     const canRenderHeaderFooter = typeof this.root.ownerDocument.createElement === 'function';
     if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
@@ -315,7 +352,8 @@ export class DocxEditor {
       if (node.nodeType === 3) return node.textContent ?? '';
       if (node.nodeType !== 1) return '';
       const current = node as HTMLElement;
-      if (current.dataset.image || current.contentEditable === 'false') return '';
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return '';
+      if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return '';
       if (current.tagName === 'BR') return '\n';
       const text = Array.from(current.childNodes).map(walk).join('');
       if (['DIV', 'P'].includes(current.tagName)) return text ? `${text}\n` : '';
@@ -561,6 +599,7 @@ export class DocxEditor {
       const marker = this.root.ownerDocument.createElement('span');
       marker.className = 'docx-numbering';
       marker.contentEditable = 'false';
+      marker.setAttribute('data-docx-mark', '1');
       marker.setAttribute('aria-hidden', 'true');
       marker.textContent = paragraph.numbering.text;
       marker.dataset.suffix = paragraph.numbering.suffix;
@@ -585,6 +624,11 @@ export class DocxEditor {
     content.setAttribute('aria-multiline', 'true');
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
+    if (paragraphCommentIds?.length) {
+      element.classList.add('docx-comment-anchor');
+      element.dataset.docxCommentIds = paragraphCommentIds.join(',');
+    }
     element.addEventListener('mousedown', (event) => {
       const target = event.target as Node | null;
       if (target && content.contains(target)) return;
@@ -677,6 +721,11 @@ export class DocxEditor {
       event.preventDefault();
       if (!(event.ctrlKey || event.metaKey)) return;
       this.dispatchLinkClick(target);
+    });
+    content.addEventListener('click', (event) => {
+      const target = (event.target as Element | null)?.closest<HTMLElement>('[data-docx-comment-ids]');
+      if (!target || !this.root.contains(target)) return;
+      this.dispatchCommentClick(target);
     });
     content.addEventListener('beforeinput', (event) => {
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
@@ -781,6 +830,11 @@ export class DocxEditor {
     const unsafe = run.hyperlink?.unsafe ?? false;
     const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
     const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
+    const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
+    if (commentIds.length) {
+      runSpan.classList.add('docx-comment-anchor');
+      runSpan.dataset.docxCommentIds = commentIds.join(',');
+    }
     if (hasSafeLink && run.hyperlink) {
       const link = runSpan as HTMLAnchorElement;
       runSpan.dataset.docxLink = '1';
@@ -1045,7 +1099,8 @@ export class DocxEditor {
     if (node.nodeType === 3) return Array.from(node.textContent ?? '').length;
     if (node.nodeType !== 1) return 0;
     const current = node as HTMLElement;
-    if (current.dataset.image || current.contentEditable === 'false') return 0;
+    if (current.dataset.image || current.dataset.docxMark !== undefined) return 0;
+    if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return 0;
     if (current.tagName === 'BR') return 1;
     return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
   }
@@ -1088,7 +1143,8 @@ export class DocxEditor {
         }
         if (node.nodeType !== 1) return true;
         const current = node as HTMLElement;
-        if (current.dataset.image || current.contentEditable === 'false') return true;
+        if (current.dataset.image || current.dataset.docxMark !== undefined) return true;
+        if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return true;
         if (current.tagName === 'BR') {
           offset += targetOffset > 0 ? 1 : 0;
           return true;
@@ -1105,7 +1161,8 @@ export class DocxEditor {
       }
       if (node.nodeType !== 1) return false;
       const current = node as HTMLElement;
-      if (current.dataset.image || current.contentEditable === 'false') return false;
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return false;
+      if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return false;
       if (current.tagName === 'BR') {
         offset += 1;
         return false;
@@ -1132,7 +1189,8 @@ export class DocxEditor {
       }
       if (node.nodeType !== 1) return null;
       const current = node as HTMLElement;
-      if (current.dataset.image || current.contentEditable === 'false') return null;
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return null;
+      if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return null;
       if (current.tagName === 'BR') {
         if (remaining <= 1) {
           const parent = node.parentNode as Node;
