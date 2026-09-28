@@ -21,6 +21,7 @@ const COMMENTS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocess
 const COMMENTS_EXTENDED_TYPE = 'application/vnd.ms-word.commentsExtended+xml';
 const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
 const W15_NS = 'http://schemas.microsoft.com/office/word/2012/wordml';
+const SETTINGS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -71,6 +72,13 @@ function withCommentsDoc(bodyXml, commentsXml, commentsExtendedXml = '', target 
     });
     doc.addPart(`word/${extendedTarget}`, encoder.encode(commentsExtendedXml), COMMENTS_EXTENDED_TYPE);
   }
+  return doc;
+}
+
+function withSettingsXml(settingsXml, target = 'settings.xml') {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="${target}"/></Relationships>`), RELS_TYPE);
+  doc.addPart(`word/${target}`, encoder.encode(settingsXml), SETTINGS_TYPE);
   return doc;
 }
 
@@ -2296,8 +2304,162 @@ test('insertBreak writes OOXML default form for textWrapping', () => {
 test('getSettings resolves related settings.xml with defaults', () => {
   const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
   doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`), RELS_TYPE);
-  doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:defaultTabStop w:val="1440"/><w:evenAndOddHeaders/></w:settings>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml');
-  assert.deepEqual(doc.getSettings(), { defaultTabStop: 1440, evenAndOddHeaders: true });
+  doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:defaultTabStop w:val="1440"/><w:evenAndOddHeaders/></w:settings>`), SETTINGS_TYPE);
+  assert.deepEqual(doc.getSettings(), { defaultTabStop: 1440, evenAndOddHeaders: true, trackChanges: false });
+});
+
+test('getSettings reads explicit trackChanges off and on', () => {
+  const disabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges w:val="0"/></w:settings>`);
+  assert.equal(disabled.getSettings().trackChanges, false);
+  const enabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges/></w:settings>`);
+  assert.equal(enabled.getSettings().trackChanges, true);
+});
+
+test('setTrackChanges creates settings.xml and keeps CT_Settings order', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  const settingsXml = doc.getPartXml('word/settings.xml');
+  assert.match(settingsXml, /<w:trackChanges\/>/);
+  assert.match(doc.getPartXml('word/_rels/document.xml.rels'), /relationships\/settings" Target="settings\.xml"/);
+  const ordered = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:revisionView/><w:doNotTrackMoves/></w:settings>`);
+  ordered.setTrackChanges(true);
+  assert.match(ordered.getPartXml('word/settings.xml'), /<w:revisionView\/><w:trackChanges\/><w:doNotTrackMoves\/>/);
+});
+
+test('setTrackChanges(false) writes explicit off value after being enabled', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setTrackChanges(false);
+  assert.equal(doc.getSettings().trackChanges, false);
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:trackChanges w:val="0"\/>/);
+});
+
+test('setTrackChanges(false) writes explicit off markup when settings were previously implicit', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(false);
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:trackChanges w:val="0"\/>/);
+});
+
+test('setTrackChanges is a no-op when the explicit XML state is unchanged', () => {
+  const disabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges w:val="0"/></w:settings>`);
+  const disabledRevision = disabled.revision;
+  disabled.setTrackChanges(false);
+  assert.equal(disabled.revision, disabledRevision);
+  const enabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges/></w:settings>`);
+  const enabledRevision = enabled.revision;
+  enabled.setTrackChanges(true);
+  assert.equal(enabled.revision, enabledRevision);
+});
+
+test('getParagraphs keeps inserted text in body text and marks the run revision', () => {
+  const doc = withBody('<w:p><w:ins w:id="7" w:author="Alice" w:date="2026-09-28T00:00:00Z"><w:r><w:t>inserted</w:t></w:r></w:ins><w:r><w:t>keep</w:t></w:r></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'insertedkeep');
+  assert.equal(paragraph.runs[0].text, 'inserted');
+  assert.deepEqual(paragraph.runs[0].revisions, [{ id: 7, kind: 'insertion', author: 'Alice', date: '2026-09-28T00:00:00Z' }]);
+});
+
+test('deleted text stays out of paragraph text but keeps an empty run slot', () => {
+  const doc = withBody('<w:p><w:del w:id="8"><w:r><w:delText>old</w:delText></w:r></w:del><w:r><w:t>keep</w:t></w:r></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'keep');
+  assert.equal(paragraph.runs.length, 2);
+  assert.equal(paragraph.runs[0].text, '');
+  assert.deepEqual(doc.getRevisions(), [{ id: 8, kind: 'deletion', paragraph: 0, run: 0, deletedText: 'old' }]);
+});
+
+test('nested ins/del markup degrades without throwing and preserves visible text rules', () => {
+  const doc = withBody('<w:p><w:ins w:id="1"><w:del w:id="2"><w:r><w:delText>old</w:delText></w:r></w:del><w:r><w:t>new</w:t></w:r></w:ins></w:p>');
+  assert.doesNotThrow(() => doc.getParagraphs());
+  assert.equal(doc.getParagraphs()[0].text, 'new');
+  assert.deepEqual(doc.getRevisions().map((revision) => revision.kind), ['insertion', 'deletion']);
+});
+
+test('getRevisions ignores malformed metadata but does not throw', () => {
+  const doc = withBody('<w:p><w:ins w:author="" w:date="not-a-date"><w:r><w:t>bad</w:t></w:r></w:ins><w:del w:id="9" w:author="" w:date="bad"><w:r><w:delText>old</w:delText></w:r></w:del></w:p>');
+  assert.doesNotThrow(() => doc.getRevisions());
+  assert.deepEqual(doc.getRevisions(), [{ id: 9, kind: 'deletion', paragraph: 0, run: 1, deletedText: 'old' }]);
+});
+
+test('getRevisions filters by author and kind', () => {
+  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>B</w:delText></w:r></w:del></w:p>');
+  assert.deepEqual(doc.getRevisions({ authors: ['Alice'] }).map((revision) => revision.id), [1]);
+  assert.deepEqual(doc.getRevisions({ kinds: ['deletion'] }).map((revision) => revision.id), [2]);
+});
+
+test('getRevisions reads run-property insertion and deletion markers', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:ins w:id="10"/><w:del w:id="11"/></w:rPr><w:t>A</w:t></w:r></w:p>');
+  const revisions = doc.getRevisions();
+  assert.deepEqual(revisions.map((revision) => ({ id: revision.id, kind: revision.kind, run: revision.run })), [
+    { id: 10, kind: 'insertion', run: 0 },
+    { id: 11, kind: 'deletion', run: 0 },
+  ]);
+});
+
+test('getRevisions reads rPrChange previous format snapshots', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:rPrChange w:id="12" w:author="Alice"><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr></w:rPrChange></w:rPr><w:t>A</w:t></w:r></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  assert.deepEqual(paragraph.runs[0].revisions, [{ id: 12, kind: 'runFormatChange', author: 'Alice' }]);
+  assert.deepEqual(doc.getRevisions()[0].previousFormat, { bold: true, color: 'FF0000' });
+});
+
+test('getParagraphs exposes paragraphRevision and getRevisions reads pPrChange snapshots', () => {
+  const doc = withBody('<w:p><w:pPr><w:pPrChange w:id="13"><w:pPr><w:jc w:val="center"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getParagraphs()[0].paragraphRevision, { id: 13, kind: 'paragraphFormatChange' });
+  assert.deepEqual(doc.getRevisions()[0].previousFormat, { alignment: 'center' });
+});
+
+test('getRevisions reads table, row, and cell format changes', () => {
+  const doc = withBody('<w:tbl><w:tblPr><w:tblPrChange w:id="14"/></w:tblPr><w:tr><w:trPr><w:trPrChange w:id="15"/></w:trPr><w:tc><w:tcPr><w:tcPrChange w:id="16"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, kind: revision.kind, paragraph: revision.paragraph })), [
+    { id: 14, kind: 'tableFormatChange', paragraph: 0 },
+    { id: 15, kind: 'rowFormatChange', paragraph: 0 },
+    { id: 16, kind: 'cellFormatChange', paragraph: 0 },
+  ]);
+});
+
+test('getRevisions inside table cells uses the same paragraph index namespace as getParagraphs', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:ins w:id="21"><w:r><w:t>cell</w:t></w:r></w:ins></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  const paragraphs = doc.getParagraphs();
+  const cellParagraph = paragraphs.find((paragraph) => paragraph.text === 'cell');
+  assert.ok(cellParagraph);
+  assert.deepEqual(doc.getRevisions(), [{ id: 21, kind: 'insertion', paragraph: cellParagraph.index, run: 0 }]);
+});
+
+test('moveFrom and moveTo revisions are downgraded to deletion and insertion', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="17"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:moveTo w:id="18"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, kind: revision.kind })), [
+    { id: 17, kind: 'deletion' },
+    { id: 18, kind: 'insertion' },
+  ]);
+  assert.equal(doc.getParagraphs()[0].text, 'new');
+});
+
+test('inserted images remain discoverable through transparent revision wrappers', () => {
+  const doc = withImageDoc(
+    '<w:p><w:ins w:id="19"><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><wp:docPr id="1" name="img"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill><pic:spPr/></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:ins></w:p>',
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>',
+  );
+  assert.equal(doc.getImages().length, 1);
+  assert.equal(doc.getImages()[0].relationshipId, 'rId1');
+});
+
+test('getRevisions uses a per-revision cache and invalidates after mutation', () => {
+  const doc = withBody('<w:p><w:ins w:id="20"><w:r><w:t>A</w:t></w:r></w:ins></w:p>');
+  const first = doc.getRevisions();
+  const second = doc.getRevisions();
+  assert.equal(first, second);
+  doc.setTrackChanges(true);
+  const third = doc.getRevisions();
+  assert.notEqual(third, first);
+});
+
+test('getRevisions fast-paths empty documents to a cached empty list', () => {
+  const doc = DocxDocument.create();
+  const first = doc.getRevisions();
+  const second = doc.getRevisions();
+  assert.deepEqual(first, []);
+  assert.equal(first, second);
 });
 
 test('applyOperations validates new formatting operations', () => {

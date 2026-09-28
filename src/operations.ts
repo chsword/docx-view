@@ -255,7 +255,7 @@ export function validateTableFormat(value: unknown): asserts value is TableForma
 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {
   object(value);
-  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted']);
+  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision']);
   if ('height' in value) {
     object(value.height);
     const height = value.height as Record<string, unknown>;
@@ -267,6 +267,13 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
     if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
+  if ('revision' in value) {
+    object(value.revision);
+    const revision = value.revision as Record<string, unknown>;
+    keys(revision, ['author', 'date']);
+    if ('author' in revision) assertText(revision.author, 'revision.author');
+    if ('date' in revision) assertText(revision.date, 'revision.date');
+  }
 }
 
 export function validateCellFormat(value: unknown): asserts value is CellFormat {
@@ -651,6 +658,7 @@ const rowFormat = shape({
   height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
   cantSplit: { type: 'boolean' }, header: { type: 'boolean' }, alignment: { enum: ['left', 'center', 'right'] },
   deleted: { type: 'boolean' }, inserted: { type: 'boolean' },
+  revision: shape({ author: { type: 'string' }, date: { type: 'string' } }),
 }, []);
 const cellFormat = shape({
   width, borders, shading, margin: margins, verticalAlign: { enum: ['top', 'center', 'bottom'] },

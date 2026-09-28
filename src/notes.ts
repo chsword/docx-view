@@ -24,7 +24,7 @@ const SETTINGS_ORDER = [
   'embedTrueTypeFonts', 'embedSystemFonts', 'saveSubsetFonts', 'saveFormsData', 'mirrorMargins', 'alignBordersAndEdges',
   'bordersDoNotSurroundHeader', 'bordersDoNotSurroundFooter', 'gutterAtTop', 'hideSpellingErrors',
   'hideGrammaticalErrors', 'activeWritingStyle', 'proofState', 'formsDesign', 'attachedTemplate', 'linkStyles',
-  'stylePaneFormatFilter', 'stylePaneSortMethod', 'documentType', 'mailMerge', 'revisionView', 'trackRevisions',
+  'stylePaneFormatFilter', 'stylePaneSortMethod', 'documentType', 'mailMerge', 'revisionView', 'trackChanges',
   'doNotTrackMoves', 'doNotTrackFormatting', 'documentProtection', 'autoFormatOverride', 'styleLockTheme',
   'styleLockQFSet', 'defaultTabStop', 'autoHyphenation', 'consecutiveHyphenLimit', 'hyphenationZone',
   'doNotHyphenateCaps', 'showEnvelope', 'summaryLength', 'clickAndTypeStyle', 'defaultTableStyle', 'evenAndOddHeaders',
@@ -40,7 +40,7 @@ const SETTINGS_ORDER = [
 
 const NOTE_PR_ORDER = ['pos', 'numFmt', 'numStart', 'numRestart', 'numId', 'suppressRef'];
 
-function orderedProperty(parent: Element, name: string, order: string[]): Element {
+export function orderedProperty(parent: Element, name: string, order: string[]): Element {
   let result = children(parent, name)[0];
   if (!result) {
     result = wordElement(parent.ownerDocument!, name);
@@ -140,6 +140,18 @@ export function setNoteSettingsOn(settingsDocument: Document, update: Partial<No
     if (patch.numFmt !== undefined) setWordValue(orderedProperty(pr, 'numFmt', NOTE_PR_ORDER), patch.numFmt);
     if (patch.numStart !== undefined) setWordValue(orderedProperty(pr, 'numStart', NOTE_PR_ORDER), String(patch.numStart));
     if (patch.numRestart !== undefined) setWordValue(orderedProperty(pr, 'numRestart', NOTE_PR_ORDER), patch.numRestart);
+  }
+}
+
+export function setTrackChangesOn(settingsDocument: Document, enabled: boolean): void {
+  const root = settingsDocument.documentElement;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') throw new Error('Invalid settings.xml root.');
+  const trackChanges = orderedProperty(root, 'trackChanges', SETTINGS_ORDER);
+  if (enabled) {
+    trackChanges.removeAttributeNS(WORD_NS, 'val');
+    trackChanges.removeAttribute('w:val');
+  } else {
+    setWordValue(trackChanges, '0');
   }
 }
 
