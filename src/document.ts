@@ -7407,9 +7407,7 @@ export class DocxDocument {
 
   setDocumentProtection(value: DocumentProtection): void {
     assertDocumentProtection(value);
-    const current = this.getDocumentProtection();
-    if (!value.enabled && value.edit === undefined && value.enforced === undefined && !current.enabled && !this.hasDocumentProtectionElement()) return;
-    if (current.enabled === value.enabled && current.edit === value.edit && current.enforced === value.enforced) return;
+    if (!value.enabled && value.edit === undefined && value.enforced === undefined && !this.getDocumentProtection().enabled && !this.hasDocumentProtectionElement()) return;
     this.withDraft((draft) => draft.setDocumentProtectionDirect(value));
   }
 
