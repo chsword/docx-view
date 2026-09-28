@@ -191,6 +191,18 @@ export function setDocumentProtectionOn(settingsDocument: Document, value: Docum
   if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') throw new Error('Invalid settings.xml root.');
   const existing = children(root, 'documentProtection')[0];
   if (!existing && !value.enabled && !('edit' in value) && !('enforced' in value)) return;
+  if (existing && !value.enabled && !('edit' in value) && !('enforced' in value)) {
+    const hasExtraAttributes = Array.from({ length: existing.attributes.length }, (_, index) => existing.attributes.item(index))
+      .some((attribute) => attribute && !(
+        attribute.namespaceURI === WORD_NS &&
+        ['edit', 'enforcement'].includes(attribute.localName ?? '')
+      ));
+    const hasChildren = Boolean(existing.firstChild);
+    if (!hasExtraAttributes && !hasChildren) {
+      existing.parentNode?.removeChild(existing);
+      return;
+    }
+  }
   const protection = existing ?? orderedProperty(root, 'documentProtection', SETTINGS_ORDER);
   if ('edit' in value) {
     if (value.edit === undefined) {

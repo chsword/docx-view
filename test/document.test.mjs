@@ -3060,6 +3060,20 @@ test('setDocumentProperties follows an existing custom package relationship targ
   assert.match(rels, /Target="meta\/core%20props\.xml"/);
 });
 
+test('setDocumentProperties can resolve a dangling relationship with an all-undefined patch', () => {
+  const doc = withDocProps({
+    coreTarget: 'meta/core%20props.xml',
+    corePath: 'meta/core props.xml',
+    coreXml: undefined,
+    includeAppRel: false,
+    appTarget: undefined,
+  });
+  doc.setDocumentProperties({ title: undefined });
+  assert.ok(doc.listParts().includes('meta/core props.xml'));
+  assert.deepEqual(doc.getDocumentProperties(), {});
+  assert.match(doc.getPartXml('meta/core props.xml'), /<cp:coreProperties/);
+});
+
 test('getDocumentProperties output can be written back unchanged', async () => {
   const doc = withDocProps({
     coreTarget: 'meta/core.xml',
@@ -3171,6 +3185,16 @@ test('setDocumentProtection is a no-op when the declaration is unchanged', () =>
   const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="comments" w:enforcement="1"/></w:settings>`);
   const revision = doc.revision;
   doc.setDocumentProtection({ enabled: true, edit: 'comments', enforced: true });
+  assert.equal(doc.revision, revision);
+});
+
+test('setDocumentProtection removes a plain declaration when disabling', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="readOnly" w:enforcement="1"/></w:settings>`);
+  doc.setDocumentProtection({ enabled: false });
+  assert.equal(doc.getDocumentProtection().enabled, false);
+  assert.doesNotMatch(doc.getPartXml('word/settings.xml'), /documentProtection/);
+  const revision = doc.revision;
+  doc.setDocumentProtection({ enabled: false });
   assert.equal(doc.revision, revision);
 });
 
