@@ -1106,20 +1106,33 @@ test('appendRun writes all revision ids for a run with multiple revisions', () =
   assert.equal(runSpan.dataset.docxRun, '4');
 });
 
-test('appendRun exposes revision ids even when revision markup is hidden', () => {
+test('appendRun omits revision ids when revisions are hidden', () => {
   const editor = makeRunRenderEditor({ showRevisions: false });
-  const { runSpan } = appendRunToParagraph(editor, {
-    run: { index: 0, text: 'A', revisions: [{ id: 41, kind: 'insertion' }] },
-  });
-  assert.equal(runSpan.dataset.docxRevisionIds, '41');
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const visibleRun = editor.reviewScopedRun(0, { index: 0, text: 'A', revisions: [{ id: 41, kind: 'insertion' }] }, reviewContext);
+  const { runSpan } = appendRunToParagraph(editor, { run: visibleRun, reviewContext });
+  assert.equal('docxRevisionIds' in runSpan.dataset, false);
+  assert.equal(editor.revisionRunIds.size, 0);
+});
+
+test('appendRun omits revision ids when revisions are filtered out by author', () => {
+  const editor = makeRunRenderEditor();
+  const reviewContext = {
+    authors: new Set(['named:Bob']),
+    deletedTextByRun: new Map(),
+    revisionColors: new Map(),
+  };
+  const visibleRun = editor.reviewScopedRun(0, { index: 0, text: 'A', revisions: [{ id: 42, kind: 'insertion', author: 'Alice' }] }, reviewContext);
+  const { runSpan } = appendRunToParagraph(editor, { run: visibleRun, reviewContext });
+  assert.equal('docxRevisionIds' in runSpan.dataset, false);
   assert.equal(editor.revisionRunIds.size, 0);
 });
 
 test('appendRun exposes revision ids in final view', () => {
   const editor = makeRunRenderEditor({ revisionView: 'final' });
-  const { runSpan } = appendRunToParagraph(editor, {
-    run: { index: 6, text: 'A', revisions: [{ id: 51, kind: 'deletion' }] },
-  });
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const visibleRun = editor.reviewScopedRun(0, { index: 6, text: 'A', revisions: [{ id: 51, kind: 'deletion' }] }, reviewContext);
+  const { runSpan } = appendRunToParagraph(editor, { run: visibleRun, reviewContext });
   assert.equal(runSpan.dataset.docxRevisionIds, '51');
   assert.equal(runSpan.dataset.docxRun, '6');
 });
