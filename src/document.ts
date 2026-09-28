@@ -2,8 +2,9 @@ import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, DocumentBlock, DocumentSnapshot, HyperlinkInfo, ImageInfo, NoteInfo,
-  NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo,
+  DocumentRange, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, SectionInfo, SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo,
+  TextRange,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
 import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
@@ -1340,6 +1341,39 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
   }
 }
 
+const RUN_FORMAT_FIELDS = [
+  'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
+  'highlight', 'characterSpacing', 'border', 'shading',
+] as const satisfies readonly (keyof RunFormat)[];
+
+function cloneRunFormatValue<T>(value: T): T {
+  if (!value || typeof value !== 'object') return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function runFormatValueEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function isHighSurrogateCodeUnit(code: number): boolean {
+  return code >= 0xD800 && code <= 0xDBFF;
+}
+
+function isLowSurrogateCodeUnit(code: number): boolean {
+  return code >= 0xDC00 && code <= 0xDFFF;
+}
+
+function normalizeTextBoundary(text: string, offset: number, side: 'start' | 'end'): number {
+  if (offset <= 0 || offset >= text.length) return offset;
+  const left = text.charCodeAt(offset - 1);
+  const right = text.charCodeAt(offset);
+  if (isHighSurrogateCodeUnit(left) && isLowSurrogateCodeUnit(right)) return side === 'start' ? offset - 1 : offset + 1;
+  return offset;
+}
+
 function fieldInstruction(link: { url?: string; anchor?: string }): string {
   const escapeFieldText = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const chunks = ['HYPERLINK'];
@@ -2382,17 +2416,21 @@ export class DocxDocument {
   }
 
   private splitRunAtOffset(paragraph: Element, offset: number): void {
+    const paragraphText = textOf(paragraph);
+    const normalizedOffset = normalizeTextBoundary(paragraphText, offset, 'start');
     const runs = ownRuns(paragraph);
     let cursor = 0;
     for (const run of runs) {
       const value = textOf(run);
       const next = cursor + value.length;
-      if (offset <= cursor || offset >= next || !value.length) {
+      if (normalizedOffset <= cursor || normalizedOffset >= next || !value.length) {
         cursor = next;
         continue;
       }
-      const left = value.slice(0, offset - cursor);
-      const right = value.slice(offset - cursor);
+      const cut = normalizeTextBoundary(value, normalizedOffset - cursor, 'start');
+      if (cut <= 0 || cut >= value.length) return;
+      const left = value.slice(0, cut);
+      const right = value.slice(cut);
       const rightRun = run.cloneNode(true) as Element;
       const leftElements = textElements(run);
       for (const element of leftElements) (element.parentNode as Element).removeChild(element);
@@ -2403,6 +2441,125 @@ export class DocxDocument {
       run.parentNode!.insertBefore(rightRun, run.nextSibling);
       return;
     }
+  }
+
+  private validateRangeFields(fields: (keyof RunFormat)[] | undefined): (keyof RunFormat)[] {
+    if (fields === undefined) return [...RUN_FORMAT_FIELDS];
+    if (!Array.isArray(fields)) throw new Error('fields must be an array.');
+    const unique: (keyof RunFormat)[] = [];
+    for (const field of fields) {
+      if (!RUN_FORMAT_FIELDS.includes(field)) throw new Error(`Unsupported run format field: ${String(field)}`);
+      if (!unique.includes(field)) unique.push(field);
+    }
+    return unique;
+  }
+
+  private normalizeTextRange(paragraphElement: Element, range: TextRange): { start: number; end: number } {
+    assertIndex(range.paragraph);
+    assertIndex(range.start);
+    assertIndex(range.end);
+    textRangeLength(paragraphElement, range.start, range.end);
+    const text = textOf(paragraphElement);
+    if (range.start === range.end) {
+      const offset = normalizeTextBoundary(text, range.start, 'start');
+      return { start: offset, end: offset };
+    }
+    let start = normalizeTextBoundary(text, range.start, 'start');
+    let end = normalizeTextBoundary(text, range.end, 'end');
+    if (end < start) end = start;
+    return { start, end };
+  }
+
+  private normalizeDocumentRange(document: Document, range: DocumentRange): DocumentRange {
+    const startParagraph = paragraphAt(document, range.start.paragraph);
+    const endParagraph = paragraphAt(document, range.end.paragraph);
+    if (range.start.paragraph > range.end.paragraph ||
+        (range.start.paragraph === range.end.paragraph && range.start.offset > range.end.offset)) {
+      throw new Error('range.start must not be after range.end.');
+    }
+    if (range.start.paragraph === range.end.paragraph) {
+      const normalized = this.normalizeTextRange(startParagraph, {
+        paragraph: range.start.paragraph,
+        start: range.start.offset,
+        end: range.end.offset,
+      });
+      return {
+        start: { paragraph: range.start.paragraph, offset: normalized.start },
+        end: { paragraph: range.end.paragraph, offset: normalized.end },
+      };
+    }
+    const startNormalized = this.normalizeTextRange(startParagraph, {
+      paragraph: range.start.paragraph,
+      start: range.start.offset,
+      end: range.start.offset,
+    });
+    const endNormalized = this.normalizeTextRange(endParagraph, {
+      paragraph: range.end.paragraph,
+      start: range.end.offset,
+      end: range.end.offset,
+    });
+    return {
+      start: { paragraph: range.start.paragraph, offset: startNormalized.start },
+      end: { paragraph: range.end.paragraph, offset: endNormalized.end },
+    };
+  }
+
+  private runsInRange(paragraph: Element, start: number, end: number, collapsed = false): Element[] {
+    const runs = ownRuns(paragraph);
+    let cursor = 0;
+    const selected: Element[] = [];
+    for (const run of runs) {
+      const length = textOf(run).length;
+      const next = cursor + length;
+      if (length > 0 && start < next && end > cursor) selected.push(run);
+      cursor = next;
+    }
+    if (selected.length || !collapsed) return selected;
+    cursor = 0;
+    let previous: Element | undefined;
+    for (const run of runs) {
+      const length = textOf(run).length;
+      const next = cursor + length;
+      if (!length) continue;
+      if (start < next) return [run];
+      if (start === next) {
+        previous = run;
+        cursor = next;
+        continue;
+      }
+      previous = run;
+      cursor = next;
+    }
+    return previous ? [previous] : [];
+  }
+
+  private normalizeRangeOn(document: Document, range: TextRange): { paragraph: Element; start: number; end: number } {
+    const paragraph = paragraphAt(document, range.paragraph);
+    const normalized = this.normalizeTextRange(paragraph, range);
+    return { paragraph, start: normalized.start, end: normalized.end };
+  }
+
+  private rangeRunFormats(document: Document, range: TextRange): RunFormat[] {
+    const normalized = this.normalizeRangeOn(document, range);
+    const runs = this.runsInRange(normalized.paragraph, normalized.start, normalized.end, normalized.start === normalized.end);
+    return runs.map((run) => readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
+  }
+
+  private mergeRangeFormats(formats: RunFormat[]): RunFormat {
+    const merged: RunFormat = {};
+    if (!formats.length) return merged;
+    for (const field of RUN_FORMAT_FIELDS) {
+      const first = formats[0]?.[field];
+      let same = true;
+      for (let i = 1; i < formats.length; i++) {
+        if (!runFormatValueEqual(first, formats[i]?.[field])) {
+          same = false;
+          break;
+        }
+      }
+      if (same && first !== undefined) (merged as Record<string, unknown>)[field] = cloneRunFormatValue(first);
+    }
+    return merged;
   }
 
   insertHyperlink(
@@ -3554,6 +3711,63 @@ export class DocxDocument {
     });
   }
 
+  formatRange(range: TextRange, format: RunFormat): void {
+    validateRunFormat(format);
+    this.updatePartXmlInternal(this.mainPath, document => {
+      const normalized = this.normalizeRangeOn(document, range);
+      if (normalized.start === normalized.end) return;
+      this.splitRunAtOffset(normalized.paragraph, normalized.end);
+      this.splitRunAtOffset(normalized.paragraph, normalized.start);
+      for (const run of this.runsInRange(normalized.paragraph, normalized.start, normalized.end)) {
+        applyRunFormatTo(properties(run, 'rPr'), format);
+      }
+    });
+  }
+
+  getRangeFormat(range: TextRange): RunFormat {
+    const document = this.getCachedPartDocument(this.mainPath);
+    return this.mergeRangeFormats(this.rangeRunFormats(document, range));
+  }
+
+  clearRangeFormat(range: TextRange, fields?: (keyof RunFormat)[]): void {
+    const targets = this.validateRangeFields(fields);
+    if (!targets.length) return;
+    const format: RunFormat = {};
+    for (const field of targets) (format as Record<string, unknown>)[field] = null;
+    this.formatRange(range, format);
+  }
+
+  formatDocumentRange(range: DocumentRange, format: RunFormat): void {
+    validateRunFormat(format);
+    this.withDraft((draft) => {
+      const document = draft.getCachedPartDocument(draft.mainPath);
+      const normalized = draft.normalizeDocumentRange(document, range);
+      for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
+        const paragraph = paragraphAt(document, index);
+        const length = textOf(paragraph).length;
+        const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
+        const end = index === normalized.end.paragraph ? normalized.end.offset : length;
+        if (start === end) continue;
+        draft.formatRange({ paragraph: index, start, end }, format);
+      }
+    });
+  }
+
+  getDocumentRangeFormat(range: DocumentRange): RunFormat {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(document, range);
+    const formats: RunFormat[] = [];
+    for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
+      const paragraph = paragraphAt(document, index);
+      const length = textOf(paragraph).length;
+      const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
+      const end = index === normalized.end.paragraph ? normalized.end.offset : length;
+      const rangeFormats = this.rangeRunFormats(document, { paragraph: index, start, end });
+      formats.push(...rangeFormats);
+    }
+    return this.mergeRangeFormats(formats);
+  }
+
   setParagraphTabs(index: number, tabs: TabStop[]): void {
     validateTabs(tabs);
     this.formatParagraph(index, { tabs: tabs.length ? tabs : null });
@@ -4269,6 +4483,9 @@ export class DocxDocument {
         case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
         case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
+        case 'formatRange': draft.formatRange(operation.range, operation.format); break;
+        case 'clearRangeFormat': draft.clearRangeFormat(operation.range, operation.fields); break;
+        case 'formatDocumentRange': draft.formatDocumentRange(operation.range, operation.format); break;
         case 'setParagraphTabs': draft.setParagraphTabs(operation.index, operation.tabs); break;
         case 'setParagraphBorders': draft.setParagraphBorders(operation.index, operation.borders); break;
         case 'setParagraphShading': draft.setParagraphShading(operation.index, operation.shading); break;

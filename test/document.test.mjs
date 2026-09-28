@@ -401,6 +401,183 @@ test('format toggles explicitly disable formatting and retain OOXML property ord
   assert.throws(() => doc.formatRun(0, 0, { bold: 'true' }), /boolean/);
 });
 
+test('formatRange updates only the selected character span and keeps surrounding run format', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:color w:val="112233"/><w:foo w:bar="1"/></w:rPr><w:t>abcdef</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 2, end: 4 }, { bold: true });
+  const paragraph = doc.getParagraphs()[0];
+  assert.deepEqual(paragraph.runs.map((run) => run.text), ['ab', 'cd', 'ef']);
+  assert.equal(paragraph.runs[0].color, '112233');
+  assert.equal(paragraph.runs[2].color, '112233');
+  assert.equal(paragraph.runs[1].bold, true);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:foo w:bar="1"\/>/);
+});
+
+test('formatRange split is idempotent across repeated formatting calls', () => {
+  const doc = withBody('<w:p><w:r><w:t>abcdef</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 1, end: 5 }, { bold: true });
+  const once = doc.getParagraphs()[0].runs.map((run) => run.text);
+  doc.formatRange({ paragraph: 0, start: 1, end: 5 }, { italic: true });
+  const twice = doc.getParagraphs()[0].runs.map((run) => run.text);
+  assert.deepEqual(once, ['a', 'bcde', 'f']);
+  assert.deepEqual(twice, ['a', 'bcde', 'f']);
+});
+
+test('formatRange handles tab and line-break boundaries without corrupting text', () => {
+  const doc = withBody('<w:p><w:r><w:t>a</w:t><w:tab/><w:t>b</w:t><w:br/><w:t>c</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 1, end: 4 }, { underline: true });
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'a\tb\nc');
+  assert.equal(paragraph.runs.some((run) => run.underline), true);
+});
+
+test('formatRange does not cut surrogate pairs', () => {
+  const doc = withBody('<w:p><w:r><w:t>A😀B</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 1, end: 2 }, { color: 'FF0000' });
+  assert.equal(doc.getParagraphs()[0].text, 'A😀B');
+  assert.equal(doc.getParagraphs()[0].runs.some((run) => run.text === '😀'), true);
+});
+
+test('formatRange across hyperlink text keeps hyperlink metadata readable', () => {
+  const doc = withBody('<w:p xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:hyperlink w:anchor="bk"><w:r><w:t>hello</w:t></w:r></w:hyperlink><w:r><w:t> world</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 1, end: 7 }, { italic: true });
+  const links = doc.getHyperlinks();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].anchor, 'bk');
+  assert.equal(links[0].text, 'hello');
+});
+
+test('getRangeFormat returns common values and undefined for mixed values', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:color w:val="112233"/></w:rPr><w:t>ab</w:t></w:r><w:r><w:rPr><w:b w:val="0"/><w:color w:val="112233"/></w:rPr><w:t>cd</w:t></w:r></w:p>');
+  const format = doc.getRangeFormat({ paragraph: 0, start: 0, end: 4 });
+  assert.equal(format.bold, undefined);
+  assert.equal(format.color, '112233');
+});
+
+test('clearRangeFormat clears only requested run-format fields', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:i/><w:color w:val="112233"/></w:rPr><w:t>abcd</w:t></w:r></w:p>');
+  doc.clearRangeFormat({ paragraph: 0, start: 1, end: 3 }, ['bold']);
+  const middle = doc.getParagraphs()[0].runs.find((run) => run.text === 'bc');
+  assert.equal(middle?.bold, undefined);
+  assert.equal(middle?.italic, true);
+  assert.equal(middle?.color, '112233');
+});
+
+test('clearRangeFormat without fields clears all modeled run direct formatting', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:i/><w:color w:val="112233"/></w:rPr><w:t>abcd</w:t></w:r></w:p>');
+  doc.clearRangeFormat({ paragraph: 0, start: 0, end: 4 });
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.bold, undefined);
+  assert.equal(run.italic, undefined);
+  assert.equal(run.color, undefined);
+});
+
+test('formatDocumentRange applies partial/whole/partial spans with one revision bump', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>middle</w:t></w:r></w:p><w:p><w:r><w:t>last</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.formatDocumentRange({
+    start: { paragraph: 0, offset: 2 },
+    end: { paragraph: 2, offset: 2 },
+  }, { bold: true });
+  assert.equal(doc.revision, before + 1);
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs[0].runs.some((run) => run.bold && run.text === 'rst'), true);
+  assert.equal(paragraphs[1].runs.every((run) => run.bold === true), true);
+  assert.equal(paragraphs[2].runs.some((run) => run.bold && run.text.startsWith('la')), true);
+});
+
+test('formatDocumentRange is atomic when range validation fails', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  const beforeXml = doc.getPartXml(doc.mainDocumentPath);
+  const beforeRevision = doc.revision;
+  assert.throws(() => doc.formatDocumentRange({
+    start: { paragraph: 0, offset: 0 },
+    end: { paragraph: 1, offset: 999 },
+  }, { bold: true }), /out of bounds/);
+  assert.equal(doc.revision, beforeRevision);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), beforeXml);
+});
+
+test('getDocumentRangeFormat returns undefined for mixed values across paragraphs', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  const format = doc.getDocumentRangeFormat({
+    start: { paragraph: 0, offset: 0 },
+    end: { paragraph: 1, offset: 6 },
+  });
+  assert.equal(format.bold, undefined);
+});
+
+test('formatRange skips image-only offsets safely', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:pic="${PIC_NS}"><w:r><w:drawing><wp:inline><wp:extent cx="190500" cy="95250"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="logo"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="190500" cy="95250"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`);
+  const revision = doc.revision;
+  doc.formatRange({ paragraph: 0, start: 0, end: 0 }, { italic: true });
+  assert.equal(doc.revision, revision + 1);
+});
+
+test('agent validates and applies formatRange operation', () => {
+  const doc = withBody('<w:p><w:r><w:t>abcdef</w:t></w:r></w:p>');
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'formatRange', range: { paragraph: 0, start: 4, end: 1 }, format: { bold: true } }] }), /range.end/);
+  doc.applyOperations({ operations: [{ type: 'formatRange', range: { paragraph: 0, start: 2, end: 4 }, format: { bold: true } }] });
+  assert.equal(doc.getParagraphs()[0].runs.some((run) => run.text === 'cd' && run.bold), true);
+});
+
+test('agent validates and applies clearRangeFormat operation', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>abcd</w:t></w:r></w:p>');
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'clearRangeFormat', range: { paragraph: 0, start: 0, end: 2 }, fields: ['unknown'] }] }), /Unsupported/);
+  doc.applyOperations({ operations: [{ type: 'clearRangeFormat', range: { paragraph: 0, start: 0, end: 2 }, fields: ['bold'] }] });
+  assert.equal(doc.getParagraphs()[0].runs.some((run) => run.text === 'ab' && run.bold === undefined), true);
+});
+
+test('agent validates and applies formatDocumentRange operation', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  assert.throws(() => doc.applyOperations({ operations: [{
+    type: 'formatDocumentRange',
+    range: { start: { paragraph: 1, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    format: { italic: true },
+  }] }), /must not be after/);
+  doc.applyOperations({ operations: [{
+    type: 'formatDocumentRange',
+    range: { start: { paragraph: 0, offset: 2 }, end: { paragraph: 1, offset: 3 } },
+    format: { italic: true },
+  }] });
+  assert.equal(doc.getParagraphs()[1].runs.some((run) => run.italic), true);
+});
+
+test('getRangeFormat on collapsed range returns nearby run direct format', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:color w:val="AA0000"/></w:rPr><w:t>ab</w:t></w:r><w:r><w:rPr><w:color w:val="00AA00"/></w:rPr><w:t>cd</w:t></w:r></w:p>');
+  const left = doc.getRangeFormat({ paragraph: 0, start: 1, end: 1 });
+  const right = doc.getRangeFormat({ paragraph: 0, start: 2, end: 2 });
+  assert.equal(left.color, 'AA0000');
+  assert.equal(right.color, '00AA00');
+});
+
+test('clearRangeFormat rejects unsupported fields at runtime API', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.clearRangeFormat({ paragraph: 0, start: 0, end: 0 }, ['notAField']), /Unsupported/);
+});
+
+test('formatDocumentRange spanning table-cell paragraphs keeps document readable', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'head');
+  doc.insertTable([['cell']]);
+  const cellParagraph = doc.getBlocks().find((block) => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.index;
+  doc.insertParagraph('tail');
+  doc.formatDocumentRange({
+    start: { paragraph: 0, offset: 1 },
+    end: { paragraph: cellParagraph, offset: doc.getParagraphs()[cellParagraph].text.length },
+  }, { underline: true });
+  assert.equal(doc.getParagraphs()[0].text, 'head');
+  assert.equal(doc.getParagraphs()[cellParagraph].text, 'cell');
+});
+
+test('agent schema includes new range formatting operations', () => {
+  const names = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .map((entry) => entry.properties.type.const)
+    .sort();
+  assert.equal(names.includes('formatRange'), true);
+  assert.equal(names.includes('clearRangeFormat'), true);
+  assert.equal(names.includes('formatDocumentRange'), true);
+});
+
 test('OOXML DOM edits are namespace-aware and detached until explicitly committed', () => {
   const doc = DocxDocument.create();
   const detached = doc.getPartDocument(doc.mainDocumentPath);
@@ -432,7 +609,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 42);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 45);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -693,7 +870,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 42);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 45);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });

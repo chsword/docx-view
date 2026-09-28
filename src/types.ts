@@ -341,6 +341,17 @@ export interface NoteInfo {
   reference: { paragraph: number; run: number };
 }
 
+export interface TextRange {
+  paragraph: number;
+  start: number;
+  end: number;
+}
+
+export interface DocumentRange {
+  start: { paragraph: number; offset: number };
+  end: { paragraph: number; offset: number };
+}
+
 export type AgentOperation =
   | { type: 'setParagraphText'; index: number; text: string }
   | { type: 'insertParagraph'; text: string; before?: number }
@@ -350,6 +361,9 @@ export type AgentOperation =
   | { type: 'clearParagraphNumbering'; index: number }
   | { type: 'setParagraphLevel'; index: number; delta: number }
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
+  | { type: 'formatRange'; range: TextRange; format: RunFormat }
+  | { type: 'clearRangeFormat'; range: TextRange; fields?: (keyof RunFormat)[] }
+  | { type: 'formatDocumentRange'; range: DocumentRange; format: RunFormat }
   | { type: 'setParagraphTabs'; index: number; tabs: TabStop[] }
   | {
     type: 'setParagraphBorders';
