@@ -227,3 +227,94 @@ test('readText skips non-editable decorations unless explicitly marked as docume
   ]);
   assert.equal(editor.readText(root), 'keep');
 });
+
+test('applyHistory flushes first and re-renders after undo/redo', () => {
+  const calls = [];
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.selected = 0;
+  editor.paragraphs = new Map([[0, { content: { focus: () => {} } }]]);
+  editor.focusContent = () => {};
+  editor.flush = () => calls.push('flush');
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.document = {
+    revision: 1,
+    undo: () => ({ revision: 2, paragraphs: [{ index: 0 }] }),
+    redo: () => ({ revision: 3, paragraphs: [{ index: 0 }] }),
+  };
+  editor.applyHistory('undo');
+  editor.applyHistory('redo');
+  assert.deepEqual(calls, ['flush', 'render', 'change', 'flush', 'render', 'change']);
+});
+
+test('applyHistory is a no-op when revision does not change', () => {
+  const calls = [];
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.selected = null;
+  editor.paragraphs = new Map();
+  editor.flush = () => calls.push('flush');
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.document = {
+    revision: 2,
+    undo: () => ({ revision: 2, paragraphs: [] }),
+    redo: () => ({ revision: 2, paragraphs: [] }),
+  };
+  editor.applyHistory('undo');
+  assert.deepEqual(calls, ['flush']);
+});
+
+test('handleHistoryShortcut maps Ctrl/Cmd+Z to undo', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.composing = false;
+  editor.applyHistory = (direction) => calls.push(direction);
+  const content = {};
+  editor.root = { contains: (value) => value === content };
+  const event = {
+    isComposing: false,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    key: 'z',
+    preventDefault: () => calls.push('prevent'),
+    target: { nodeType: 1, closest: () => content },
+  };
+  assert.equal(editor.handleHistoryShortcut(event), true);
+  assert.deepEqual(calls, ['prevent', 'undo']);
+});
+
+test('handleHistoryShortcut maps Cmd+Shift+Z and Ctrl+Y to redo', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.composing = false;
+  const calls = [];
+  editor.applyHistory = (direction) => calls.push(direction);
+  const content = {};
+  editor.root = { contains: (value) => value === content };
+  const metaShiftZ = {
+    isComposing: false,
+    ctrlKey: false,
+    metaKey: true,
+    altKey: false,
+    shiftKey: true,
+    key: 'z',
+    preventDefault: () => calls.push('prevent:z'),
+    target: { nodeType: 1, closest: () => content },
+  };
+  const ctrlY = {
+    isComposing: false,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    key: 'y',
+    preventDefault: () => calls.push('prevent:y'),
+    target: { nodeType: 1, closest: () => content },
+  };
+  assert.equal(editor.handleHistoryShortcut(metaShiftZ), true);
+  assert.equal(editor.handleHistoryShortcut(ctrlY), true);
+  assert.deepEqual(calls, ['prevent:z', 'redo', 'prevent:y', 'redo']);
+});

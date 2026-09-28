@@ -337,6 +337,12 @@ export interface RevisionInfo extends RevisionMark {
   previousFormat?: RunFormat | ParagraphFormat;
 }
 
+export interface HistoryEntry {
+  revision: number;
+  label?: string;
+  at: number;
+}
+
 export interface NoteSettingsValue {
   pos?: 'pageBottom' | 'beneathText' | 'sectEnd' | 'docEnd';
   numFmt?: string;
@@ -443,7 +449,9 @@ export type AgentOperation =
   | { type: 'replyComment'; parentId: number; comment: { author?: string; initials?: string; text: string } }
   | { type: 'setCommentResolved'; id: number; resolved: boolean }
   | { type: 'setCommentText'; id: number; text: string }
-  | { type: 'deleteComment'; id: number; options?: { withReplies?: boolean } };
+  | { type: 'deleteComment'; id: number; options?: { withReplies?: boolean } }
+  | { type: 'undo' }
+  | { type: 'redo' };
 
 export interface AgentRequest {
   expectedRevision?: number;

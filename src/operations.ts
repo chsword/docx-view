@@ -564,6 +564,9 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
             throw new Error('options.withReplies must be boolean.');
           }
         }
+      case 'undo':
+      case 'redo':
+        keys(op, ['type']);
         break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
     }
@@ -850,6 +853,8 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setCommentResolved', { id: index, resolved: { type: 'boolean' } }),
           operation('setCommentText', { id: index, text }),
           operation('deleteComment', { id: index, options: shape({ withReplies: { type: 'boolean' } }, []) }, ['id']),
+          operation('undo', {}),
+          operation('redo', {}),
         ],
       },
     },

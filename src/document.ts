@@ -1,10 +1,10 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, CommentAnchor, CommentInfo, DocumentBlock, DocumentSnapshot, HyperlinkInfo, ImageInfo, NoteInfo,
-  DocumentRange, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo,
-  RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo, SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo,
-  TextRange,
+  AgentRequest, BookmarkInfo, CellFormat, CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
+  HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
+  NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
+  SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
 import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
@@ -101,6 +101,24 @@ const encoder = new TextEncoder();
 const IMAGE_LIMIT = 16 * 1024 * 1024;
 const HYPERLINK_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
 const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
+const HISTORY_MAX_ENTRIES = 50;
+const HISTORY_MAX_BYTES = 64 * 1024 * 1024;
+const HISTORY_MERGE_WINDOW_MS = 500;
+
+type HistoryAction =
+  | { kind: 'setParagraphText'; paragraph: number }
+  | { kind: 'transaction' }
+  | { kind: 'group' }
+  | { kind: 'undo' }
+  | { kind: 'redo' }
+  | { kind: 'other' };
+
+interface HistoryState {
+  parts: Map<string, Uint8Array>;
+  bytes: number;
+  entry: HistoryEntry;
+  action: HistoryAction;
+}
 
 function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
   const result: Element[] = [];
@@ -1708,6 +1726,19 @@ export class DocxDocument {
   private commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
   private revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
+  private undoHistory: HistoryState[] = [];
+  private redoHistory: HistoryState[] = [];
+  private undoHistoryBytes = 0;
+  private redoHistoryBytes = 0;
+  private historyGroupDepth = 0;
+  private historyGroupLabel?: string;
+  private historyGroupBase?: { parts: Map<string, Uint8Array>; bytes: number };
+  private historyGroupAction: HistoryAction = { kind: 'group' };
+  private historyGroupAborted = false;
+  private suppressHistory = false;
+  private nextHistoryLabel?: string;
+  private nextHistoryAction: HistoryAction = { kind: 'other' };
+  private pendingMergedHistory?: { label?: string; action: HistoryAction; at: number };
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -1749,6 +1780,108 @@ export class DocxDocument {
   get mainDocumentPath(): string { return this.mainPath; }
 
   listParts(): string[] { return [...this.parts.keys()].sort(); }
+
+  canUndo(): boolean {
+    return this.undoHistory.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoHistory.length > 0;
+  }
+
+  undo(): DocumentSnapshot {
+    if (!this.undoHistory.length) return this.getSnapshot();
+    this.materializeAllParts();
+    const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
+    const step = this.undoHistory.pop()!;
+    this.undoHistoryBytes -= step.bytes;
+    this.restorePartsFromHistory(step.parts);
+    this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.noteStateCache = undefined;
+    this.commentStateCache = undefined;
+    this.revisionInfoCache = undefined;
+    this.imageDataUrls.clear();
+    this.pushRedoState({ ...current, action: step.action });
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    return this.getSnapshot();
+  }
+
+  redo(): DocumentSnapshot {
+    if (!this.redoHistory.length) return this.getSnapshot();
+    this.materializeAllParts();
+    const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
+    const step = this.redoHistory.pop()!;
+    this.redoHistoryBytes -= step.bytes;
+    this.restorePartsFromHistory(step.parts);
+    this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.noteStateCache = undefined;
+    this.commentStateCache = undefined;
+    this.revisionInfoCache = undefined;
+    this.imageDataUrls.clear();
+    this.pushUndoState({ ...current, action: step.action });
+    this.enforceHistoryLimits();
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    return this.getSnapshot();
+  }
+
+  getHistory(): { undo: HistoryEntry[]; redo: HistoryEntry[] } {
+    return {
+      undo: this.undoHistory.map((state) => ({ ...state.entry })),
+      redo: this.redoHistory.map((state) => ({ ...state.entry })),
+    };
+  }
+
+  clearHistory(): void {
+    this.undoHistory = [];
+    this.redoHistory = [];
+    this.undoHistoryBytes = 0;
+    this.redoHistoryBytes = 0;
+    this.historyGroupDepth = 0;
+    this.historyGroupLabel = undefined;
+    this.historyGroupBase = undefined;
+    this.historyGroupAction = { kind: 'group' };
+    this.historyGroupAborted = false;
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    this.pendingMergedHistory = undefined;
+  }
+
+  beginHistoryGroup(label?: string): void {
+    if (this.historyGroupDepth === 0) {
+      this.historyGroupLabel = label;
+      this.historyGroupBase = undefined;
+      this.historyGroupAction = { kind: 'group' };
+      this.historyGroupAborted = false;
+    }
+    this.historyGroupDepth++;
+  }
+
+  endHistoryGroup(): void {
+    if (this.historyGroupDepth === 0) throw new Error('History group is not active.');
+    this.historyGroupDepth--;
+    if (this.historyGroupDepth > 0) return;
+    if (this.historyGroupBase && !this.historyGroupAborted) {
+      this.pushUndoState({
+        parts: this.historyGroupBase.parts,
+        bytes: this.historyGroupBase.bytes,
+        entry: { revision: this.revision, label: this.historyGroupLabel, at: Date.now() },
+        action: this.historyGroupAction,
+      });
+      this.redoHistory = [];
+      this.redoHistoryBytes = 0;
+      this.enforceHistoryLimits();
+    }
+    this.historyGroupLabel = undefined;
+    this.historyGroupBase = undefined;
+    this.historyGroupAction = { kind: 'group' };
+    this.historyGroupAborted = false;
+  }
 
   private hasPart(path: string): boolean {
     return this.parts.has(path);
@@ -1827,6 +1960,9 @@ export class DocxDocument {
 
   private updatePartXmlInternal(path: string, update: (document: Document) => void): void {
     validatePath(path);
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
       const document = this.getCachedPartDocument(path);
@@ -1834,14 +1970,20 @@ export class DocxDocument {
       this.dirtyPartXml.add(path);
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation(path);
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
       throw error;
     }
   }
 
   setPartXml(path: string, xml: string): void {
     if (typeof xml !== 'string' || xml.length > MAX_PART) throw new Error('XML part exceeds size limit.');
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
       validatePath(path);
@@ -1852,25 +1994,37 @@ export class DocxDocument {
       this.dirtyPartXml.delete(path);
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation(path);
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
       throw error;
     }
   }
 
   /** Replaces an existing part. Relationships/content types remain under caller control. */
   setPartBytes(path: string, bytes: Uint8Array): void {
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
       this.replacePartBytes(path, bytes);
       this.finalizeMutation(path);
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
       throw error;
     }
   }
 
   addPart(path: string, bytes: Uint8Array, contentType: string): void {
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
       validatePath(path);
@@ -1886,13 +2040,19 @@ export class DocxDocument {
       this.dirtyPartXml.add('[Content_Types].xml');
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation('[Content_Types].xml');
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
       throw error;
     }
   }
 
   private commitParts(parts: Map<string, Uint8Array>): void {
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
       this.parts = parts;
@@ -1908,8 +2068,11 @@ export class DocxDocument {
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
       this.imageDataUrls.clear();
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
       throw error;
     }
   }
@@ -1990,6 +2153,159 @@ export class DocxDocument {
     this.commentStateCache = state.commentStateCache;
     this.revisionInfoCache = state.revisionInfoCache;
     this.imageDataUrls = state.imageDataUrls;
+  }
+
+  private cloneParts(parts: Map<string, Uint8Array>): Map<string, Uint8Array> {
+    return new Map(parts);
+  }
+
+  private historyStateBytes(parts: Map<string, Uint8Array>): number {
+    let total = 0;
+    for (const bytes of parts.values()) total += bytes.byteLength;
+    return total;
+  }
+
+  private snapshotHistoryState(revision: number, label: string | undefined, action: HistoryAction): HistoryState {
+    const parts = this.cloneParts(this.parts);
+    return {
+      parts,
+      bytes: this.historyStateBytes(parts),
+      entry: { revision, label, at: Date.now() },
+      action,
+    };
+  }
+
+  private pushUndoState(state: HistoryState): void {
+    const previous = this.undoHistory[this.undoHistory.length - 1];
+    const canMerge = state.action.kind === 'setParagraphText' &&
+      previous?.action.kind === 'setParagraphText' &&
+      previous.action.paragraph === state.action.paragraph &&
+      state.entry.at - previous.entry.at <= HISTORY_MERGE_WINDOW_MS &&
+      !this.historyGroupDepth &&
+      this.redoHistory.length === 0;
+    if (canMerge) {
+      previous.entry.revision = state.entry.revision;
+      previous.entry.at = state.entry.at;
+      previous.entry.label = state.entry.label ?? previous.entry.label;
+      return;
+    }
+    this.undoHistory.push(state);
+    this.undoHistoryBytes += state.bytes;
+  }
+
+  private pushRedoState(state: HistoryState): void {
+    this.redoHistory.push(state);
+    this.redoHistoryBytes += state.bytes;
+    const overflow = this.redoHistory.length - HISTORY_MAX_ENTRIES;
+    if (overflow > 0) {
+      const dropped = this.redoHistory.splice(0, overflow);
+      this.redoHistoryBytes -= dropped.reduce((sum, entry) => sum + entry.bytes, 0);
+    }
+  }
+
+  private enforceHistoryLimits(): void {
+    const undoOverflow = this.undoHistory.length - HISTORY_MAX_ENTRIES;
+    if (undoOverflow > 0) {
+      const dropped = this.undoHistory.splice(0, undoOverflow);
+      this.undoHistoryBytes -= dropped.reduce((sum, entry) => sum + entry.bytes, 0);
+    }
+    let total = this.undoHistoryBytes + this.redoHistoryBytes;
+    while (total > HISTORY_MAX_BYTES) {
+      if (this.undoHistory.length) {
+        let removeCount = 0;
+        let removedBytes = 0;
+        while (removeCount < this.undoHistory.length && total - removedBytes > HISTORY_MAX_BYTES) {
+          removedBytes += this.undoHistory[removeCount]!.bytes;
+          removeCount++;
+        }
+        this.undoHistory.splice(0, removeCount);
+        this.undoHistoryBytes -= removedBytes;
+        total -= removedBytes;
+        continue;
+      }
+      if (this.redoHistory.length) {
+        let removeCount = 0;
+        let removedBytes = 0;
+        while (removeCount < this.redoHistory.length && total - removedBytes > HISTORY_MAX_BYTES) {
+          removedBytes += this.redoHistory[removeCount]!.bytes;
+          removeCount++;
+        }
+        this.redoHistory.splice(0, removeCount);
+        this.redoHistoryBytes -= removedBytes;
+        total -= removedBytes;
+        continue;
+      }
+      break;
+    }
+  }
+
+  private restorePartsFromHistory(parts: Map<string, Uint8Array>): void {
+    const next = this.cloneParts(parts);
+    this.parts = next;
+    this.documents = new Map();
+    this.dirtyPartXml = new Set();
+    this.dirtyPartSizes = new Map();
+    this.assertPackageLimits();
+    this.mainPath = this.validatePackage();
+  }
+
+  private recordHistory(before: HistoryState): void {
+    if (this.suppressHistory) return;
+    if (this.historyGroupDepth > 0) {
+      if (!this.historyGroupBase) this.historyGroupBase = { parts: before.parts, bytes: before.bytes };
+      if (before.action.kind !== 'other') this.historyGroupAction = before.action;
+      this.redoHistory = [];
+      this.redoHistoryBytes = 0;
+      return;
+    }
+    this.pushUndoState({
+      parts: before.parts,
+      bytes: before.bytes,
+      entry: { revision: this.revision, label: before.entry.label, at: Date.now() },
+      action: before.action,
+    });
+    this.redoHistory = [];
+    this.redoHistoryBytes = 0;
+    this.enforceHistoryLimits();
+  }
+
+  private shouldMergeWithPreviousUndo(action: HistoryAction, at: number): boolean {
+    const previous = this.undoHistory[this.undoHistory.length - 1];
+    return action.kind === 'setParagraphText' &&
+      previous?.action.kind === 'setParagraphText' &&
+      previous.action.paragraph === action.paragraph &&
+      at - previous.entry.at <= HISTORY_MERGE_WINDOW_MS &&
+      this.historyGroupDepth === 0 &&
+      this.redoHistory.length === 0;
+  }
+
+  private applyPendingMergedHistory(): void {
+    const pending = this.pendingMergedHistory;
+    this.pendingMergedHistory = undefined;
+    if (!pending) return;
+    const previous = this.undoHistory[this.undoHistory.length - 1];
+    if (!previous || !this.shouldMergeWithPreviousUndo(pending.action, pending.at)) return;
+    previous.entry.revision = this.revision;
+    previous.entry.at = Date.now();
+    previous.entry.label = pending.label ?? previous.entry.label;
+    this.redoHistory = [];
+    this.redoHistoryBytes = 0;
+  }
+
+  private beginMutationHistory(label?: string, action: HistoryAction = { kind: 'other' }): HistoryState | undefined {
+    if (this.suppressHistory) return undefined;
+    const at = Date.now();
+    if (this.shouldMergeWithPreviousUndo(action, at)) {
+      this.pendingMergedHistory = { label, action, at };
+      return undefined;
+    }
+    this.materializeAllParts();
+    return this.snapshotHistoryState(this.revision, label, action);
+  }
+
+  private abortHistoryGroupOnFailure(): void {
+    if (this.historyGroupDepth > 0) this.historyGroupAborted = true;
+    this.pendingMergedHistory = undefined;
   }
 
   private getCachedPartDocument(path: string): Document {
@@ -3601,7 +3917,7 @@ export class DocxDocument {
     if (options.alt !== undefined) assertText(options.alt, 'alt');
     const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
-    const main = this.getCachedPartDocument(this.mainPath);
+    const main = this.getPartDocument(this.mainPath);
     const paragraphs = descendants(bodyOf(main), 'p');
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
@@ -3614,7 +3930,7 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(this.mainPath);
     const next = this.ensureMediaContentType(partPath, options.contentType);
     next.set(partPath, Uint8Array.from(options.bytes));
-    const rels = this.hasPart(relPath) ? this.getCachedPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const rels = this.hasPart(relPath) ? this.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const relationshipId = this.nextRelationshipId(rels);
     const relationship = rels.createElementNS(REL_NS, 'Relationship');
     relationship.setAttribute('Id', relationshipId);
@@ -4136,6 +4452,7 @@ export class DocxDocument {
   setParagraphText(index: number, text: string): void {
     assertText(text);
     const normalized = text.replace(/\r\n?/g, '\n');
+    this.nextHistoryAction = { kind: 'setParagraphText', paragraph: index };
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const old = textOf(paragraph);
@@ -4781,20 +5098,45 @@ export class DocxDocument {
   private withDraft<T>(action: (draft: DocxDocument) => T): T {
     this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
-    const result = action(draft);
-    this.parts = draft.parts;
-    this.documents = draft.documents;
-    this.dirtyPartXml = draft.dirtyPartXml;
-    this.dirtyPartSizes = draft.dirtyPartSizes;
-    this.mainPath = draft.mainPath;
-    this.currentRevision++;
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.imageDataUrls.clear();
-    return result;
+    draft.currentRevision = this.currentRevision;
+    draft.undoHistory = this.undoHistory.map((state) => ({
+      parts: draft.cloneParts(state.parts),
+      bytes: state.bytes,
+      entry: { ...state.entry },
+      action: state.action,
+    }));
+    draft.redoHistory = this.redoHistory.map((state) => ({
+      parts: draft.cloneParts(state.parts),
+      bytes: state.bytes,
+      entry: { ...state.entry },
+      action: state.action,
+    }));
+    draft.undoHistoryBytes = this.undoHistoryBytes;
+    draft.redoHistoryBytes = this.redoHistoryBytes;
+    draft.suppressHistory = true;
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    try {
+      const result = action(draft);
+      this.parts = draft.parts;
+      this.documents = draft.documents;
+      this.dirtyPartXml = draft.dirtyPartXml;
+      this.dirtyPartSizes = draft.dirtyPartSizes;
+      this.mainPath = draft.mainPath;
+      this.currentRevision++;
+      this.numberingContextCache = undefined;
+      this.stylesCache = undefined;
+      this.noteStateCache = undefined;
+      this.commentStateCache = undefined;
+      this.revisionInfoCache = undefined;
+      this.imageDataUrls.clear();
+      if (history) this.recordHistory(history);
+      return result;
+    } catch (error) {
+      this.abortHistoryGroupOnFailure();
+      throw error;
+    }
   }
 
   private nextNoteId(kind: NoteKind): number {
@@ -5481,10 +5823,38 @@ export class DocxDocument {
       throw new Error(`Revision conflict: expected ${request.expectedRevision}, current ${this.revision}.`);
     }
     if (!request.operations.length) return this.getSnapshot();
+    const historyOnlyBatch = request.operations.every((operation) => operation.type === 'undo' || operation.type === 'redo');
+    if (historyOnlyBatch) {
+      for (const operation of request.operations) {
+        if (operation.type === 'undo') this.undo();
+        else this.redo();
+      }
+      return this.getSnapshot();
+    }
     this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
-    for (const operation of request.operations) {
-      switch (operation.type) {
+    draft.currentRevision = this.currentRevision;
+    draft.undoHistory = this.undoHistory.map((state) => ({
+      parts: draft.cloneParts(state.parts),
+      bytes: state.bytes,
+      entry: { ...state.entry },
+      action: state.action,
+    }));
+    draft.redoHistory = this.redoHistory.map((state) => ({
+      parts: draft.cloneParts(state.parts),
+      bytes: state.bytes,
+      entry: { ...state.entry },
+      action: state.action,
+    }));
+    draft.undoHistoryBytes = this.undoHistoryBytes;
+    draft.redoHistoryBytes = this.redoHistoryBytes;
+    draft.suppressHistory = true;
+    const history = historyOnlyBatch ? undefined : this.beginMutationHistory(this.nextHistoryLabel, { kind: 'transaction' });
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    try {
+      for (const operation of request.operations) {
+        switch (operation.type) {
         case 'setParagraphText': draft.setParagraphText(operation.index, operation.text); break;
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
@@ -5544,22 +5914,33 @@ export class DocxDocument {
         case 'setCommentResolved': draft.setCommentResolved(operation.id, operation.resolved); break;
         case 'setCommentText': draft.setCommentText(operation.id, operation.text); break;
         case 'deleteComment': draft.deleteComment(operation.id, operation.options); break;
+        case 'undo': draft.undo(); break;
+        case 'redo': draft.redo(); break;
+        }
       }
+      const snapshot = draft.getSnapshot();
+      this.parts = draft.parts;
+      this.documents = draft.documents;
+      this.dirtyPartXml = draft.dirtyPartXml;
+      this.dirtyPartSizes = draft.dirtyPartSizes;
+      this.mainPath = draft.mainPath;
+      this.currentRevision++;
+      this.undoHistory = draft.undoHistory;
+      this.redoHistory = draft.redoHistory;
+      this.undoHistoryBytes = draft.undoHistoryBytes;
+      this.redoHistoryBytes = draft.redoHistoryBytes;
+      this.numberingContextCache = undefined;
+      this.stylesCache = undefined;
+      this.noteStateCache = undefined;
+      this.commentStateCache = undefined;
+      this.revisionInfoCache = undefined;
+      this.imageDataUrls.clear();
+      if (history) this.recordHistory(history);
+      return { ...snapshot, revision: this.revision };
+    } catch (error) {
+      this.abortHistoryGroupOnFailure();
+      throw error;
     }
-    const snapshot = draft.getSnapshot();
-    this.parts = draft.parts;
-    this.documents = draft.documents;
-    this.dirtyPartXml = draft.dirtyPartXml;
-    this.dirtyPartSizes = draft.dirtyPartSizes;
-    this.mainPath = draft.mainPath;
-    this.currentRevision++;
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.imageDataUrls.clear();
-    return { ...snapshot, revision: this.revision };
   }
 
   async toUint8Array(): Promise<Uint8Array> {

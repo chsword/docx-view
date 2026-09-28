@@ -672,6 +672,7 @@ export class DocxEditor {
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     content.addEventListener('drop', (event) => { event.preventDefault(); });
     content.addEventListener('keydown', (event) => {
+      if (this.handleHistoryShortcut(event)) return;
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         const target = this.linkTargetFromSelection();
         if (target) {
@@ -728,6 +729,16 @@ export class DocxEditor {
       this.dispatchCommentClick(target);
     });
     content.addEventListener('beforeinput', (event) => {
+      if (event.inputType === 'historyUndo') {
+        event.preventDefault();
+        this.applyHistory('undo');
+        return;
+      }
+      if (event.inputType === 'historyRedo') {
+        event.preventDefault();
+        this.applyHistory('redo');
+        return;
+      }
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
         event.preventDefault();
         this.insertText(content, '\n');
@@ -1317,6 +1328,7 @@ export class DocxEditor {
   };
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {
+    if (this.handleHistoryShortcut(event)) return;
     if (!this.selectedImageInfo || !['Delete', 'Backspace'].includes(event.key)) return;
     const active = this.root.ownerDocument.activeElement as HTMLElement | null;
     const image = active?.closest('[data-image]') as HTMLElement | null;
@@ -1326,6 +1338,43 @@ export class DocxEditor {
     this.render();
     this.options.onChange?.(this.document.getSnapshot());
   };
+
+  private handleHistoryShortcut(event: Pick<KeyboardEvent, 'isComposing' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'key' | 'preventDefault' | 'target'>): boolean {
+    if (event.isComposing || this.composing || !(event.ctrlKey || event.metaKey) || event.altKey) return false;
+    const node = event.target as Node | null;
+    const target = node?.nodeType === 1 ? node as Element : node?.parentElement ?? null;
+    const content = target?.closest<HTMLElement>('.docx-paragraph-content');
+    if (!content || !this.root.contains(content)) return false;
+    const key = event.key.toLowerCase();
+    if (key === 'z' && !event.shiftKey) {
+      event.preventDefault();
+      this.applyHistory('undo');
+      return true;
+    }
+    if (key === 'y' || (key === 'z' && event.shiftKey)) {
+      event.preventDefault();
+      this.applyHistory('redo');
+      return true;
+    }
+    return false;
+  }
+
+  private applyHistory(direction: 'undo' | 'redo'): void {
+    if (this.destroyed) return;
+    const previousSelected = this.selected;
+    this.flush();
+    const beforeRevision = this.document.revision;
+    const snapshot = direction === 'undo' ? this.document.undo() : this.document.redo();
+    if (snapshot.revision === beforeRevision) return;
+    this.render();
+    const fallback = snapshot.paragraphs[0]?.index ?? null;
+    const targetIndex = previousSelected !== null && this.paragraphs.has(previousSelected) ? previousSelected : fallback;
+    if (targetIndex !== null) {
+      const paragraph = this.paragraphs.get(targetIndex)?.content;
+      if (paragraph) this.focusContent(paragraph);
+    }
+    this.options.onChange?.(snapshot);
+  }
 
   private captureCaret(): { index: number; start: number; end: number } | null {
     if (!this.root.contains(this.root.ownerDocument.activeElement)) return null;
