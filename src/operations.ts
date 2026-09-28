@@ -443,6 +443,27 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'image']); assertText(op.image, 'image'); break;
       case 'setPartXml':
         keys(op, ['type', 'path', 'xml']); assertText(op.path, 'path'); assertText(op.xml, 'xml'); break;
+      case 'insertFootnote':
+      case 'insertEndnote':
+        keys(op, ['type', 'paragraph', 'run', 'text', 'customMark']);
+        assertIndex(op.paragraph); assertIndex(op.run); assertText(op.text);
+        if ('customMark' in op && op.customMark !== undefined) assertText(op.customMark, 'customMark');
+        break;
+      case 'setNoteText':
+        keys(op, ['type', 'kind', 'id', 'text']);
+        if (!['footnote', 'endnote'].includes(String(op.kind))) throw new Error('Invalid note kind.');
+        assertIndex(op.id); assertText(op.text);
+        break;
+      case 'deleteNote':
+        keys(op, ['type', 'kind', 'id']);
+        if (!['footnote', 'endnote'].includes(String(op.kind))) throw new Error('Invalid note kind.');
+        assertIndex(op.id);
+        break;
+      case 'convertNote':
+        keys(op, ['type', 'kind', 'id']);
+        if (!['footnote', 'endnote'].includes(String(op.kind))) throw new Error('Invalid note kind.');
+        assertIndex(op.id);
+        break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
     }
   }
@@ -656,6 +677,11 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setImageAlt', { image: text, alt: text, title: text }, ['image', 'alt']),
           operation('deleteImage', { image: text }),
           operation('setPartXml', { path: text, xml: text }),
+          operation('insertFootnote', { paragraph: index, run: index, text, customMark: text }, ['paragraph', 'run', 'text']),
+          operation('insertEndnote', { paragraph: index, run: index, text, customMark: text }, ['paragraph', 'run', 'text']),
+          operation('setNoteText', { kind: { enum: ['footnote', 'endnote'] }, id: index, text }),
+          operation('deleteNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
+          operation('convertNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
         ],
       },
     },

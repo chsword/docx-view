@@ -577,6 +577,15 @@ export class DocxEditor {
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
       currentLineOffsetPx = this.appendRun(content, paragraph, run, defaultTabStopTwips, currentLineOffsetPx);
+      if (run.noteReference) {
+        const marker = this.root.ownerDocument.createElement('sup');
+        marker.className = 'docx-note-ref';
+        marker.contentEditable = 'false';
+        marker.setAttribute('data-docx-mark', '1');
+        marker.textContent = run.noteReference.marker;
+        marker.setAttribute('aria-label', `${run.noteReference.kind} reference ${run.noteReference.marker}`);
+        content.append(marker);
+      }
       for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
     }
     if (!paragraph.runs.length) content.textContent = paragraph.text;

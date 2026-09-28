@@ -460,6 +460,24 @@ element<HTMLSelectElement>('header-kind').addEventListener('change', (event) => 
 element<HTMLSelectElement>('footer-kind').addEventListener('change', (event) => {
   editor.setFooterKind((event.target as HTMLSelectElement).value as 'default' | 'first' | 'even');
 });
+element('add-footnote').addEventListener('click', () => run(() => {
+  editor.flush();
+  const index = editor.selectedParagraph ?? 0;
+  const run = doc.getParagraphs().find(item => item.index === index)?.runs.length ?? 0;
+  doc.insertFootnote(index, run, '示例脚注内容');
+  editor.render();
+  refresh();
+  message('已插入脚注。');
+}));
+element('add-endnote').addEventListener('click', () => run(() => {
+  editor.flush();
+  const index = editor.selectedParagraph ?? 0;
+  const run = doc.getParagraphs().find(item => item.index === index)?.runs.length ?? 0;
+  doc.insertEndnote(index, run, '示例尾注内容');
+  editor.render();
+  refresh();
+  message('已插入尾注。');
+}));
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;
   setDocument(DocxDocument.create(), '未命名.docx');
