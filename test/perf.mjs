@@ -4,6 +4,7 @@ import { DocxDocument } from '../dist/document.js';
 
 const ROUNDS = 5;
 const WARMUPS = 1;
+const INITIAL_PARAGRAPH_COUNT = 1;
 
 function elapsedMs(run) {
   const start = process.hrtime.bigint();
@@ -28,14 +29,18 @@ function formatMeasurement(label, measurement) {
   return `${label}: median=${measurement.median.toFixed(1)}ms samples=[${measurement.samples.map((value) => value.toFixed(1)).join(', ')}]`;
 }
 
+function seedParagraphs(doc, totalParagraphs) {
+  const extraParagraphs = Math.max(0, totalParagraphs - INITIAL_PARAGRAPH_COUNT);
+  if (extraParagraphs === 0) return;
+  doc.applyOperations({
+    operations: Array.from({ length: extraParagraphs }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
+  });
+}
+
 function measureSingleInsert(count, seedCount = 0) {
   return measureMedian(() => {
     const doc = DocxDocument.create();
-    if (seedCount > 0) {
-      doc.applyOperations({
-        operations: Array.from({ length: seedCount - 1 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
-      });
-    }
+    seedParagraphs(doc, seedCount);
     for (let i = 0; i < count; i++) doc.insertParagraph(`段落内容 ${i}`);
   });
 }
@@ -52,9 +57,7 @@ function measureBatchInsert(count) {
 function measureSetParagraphText(count) {
   return measureMedian(() => {
     const doc = DocxDocument.create();
-    doc.applyOperations({
-      operations: Array.from({ length: count - 1 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
-    });
+    seedParagraphs(doc, count);
     for (let i = 0; i < count; i++) doc.setParagraphText(i, `改写 ${i}`);
   });
 }
@@ -62,9 +65,7 @@ function measureSetParagraphText(count) {
 function measureBatchSetParagraphText(count) {
   return measureMedian(() => {
     const doc = DocxDocument.create();
-    doc.applyOperations({
-      operations: Array.from({ length: count - 1 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
-    });
+    seedParagraphs(doc, count);
     doc.applyOperations({
       operations: Array.from({ length: count }, (_, i) => ({ type: 'setParagraphText', index: i, text: `更新-${i}` })),
     });
