@@ -3444,15 +3444,12 @@ export class DocxDocument {
   private insertTrackedText(paragraph: Element, start: number, text: string): void {
     if (!text) return;
     this.splitRunAtOffset(paragraph, start);
-    const run = wordElement(paragraph.ownerDocument!, 'r');
-    appendText(run, text);
     const runs = ownRuns(paragraph);
     let cursor = 0;
     let parent = paragraph;
     let anchor: Element | undefined;
     let previous: Element | undefined;
     for (const candidate of runs) {
-      if (candidate === run) continue;
       const length = textOf(candidate).length;
       const next = cursor + length;
       if (length === 0) {
@@ -3471,6 +3468,8 @@ export class DocxDocument {
       parent = previous.parentNode as Element;
     }
     const reference = anchor ?? previous?.nextSibling ?? null;
+    const run = wordElement(parent.ownerDocument!, 'r');
+    appendText(run, text);
     const wrapper = markRevision(parent, 'ins', this.trackedRevisionAuthor());
     wrapper.appendChild(run);
     parent.insertBefore(wrapper, reference);

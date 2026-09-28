@@ -2784,6 +2784,16 @@ test('tracked formatRange writes rPrChange on the affected run slice', () => {
   assert.match(xml, /<w:rPr><w:b w:val="1"\/><w:color w:val="FF0000"\/><w:rPrChange w:id="\d+" w:author="docx-view"><w:rPr><w:color w:val="FF0000"\/><\/w:rPr><\/w:rPrChange><\/w:rPr><w:t xml:space="preserve">bc<\/w:t>/);
 });
 
+test('tracked formatRange across multiple runs writes revision markup and only increments revision once', () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>ab</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>cd</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.formatRange({ paragraph: 0, start: 1, end: 3 }, { bold: true });
+  assert.equal(doc.revision, before + 1);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:rPr><w:b w:val="1"\/><w:color w:val="FF0000"\/><w:rPrChange w:id="\d+" w:author="docx-view"><w:rPr><w:color w:val="FF0000"\/><\/w:rPr><\/w:rPrChange><\/w:rPr><w:t xml:space="preserve">b<\/w:t>/);
+  assert.match(xml, /<w:rPr><w:b w:val="1"\/><w:i\/><w:rPrChange w:id="\d+" w:author="docx-view"><w:rPr><w:i w:val="1"\/><\/w:rPr><\/w:rPrChange><\/w:rPr><w:t xml:space="preserve">c<\/w:t>/);
+});
+
 test('tracked formatParagraph writes pPrChange with previous paragraph properties', () => {
   const doc = trackedDoc('<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
   doc.formatParagraph(0, { spacingAfter: 120 });
