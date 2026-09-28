@@ -313,6 +313,7 @@ export interface DocumentSnapshot {
   blocks: DocumentBlock[];
   footnotes: NoteInfo[];
   endnotes: NoteInfo[];
+  comments: CommentInfo[];
   parts: string[];
   styles: StyleInfo[];
   hyperlinks: HyperlinkInfo[];
@@ -339,6 +340,23 @@ export interface NoteInfo {
   customMark?: string;
   blocks: DocumentBlock[];
   reference: { paragraph: number; run: number };
+}
+
+export type CommentAnchor =
+  | { sourcePartPath: string; paragraph: number; runs: number[] }
+  | { sourcePartPath: string; startParagraph: number; endParagraph: number };
+
+export interface CommentInfo {
+  id: number;
+  author?: string;
+  initials?: string;
+  date?: string;
+  text: string;
+  blocks?: DocumentBlock[];
+  anchor?: CommentAnchor;
+  parentId?: number;
+  resolved?: boolean;
+  isOrphan: boolean;
 }
 
 export interface TextRange {
@@ -401,7 +419,12 @@ export type AgentOperation =
   | { type: 'insertEndnote'; paragraph: number; run: number; text: string; customMark?: string }
   | { type: 'setNoteText'; kind: 'footnote' | 'endnote'; id: number; text: string }
   | { type: 'deleteNote'; kind: 'footnote' | 'endnote'; id: number }
-  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number };
+  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number }
+  | { type: 'addComment'; range: TextRange | DocumentRange; comment: { author?: string; initials?: string; text: string } }
+  | { type: 'replyComment'; parentId: number; comment: { author?: string; initials?: string; text: string } }
+  | { type: 'setCommentResolved'; id: number; resolved: boolean }
+  | { type: 'setCommentText'; id: number; text: string }
+  | { type: 'deleteComment'; id: number; options?: { withReplies?: boolean } };
 
 export interface AgentRequest {
   expectedRevision?: number;
