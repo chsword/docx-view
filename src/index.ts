@@ -12,7 +12,7 @@ export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS }
 export type {
   AgentOperation, AgentRequest, BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, ShadingFormat, StyleInfo, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
+  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
   WidthFormat,
   PageSetup, SectionInfo, SectionType,
 } from './types.js';

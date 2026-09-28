@@ -1,6 +1,6 @@
-import type { AgentRequest, CellFormat, ParagraphFormat, RowFormat, RunFormat, TableFormat } from './types.js';
+import type { AgentRequest, BorderSide, CellFormat, ParagraphFormat, RowFormat, RunFormat, Shading, TableFormat, TabStop } from './types.js';
 import { assertBase64 } from './drawing.js';
-import { assertText } from './xml.js';
+import { assertText, isValidXmlCharCode } from './xml.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -33,7 +33,7 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   keys(value, [
     'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-    'highlight', 'characterSpacing',
+    'highlight', 'characterSpacing', 'border', 'shading',
   ]);
   for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
@@ -58,6 +58,8 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
       (!Number.isSafeInteger(value.characterSpacing as number) || Math.abs(value.characterSpacing as number) > 31680)) {
     throw new Error('characterSpacing must be a safe integer within OOXML spacing bounds.');
   }
+  if ('border' in value) maybeNull(value.border as BorderSide | null | undefined, (entry) => validateBorderSide(entry));
+  if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry));
 }
 
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {
@@ -65,7 +67,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   keys(value, [
     'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
     'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
-    'widowControl', 'outlineLevel',
+    'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens',
   ]);
   if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
@@ -88,8 +90,63 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   if ('lineSpacingRule' in value && value.lineSpacingRule !== null && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
     throw new Error('Invalid lineSpacingRule.');
   }
-  for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl']) {
+  for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  if ('tabs' in value) maybeNull(value.tabs as TabStop[] | null | undefined, (entry) => validateTabs(entry));
+  if ('borders' in value) maybeNull(value.borders as ParagraphFormat['borders'] | null | undefined, (entry) => validateParagraphBorders(entry));
+  if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry, 'shading'));
+}
+
+export function validateTabStop(value: unknown): asserts value is TabStop {
+  object(value);
+  keys(value, ['position', 'alignment', 'leader']);
+  if (typeof value.position !== 'number' || !Number.isFinite(value.position)) throw new Error('tab.position must be a finite number.');
+  if (!['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'].includes(String(value.alignment))) {
+    throw new Error('tab.alignment is invalid.');
+  }
+  if ('leader' in value && value.leader !== undefined &&
+      (typeof value.leader !== 'string' || !['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'].includes(value.leader))) {
+    throw new Error('tab.leader is invalid.');
+  }
+}
+
+export function validateTabs(value: unknown): asserts value is TabStop[] {
+  if (!Array.isArray(value)) throw new Error('tabs must be an array.');
+  if (value.length > 200) throw new Error('tabs must contain at most 200 items.');
+  value.forEach(validateTabStop);
+}
+
+export function validateBorderSide(value: unknown): asserts value is BorderSide {
+  object(value);
+  keys(value, ['style', 'size', 'space', 'color', 'shadow']);
+  assertText(value.style, 'border.style');
+  if (typeof value.size !== 'number' || !Number.isFinite(value.size) || value.size < 0) throw new Error('border.size must be a non-negative number.');
+  if (typeof value.space !== 'number' || !Number.isFinite(value.space) || value.space < 0) throw new Error('border.space must be a non-negative number.');
+  if (typeof value.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(value.color)) throw new Error('border.color must be auto or six hexadecimal digits.');
+  if ('shadow' in value && value.shadow !== undefined && typeof value.shadow !== 'boolean') throw new Error('border.shadow must be boolean.');
+}
+
+export function validateParagraphBorders(value: unknown): asserts value is ParagraphFormat['borders'] {
+  object(value as Record<string, unknown>);
+  keys(value as Record<string, unknown>, ['top', 'left', 'bottom', 'right', 'between', 'bar']);
+  for (const key of ['top', 'left', 'bottom', 'right', 'between', 'bar'] as const) {
+    if (key in (value as Record<string, unknown>) && (value as Record<string, unknown>)[key] !== undefined) {
+      validateBorderSide((value as Record<string, unknown>)[key]);
+    }
+  }
+}
+
+export function validateDocShading(value: unknown, name = 'shading'): asserts value is Shading {
+  object(value as Record<string, unknown>);
+  const shading = value as Record<string, unknown>;
+  keys(shading, ['pattern', 'fill', 'color']);
+  assertText(shading.pattern, `${name}.pattern`);
+  if (typeof shading.fill !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(shading.fill)) {
+    throw new Error(`${name}.fill must be auto or six hexadecimal digits.`);
+  }
+  if ('color' in shading && shading.color !== undefined && (typeof shading.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(shading.color))) {
+    throw new Error(`${name}.color must be auto or six hexadecimal digits.`);
   }
 }
 
@@ -238,6 +295,23 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'formatRun':
         keys(op, ['type', 'paragraph', 'run', 'format']);
         assertIndex(op.paragraph); assertIndex(op.run); validateRunFormat(op.format); break;
+      case 'setParagraphTabs':
+        keys(op, ['type', 'index', 'tabs']); assertIndex(op.index); validateTabs(op.tabs); break;
+      case 'setParagraphBorders':
+        keys(op, ['type', 'index', 'borders']); assertIndex(op.index); validateParagraphBorders(op.borders); break;
+      case 'setParagraphShading':
+        keys(op, ['type', 'index', 'shading']); assertIndex(op.index); validateDocShading(op.shading); break;
+      case 'insertBreak':
+        keys(op, ['type', 'paragraph', 'run', 'breakType']);
+        assertIndex(op.paragraph); assertIndex(op.run);
+        if (!['textWrapping', 'page', 'column'].includes(String(op.breakType))) throw new Error('Invalid break type.');
+        break;
+      case 'insertSymbol':
+        keys(op, ['type', 'paragraph', 'run', 'font', 'charCode']);
+        assertIndex(op.paragraph); assertIndex(op.run); assertText(op.font, 'font');
+        if (typeof op.charCode !== 'number' || !Number.isInteger(op.charCode) || op.charCode < 0 || op.charCode > 0xFFFF ||
+            !isValidXmlCharCode(op.charCode)) throw new Error('charCode must be an XML-valid BMP code point.');
+        break;
       case 'replaceText':
         keys(op, ['type', 'search', 'replacement']); assertText(op.search, 'search'); assertText(op.replacement, 'replacement');
         if (!op.search) throw new Error('search must not be empty.');
@@ -349,6 +423,27 @@ const border = shape({
   color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
   none: { type: 'boolean' },
 }, []);
+const docBorderSide = shape({
+  style: text,
+  size: { type: 'number', minimum: 0 },
+  space: { type: 'number', minimum: 0 },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  shadow: { type: 'boolean' },
+}, ['style', 'size', 'space', 'color']);
+const docShading = shape({
+  pattern: text,
+  fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+  color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
+}, ['pattern', 'fill']);
+const docTabs = {
+  type: 'array',
+  maxItems: 200,
+  items: shape({
+    position: { type: 'number' },
+    alignment: { enum: ['left', 'center', 'right', 'decimal', 'bar', 'clear', 'num'] },
+    leader: { enum: ['none', 'dot', 'hyphen', 'underscore', 'heavy', 'middleDot'] },
+  }, ['position', 'alignment']),
+};
 const borders = shape({
   top: border, right: border, bottom: border, left: border, insideH: border, insideV: border,
 }, []);
@@ -403,7 +498,19 @@ export const AGENT_OPERATION_SCHEMA = {
             keepLines: nullable({ type: 'boolean' }),
             pageBreakBefore: nullable({ type: 'boolean' }),
             widowControl: nullable({ type: 'boolean' }),
+            suppressLineNumbers: nullable({ type: 'boolean' }),
+            suppressAutoHyphens: nullable({ type: 'boolean' }),
             outlineLevel: nullable(outlineLevel),
+            tabs: nullable(docTabs),
+            borders: nullable(shape({
+              top: docBorderSide,
+              left: docBorderSide,
+              bottom: docBorderSide,
+              right: docBorderSide,
+              between: docBorderSide,
+              bar: docBorderSide,
+            }, [])),
+            shading: nullable(docShading),
           }, []) }),
           operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
           operation('clearParagraphNumbering', { index }),
@@ -426,7 +533,21 @@ export const AGENT_OPERATION_SCHEMA = {
             allCaps: nullable({ type: 'boolean' }),
             highlight: nullable(text),
             characterSpacing: nullable(signedInteger),
+            border: nullable(docBorderSide),
+            shading: nullable(docShading),
           }, []) }),
+          operation('setParagraphTabs', { index, tabs: docTabs }),
+          operation('setParagraphBorders', { index, borders: shape({
+            top: docBorderSide,
+            left: docBorderSide,
+            bottom: docBorderSide,
+            right: docBorderSide,
+            between: docBorderSide,
+            bar: docBorderSide,
+          }, []) }),
+          operation('setParagraphShading', { index, shading: docShading }),
+          operation('insertBreak', { paragraph: index, run: index, breakType: { enum: ['textWrapping', 'page', 'column'] } }),
+          operation('insertSymbol', { paragraph: index, run: index, font: text, charCode: { type: 'integer', minimum: 0, maximum: 65535 } }),
           operation('replaceText', { search: { ...text, minLength: 1 }, replacement: text }),
           operation('insertTable', { rows: {
             type: 'array', minItems: 1, maxItems: 1000,
