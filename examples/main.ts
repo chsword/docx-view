@@ -1,4 +1,4 @@
-import { DocxDocument, DocxEditor } from '../src/index.js';
+import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
 import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
 import { findReusableNumberingId } from '../src/numbering.js';
@@ -110,6 +110,19 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element('revision').textContent = String(snapshot.revision);
   element('paragraph-count').textContent = String(snapshot.paragraphs.length);
   element('snapshot-output').textContent = JSON.stringify(snapshot, null, 2);
+  let orientation: 'portrait' | 'landscape' = 'portrait';
+  let pageSize: 'A4' | 'Letter' = 'A4';
+  try {
+    const first = doc.getSection(0);
+    orientation = first.orientation;
+    const longEdge = Math.max(first.pageWidth, first.pageHeight);
+    pageSize = longEdge > 16300 ? 'A4' : 'Letter';
+  } catch {
+    orientation = 'portrait';
+    pageSize = 'A4';
+  }
+  element<HTMLSelectElement>('page-orientation').value = orientation;
+  element<HTMLSelectElement>('page-size').value = pageSize;
   loadStyleOptions();
   updateSelection();
   updateImageSelection();
@@ -407,6 +420,46 @@ element<HTMLInputElement>('image-alt').addEventListener('change', (event) => run
   refresh();
   message('已更新图片替代文本。');
 }));
+element('apply-page-setup').addEventListener('click', () => run(() => {
+  const size = element<HTMLSelectElement>('page-size').value;
+  const orientation = element<HTMLSelectElement>('page-orientation').value as 'portrait' | 'landscape';
+  const portrait = size === 'Letter' ? { pageWidth: 12240, pageHeight: 15840 } : { pageWidth: 11906, pageHeight: 16838 };
+  const setup = orientation === 'landscape'
+    ? { pageWidth: portrait.pageHeight, pageHeight: portrait.pageWidth }
+    : portrait;
+  doc.setPageSetup(0, { ...setup, orientation });
+  editor.render();
+  refresh();
+  message('已更新页面设置。');
+}));
+element('insert-section-break').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.insertSectionBreak(index, 'nextPage');
+  editor.render();
+  refresh();
+  message('已插入分节符。');
+}));
+element('insert-page-break').addEventListener('click', () => run(() => {
+  const index = selectedIndex();
+  doc.updatePartXml(doc.mainDocumentPath, xml => {
+    const paragraph = xml.getElementsByTagNameNS(WORD_NS, 'p')[index];
+    if (!paragraph) throw new Error('找不到目标段落。');
+    const run = xml.createElementNS(WORD_NS, 'w:r');
+    const br = xml.createElementNS(WORD_NS, 'w:br');
+    br.setAttributeNS(WORD_NS, 'w:type', 'page');
+    run.appendChild(br);
+    paragraph.appendChild(run);
+  });
+  editor.render();
+  refresh();
+  message('已插入分页符。');
+}));
+element<HTMLSelectElement>('header-kind').addEventListener('change', (event) => {
+  editor.setHeaderKind((event.target as HTMLSelectElement).value as 'default' | 'first' | 'even');
+});
+element<HTMLSelectElement>('footer-kind').addEventListener('change', (event) => {
+  editor.setFooterKind((event.target as HTMLSelectElement).value as 'default' | 'first' | 'even');
+});
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;
   setDocument(DocxDocument.create(), '未命名.docx');

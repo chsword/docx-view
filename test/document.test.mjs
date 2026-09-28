@@ -843,6 +843,257 @@ test('UTF-16 XML input is decoded and edited output declares UTF-8', async () =>
   assert.equal((await DocxDocument.load(await doc.toUint8Array())).getParagraphs()[0].text, '编码');
 });
 
+test('getSections returns basic page setup from body sectPr', () => {
+  const doc = DocxDocument.create();
+  const section = doc.getSection(0);
+  assert.equal(section.index, 0);
+  assert.equal(section.startParagraph, 0);
+  assert.equal(section.type, 'nextPage');
+  assert.equal(section.orientation, 'portrait');
+  assert.equal(section.pageWidth, 11906);
+});
+
+test('getSections synthesizes an implicit default section when sectPr is missing', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`);
+  const section = doc.getSection(0);
+  assert.equal(section.isImplicit, true);
+  assert.equal(section.startParagraph, 0);
+  assert.equal(section.endParagraph, 0);
+  doc.setPageSetup(0, { pageWidth: 15000 });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:sectPr>/);
+});
+
+test('paragraph-scoped sectPr produces multiple sections with correct ranges', () => {
+  const doc = withBody('<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>');
+  const sections = doc.getSections();
+  assert.equal(sections.length, 2);
+  assert.equal(sections[0].startParagraph, 0);
+  assert.equal(sections[0].endParagraph, 0);
+  assert.equal(sections[0].type, 'continuous');
+  assert.equal(sections[1].startParagraph, 1);
+});
+
+test('section ranges stay aligned when body contains table paragraphs', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>end</w:t></w:r></w:p><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const sections = doc.getSections();
+  assert.equal(doc.getParagraphs().length, 3);
+  assert.equal(sections[0].endParagraph, 1);
+  assert.equal(sections[1].startParagraph, 2);
+});
+
+test('section ranges stay aligned with descendants order including txbxContent paragraphs', () => {
+  const doc = withBody('<w:p><w:r><w:pict><w:txbxContent><w:p><w:r><w:t>inside box</w:t></w:r></w:p></w:txbxContent></w:pict><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:r><w:t>C</w:t></w:r></w:p>');
+  const sections = doc.getSections();
+  assert.equal(doc.getParagraphs().length, 4);
+  assert.equal(sections[0].endParagraph, 2);
+  assert.equal(sections[1].startParagraph, 3);
+});
+
+test('setPageSetup updates known fields and keeps unknown sectPr children', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr><w:docGrid w:linePitch="360"/></w:sectPr>');
+  doc.setPageSetup(0, { pageWidth: 20000, orientation: 'landscape', margins: { left: 700 }, columns: { count: 2, space: 360 } });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /w:pgSz[^>]*w:w="20000"[^>]*w:orient="landscape"/);
+  assert.match(xml, /w:pgMar[^>]*w:left="700"/);
+  assert.match(xml, /w:cols[^>]*w:num="2"[^>]*w:space="360"/);
+  assert.match(xml, /w:docGrid/);
+});
+
+test('setPageSetup with only orientation swaps page width and height when needed', () => {
+  const doc = DocxDocument.create();
+  doc.setPageSetup(0, { orientation: 'landscape' });
+  let section = doc.getSection(0);
+  assert.equal(section.orientation, 'landscape');
+  assert.ok(section.pageWidth > section.pageHeight);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:pgSz[^>]*w:w="16838"[^>]*w:h="11906"[^>]*w:orient="landscape"/);
+  doc.setPageSetup(0, { orientation: 'portrait' });
+  section = doc.getSection(0);
+  assert.equal(section.orientation, 'portrait');
+  assert.ok(section.pageWidth < section.pageHeight);
+});
+
+test('insertSectionBreak and deleteSectionBreak update section structure explicitly', () => {
+  const doc = withBody('<w:p><w:r><w:t>one</w:t></w:r></w:p><w:p><w:r><w:t>two</w:t></w:r></w:p>');
+  doc.insertSectionBreak(0, 'continuous');
+  assert.equal(doc.getSections().length, 2);
+  assert.equal(doc.getSection(0).type, 'continuous');
+  doc.deleteSectionBreak(0);
+  assert.equal(doc.getSections().length, 1);
+});
+
+test('deleteSectionBreak keeps following section properties after merge', () => {
+  const doc = withBody('<w:p><w:pPr><w:sectPr><w:pgSz w:w="14000" w:h="10000"/></w:sectPr></w:pPr><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="18000" w:h="12000"/></w:sectPr>');
+  doc.deleteSectionBreak(0);
+  assert.equal(doc.getSections().length, 1);
+  assert.equal(doc.getSection(0).pageWidth, 18000);
+});
+
+test('deleteSectionBreak rejects final section and insertSectionBreak rejects duplicate break paragraph', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.deleteSectionBreak(0), /final section break/);
+  doc.insertSectionBreak(0, 'nextPage');
+  assert.throws(() => doc.insertSectionBreak(0, 'nextPage'), /already ends with a section break/);
+});
+
+test('createHeader registers content type, relationship and section reference order', () => {
+  const doc = DocxDocument.create();
+  const path = doc.createHeader(0);
+  assert.equal(path, 'word/header1.xml');
+  const rels = doc.getPartXml('word/_rels/document.xml.rels');
+  assert.match(rels, /relationships\/header/);
+  const main = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(main, /<w:headerReference[\s\S]*<w:pgSz/);
+  assert.match(doc.getPartXml('[Content_Types].xml'), /word\/header1.xml/);
+});
+
+test('creating even header enables evenAndOddHeaders in settings.xml', () => {
+  const doc = DocxDocument.create();
+  doc.setHeaderText(0, 'Even page header', 'even');
+  assert.equal(doc.getHeaderBlocks(0, 'even')[0].paragraph.text, 'Even page header');
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:evenAndOddHeaders\/>/);
+});
+
+test('setHeaderText and setFooterText create parts and keep editable text', () => {
+  const doc = DocxDocument.create();
+  doc.setHeaderText(0, 'Header');
+  doc.setFooterText(0, 'Footer');
+  assert.equal(doc.getHeaderBlocks(0)[0].paragraph.text, 'Header');
+  assert.equal(doc.getFooterBlocks(0)[0].paragraph.text, 'Footer');
+});
+
+test('setHeaderText and setFooterText do not bump revision on no-op writes', () => {
+  const doc = DocxDocument.create();
+  doc.setHeaderText(0, 'Header');
+  doc.setFooterText(0, 'Footer');
+  const revision = doc.revision;
+  const headerXml = doc.getPartXml(doc.getSection(0).headers.default);
+  const footerXml = doc.getPartXml(doc.getSection(0).footers.default);
+  doc.setHeaderText(0, 'Header');
+  doc.setFooterText(0, 'Footer');
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.getPartXml(doc.getSection(0).headers.default), headerXml);
+  assert.equal(doc.getPartXml(doc.getSection(0).footers.default), footerXml);
+});
+
+test('getHeaderBlocks reads nested table structure from header part', () => {
+  const doc = DocxDocument.create();
+  const path = doc.createHeader(0);
+  doc.setPartXml(path, `<w:hdr xmlns:w="${WORD_NS}"><w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:hdr>`);
+  const blocks = doc.getHeaderBlocks(0);
+  assert.equal(blocks[0].type, 'table');
+  assert.equal(blocks[0].rows[0].cells[0].blocks[0].paragraph.text, 'A');
+});
+
+test('header and footer kind fall back to default when specific kind is missing', () => {
+  const doc = DocxDocument.create();
+  doc.setHeaderText(0, 'Default header');
+  assert.equal(doc.getHeaderBlocks(0, 'first')[0].paragraph.text, 'Default header');
+  doc.setFooterText(0, 'Default footer');
+  assert.equal(doc.getFooterBlocks(0, 'even')[0].paragraph.text, 'Default footer');
+});
+
+test('missing header/footer parts or dangling references do not crash block reads', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId9" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></w:sectPr>');
+  assert.deepEqual(doc.getHeaderBlocks(0), []);
+});
+
+test('insertPageNumberField writes PAGE placeholder and renders text', () => {
+  const doc = DocxDocument.create();
+  const path = doc.createHeader(0);
+  doc.insertPageNumberField(path);
+  assert.match(doc.getPartXml(path), /w:fldSimple[^>]+PAGE/);
+  const texts = doc.getHeaderBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
+  assert.ok(texts.includes('1'));
+});
+
+test('insertPageNumberField writes NUMPAGES placeholder and renders text', () => {
+  const doc = DocxDocument.create();
+  const path = doc.createFooter(0);
+  doc.insertPageNumberField(path, { total: true, format: 'ROMAN' });
+  assert.ok(doc.getPartXml(path).includes('NUMPAGES \\* ROMAN'));
+  const texts = doc.getFooterBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
+  assert.ok(texts.includes('?'));
+});
+
+test('setParagraphText preserves fldSimple and keeps runs valid', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath,
+    `<w:document xmlns:w="${WORD_NS}"><w:body>` +
+    `<w:p><w:r><w:t xml:space="preserve">Page </w:t></w:r>` +
+    `<w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple>` +
+    `<w:r><w:t xml:space="preserve"> end</w:t></w:r></w:p>` +
+    `<w:sectPr/></w:body></w:document>`);
+  doc.setParagraphText(0, 'Page 9 end');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:fldSimple/);
+  assert.doesNotMatch(xml, /<w:p><w:r>[\s\S]*<\/w:r><w:t/);
+});
+
+test('section parser tolerates zero page size and mismatched column declaration', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="0" w:h="0"/><w:cols w:num="3"><w:col w:w="1000"/></w:cols></w:sectPr>');
+  const section = doc.getSection(0);
+  assert.equal(section.pageWidth, 0);
+  assert.equal(section.pageHeight, 0);
+  assert.equal(section.columns.count, 3);
+  assert.deepEqual(section.columns.widths, [1000]);
+});
+
+test('getBlocks includes visible page and section break markers', () => {
+  const doc = withBody('<w:p><w:r><w:t>a</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p><w:p><w:pPr><w:sectPr><w:type w:val="oddPage"/></w:sectPr></w:pPr><w:r><w:t>b</w:t></w:r></w:p>');
+  const kinds = doc.getBlocks().map(block => block.type);
+  assert.ok(kinds.includes('pageBreak'));
+  assert.ok(kinds.includes('sectionBreak'));
+});
+
+test('page-break markers ignore nested textbox breaks and keep count', () => {
+  const doc = withBody('<w:p><w:r><w:pict><w:txbxContent><w:p><w:r><w:br w:type="page"/></w:r></w:p></w:txbxContent></w:pict><w:br w:type="page"/><w:t>A</w:t><w:br w:type="page"/></w:r></w:p>');
+  const blocks = doc.getBlocks();
+  assert.equal(blocks.filter(block => block.type === 'pageBreak').length, 2);
+});
+
+test('even/odd header references are disabled when settings flag is absent', () => {
+  const doc = DocxDocument.create();
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode(
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+  ), 'application/vnd.openxmlformats-package.relationships+xml');
+  doc.setPartXml(doc.mainDocumentPath,
+    `<w:document xmlns:w="${WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>a</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="even" r:id="rId2"/></w:sectPr></w:body></w:document>`);
+  doc.addPart('word/header1.xml', new TextEncoder().encode(`<w:hdr xmlns:w="${WORD_NS}"><w:p><w:r><w:t>even</w:t></w:r></w:p></w:hdr>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml');
+  assert.equal(doc.getSection(0).headers.even, undefined);
+});
+
+test('setPageSetup can persist explicit column widths and numbering start', () => {
+  const doc = DocxDocument.create();
+  doc.setPageSetup(0, { columns: { count: 2, equalWidth: false, widths: [3000, 5000] }, pageNumbering: { start: 5, format: 'decimal' }, titlePage: true });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /w:cols[^>]*w:equalWidth="0"/);
+  assert.match(xml, /<w:col w:w="3000"/);
+  assert.match(xml, /<w:pgNumType[^>]*w:start="5"[^>]*w:fmt="decimal"/);
+  assert.match(xml, /<w:titlePg\/>/);
+});
+
+test('setPageSetup can clear stale column widths and page numbering attributes', () => {
+  const doc = DocxDocument.create();
+  doc.setPageSetup(0, { columns: { count: 2, equalWidth: false, widths: [3000, 5000] }, pageNumbering: { start: 3, format: 'decimal' } });
+  doc.setPageSetup(0, { columns: { equalWidth: true, widths: [] }, pageNumbering: {} });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /<w:col /);
+  assert.doesNotMatch(xml, /w:start="/);
+  assert.doesNotMatch(xml, /w:fmt="/);
+});
+
+test('relationship target decoding errors are tolerated when resolving section references', () => {
+  const doc = DocxDocument.create();
+  doc.addPart('word/_rels/document.xml.rels', new TextEncoder().encode(
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBad" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="%E0%A4%A"/></Relationships>`,
+  ), 'application/vnd.openxmlformats-package.relationships+xml');
+  doc.setPartXml(doc.mainDocumentPath,
+    `<w:document xmlns:w="${WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>a</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdBad"/></w:sectPr></w:body></w:document>`);
+  assert.doesNotThrow(() => doc.getSections());
+  assert.equal(Object.values(doc.getSection(0).headers).filter(Boolean).length, 0);
+});
+
 test('snapshot exposes parsed styles and default effective formatting', () => {
   const doc = withStyles(
     '<w:p><w:r><w:t>Styled</w:t></w:r></w:p>',

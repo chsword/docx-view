@@ -8,6 +8,7 @@ import type {
   ImageInfo,
   ParagraphInfo,
   RunInfo,
+  SectionInfo,
   TabStop,
   TableFormat,
   TableRowInfo,
@@ -157,6 +158,8 @@ export class DocxEditor {
     text: string;
     failed: boolean;
   }>();
+  private headerKind: 'default' | 'first' | 'even' = 'default';
+  private footerKind: 'default' | 'first' | 'even' = 'default';
   private selected: number | null = null;
   private selectedImageInfo: ImageInfo | null = null;
   private composing = false;
@@ -234,8 +237,11 @@ export class DocxEditor {
       ?? this.selectedImageInfo?.id
       ?? null;
     this.flush();
+    this.applyPageSetup();
     this.paragraphs.clear();
     const fragment = this.root.ownerDocument.createDocumentFragment();
+    const canRenderHeaderFooter = typeof this.root.ownerDocument.createElement === 'function';
+    if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
     let defaultTabStopTwips = 720;
     try {
       defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
@@ -243,6 +249,7 @@ export class DocxEditor {
       defaultTabStopTwips = 720;
     }
     this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
+    if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
     const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
@@ -369,7 +376,7 @@ export class DocxEditor {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
         parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips));
-      } else {
+      } else if (block.type === 'table') {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
         this.applyTableStyle(table, block.format);
@@ -403,8 +410,104 @@ export class DocxEditor {
           table.setAttribute('aria-describedby', description.id);
           parent.appendChild(description);
         }
+      } else {
+        const marker = this.root.ownerDocument.createElement('div');
+        marker.className = 'docx-break-marker';
+        marker.textContent = block.type === 'pageBreak'
+          ? '—— 分页符 ——'
+          : `—— 分节符（${block.breakType}）——`;
+        marker.setAttribute('role', 'note');
+        marker.setAttribute('aria-label', marker.textContent);
+        parent.appendChild(marker);
       }
     }
+  }
+
+  private applyPageSetup(): void {
+    const rootStyle = (this.root as unknown as { style?: CSSStyleDeclaration }).style;
+    const paper = this.root.parentElement as HTMLElement | null;
+    if (rootStyle) {
+      rootStyle.columnCount = '';
+      rootStyle.columnGap = '';
+    }
+    if (paper) {
+      paper.style.maxWidth = '';
+      paper.style.paddingTop = '';
+      paper.style.paddingRight = '';
+      paper.style.paddingBottom = '';
+      paper.style.paddingLeft = '';
+      delete paper.dataset.orientation;
+    }
+    let section: SectionInfo | undefined;
+    try { section = this.document.getSection(0); } catch { section = undefined; }
+    if (!section) return;
+    const toPx = (twips: number) => `${Math.max(0, twips * 96 / 1440)}px`;
+    if (paper) {
+      paper.style.maxWidth = toPx(section.pageWidth);
+      paper.style.paddingTop = toPx(section.margins.top);
+      paper.style.paddingRight = toPx(section.margins.right);
+      paper.style.paddingBottom = toPx(section.margins.bottom);
+      paper.style.paddingLeft = toPx(section.margins.left);
+      paper.dataset.orientation = section.orientation;
+    }
+    if (rootStyle) {
+      rootStyle.columnCount = String(Math.max(1, section.columns.count));
+      rootStyle.columnGap = toPx(section.columns.space);
+    }
+  }
+
+  private makeHeaderFooter(type: 'header' | 'footer'): HTMLElement {
+    const kind = type === 'header' ? this.headerKind : this.footerKind;
+    let map: Partial<Record<'default' | 'first' | 'even', string>> = {};
+    try {
+      const section = this.document.getSection(0);
+      map = type === 'header' ? section.headers : section.footers;
+    } catch {
+      map = {};
+    }
+    const part = map[kind] ?? map.default;
+    const blocks = type === 'header'
+      ? this.document.getHeaderBlocks(0, kind)
+      : this.document.getFooterBlocks(0, kind);
+    const partXml = part ? this.document.getPartXml(part) : '';
+    const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar|drawing|hyperlink|object|pict|sdt|customXml|smartTag|ins|del)\b/.test(partXml);
+    const area = this.root.ownerDocument.createElement('div');
+    area.className = `docx-${type}`;
+    const label = this.root.ownerDocument.createElement('div');
+    label.className = 'docx-header-footer-label';
+    label.id = `docx-${type}-${kind}-label`;
+    label.textContent = `${type === 'header' ? '页眉' : '页脚'}（${kind}）`;
+    const editable = this.root.ownerDocument.createElement('div');
+    editable.contentEditable = plainEditable ? 'true' : 'false';
+    editable.className = 'docx-header-footer-text';
+    editable.setAttribute('role', 'textbox');
+    editable.setAttribute('aria-multiline', 'true');
+    editable.setAttribute('aria-labelledby', label.id);
+    const renderedText = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
+    const normalizedRenderedText = renderedText.replace(/\r\n?/g, '\n').trimEnd();
+    editable.textContent = renderedText;
+    if (!plainEditable) editable.setAttribute('aria-readonly', 'true');
+    editable.addEventListener('blur', () => {
+      if (!plainEditable) return;
+      const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
+      if (text === normalizedRenderedText) return;
+      if (type === 'header') this.document.setHeaderText(0, text, kind);
+      else this.document.setFooterText(0, text, kind);
+      this.render();
+      this.options.onChange?.(this.document.getSnapshot());
+    });
+    area.append(label, editable);
+    return area;
+  }
+
+  setHeaderKind(kind: 'default' | 'first' | 'even'): void {
+    this.headerKind = kind;
+    this.render();
+  }
+
+  setFooterKind(kind: 'default' | 'first' | 'even'): void {
+    this.footerKind = kind;
+    this.render();
   }
 
   private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number): HTMLParagraphElement {

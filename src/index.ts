@@ -14,4 +14,5 @@ export type {
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
   WidthFormat,
+  PageSetup, SectionInfo, SectionType,
 } from './types.js';

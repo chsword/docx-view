@@ -45,7 +45,6 @@
                 <button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button>
                 <button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button>
               </div>
-              <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option></select></div>
               <div class="tool-group insert-tools">
                 <button id="add-paragraph" class="tool wide">＋ 段落</button>
                 <select id="table-rows" aria-label="表格行数"><option value="2">2 行</option><option value="3">3 行</option><option value="4">4 行</option></select>
@@ -66,6 +65,19 @@
               </div>
               <div class="tool-group"><button id="insert-image" class="tool wide">🖼 插图</button><button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button></div>
               <div class="tool-group"><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" /></div>
+              <div class="tool-group">
+                <label class="sr-only" for="page-size">纸张</label>
+                <select id="page-size"><option value="A4">A4</option><option value="Letter">Letter</option></select>
+                <label class="sr-only" for="page-orientation">方向</label>
+                <select id="page-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select>
+                <button id="apply-page-setup" class="tool wide">页面设置</button>
+              </div>
+              <div class="tool-group">
+                <button id="insert-section-break" class="tool wide">分节符</button>
+                <button id="insert-page-break" class="tool wide">分页符</button>
+                <label class="sr-only" for="header-kind">页眉类型</label><select id="header-kind"><option value="default">页眉默认</option><option value="first">页眉首页</option><option value="even">页眉偶数</option></select>
+                <label class="sr-only" for="footer-kind">页脚类型</label><select id="footer-kind"><option value="default">页脚默认</option><option value="first">页脚首页</option><option value="even">页脚偶数</option></select>
+              </div>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>
             <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span id="image-selection-label">未选中图片</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>
@@ -100,7 +112,7 @@
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
             </section>
             <div class="scope-note"><strong>段落有效格式</strong><pre id="effective-format" class="code-editor snapshot" tabindex="0" aria-label="当前段落有效格式"></pre></div>
-            <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式、基础表格和图片显示 / 插入 / 替换 / 删除 / 调整尺寸。浮动图片采用简化布局，不追求与 Word 像素级一致；外部链接图片会显示占位框且不会主动联网加载。</p></div>
+            <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式、基础表格、分节页面设置近似，以及图片显示 / 插入 / 替换 / 删除 / 调整尺寸。不是 Word 排版引擎，不模拟精确分页；页码域值与完整分页计算仍为占位，外部链接图片会显示占位框且不会主动联网加载。</p></div>
           </aside>
         </section>
         <footer class="page-footer"><span>纸间 · 给文档更多可能</span><span>无上传 · 无云端存储 · 无外部字体</span></footer>
