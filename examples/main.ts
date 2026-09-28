@@ -13,6 +13,11 @@ import type {
 } from '../src/index.js';
 import { reviewerBucketKey, reviewerBucketLabel, reviewerBucketOf } from '../src/revisions.js';
 import { findReusableNumberingId } from '../src/numbering.js';
+import {
+  createCommandRegistry,
+  createExampleCommandDescriptors,
+  type CommandContext,
+} from './commands.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -406,35 +411,13 @@ function updateSelection(): void {
   const index = editor.selectedParagraph;
   const paragraph = doc.getParagraphs().find((item) => item.index === index);
   const hasRange = !!selectedRange;
-  const editable = isMarkupView();
   element('selection-label').textContent = hasRange
     ? `已选择范围：第 ${selectedRange!.start.paragraph + 1} 段 ${selectedRange!.start.offset} 到 第 ${selectedRange!.end.paragraph + 1} 段 ${selectedRange!.end.offset}`
     : paragraph ? `已选择第 ${paragraph.index + 1} 段` : '点击正文选择段落';
-  for (const key of ['bold', 'italic', 'underline'] as const) {
-    const button = element<HTMLButtonElement>(`format-${key}`);
-    button.disabled = !paragraph && !hasRange;
-    button.setAttribute('aria-pressed', String(Boolean(selectedRangeFormat?.[key])));
-  }
-  const painter = element<HTMLButtonElement>('format-painter');
-  painter.disabled = !paragraph && !hasRange;
-  painter.setAttribute('aria-pressed', String(Boolean(formatPainter)));
-  const clear = element<HTMLButtonElement>('clear-format');
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
   const style = element<HTMLSelectElement>('paragraph-style');
   const alignment = element<HTMLSelectElement>('alignment');
-  const bullet = element<HTMLButtonElement>('list-bullet');
-  const decimal = element<HTMLButtonElement>('list-decimal');
-  const indent = element<HTMLButtonElement>('list-indent');
-  const outdent = element<HTMLButtonElement>('list-outdent');
-  size.disabled = color.disabled = !editable || (!paragraph && !hasRange);
-  style.disabled = alignment.disabled = !editable || !paragraph;
-  clear.disabled = !editable || (!paragraph && !hasRange);
-  bullet.disabled = decimal.disabled = !editable || !paragraph;
-  indent.disabled = !editable || !paragraph?.numbering || paragraph.numbering.level >= 8;
-  outdent.disabled = !editable || !paragraph?.numbering || paragraph.numbering.level <= 0;
-  bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
-  decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
   size.value = selectedRangeFormat?.fontSize ? String(selectedRangeFormat.fontSize) : '';
   const runColor = selectedRangeFormat?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
@@ -445,14 +428,14 @@ function updateSelection(): void {
   style.value = currentStyle?.id ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
   element('effective-format').textContent = paragraph ? JSON.stringify(paragraph.effective ?? {}, null, 2) : '点击正文选择段落';
+  syncCommandState();
 }
 
 function updateImageSelection(): void {
   const image = editor.selectedImage;
   element('image-selection-label').textContent = image ? `已选择图片 · ${image.alt ?? image.name ?? image.relationshipId}` : '未选中图片';
   element<HTMLInputElement>('image-alt').value = image?.alt ?? '';
-  element<HTMLButtonElement>('replace-image').disabled = !image;
-  element<HTMLButtonElement>('delete-image').disabled = !image;
+  syncCommandState();
 }
 
 function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
@@ -493,6 +476,7 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
     const ids = (node.dataset.docxCommentIds ?? '').split(',').map((value) => Number(value));
     node.classList.toggle('docx-comment-active', selectedCommentId !== null && ids.includes(selectedCommentId));
   }
+  syncCommandState();
 }
 
 function revisionSummaryText(revision: ReturnType<DocxDocument['getRevisions']>[number]): string {
@@ -505,11 +489,15 @@ function revisionSummaryText(revision: ReturnType<DocxDocument['getRevisions']>[
   return '单元格格式修订';
 }
 
+function visibleRevisions() {
+  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors.map(reviewerSelectionKey)) : undefined;
+  return (reviewShowRevisions ? doc.getRevisions() : []).filter((revision) =>
+    !selectedAuthors || selectedAuthors.has(reviewerBucketKey(reviewerBucketOf(revision.author))));
+}
+
 function refreshRevisions(): void {
   const list = element<HTMLUListElement>('revision-list');
-  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors.map(reviewerSelectionKey)) : undefined;
-  const revisions = (reviewShowRevisions ? doc.getRevisions() : []).filter((revision) =>
-    !selectedAuthors || selectedAuthors.has(reviewerBucketKey(reviewerBucketOf(revision.author))));
+  const revisions = visibleRevisions();
   if (selectedRevisionId !== null && !revisions.some((revision) => revision.id === selectedRevisionId)) selectedRevisionId = null;
   list.replaceChildren(...revisions.map((revision) => {
     const item = document.createElement('li');
@@ -557,10 +545,7 @@ function refreshRevisions(): void {
     item.append(button);
     return item;
   }));
-  element<HTMLButtonElement>('review-prev-revision').disabled = !revisions.length;
-  element<HTMLButtonElement>('review-next-revision').disabled = !revisions.length;
-  element<HTMLButtonElement>('review-accept-all').disabled = !revisions.length;
-  element<HTMLButtonElement>('review-reject-all').disabled = !revisions.length;
+  syncCommandState();
 }
 
 function refreshReviewers(): void {
@@ -748,6 +733,275 @@ function setDocument(next: DocxDocument, name: string): void {
   resetAgent();
 }
 
+const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
+  actions: {
+    toggleRunFormat(kind) {
+      formatRuns({ [kind]: !selectedRangeFormat?.[kind] });
+    },
+    activateFormatPainter,
+    clearFormat() {
+      ensureMarkupView();
+      const paragraph = doc.getParagraphs().find((item) => item.index === selectedIndex());
+      if (!paragraph && !selectedRange) throw new Error('请先选择要清除格式的段落或文本。');
+      if (selectedRange) doc.formatDocumentRange(selectedRange, CLEAR_RUN_FORMAT);
+      if (paragraph) {
+        const styleId = paragraph.style ?? defaultParagraphStyle()?.id;
+        if (styleId) doc.applyParagraphStyle(paragraph.index, styleId, { clearDirectFormat: true });
+        else doc.formatParagraph(paragraph.index, CLEAR_PARAGRAPH_FORMAT);
+        if (!selectedRange && paragraph.text.length) {
+          doc.formatDocumentRange({
+            start: { paragraph: paragraph.index, offset: 0 },
+            end: { paragraph: paragraph.index, offset: paragraph.text.length },
+          }, CLEAR_RUN_FORMAT);
+        }
+      }
+      editor.render();
+      refresh();
+      message('已清除直接格式。');
+    },
+    setFontSize(value) {
+      formatRuns({ fontSize: value });
+    },
+    setFontColor(color) {
+      formatRuns({ color });
+    },
+    applyParagraphStyle(style) {
+      ensureMarkupView();
+      doc.applyParagraphStyle(selectedIndex(), style);
+      editor.render();
+      refresh();
+      message(`已应用段落样式 ${doc.getStyle(style)?.name ?? style}。`);
+    },
+    setAlignment(alignment) {
+      doc.formatParagraph(selectedIndex(), { alignment });
+      editor.render();
+      refresh();
+      message('已更新段落对齐方式。');
+    },
+    applyNumbering,
+    changeNumberingLevel,
+    insertTableRow() {
+      const cell = selectedCell();
+      doc.insertTableRow(cell.table, cell.row + 1);
+      editor.render();
+      refresh();
+      message('已在当前单元格下方插入一行。');
+    },
+    deleteTableRow() {
+      const cell = selectedCell();
+      doc.deleteTableRow(cell.table, cell.row);
+      editor.render();
+      refresh();
+      message('已删除当前行。');
+    },
+    insertTableColumn() {
+      const cell = selectedCell();
+      doc.insertTableColumn(cell.table, cell.col + cell.colSpan);
+      editor.render();
+      refresh();
+      message('已在当前单元格右侧插入一列。');
+    },
+    deleteTableColumn() {
+      const cell = selectedCell();
+      doc.deleteTableColumn(cell.table, cell.col);
+      editor.render();
+      refresh();
+      message('已删除当前列。');
+    },
+    mergeCells() {
+      const cell = selectedCell();
+      doc.mergeCells(cell.table, { row: cell.row, col: cell.col, rowSpan: 2, colSpan: 2 });
+      editor.render();
+      refresh();
+      message('已尝试从当前单元格开始合并 2 × 2 区域。');
+    },
+    splitCell() {
+      const cell = selectedCell();
+      doc.splitCell(cell.table, cell.row, cell.col, cell.rowSpan, cell.colSpan);
+      editor.render();
+      refresh();
+      message('已按当前跨度拆分单元格。');
+    },
+    applyCellStyle(fill) {
+      const cell = selectedCell();
+      doc.formatCell(cell.table, cell.row, cell.col, {
+        shading: { fill: fill.slice(1).toUpperCase() },
+        borders: {
+          top: { style: 'single', size: 8, color: '7A8AA0' },
+          right: { style: 'single', size: 8, color: '7A8AA0' },
+          bottom: { style: 'single', size: 8, color: '7A8AA0' },
+          left: { style: 'single', size: 8, color: '7A8AA0' },
+        },
+      });
+      editor.render();
+      refresh();
+      message('已应用当前单元格边框与底纹。');
+    },
+    startInsertImage() {
+      imageAction = 'insert';
+      element<HTMLInputElement>('image-file-input').click();
+    },
+    startReplaceImage() {
+      if (!editor.selectedImage) return;
+      imageAction = 'replace';
+      element<HTMLInputElement>('image-file-input').click();
+    },
+    deleteImage() {
+      if (!editor.selectedImage) throw new Error('请先选择一张图片。');
+      doc.deleteImage(editor.selectedImage);
+      editor.render();
+      refresh();
+      message('已删除图片。');
+    },
+    setImageAlt(text) {
+      if (!editor.selectedImage) throw new Error('请先选择一张图片。');
+      doc.setImageAlt(editor.selectedImage, text);
+      editor.render();
+      refresh();
+      message('已更新图片替代文本。');
+    },
+    focusPreviousRevision() {
+      const id = editor.focusPreviousRevision();
+      selectedRevisionId = id;
+      refreshRevisions();
+    },
+    focusNextRevision() {
+      const id = editor.focusNextRevision();
+      selectedRevisionId = id;
+      refreshRevisions();
+    },
+    acceptAllRevisions() {
+      editor.acceptAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
+      selectedRevisionId = null;
+      refresh();
+    },
+    rejectAllRevisions() {
+      editor.rejectAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
+      selectedRevisionId = null;
+      refresh();
+    },
+    addComment() {
+      const text = window.prompt('输入批注内容');
+      if (text === null) return;
+      const id = doc.addComment(selectedCommentRange(), { text });
+      selectedCommentId = id;
+      editor.render();
+      refresh();
+      message('已添加批注。');
+    },
+    replyComment(commentId) {
+      const text = window.prompt('输入回复内容');
+      if (text === null) return;
+      selectedCommentId = doc.replyComment(commentId, { text });
+      refresh();
+      message('已添加回复。');
+    },
+    toggleCommentResolved(commentId) {
+      const current = doc.getComments().find((comment) => comment.id === commentId);
+      if (!current) throw new Error('找不到当前批注。');
+      doc.setCommentResolved(current.id, !current.resolved);
+      refresh();
+      message(current.resolved ? '已取消解决状态。' : '已标记为解决。');
+    },
+    deleteComment(commentId) {
+      doc.deleteComment(commentId);
+      selectedCommentId = null;
+      editor.render();
+      refresh();
+      message('已删除批注。');
+    },
+  },
+  getParagraphInfo(paragraph) {
+    if (paragraph === null) return null;
+    return doc.getParagraphs().find((item) => item.index === paragraph) ?? null;
+  },
+  getVisibleRevisionCount() {
+    return visibleRevisions().length;
+  },
+  isFormatPainterActive() {
+    return Boolean(formatPainter);
+  },
+  getFontSizeValue() {
+    return element<HTMLSelectElement>('font-size').value;
+  },
+  getFontColorValue() {
+    return element<HTMLInputElement>('font-color').value.slice(1);
+  },
+  getParagraphStyleValue() {
+    return element<HTMLSelectElement>('paragraph-style').value;
+  },
+  getAlignmentValue() {
+    return element<HTMLSelectElement>('alignment').value as ParagraphFormat['alignment'];
+  },
+  getCellFillValue() {
+    return element<HTMLInputElement>('cell-fill').value;
+  },
+  getImageAltValue() {
+    return element<HTMLInputElement>('image-alt').value;
+  },
+}));
+
+const commandControls: Array<{ elementId: string; commandId: string; pressed?: boolean }> = [
+  { elementId: 'format-bold', commandId: 'format.bold', pressed: true },
+  { elementId: 'format-italic', commandId: 'format.italic', pressed: true },
+  { elementId: 'format-underline', commandId: 'format.underline', pressed: true },
+  { elementId: 'format-painter', commandId: 'format.painter', pressed: true },
+  { elementId: 'clear-format', commandId: 'format.clear' },
+  { elementId: 'font-size', commandId: 'format.fontSize' },
+  { elementId: 'font-color', commandId: 'format.fontColor' },
+  { elementId: 'paragraph-style', commandId: 'paragraph.style' },
+  { elementId: 'alignment', commandId: 'paragraph.alignment' },
+  { elementId: 'list-bullet', commandId: 'list.bullet', pressed: true },
+  { elementId: 'list-decimal', commandId: 'list.decimal', pressed: true },
+  { elementId: 'list-indent', commandId: 'list.indent' },
+  { elementId: 'list-outdent', commandId: 'list.outdent' },
+  { elementId: 'replace-image', commandId: 'image.replace' },
+  { elementId: 'delete-image', commandId: 'image.delete' },
+  { elementId: 'reply-comment', commandId: 'comment.reply' },
+  { elementId: 'resolve-comment', commandId: 'comment.toggleResolved' },
+  { elementId: 'delete-comment', commandId: 'comment.delete' },
+  { elementId: 'review-prev-revision', commandId: 'review.previousRevision' },
+  { elementId: 'review-next-revision', commandId: 'review.nextRevision' },
+  { elementId: 'review-accept-all', commandId: 'review.acceptAll' },
+  { elementId: 'review-reject-all', commandId: 'review.rejectAll' },
+] as const;
+
+function buildCommandContext(source: CommandContext['source'] = 'ribbon'): CommandContext {
+  const range = selectedRange;
+  const paragraph = doc.getParagraphs().find((item) => item.index === editor.selectedParagraph)?.index ?? null;
+  return {
+    revisionView: reviewRevisionView,
+    editable: isMarkupView(),
+    selection: {
+      paragraph,
+      range,
+      format: selectedRangeFormat,
+      collapsed: !range || (range.start.paragraph === range.end.paragraph && range.start.offset === range.end.offset),
+    },
+    table: null,
+    image: editor.selectedImage ?? null,
+    hyperlink: null,
+    revisionsAtPoint: [],
+    commentsAtPoint: selectedCommentId === null ? [] : [selectedCommentId],
+    clipboard: 'unknown',
+    source,
+  };
+}
+
+function syncCommandState(): void {
+  const ctx = buildCommandContext();
+  for (const { elementId, commandId, pressed } of commandControls) {
+    const control = element<HTMLElement>(elementId);
+    const command = commandRegistry.get(commandId);
+    if ('disabled' in control) (control as HTMLButtonElement | HTMLSelectElement | HTMLInputElement).disabled = !command.enabled(ctx);
+    if (pressed) control.setAttribute('aria-pressed', String(Boolean(command.checked?.(ctx))));
+  }
+}
+
+function runCommand(id: string, source: CommandContext['source'] = 'ribbon'): void {
+  run(() => commandRegistry.run(id, buildCommandContext(source)));
+}
+
 host.addEventListener('docx-selectionchange', updateSelection);
 host.addEventListener('docx-rangechange', (event) => {
   const detail = (event as CustomEvent<{ range: DocumentRange; format: RunFormat } | null>).detail;
@@ -812,129 +1066,50 @@ element('review-clear-authors').addEventListener('click', () => {
 });
 element('comment-author-filter').addEventListener('input', () => refreshComments());
 element('comment-resolved-filter').addEventListener('change', () => refreshComments());
-element('new-comment').addEventListener('click', () => run(() => {
-  const text = window.prompt('输入批注内容');
-  if (text === null) return;
-  const id = doc.addComment(selectedCommentRange(), { text });
-  selectedCommentId = id;
-  editor.render();
-  refresh();
-  message('已添加批注。');
-}));
-element('review-prev-revision').addEventListener('click', () => run(() => {
-  const id = editor.focusPreviousRevision();
-  selectedRevisionId = id;
-  refreshRevisions();
-}));
-element('review-next-revision').addEventListener('click', () => run(() => {
-  const id = editor.focusNextRevision();
-  selectedRevisionId = id;
-  refreshRevisions();
-}));
-element('review-accept-all').addEventListener('click', () => run(() => {
-  editor.acceptAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
-  selectedRevisionId = null;
-  refresh();
-}));
-element('review-reject-all').addEventListener('click', () => run(() => {
-  editor.rejectAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
-  selectedRevisionId = null;
-  refresh();
-}));
-element('reply-comment').addEventListener('click', () => run(() => {
-  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
-  const text = window.prompt('输入回复内容');
-  if (text === null) return;
-  selectedCommentId = doc.replyComment(selectedCommentId, { text });
-  refresh();
-  message('已添加回复。');
-}));
-element('resolve-comment').addEventListener('click', () => run(() => {
-  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
-  const current = doc.getComments().find((comment) => comment.id === selectedCommentId);
-  if (!current) throw new Error('找不到当前批注。');
-  doc.setCommentResolved(current.id, !current.resolved);
-  refresh();
-  message(current.resolved ? '已取消解决状态。' : '已标记为解决。');
-}));
-element('delete-comment').addEventListener('click', () => run(() => {
-  if (selectedCommentId === null) throw new Error('请先选择一条批注。');
-  doc.deleteComment(selectedCommentId);
-  selectedCommentId = null;
-  editor.render();
-  refresh();
-  message('已删除批注。');
-}));
+element('new-comment').addEventListener('click', () => runCommand('comment.new'));
+element('review-prev-revision').addEventListener('click', () => runCommand('review.previousRevision'));
+element('review-next-revision').addEventListener('click', () => runCommand('review.nextRevision'));
+element('review-accept-all').addEventListener('click', () => runCommand('review.acceptAll'));
+element('review-reject-all').addEventListener('click', () => runCommand('review.rejectAll'));
+element('reply-comment').addEventListener('click', () => runCommand('comment.reply'));
+element('resolve-comment').addEventListener('click', () => runCommand('comment.toggleResolved'));
+element('delete-comment').addEventListener('click', () => runCommand('comment.delete'));
 for (const key of ['bold', 'italic', 'underline'] as const) {
-  element(`format-${key}`).addEventListener('click', () => run(() => {
-    formatRuns({ [key]: !selectedRangeFormat?.[key] });
-  }));
+  element(`format-${key}`).addEventListener('click', () => runCommand(`format.${key}`));
 }
-element('format-painter').addEventListener('click', () => run(() => activateFormatPainter(false)));
+element('format-painter').addEventListener('click', () => runCommand('format.painter'));
 element('format-painter').addEventListener('dblclick', (event) => run(() => {
   event.preventDefault();
   activateFormatPainter(true);
 }));
-element('clear-format').addEventListener('click', () => run(() => {
-  ensureMarkupView();
-  const paragraph = doc.getParagraphs().find((item) => item.index === selectedIndex());
-  if (!paragraph && !selectedRange) throw new Error('请先选择要清除格式的段落或文本。');
-  if (selectedRange) doc.formatDocumentRange(selectedRange, CLEAR_RUN_FORMAT);
-  if (paragraph) {
-    const styleId = paragraph.style ?? defaultParagraphStyle()?.id;
-    if (styleId) doc.applyParagraphStyle(paragraph.index, styleId, { clearDirectFormat: true });
-    else doc.formatParagraph(paragraph.index, CLEAR_PARAGRAPH_FORMAT);
-    if (!selectedRange && paragraph.text.length) {
-      doc.formatDocumentRange({
-        start: { paragraph: paragraph.index, offset: 0 },
-        end: { paragraph: paragraph.index, offset: paragraph.text.length },
-      }, CLEAR_RUN_FORMAT);
-    }
-  }
-  editor.render();
-  refresh();
-  message('已清除直接格式。');
-}));
+element('clear-format').addEventListener('click', () => runCommand('format.clear'));
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   cancelFormatPainter();
 });
 element<HTMLSelectElement>('font-size').addEventListener('change', (event) => {
   const value = (event.target as HTMLSelectElement).value;
-  if (value) run(() => formatRuns({ fontSize: Number(value) }));
+  if (value) runCommand('format.fontSize');
 });
 element<HTMLInputElement>('font-color').addEventListener('change', (event) => {
   const color = (event.target as HTMLInputElement).value.slice(1);
-  run(() => formatRuns({ color }));
+  if (color) runCommand('format.fontColor');
 });
 element<HTMLSelectElement>('alignment').addEventListener('change', (event) => {
-  const alignment = (event.target as HTMLSelectElement).value as ParagraphFormat['alignment'];
-  run(() => {
-    doc.formatParagraph(selectedIndex(), { alignment });
-    editor.render();
-    refresh();
-    message('已更新段落对齐方式。');
-  });
+  if ((event.target as HTMLSelectElement).value) runCommand('paragraph.alignment');
 });
-element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
-element('list-decimal').addEventListener('click', () => run(() => applyNumbering('decimal')));
-element('list-indent').addEventListener('click', () => run(() => changeNumberingLevel(1)));
-element('list-outdent').addEventListener('click', () => run(() => changeNumberingLevel(-1)));
+element('list-bullet').addEventListener('click', () => runCommand('list.bullet'));
+element('list-decimal').addEventListener('click', () => runCommand('list.decimal'));
+element('list-indent').addEventListener('click', () => runCommand('list.indent'));
+element('list-outdent').addEventListener('click', () => runCommand('list.outdent'));
 element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event) => {
   const style = (event.target as HTMLSelectElement).value;
-  if (!style) return;
-  run(() => {
-    ensureMarkupView();
-    doc.applyParagraphStyle(selectedIndex(), style);
-    editor.render();
-    refresh();
-    message(`已应用段落样式 ${doc.getStyle(style)?.name ?? style}。`);
-  });
+  if (style) runCommand('paragraph.style');
 });
-element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
-element('list-decimal').addEventListener('click', () => run(() => applyNumbering('decimal')));
-element('list-indent').addEventListener('click', () => run(() => changeNumberingLevel(1)));
-element('list-outdent').addEventListener('click', () => run(() => changeNumberingLevel(-1)));
+element('list-bullet').addEventListener('click', () => runCommand('list.bullet'));
+element('list-decimal').addEventListener('click', () => runCommand('list.decimal'));
+element('list-indent').addEventListener('click', () => runCommand('list.indent'));
+element('list-outdent').addEventListener('click', () => runCommand('list.outdent'));
 element('add-paragraph').addEventListener('click', () => run(() => {
   editor.flush();
   doc.insertParagraph('在这里写下新的想法。');
@@ -955,88 +1130,17 @@ element('add-table').addEventListener('click', () => run(() => {
   refresh();
   message(`已在文档末尾添加 ${rows} × ${cols} 表格。`);
 }));
-element('insert-row').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.insertTableRow(cell.table, cell.row + 1);
-  editor.render();
-  refresh();
-  message('已在当前单元格下方插入一行。');
-}));
-element('delete-row').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.deleteTableRow(cell.table, cell.row);
-  editor.render();
-  refresh();
-  message('已删除当前行。');
-}));
-element('insert-col').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.insertTableColumn(cell.table, cell.col + cell.colSpan);
-  editor.render();
-  refresh();
-  message('已在当前单元格右侧插入一列。');
-}));
-element('delete-col').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.deleteTableColumn(cell.table, cell.col);
-  editor.render();
-  refresh();
-  message('已删除当前列。');
-}));
-element('merge-cells').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.mergeCells(cell.table, { row: cell.row, col: cell.col, rowSpan: 2, colSpan: 2 });
-  editor.render();
-  refresh();
-  message('已尝试从当前单元格开始合并 2 × 2 区域。');
-}));
-element('split-cell').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  doc.splitCell(cell.table, cell.row, cell.col, cell.rowSpan, cell.colSpan);
-  editor.render();
-  refresh();
-  message('已按当前跨度拆分单元格。');
-}));
-element('apply-cell-style').addEventListener('click', () => run(() => {
-  const cell = selectedCell();
-  const fill = element<HTMLInputElement>('cell-fill').value.slice(1).toUpperCase();
-  doc.formatCell(cell.table, cell.row, cell.col, {
-    shading: { fill },
-    borders: {
-      top: { style: 'single', size: 8, color: '7A8AA0' },
-      right: { style: 'single', size: 8, color: '7A8AA0' },
-      bottom: { style: 'single', size: 8, color: '7A8AA0' },
-      left: { style: 'single', size: 8, color: '7A8AA0' },
-    },
-  });
-  editor.render();
-  refresh();
-  message('已应用当前单元格边框与底纹。');
-}));
-element('insert-image').addEventListener('click', () => {
-  imageAction = 'insert';
-  element<HTMLInputElement>('image-file-input').click();
-});
-element('replace-image').addEventListener('click', () => {
-  if (!editor.selectedImage) return;
-  imageAction = 'replace';
-  element<HTMLInputElement>('image-file-input').click();
-});
-element('delete-image').addEventListener('click', () => run(() => {
-  if (!editor.selectedImage) throw new Error('请先选择一张图片。');
-  doc.deleteImage(editor.selectedImage);
-  editor.render();
-  refresh();
-  message('已删除图片。');
-}));
-element<HTMLInputElement>('image-alt').addEventListener('change', (event) => run(() => {
-  if (!editor.selectedImage) throw new Error('请先选择一张图片。');
-  const input = event.target as HTMLInputElement;
-  doc.setImageAlt(editor.selectedImage, input.value);
-  editor.render();
-  refresh();
-  message('已更新图片替代文本。');
-}));
+element('insert-row').addEventListener('click', () => runCommand('table.insertRow'));
+element('delete-row').addEventListener('click', () => runCommand('table.deleteRow'));
+element('insert-col').addEventListener('click', () => runCommand('table.insertColumn'));
+element('delete-col').addEventListener('click', () => runCommand('table.deleteColumn'));
+element('merge-cells').addEventListener('click', () => runCommand('table.mergeCells'));
+element('split-cell').addEventListener('click', () => runCommand('table.splitCell'));
+element('apply-cell-style').addEventListener('click', () => runCommand('table.applyCellStyle'));
+element('insert-image').addEventListener('click', () => { void commandRegistry.run('image.insert', buildCommandContext()); });
+element('replace-image').addEventListener('click', () => { void commandRegistry.run('image.replace', buildCommandContext()); });
+element('delete-image').addEventListener('click', () => runCommand('image.delete'));
+element<HTMLInputElement>('image-alt').addEventListener('change', () => runCommand('image.setAlt'));
 element('apply-page-setup').addEventListener('click', () => run(() => {
   const size = element<HTMLSelectElement>('page-size').value;
   const orientation = element<HTMLSelectElement>('page-orientation').value as 'portrait' | 'landscape';
