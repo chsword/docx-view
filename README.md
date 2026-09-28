@@ -136,7 +136,7 @@ console.log(reopened.getSnapshot());
 注释（脚注/尾注）`blocks` 里的段落 `index` 固定为 `-1`，不属于正文索引命名空间；注释内容请使用 `setNoteText(kind, id, text)` 编辑。`insertFootnote` / `insertEndnote` 为匹配 Word 常见显示，会在标记后以保留空格写入正文文本 run（例如读回 `" 内容"`）。
 批注锚点通过 `CommentInfo.anchor.sourcePartPath` 指明所属部件；`paragraph` / `startParagraph` / `endParagraph` 都是该部件内部的局部顺序，不可直接拿去调用正文 `setParagraphText()` 之类的 API。回复批注会复用父批注锚点；没有正文锚点或没有 `comments.xml` 条目的记录会被标记为 `isOrphan: true`。
 当前写入型批注 API（`addComment` / `replyComment` / `setCommentResolved` / `setCommentText` / `deleteComment`）以主文档为编辑入口；`getComments()` 会同时读出正文、页眉、页脚、脚注和尾注中的批注锚点。`getReviewers()` 现在返回原始 `author`（可为 `undefined` / `''` / 空白字符串）+ `kind` 判别字段，不再用字符串哨兵替代作者值，因此真实作者名即使等于 `"(unattributed)"` / `"(empty author)"` / `"(blank author)"` 也不会与缺失/空串/空白作者合并；同一作者出现多个 `initials` 时，取出现次数最多的值，若并列则取最早出现的值（`initials` 仅来自批注；仅有修订而没有批注的作者不会带 `initials`）。`DocxEditor.setReviewFilter({ authors })` 也同步改为传 `ReviewerFilterAuthor[]`：`named` 必须带非空 `author`，`unattributed` 不带 `author`，`empty` 必须传 `author: ''`，`blank` 必须传仅空白的 `author`。旧的字符串数组写法需迁移。当前 `getReviewers()` 只统计主文档修订与主文档锚点批注，页眉/页脚/脚注/尾注锚点的批注不计入。
-逐次调用公开方法会按次记录历史（每步一次快照），连续编辑同一段落的文字会在短时间窗口内合并为一步；批量修改请走 `applyOperations`，一个批次只记录一步、也只拍一次快照——实测 600 次逐个 `insertParagraph` 明显慢于同样内容的单批操作，大批量场景请优先使用批次接口。撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
+逐次调用公开方法会按次记录历史（每步一次快照），连续编辑同一段落的文字会在短时间窗口内合并为一步；批量修改请走 `applyOperations`，一个批次只记录一步、也只拍一次快照——实测 600 次逐个 `insertParagraph` 明显慢于同样内容的单批操作，大批量场景请优先使用批次接口。若一次写入调用（包括非空 `applyOperations` 批次）最终没有产生任何部件字节变化，则该调用视为 no-op：不会推进 `revision`、不会新增撤销历史。撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
 
 ### 可视化组件
 
