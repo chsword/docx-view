@@ -556,8 +556,9 @@ export class DocxEditor {
       revisionColors: new Map(),
     };
     try {
-      for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
+      for (const revision of this.document.getRevisions({ kinds: ['deletion', 'move'] })) {
         if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
+        if (revision.kind === 'move' && revision.move?.side !== 'from') continue;
         if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
         const key = `${revision.paragraph}:${revision.run}`;
         reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
@@ -1071,13 +1072,15 @@ export class DocxEditor {
     }
     const hasInsertion = revisions.some((revision) => revision.kind === 'insertion');
     const hasDeletion = revisions.some((revision) => revision.kind === 'deletion');
+    const hasMoveFrom = revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'from');
+    const hasMoveTo = revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'to');
     const view = this.reviewFilter.revisionView;
     let text = run.text;
     if (view === 'original') {
-      if (hasInsertion) text = '';
-      else if (hasDeletion) text = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`) ?? run.text;
+      if (hasInsertion || hasMoveTo) text = '';
+      else if (hasDeletion || hasMoveFrom) text = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`) ?? run.text;
     } else if (view === 'final') {
-      if (hasDeletion) text = '';
+      if (hasDeletion || hasMoveFrom) text = '';
     }
     if (text === run.text && revisions.length === run.revisions.length && revisions.every((entry, index) => entry === run.revisions![index])) {
       return run;
@@ -1100,6 +1103,7 @@ export class DocxEditor {
     const labels = [];
     if (revisions.some((revision) => revision.kind === 'insertion')) labels.push('插入');
     if (revisions.some((revision) => revision.kind === 'deletion')) labels.push('删除');
+    if (revisions.some((revision) => revision.kind === 'move')) labels.push('移动');
     const author = revisions.find((revision) => revision.author !== undefined)?.author;
     return author ? `修订：${labels.join(' / ') || '变更'}，作者 ${author}` : `修订：${labels.join(' / ') || '变更'}`;
   }
@@ -1122,7 +1126,8 @@ export class DocxEditor {
     run: RunInfo,
     reviewContext: ReviewRenderContext,
   ): void {
-    if (this.reviewFilter.revisionView !== 'markup' || !run.revisions?.some((revision) => revision.kind === 'deletion')) return;
+    if (this.reviewFilter.revisionView !== 'markup' || !run.revisions?.some((revision) =>
+      revision.kind === 'deletion' || (revision.kind === 'move' && revision.move?.side === 'from'))) return;
     const deletedText = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`);
     if (!deletedText) return;
     const marker = this.root.ownerDocument.createElement('span');
@@ -1130,11 +1135,15 @@ export class DocxEditor {
     marker.dataset.docxDeleted = '1';
     marker.contentEditable = 'false';
     marker.textContent = deletedText;
-    marker.style.textDecoration = 'line-through';
+    const hasMoveFrom = run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'from');
+    marker.style.textDecoration = hasMoveFrom ? 'line-through underline' : 'line-through';
+    if (hasMoveFrom) marker.style.textDecorationStyle = 'solid double';
     marker.style.opacity = '0.85';
-    const authorRevision = run.revisions.find((revision) => revision.kind === 'deletion');
+    const authorRevision = run.revisions.find((revision) =>
+      revision.kind === 'deletion' || (revision.kind === 'move' && revision.move?.side === 'from'));
     marker.style.color = this.reviewColor(authorRevision?.author, reviewContext);
-    marker.setAttribute('aria-label', `修订删除文本：${deletedText}`);
+    marker.setAttribute('aria-label', hasMoveFrom ? `修订移动来源文本：${deletedText}` : `修订删除文本：${deletedText}`);
+    if (hasMoveFrom) marker.append(this.makeMark('↤', '移动来源'));
     this.registerRevisionNode(run.revisions.map((revision) => revision.id), marker);
     paragraphElement.append(marker);
   }
@@ -1266,10 +1275,13 @@ export class DocxEditor {
     if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup') {
       const hasInsertion = run.revisions.some((revision) => revision.kind === 'insertion');
       const hasDeletion = run.revisions.some((revision) => revision.kind === 'deletion');
+      const hasMoveFrom = run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'from');
+      const hasMoveTo = run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'to');
       const author = run.revisions.find((revision) => revision.author !== undefined)?.author;
       const revisionColor = this.reviewColor(author, reviewContext);
-      const textDecoration = [hasInsertion ? 'underline' : '', hasDeletion ? 'line-through' : ''].filter(Boolean).join(' ');
+      const textDecoration = [hasInsertion || hasMoveTo ? 'underline' : '', hasDeletion || hasMoveFrom ? 'line-through' : ''].filter(Boolean).join(' ');
       if (textDecoration) runSpan.style.textDecoration = textDecoration;
+      if (hasMoveTo || hasMoveFrom) runSpan.style.textDecorationStyle = 'double';
       if (textDecoration) runSpan.style.textDecorationColor = revisionColor;
       const description = this.revisionAriaDescription(run.revisions);
       if (description) runSpan.setAttribute('aria-description', description);
@@ -1306,6 +1318,10 @@ export class DocxEditor {
         runSpan.append(this.root.ownerDocument.createTextNode(segment));
       }
       currentLineOffsetPx += this.measure(segment, run);
+    }
+    if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup' &&
+        run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'to')) {
+      runSpan.append(this.makeMark('↦', '移动目标'));
     }
     paragraphElement.append(runSpan);
     return currentLineOffsetPx;

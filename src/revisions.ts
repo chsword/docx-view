@@ -9,9 +9,9 @@ const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakH
 const DEFAULT_REVISION_AUTHOR = 'docx-view';
 const WRAPPER_KIND = {
   ins: 'insertion',
-  moveTo: 'insertion',
+  moveTo: 'move',
   del: 'deletion',
-  moveFrom: 'deletion',
+  moveFrom: 'move',
 } as const satisfies Partial<Record<string, RevisionMark['kind']>>;
 const CHANGE_KIND = {
   rPrChange: 'runFormatChange',
@@ -68,6 +68,17 @@ function revisionAuthorOf(element: Element): string | undefined {
 function revisionDateOf(element: Element): string | undefined {
   const date = revisionAttribute(element, 'date')?.trim();
   return date && Number.isFinite(Date.parse(date)) ? date : undefined;
+}
+
+function moveNameOf(element: Element): string {
+  const name = revisionAttribute(element, 'name');
+  return name?.trim() ?? '';
+}
+
+function moveSideOf(element: Element): 'from' | 'to' | undefined {
+  if (element.localName === 'moveFrom') return 'from';
+  if (element.localName === 'moveTo') return 'to';
+  return undefined;
 }
 
 function isDeletedWrapper(element: Element): boolean {
@@ -177,6 +188,12 @@ export function readRevisionMark(element: Element, kind: RevisionMark['kind'], t
     kind,
     author: revisionAuthorOf(element),
     date: revisionDateOf(element),
+    ...(kind === 'move' ? {
+      move: {
+        name: moveNameOf(element),
+        side: moveSideOf(element) ?? 'from',
+      },
+    } : {}),
     previousFormat: theme ? previousFormatOf(element, theme) : undefined,
   };
 }
