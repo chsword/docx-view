@@ -18,12 +18,29 @@ npm run dev
 ```sh
 npm run check          # TypeScript 检查
 npm test              # 构建库并运行 Node 内置测试
+npm run test:perf     # 独立进程性能回归检查（预热 + 多轮取中位数）
 npm run build         # dist/：ES modules、类型声明和 source maps
 npm run build:examples # examples-dist/：可部署的纯静态站点
 npm pack              # 打包库，供其他项目安装
 ```
 
 将 `examples-dist/` 部署到任意静态 HTTP 服务即可；资源使用相对路径，支持子目录部署。不要直接用 `file://` 打开源码 HTML。
+
+### 性能回归检查
+
+默认 `npm test` **不运行**性能断言，避免它们与其余测试共享进程时受到机器负载、GC 和新增测试数量的影响。需要检查性能回归时，单独运行：
+
+```sh
+npm run test:perf
+```
+
+性能套件会在独立 Node 进程里对关键场景先预热，再跑 5 轮取中位数，并断言：
+
+- `insertParagraph` 的单位成本不能明显偏离 `setParagraphText`
+- 批量 `applyOperations` 插入必须继续明显快于逐次插入
+- 1000 段批量改写必须继续保持近线性扩展
+
+失败信息会同时打印实测中位数、各轮样本和对应阈值，便于判断是真退化还是环境噪声。CI 也会把这组检查作为独立步骤运行。
 
 ### GitHub Pages 演示站
 

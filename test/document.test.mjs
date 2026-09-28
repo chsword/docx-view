@@ -1216,48 +1216,6 @@ test('nested setPartXml in updatePartXml keeps outer callback edits', () => {
   assert.doesNotMatch(doc.getPartXml(main), /NESTED/);
 });
 
-test('performance regression: single-op loops and batched ops stay within acceptance thresholds', () => {
-  const elapsed = (run) => {
-    const start = process.hrtime.bigint();
-    run();
-    return Number(process.hrtime.bigint() - start) / 1e6;
-  };
-  const single = DocxDocument.create();
-  const insertMs = elapsed(() => { for (let i = 0; i < 300; i++) single.insertParagraph(`段落内容 ${i}`); });
-  const setMs = elapsed(() => { for (let i = 0; i < 200; i++) single.setParagraphText(i, `改写 ${i}`); });
-  const batch = DocxDocument.create();
-  const batchMs = elapsed(() => batch.applyOperations({
-    operations: Array.from({ length: 300 }, (_, i) => ({ type: 'insertParagraph', text: `x${i}` })),
-  }));
-  assert.ok(insertMs < 1000, `300 insert took ${insertMs.toFixed(1)}ms`);
-  assert.ok(setMs < 1000, `200 set took ${setMs.toFixed(1)}ms`);
-  assert.ok(batchMs < 500, `batch 300 ops took ${batchMs.toFixed(1)}ms`);
-});
-
-test('performance regression: repeated single inserts should not grow quadratically', () => {
-  const measure = (count) => {
-    const doc = DocxDocument.create();
-    const start = process.hrtime.bigint();
-    for (let i = 0; i < count; i++) doc.insertParagraph(`p${i}`);
-    return Number(process.hrtime.bigint() - start) / 1e6;
-  };
-  const t600 = measure(600);
-  assert.ok(t600 < 1500, `insert performance regressed: 600=${t600.toFixed(1)}ms`);
-});
-
-test('performance regression: 1000 paragraph document handles 1000 operations quickly', () => {
-  const doc = DocxDocument.create();
-  doc.applyOperations({
-    operations: Array.from({ length: 999 }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
-  });
-  const start = process.hrtime.bigint();
-  doc.applyOperations({
-    operations: Array.from({ length: 1000 }, (_, i) => ({ type: 'setParagraphText', index: i, text: `更新-${i}` })),
-  });
-  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-  assert.ok(elapsedMs < 5000, `1000 ops took ${elapsedMs.toFixed(1)}ms`);
-});
-
 test('integration: table cell paragraph supports style, numbering and image together', () => {
   const doc = DocxDocument.create();
   doc.defineStyle({ id: 'CellStyle', type: 'paragraph', name: 'CellStyle', paragraph: { alignment: 'center' }, run: { bold: true } });
