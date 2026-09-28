@@ -3359,6 +3359,41 @@ test('rejectRevision on inserted table-cell paragraph marker preserves required 
   assert.equal(table.rows[0].cells[0].blocks[0].paragraph.text, '');
 });
 
+test('acceptRevision merges surviving content when only paragraph-mark deletion is tracked', () => {
+  const doc = withBody('<w:p><w:pPr><w:rPr><w:del w:id="101" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>上半</w:t></w:r></w:p><w:p><w:r><w:t>下半</w:t></w:r></w:p>');
+  doc.acceptRevision(101);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['上半下半']);
+  assert.equal(doc.getRevisions().length, 0);
+});
+
+test('acceptRevision keeps merge semantics when paragraph-mark deletion coexists with deleted runs', () => {
+  const doc = withBody('<w:p><w:pPr><w:rPr><w:del w:id="102" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>上</w:t></w:r><w:del w:id="103" w:author="Bob"><w:r><w:delText>半</w:delText></w:r></w:del></w:p><w:p><w:r><w:t>下半</w:t></w:r></w:p>');
+  doc.acceptRevision(102);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['上下半']);
+  assert.deepEqual(doc.getRevisions().map((revision) => revision.id), [103]);
+});
+
+test('acceptRevision degrades to marker removal when paragraph-mark deletion is on the last paragraph', () => {
+  const doc = withBody('<w:p><w:r><w:t>前</w:t></w:r></w:p><w:p><w:pPr><w:rPr><w:del w:id="104" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>后</w:t></w:r></w:p>');
+  doc.acceptRevision(104);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['前', '后']);
+  assert.equal(doc.getRevisions().length, 0);
+});
+
+test('acceptRevision degrades to marker removal when next paragraph is in another container', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:pPr><w:rPr><w:del w:id="105" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>单元格</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>正文</w:t></w:r></w:p>');
+  doc.acceptRevision(105);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['单元格', '正文']);
+  assert.equal(doc.getRevisions().length, 0);
+});
+
+test('acceptRevision degrades to marker removal when paragraph-mark deletion paragraph has sectPr', () => {
+  const doc = withBody('<w:p><w:pPr><w:rPr><w:del w:id="106" w:author="Alice"/></w:rPr><w:sectPr/></w:pPr><w:r><w:t>甲</w:t></w:r></w:p><w:p><w:r><w:t>乙</w:t></w:r></w:p>');
+  doc.acceptRevision(106);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['甲', '乙']);
+  assert.equal(doc.getRevisions().length, 0);
+});
+
 test('acceptRevision on row insertion marker keeps the row and removes marker', () => {
   const doc = withBody('<w:tbl><w:tr><w:trPr><w:ins w:id="11"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
   doc.acceptRevision(11);

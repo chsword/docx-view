@@ -111,16 +111,13 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
-<<<<<<< HEAD
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const REVISION_ELEMENT_NAMES = new Set([
   'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
 ]);
-=======
 const UNATTRIBUTED_REVIEWER = '(unattributed)';
 const EMPTY_REVIEWER = '(empty author)';
 const BLANK_REVIEWER = '(blank author)';
->>>>>>> origin/main
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -3720,8 +3717,53 @@ export class DocxDocument {
   private deleteParagraphForRevision(marker: Element): void {
     const paragraph = nearestWordAncestor(marker, 'p');
     if (!paragraph) return;
+    const isDeletionMark = marker.localName === 'del' || marker.localName === 'moveFrom';
+    if (isDeletionMark && this.paragraphHasUndeletedContent(paragraph)) {
+      if (this.tryMergeParagraphAfterMarkDeletion(paragraph, marker)) return;
+      this.removeRevisionMarker(marker);
+      return;
+    }
     this.removeRevisionMarker(marker);
     deleteParagraphElement(paragraph);
+  }
+
+  private paragraphHasUndeletedContent(paragraph: Element): boolean {
+    const walk = (node: Node, deletedDepth: number): boolean => {
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        if (element.namespaceURI === WORD_NS) {
+          const name = element.localName ?? '';
+          if (name === 'pPr' || isParagraphAnchorMarker(element)) continue;
+          if (name === 'del' || name === 'moveFrom') {
+            if (walk(element, deletedDepth + 1)) return true;
+            continue;
+          }
+          if (deletedDepth === 0) return true;
+        }
+        if (walk(element, deletedDepth)) return true;
+      }
+      return false;
+    };
+    return walk(paragraph, 0);
+  }
+
+  private tryMergeParagraphAfterMarkDeletion(paragraph: Element, marker: Element): boolean {
+    if (children(paragraph, 'pPr').some((props) => children(props, 'sectPr').length)) return false;
+    let container: Element | undefined;
+    try { container = paragraphContainer(paragraph); } catch { return false; }
+    const blocks = blockElements(container);
+    const index = blocks.findIndex((block) => block === paragraph);
+    const next = index >= 0 ? blocks[index + 1] : undefined;
+    if (!next || next.localName !== 'p') return false;
+    if (children(next, 'pPr').some((props) => children(props, 'sectPr').length)) return false;
+    this.removeRevisionMarker(marker);
+    for (const child of [...children(next)]) {
+      if (child.localName === 'pPr') continue;
+      paragraph.appendChild(child);
+    }
+    next.parentNode?.removeChild(next);
+    return true;
   }
 
   private deleteTableRowForRevision(marker: Element): void {
