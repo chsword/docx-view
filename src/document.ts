@@ -4413,7 +4413,7 @@ export class DocxDocument {
     const moveInfoByElement = new Map(moveEntries.map((entry) => [entry.element, entry.info] as const));
     for (const { element, info } of moveEntries) {
       const paired = movePairing.pairs.get(element);
-      if (!paired || !movePairing.stable.has(element)) continue;
+      if (!paired) continue;
       const pairedInfo = moveInfoByElement.get(paired);
       if (!pairedInfo || !info.move) continue;
       info.move.pairedId = pairedInfo.id;

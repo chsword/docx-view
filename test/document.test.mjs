@@ -3231,13 +3231,13 @@ test('getRevisions keeps single-sided moveTo readable without throwing', () => {
   }]);
 });
 
-test('getRevisions leaves pairedId undefined for ambiguous repeated move names', () => {
+test('getRevisions pairs repeated move names by document order for consistency with accept/reject', () => {
   const doc = withBody('<w:p><w:moveFrom w:id="21" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="22" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:moveFrom w:id="23" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="24" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
   assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, move: revision.move })), [
-    { id: 21, move: { name: 'dup', side: 'from' } },
-    { id: 22, move: { name: 'dup', side: 'to' } },
-    { id: 23, move: { name: 'dup', side: 'from' } },
-    { id: 24, move: { name: 'dup', side: 'to' } },
+    { id: 21, move: { name: 'dup', side: 'from', pairedId: 22 } },
+    { id: 22, move: { name: 'dup', side: 'to', pairedId: 21 } },
+    { id: 23, move: { name: 'dup', side: 'from', pairedId: 24 } },
+    { id: 24, move: { name: 'dup', side: 'to', pairedId: 23 } },
   ]);
 });
 
@@ -4149,6 +4149,12 @@ test('acceptAllRevisions author filter supports reviewer bucket keys for move pa
 
 test('acceptRevision on one move pair does not affect another pair with same name', () => {
   const doc = withBody('<w:p><w:moveFrom w:id="50" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="51" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:r><w:t>|</w:t></w:r><w:moveFrom w:id="52" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="53" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, pairedId: revision.move?.pairedId })), [
+    { id: 50, pairedId: 51 },
+    { id: 51, pairedId: 50 },
+    { id: 52, pairedId: 53 },
+    { id: 53, pairedId: 52 },
+  ]);
   doc.acceptRevision(50);
   assert.deepEqual(doc.getRevisions().map((revision) => revision.id), [52, 53]);
   assert.equal(doc.getParagraphs()[0].text, 'A|B');
