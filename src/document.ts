@@ -709,25 +709,101 @@ function isMoveRevisionMarker(element: Element): boolean {
   return moveRevisionSideOf(element) !== undefined;
 }
 
-function pairMoveRevisionMarkers(markers: Element[]): Map<Element, Element> {
+function rangeMarkerIdOf(element: Element): string | undefined {
+  const value = element.getAttributeNS(WORD_NS, 'id') ?? element.getAttribute('w:id') ?? undefined;
+  return value && /^\d+$/.test(value) ? value : undefined;
+}
+
+function activeMoveRangeId(paragraph: Element, marker: Element, side: 'from' | 'to'): string | undefined {
+  const startName = side === 'from' ? 'moveFromRangeStart' : 'moveToRangeStart';
+  const endName = side === 'from' ? 'moveFromRangeEnd' : 'moveToRangeEnd';
+  const active: string[] = [];
+  let found: string | undefined;
+  const walk = (node: Node): boolean => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      if (element.namespaceURI === WORD_NS && element.localName === startName) {
+        const id = rangeMarkerIdOf(element);
+        if (id) active.push(id);
+      }
+      if (element === marker) {
+        found = active.at(-1);
+        return true;
+      }
+      if (walk(element)) return true;
+      if (element.namespaceURI === WORD_NS && element.localName === endName) {
+        const id = rangeMarkerIdOf(element);
+        if (id) {
+          const index = active.lastIndexOf(id);
+          if (index >= 0) active.splice(index, 1);
+        }
+      }
+    }
+    return false;
+  };
+  walk(paragraph);
+  return found;
+}
+
+interface MoveMarkerPairing {
+  pairs: Map<Element, Element>;
+  stable: Set<Element>;
+}
+
+function pairMoveRevisionMarkers(markers: Element[]): MoveMarkerPairing {
   const pairs = new Map<Element, Element>();
-  const pending = new Map<string, { from: Element[]; to: Element[] }>();
-  for (const marker of markers) {
+  const stable = new Set<Element>();
+  interface MoveEntry {
+    marker: Element;
+    index: number;
+    side: 'from' | 'to';
+    name: string;
+    rangeId?: string;
+  }
+  const entries: MoveEntry[] = [];
+  for (const [index, marker] of markers.entries()) {
     const side = moveRevisionSideOf(marker);
     const name = revisionNameOf(marker);
     if (!side || !name) continue;
-    const bucket = pending.get(name) ?? { from: [], to: [] };
-    pending.set(name, bucket);
-    const opposite = side === 'from' ? bucket.to : bucket.from;
-    if (opposite.length) {
-      const mate = opposite.shift()!;
-      pairs.set(marker, mate);
-      pairs.set(mate, marker);
-    } else {
-      (side === 'from' ? bucket.from : bucket.to).push(marker);
-    }
+    const paragraph = revisionParagraphAnchor(marker);
+    const rangeId = paragraph ? activeMoveRangeId(paragraph, marker, side) : undefined;
+    entries.push({ marker, index, side, name, ...(rangeId ? { rangeId } : {}) });
   }
-  return pairs;
+  const countsByName = new Map<string, { from: number; to: number }>();
+  for (const entry of entries) {
+    const count = countsByName.get(entry.name) ?? { from: 0, to: 0 };
+    count[entry.side]++;
+    countsByName.set(entry.name, count);
+  }
+  const pairByKey = (keyOf: (entry: MoveEntry) => string | undefined, markStable: (entry: MoveEntry) => boolean): void => {
+    const pending = new Map<string, { from: MoveEntry[]; to: MoveEntry[] }>();
+    for (const entry of entries) {
+      if (pairs.has(entry.marker)) continue;
+      const key = keyOf(entry);
+      if (!key) continue;
+      const bucket = pending.get(key) ?? { from: [], to: [] };
+      pending.set(key, bucket);
+      const opposite = entry.side === 'from' ? bucket.to : bucket.from;
+      if (opposite.length) {
+        const mate = opposite.shift()!;
+        pairs.set(entry.marker, mate.marker);
+        pairs.set(mate.marker, entry.marker);
+        if (markStable(entry) && markStable(mate)) {
+          stable.add(entry.marker);
+          stable.add(mate.marker);
+        }
+      } else {
+        (entry.side === 'from' ? bucket.from : bucket.to).push(entry);
+      }
+    }
+  };
+  pairByKey((entry) => entry.rangeId ? `${entry.name}\u0000${entry.rangeId}` : undefined, () => true);
+  pairByKey((entry) => entry.name, (entry) => {
+    const count = countsByName.get(entry.name);
+    return count?.from === 1 && count?.to === 1;
+  });
+  return { pairs, stable };
 }
 
 function unwrapNode(element: Element): void {
@@ -4265,6 +4341,7 @@ export class DocxDocument {
       return entries.get(run);
     };
     const result: RevisionInfo[] = [];
+    const moveEntries: { element: Element; info: RevisionInfo }[] = [];
     const push = (element: Element, kind: RevisionInfo['kind']): void => {
       const paragraph = revisionParagraphAnchor(element);
       if (!paragraph) return;
@@ -4287,6 +4364,7 @@ export class DocxDocument {
         ...(mark.previousFormat !== undefined ? { previousFormat: mark.previousFormat } : {}),
       };
       result.push(info);
+      if (info.kind === 'move') moveEntries.push({ element, info });
     };
     const walk = (node: Node): void => {
       for (let child = node.firstChild; child; child = child.nextSibling) {
@@ -4326,24 +4404,14 @@ export class DocxDocument {
       }
     };
     walk(body);
-    const pendingMoves = new Map<string, { from: RevisionInfo[]; to: RevisionInfo[] }>();
-    for (const revision of result) {
-      if (revision.kind !== 'move') continue;
-      const side = revision.move?.side;
-      const name = revision.move?.name;
-      if (!side || !name) continue;
-      const bucket = pendingMoves.get(name) ?? { from: [], to: [] };
-      pendingMoves.set(name, bucket);
-      const opposite = side === 'from' ? bucket.to : bucket.from;
-      if (opposite.length) {
-        const mate = opposite.shift()!;
-        if (!revision.move) revision.move = { name, side };
-        if (!mate.move) mate.move = { name, side: side === 'from' ? 'to' : 'from' };
-        revision.move.pairedId = mate.id;
-        mate.move.pairedId = revision.id;
-      } else {
-        (side === 'from' ? bucket.from : bucket.to).push(revision);
-      }
+    const movePairing = pairMoveRevisionMarkers(moveEntries.map((entry) => entry.element));
+    const moveInfoByElement = new Map(moveEntries.map((entry) => [entry.element, entry.info] as const));
+    for (const { element, info } of moveEntries) {
+      const paired = movePairing.pairs.get(element);
+      if (!paired || !movePairing.stable.has(element)) continue;
+      const pairedInfo = moveInfoByElement.get(paired);
+      if (!pairedInfo || !info.move) continue;
+      info.move.pairedId = pairedInfo.id;
     }
     this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
     return result;
@@ -4409,7 +4477,7 @@ export class DocxDocument {
   private applyRevisionBatch(authors: Set<string> | undefined, action: 'accept' | 'reject'): void {
     this.updatePartXmlInternal(this.mainPath, (document) => {
       const markers = this.collectRevisionMarkers(document, () => true);
-      const movePairs = pairMoveRevisionMarkers(markers);
+      const movePairs = pairMoveRevisionMarkers(markers).pairs;
       if (!authors) {
         const processed = new Set<Element>();
         for (const marker of [...markers].reverse()) {
@@ -4541,7 +4609,7 @@ export class DocxDocument {
     const name = revisionNameOf(marker);
     if (!name) return undefined;
     const markers = this.collectRevisionMarkers(document, isMoveRevisionMarker);
-    const pairs = pairMoveRevisionMarkers(markers);
+    const pairs = pairMoveRevisionMarkers(markers).pairs;
     return pairs.get(marker);
   }
 

@@ -3231,13 +3231,13 @@ test('getRevisions keeps single-sided moveTo readable without throwing', () => {
   }]);
 });
 
-test('getRevisions pairs multiple move revisions with the same name in order', () => {
+test('getRevisions leaves pairedId undefined for ambiguous repeated move names', () => {
   const doc = withBody('<w:p><w:moveFrom w:id="21" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="22" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:moveFrom w:id="23" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="24" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
   assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, move: revision.move })), [
-    { id: 21, move: { name: 'dup', side: 'from', pairedId: 22 } },
-    { id: 22, move: { name: 'dup', side: 'to', pairedId: 21 } },
-    { id: 23, move: { name: 'dup', side: 'from', pairedId: 24 } },
-    { id: 24, move: { name: 'dup', side: 'to', pairedId: 23 } },
+    { id: 21, move: { name: 'dup', side: 'from' } },
+    { id: 22, move: { name: 'dup', side: 'to' } },
+    { id: 23, move: { name: 'dup', side: 'from' } },
+    { id: 24, move: { name: 'dup', side: 'to' } },
   ]);
 });
 
