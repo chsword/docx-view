@@ -60,9 +60,8 @@ function revisionIdOf(element: Element): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
-function revisionAuthorOf(element: Element): string | undefined {
-  const author = revisionAttribute(element, 'author')?.trim();
-  return author ? author : undefined;
+export function revisionAuthorOf(element: Element): string | undefined {
+  return revisionAttribute(element, 'author');
 }
 
 function revisionDateOf(element: Element): string | undefined {
@@ -167,8 +166,9 @@ export function deletedTextOf(element: Element): string {
 export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {
   if (author === undefined) return { kind: 'unattributed' };
   if (author === '') return { kind: 'empty', author: '' };
-  if (!author.trim()) return { kind: 'blank', author };
-  return { kind: 'named', author };
+  const normalized = author.trim();
+  if (!normalized) return { kind: 'blank', author };
+  return { kind: 'named', author: normalized };
 }
 
 export function reviewerBucketKey(author: { kind: ReviewerAuthorKind; author?: string }): string {

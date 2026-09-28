@@ -2867,6 +2867,21 @@ test('getComments supports author and resolved filters', () => {
   assert.equal(doc.getComments({ resolved: true }).length, 1);
 });
 
+test('getComments author filter can match empty and blank raw authors', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author=""><w:p><w:r><w:t>empty</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="   "><w:p><w:r><w:t>blank</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  assert.deepEqual(doc.getComments({ authors: [''] }).map((item) => item.id), [1]);
+  assert.deepEqual(doc.getComments({ authors: ['   '] }).map((item) => item.id), [2]);
+});
+
+test('getComments author filter matches comments whose named author differs only by surrounding whitespace', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author=" Alice "><w:p><w:r><w:t>named</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  assert.deepEqual(doc.getComments({ authors: ['Alice'] }).map((item) => item.id), [1]);
+});
+
 test('applyOperations supports comment operations and schema count stays aligned', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
@@ -3400,12 +3415,12 @@ test('nested ins/del markup degrades without throwing and preserves visible text
 test('getRevisions ignores malformed metadata but does not throw', () => {
   const doc = withBody('<w:p><w:ins w:author="" w:date="not-a-date"><w:r><w:t>bad</w:t></w:r></w:ins><w:del w:id="9" w:author="" w:date="bad"><w:r><w:delText>old</w:delText></w:r></w:del></w:p>');
   assert.doesNotThrow(() => doc.getRevisions());
-  assert.deepEqual(doc.getRevisions(), [{ id: 9, kind: 'deletion', paragraph: 0, run: 1, deletedText: 'old' }]);
+  assert.deepEqual(doc.getRevisions(), [{ id: 9, kind: 'deletion', paragraph: 0, run: 1, author: '', deletedText: 'old' }]);
 });
 
 test('getRevisions filters by author and kind', () => {
-  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>B</w:delText></w:r></w:del></w:p>');
-  assert.deepEqual(doc.getRevisions({ authors: ['Alice'] }).map((revision) => revision.id), [1]);
+  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="3" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>B</w:delText></w:r></w:del></w:p>');
+  assert.deepEqual(doc.getRevisions({ authors: ['Alice'] }).map((revision) => revision.id), [1, 3]);
   assert.deepEqual(doc.getRevisions({ kinds: ['deletion'] }).map((revision) => revision.id), [2]);
 });
 
@@ -3555,6 +3570,24 @@ test('getReviewers keeps missing, empty, and blank authors in explicit buckets',
   assert.equal(map.get('unattributed:')?.commentCount, 1);
   assert.equal(map.get('empty:')?.commentCount, 1);
   assert.equal(map.get('blank:   ')?.commentCount, 1);
+});
+
+test('getReviewers can construct all reviewer author kinds from revisions', () => {
+  const body = '<w:p><w:ins w:id="1"><w:r><w:t>u</w:t></w:r></w:ins><w:ins w:id="2" w:author=""><w:r><w:t>e</w:t></w:r></w:ins><w:ins w:id="3" w:author="   "><w:r><w:t>b</w:t></w:r></w:ins><w:ins w:id="4" w:author="Alice"><w:r><w:t>n</w:t></w:r></w:ins></w:p>';
+  const doc = withBody(body);
+  const map = new Map(doc.getReviewers().map((item) => [`${item.kind}:${item.author ?? ''}`, item]));
+  assert.equal(map.get('unattributed:')?.revisionCount, 1);
+  assert.equal(map.get('empty:')?.revisionCount, 1);
+  assert.equal(map.get('blank:   ')?.revisionCount, 1);
+  assert.equal(map.get('named:Alice')?.revisionCount, 1);
+});
+
+test('getReviewers merges named authors that differ only by surrounding whitespace', () => {
+  const body = '<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>a</w:t></w:r></w:ins><w:ins w:id="2" w:author=" Alice"><w:r><w:t>b</w:t></w:r></w:ins><w:ins w:id="3" w:author="Alice "><w:r><w:t>c</w:t></w:r></w:ins></w:p>';
+  const doc = withBody(body);
+  assert.deepEqual(doc.getReviewers().map((item) => ({ kind: item.kind, author: item.author, revisionCount: item.revisionCount })), [
+    { kind: 'named', author: 'Alice', revisionCount: 3 },
+  ]);
 });
 
 test('getReviewers keeps named "(unattributed)" separate from missing authors', () => {
@@ -4380,6 +4413,20 @@ test('acceptAllRevisions can filter by author', () => {
   assert.equal(doc.getParagraphs()[0].text, 'ABC');
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(16), true);
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(15), false);
+});
+
+test('acceptAllRevisions author filter removes all named:Alice revisions including spaced raw authors', () => {
+  const doc = withBody('<w:p><w:ins w:id="250" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="251" w:author=" Alice"><w:r><w:t>B</w:t></w:r></w:ins><w:ins w:id="252" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins><w:ins w:id="253" w:author="Bob"><w:r><w:t>D</w:t></w:r></w:ins></w:p>');
+  doc.acceptAllRevisions({ authors: ['Alice'] });
+  assert.equal(doc.getReviewers().some((item) => item.kind === 'named' && item.author === 'Alice'), false);
+  assert.equal(doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Bob')?.revisionCount, 1);
+});
+
+test('acceptAllRevisions named bucket filter matches revisions with surrounding-author whitespace', () => {
+  const doc = withBody('<w:p><w:ins w:id="150" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="151" w:author=" Alice"><w:r><w:t>B</w:t></w:r></w:ins><w:ins w:id="152" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins></w:p>');
+  doc.acceptAllRevisions({ authors: ['named:Alice'] });
+  assert.equal(doc.getParagraphs()[0].text, 'ABC');
+  assert.deepEqual(doc.getRevisions(), []);
 });
 
 test('acceptAllRevisions author filter accepts a full move pair when only one side matches', () => {
