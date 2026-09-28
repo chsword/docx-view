@@ -562,6 +562,7 @@ test('setReviewFilter updates render state without triggering onChange', () => {
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.options = { onChange: () => { changes++; } };
+  editor.flush = () => {};
   editor.render = () => { renderCalls++; };
   editor.setReviewFilter({ authors: ['Alice'], revisionView: 'final', showComments: false });
   assert.equal(renderCalls, 1);
@@ -588,6 +589,7 @@ test('setReviewFilter merges partial updates without clearing existing fields', 
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
   editor.render = () => {};
   editor.setReviewFilter({ showComments: false });
   assert.deepEqual(editor.reviewFilter, {
@@ -602,6 +604,7 @@ test('setReviewFilter validates authors as bounded text list', () => {
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
   editor.render = () => {};
   assert.throws(() => editor.setReviewFilter({ authors: 'Alice' }), /authors must be an array/);
   assert.throws(() => editor.setReviewFilter({ authors: ['A\u0000'] }), /reviewFilter\.authors\[\]/);
@@ -612,27 +615,37 @@ test('setReviewFilter validates show flags and revisionView enum', () => {
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
   editor.render = () => {};
   assert.throws(() => editor.setReviewFilter({ showComments: 'yes' }), /showComments must be boolean/);
   assert.throws(() => editor.setReviewFilter({ showRevisions: 1 }), /showRevisions must be boolean/);
   assert.throws(() => editor.setReviewFilter({ revisionView: 'other' }), /revisionView must be one of/);
 });
 
-test('setReviewFilter flushes pending edits instead of discarding them', () => {
-  const doc = DocxDocument.create();
-  const { editor } = makeFlushEditor({
-    text: 'pending',
-    previous: '',
-    document: doc,
-  });
-  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
-  editor.options = {};
-  editor.root = { ownerDocument: {} };
-  editor.render = function () { this.flush(); };
-  const before = doc.revision;
-  editor.setReviewFilter({ showComments: false });
-  assert.equal(doc.getParagraphs()[0].text, 'pending');
-  assert.equal(doc.revision, before + 1);
+test('setReviewFilter flushes pending edits across all filter dimensions', () => {
+  const cases = [
+    { name: 'showComments', filter: { showComments: false } },
+    { name: 'showRevisions', filter: { showRevisions: false } },
+    { name: 'authors', filter: { authors: ['Alice'] } },
+    { name: 'revisionView original', filter: { revisionView: 'original' } },
+    { name: 'revisionView final', filter: { revisionView: 'final' } },
+  ];
+  for (const sample of cases) {
+    const doc = DocxDocument.create();
+    const { editor } = makeFlushEditor({
+      text: `pending-${sample.name}`,
+      previous: '',
+      document: doc,
+    });
+    editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+    editor.options = {};
+    editor.root = { ownerDocument: {} };
+    editor.render = function () { this.flush(); };
+    const before = doc.revision;
+    editor.setReviewFilter(sample.filter);
+    assert.equal(doc.getParagraphs()[0].text, `pending-${sample.name}`);
+    assert.equal(doc.revision, before + 1);
+  }
 });
 
 test('flush is a no-op in original review view to avoid projected-text writeback', () => {
@@ -655,6 +668,23 @@ test('flush is a no-op in original review view to avoid projected-text writeback
   assert.equal(doc.getParagraphs()[0].text, 'ABXDEF');
 });
 
+test('switching from non-markup back to markup does not flush preview DOM text', () => {
+  const doc = DocxDocument.create();
+  const { editor } = makeFlushEditor({
+    text: '',
+    previous: '',
+    document: doc,
+  });
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'original' };
+  editor.options = {};
+  editor.root = { ownerDocument: {} };
+  editor.render = function () { this.flush(); };
+  const before = doc.revision;
+  editor.setReviewFilter({ revisionView: 'markup' });
+  assert.equal(doc.getParagraphs()[0].text, '');
+  assert.equal(doc.revision, before);
+});
+
 test('toggling reviewFilter fields does not mutate document revision, text, or XML bytes', () => {
   const doc = DocxDocument.create();
   doc.setTrackChanges(true);
@@ -666,6 +696,7 @@ test('toggling reviewFilter fields does not mutate document revision, text, or X
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
   editor.render = () => {};
   editor.setReviewFilter({ showComments: false });
   editor.setReviewFilter({ showComments: true, revisionView: 'original' });
@@ -686,6 +717,7 @@ test('reviewFilter author narrowing does not change unfiltered getRevisions outp
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
   editor.render = () => {};
   editor.setReviewFilter({ authors: ['Alice'] });
   assert.deepEqual(doc.getRevisions().map((item) => item.id), before);

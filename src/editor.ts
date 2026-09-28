@@ -368,6 +368,7 @@ export class DocxEditor {
       ...filter,
     });
     if (reviewFilterEqual(this.reviewFilter, next)) return;
+    this.flush();
     this.reviewFilter = next;
     this.render();
   }

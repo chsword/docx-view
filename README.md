@@ -153,7 +153,7 @@ editor.render();
 // editor.destroy();
 ```
 
-输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号和脚注/尾注引用标记会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。
+输入在段落失焦或调用 `flush()` 时提交；`onChange` 通知组件提交的修改。外部 API 修改后调用 `render()` 刷新。列表编号/项目符号和脚注/尾注引用标记会作为不可编辑的前缀渲染，段落正文文本本身不包含这些前缀；在演示界面中也可以通过 Tab / Shift+Tab 调整列表级别。不要在未 `flush()` 的情况下修改同一个文档的段落结构；也应避免在输入法组合输入期间切换文档或执行外部编辑。注意：`flush()` 仅在 `revisionView: 'markup'` 时提交文本，在 `'final'` / `'original'` 只读预览视图下会跳过提交。
 
 组件还提供 `selectedParagraph`、`selectedRange`、`setDocument(doc)`、`setReviewFilter(filter)` 和 `destroy()`。`reviewFilter` / `setReviewFilter()` 支持按作者过滤审阅内容，并切换 `showRevisions`、`showComments`、`revisionView: 'final' | 'original' | 'markup'`（纯渲染状态，不修改文档）。其中 `revisionView: 'final' | 'original'` 为只读预览模式；编辑前请切回 `'markup'`。当前 `'original'` 视图还原插入/删除文本，不还原 `rPrChange` / `pPrChange` 的格式快照。`docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引；`docx-rangechange` 的 `detail` 包含 `{ range, format }`（跨段落 `DocumentRange` 与 `getDocumentRangeFormat` 结果，可用于三态工具栏）。当选区跨越不同容器（如正文与表格单元格）时，`format` 会降级为空对象 `{}`。
 
