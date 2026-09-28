@@ -129,6 +129,7 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
+const REVIEWER_FILTER_BUCKET_KEYS = new Set(['unattributed', 'empty', 'blank']);
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const COMPARE_MAX_PARAGRAPHS = 1_000;
 const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
@@ -705,6 +706,15 @@ function revisionNameOf(element: Element): string | undefined {
   const value = element.getAttributeNS(WORD_NS, 'name') ?? element.getAttribute('w:name') ?? undefined;
   const name = value?.trim();
   return name ? name : undefined;
+}
+
+function reviewerFilterKeyOf(author: string): string {
+  if (REVIEWER_FILTER_BUCKET_KEYS.has(author) || author.startsWith('named:')) return author;
+  return reviewerBucketKey(reviewerBucketOf(author));
+}
+
+function normalizeReviewerFilterAuthors(authors: string[]): Set<string> {
+  return new Set(authors.map((author) => reviewerFilterKeyOf(author)));
 }
 
 function moveRevisionSideOf(element: Element): 'from' | 'to' | undefined {
@@ -3747,8 +3757,8 @@ export class DocxDocument {
     }
     let comments = this.getAllComments();
     if (filter.authors?.length) {
-      const authors = new Set(filter.authors);
-      comments = comments.filter((comment) => comment.author !== undefined && authors.has(comment.author));
+      const authors = normalizeReviewerFilterAuthors(filter.authors);
+      comments = comments.filter((comment) => authors.has(reviewerBucketKey(reviewerBucketOf(comment.author))));
     }
     if (filter.resolved !== undefined) comments = comments.filter((comment) => comment.resolved === filter.resolved);
     return comments.map(cloneCommentInfo);
@@ -4390,10 +4400,10 @@ export class DocxDocument {
   getRevisions(filter: { authors?: string[]; kinds?: RevisionInfo['kind'][] } = {}): RevisionInfo[] {
     const revisions = this.collectRevisions();
     if (!filter.authors && !filter.kinds) return revisions;
-    const authors = filter.authors ? new Set(filter.authors) : undefined;
+    const authors = filter.authors ? normalizeReviewerFilterAuthors(filter.authors) : undefined;
     const kinds = filter.kinds ? new Set(filter.kinds) : undefined;
     return revisions.filter((revision) =>
-      (!authors || (revision.author !== undefined && authors.has(revision.author))) &&
+      (!authors || authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) &&
       (!kinds || kinds.has(revision.kind)));
   }
 
@@ -4516,9 +4526,7 @@ export class DocxDocument {
     const authors = this.normalizeRevisionAuthorFilter(filter);
     const revisions = this.getRevisions();
     if (!revisions.length) return;
-    if (authors && !revisions.some((revision) =>
-      (revision.author !== undefined && authors.has(revision.author)) ||
-      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
+    if (authors && !revisions.some((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'accept'));
   }
 
@@ -4526,9 +4534,7 @@ export class DocxDocument {
     const authors = this.normalizeRevisionAuthorFilter(filter);
     const revisions = this.getRevisions();
     if (!revisions.length) return;
-    if (authors && !revisions.some((revision) =>
-      (revision.author !== undefined && authors.has(revision.author)) ||
-      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
+    if (authors && !revisions.some((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'reject'));
   }
 
@@ -4543,7 +4549,7 @@ export class DocxDocument {
     for (let index = 0; index < filter.authors.length; index++) {
       const author = filter.authors[index];
       assertText(author, `filter.authors[${index}]`);
-      authors.add(author);
+      authors.add(reviewerFilterKeyOf(author));
     }
     return authors;
   }
@@ -4591,7 +4597,7 @@ export class DocxDocument {
       const matchesAuthor = (marker: Element): boolean => {
         const author = revisionAuthorOf(marker);
         const bucket = reviewerBucketKey(reviewerBucketOf(author));
-        return (author !== undefined && authors.has(author)) || authors.has(bucket);
+        return authors.has(bucket);
       };
       for (const marker of markers) {
         if (!isMoveRevisionMarker(marker)) {

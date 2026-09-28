@@ -2875,6 +2875,13 @@ test('getComments author filter can match empty and blank raw authors', () => {
   assert.deepEqual(doc.getComments({ authors: ['   '] }).map((item) => item.id), [2]);
 });
 
+test('getComments author filter matches comments whose named author differs only by surrounding whitespace', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author=" Alice "><w:p><w:r><w:t>named</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  assert.deepEqual(doc.getComments({ authors: ['Alice'] }).map((item) => item.id), [1]);
+});
+
 test('applyOperations supports comment operations and schema count stays aligned', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
@@ -3412,8 +3419,8 @@ test('getRevisions ignores malformed metadata but does not throw', () => {
 });
 
 test('getRevisions filters by author and kind', () => {
-  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>B</w:delText></w:r></w:del></w:p>');
-  assert.deepEqual(doc.getRevisions({ authors: ['Alice'] }).map((revision) => revision.id), [1]);
+  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="3" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>B</w:delText></w:r></w:del></w:p>');
+  assert.deepEqual(doc.getRevisions({ authors: ['Alice'] }).map((revision) => revision.id), [1, 3]);
   assert.deepEqual(doc.getRevisions({ kinds: ['deletion'] }).map((revision) => revision.id), [2]);
 });
 
@@ -4406,6 +4413,13 @@ test('acceptAllRevisions can filter by author', () => {
   assert.equal(doc.getParagraphs()[0].text, 'ABC');
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(16), true);
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(15), false);
+});
+
+test('acceptAllRevisions author filter removes all named:Alice revisions including spaced raw authors', () => {
+  const doc = withBody('<w:p><w:ins w:id="250" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="251" w:author=" Alice"><w:r><w:t>B</w:t></w:r></w:ins><w:ins w:id="252" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins><w:ins w:id="253" w:author="Bob"><w:r><w:t>D</w:t></w:r></w:ins></w:p>');
+  doc.acceptAllRevisions({ authors: ['Alice'] });
+  assert.equal(doc.getReviewers().some((item) => item.kind === 'named' && item.author === 'Alice'), false);
+  assert.equal(doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Bob')?.revisionCount, 1);
 });
 
 test('acceptAllRevisions named bucket filter matches revisions with surrounding-author whitespace', () => {

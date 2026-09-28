@@ -136,7 +136,7 @@ console.log(reopened.getSnapshot());
 
 - 当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。
 - `getRevisions({ kinds })` 对 `kind` 严格匹配：移动修订只会命中 `kinds: ['move']`，不再包含在 `insertion` / `deletion` 过滤中。
-- `getRevisions().author` 保留修订标记里的原始 `w:author`：缺失时为 `undefined`，空串为 `''`，仅空白字符串按原样保留；审阅者身份分桶时，`named` 会用 `author.trim()` 归一（例如 `' Alice '` 与 `'Alice'` 归为同一作者），`empty` / `blank` / `unattributed` 规则不变。
+- `getRevisions().author` 保留修订标记里的原始 `w:author`：缺失时为 `undefined`，空串为 `''`，仅空白字符串按原样保留；审阅者身份分桶时，`named` 会用 `author.trim()` 归一（例如 `' Alice '` 与 `'Alice'` 归为同一作者），`empty` / `blank` / `unattributed` 规则不变；`getRevisions({ authors })` / `getComments({ authors })` / `acceptAllRevisions({ authors })` / `rejectAllRevisions({ authors })` 使用同一归一规则。
 - `RevisionInfo.move.pairedId` 与接受/拒绝逻辑使用同一配对规则（优先范围标记，其次文档顺序配对同名 `moveFrom`/`moveTo`）。
 
 **修订的写入与接受 / 拒绝**
