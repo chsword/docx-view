@@ -791,6 +791,7 @@ function pairMoveRevisionMarkers(markers: Element[]): MoveMarkerPairing {
       const opposite = entry.side === 'from' ? bucket.to : bucket.from;
       if (opposite.length) {
         const mate = opposite.shift()!;
+        if (mate.side === entry.side) continue;
         pairs.set(entry.marker, mate.marker);
         pairs.set(mate.marker, entry.marker);
         if (markStable(entry) && markStable(mate)) {
@@ -4471,10 +4472,11 @@ export class DocxDocument {
 
   private applyRevisionById(id: number, action: 'accept' | 'reject'): void {
     this.updatePartXmlInternal(this.mainPath, (document) => {
-      const marker = this.findFirstRevisionMarker(document, (_marker, markerId) => markerId === id);
+      const markers = this.collectRevisionMarkers(document, () => true);
+      const marker = markers.find((entry) => revisionIdOf(entry) === id);
       if (!marker) throw new Error(`Revision ${id} does not exist.`);
       if (isMoveRevisionMarker(marker)) {
-        const paired = this.findPairedMoveMarker(document, marker);
+        const paired = pairMoveRevisionMarkers(markers).pairs.get(marker);
         if (paired?.parentNode) {
           this.applyMovePairDecision(marker, paired, action);
           return;
@@ -4615,14 +4617,6 @@ export class DocxDocument {
         this.removeRevisionMarker(marker);
       }
     }
-  }
-
-  private findPairedMoveMarker(document: Document, marker: Element): Element | undefined {
-    const name = revisionNameOf(marker);
-    if (!name) return undefined;
-    const markers = this.collectRevisionMarkers(document, isMoveRevisionMarker);
-    const pairs = pairMoveRevisionMarkers(markers).pairs;
-    return pairs.get(marker);
   }
 
   private applyMovePairDecision(marker: Element, paired: Element, action: 'accept' | 'reject'): void {
