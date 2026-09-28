@@ -437,6 +437,38 @@ test('mapExternalHtmlFragment keeps data-image URIs as images', () => {
   assert.equal(fragment.paragraphs[0].runs.some((run) => (run.images?.length ?? 0) === 1), true);
 });
 
+test('mapExternalHtmlFragment does not inject list marker text into document runs', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value, childNodes: [] });
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            const li = element('LI', {}, [text('item')]);
+            return {
+              body: {
+                childNodes: [element('UL', {}, [li])],
+                textContent: 'item',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<ul><li>item</li></ul>', 'item');
+  assert.equal(fragment.paragraphs[0].runs.map((run) => run.text ?? '').join(''), 'item');
+});
+
 test('handleClipboardPaste prefers internal rich fragment and re-renders once', () => {
   const editor = Object.create(DocxEditor.prototype);
   const calls = [];

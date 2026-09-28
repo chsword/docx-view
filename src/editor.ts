@@ -1184,8 +1184,8 @@ export class DocxEditor {
       }
       if (tag === 'ul' || tag === 'ol') {
         const items = Array.from(element.children).filter((child) => child.tagName.toLowerCase() === 'li');
-        items.forEach((item, index) => {
-          const runs: ClipboardRun[] = [{ text: tag === 'ol' ? `${index + 1}. ` : '• ', format: {} }];
+        items.forEach((item) => {
+          const runs: ClipboardRun[] = [];
           for (const child of Array.from(item.childNodes)) walkInline(child, { format: {} }, runs);
           pushParagraph(runs);
         });

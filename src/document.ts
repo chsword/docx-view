@@ -3491,6 +3491,7 @@ export class DocxDocument {
       let next = new Map(draft.parts);
       const main = parseXml(decodeXml(next.get(draft.mainPath)!));
       const paragraph = paragraphAt(main, normalized.start.paragraph);
+      const sourcePartPath = draft.mainPath;
       draft.splitRunAtOffset(paragraph, normalized.end.offset);
       draft.splitRunAtOffset(paragraph, normalized.start.offset);
       const selected = draft.runsInRange(paragraph, normalized.start.offset, normalized.end.offset);
@@ -3520,7 +3521,7 @@ export class DocxDocument {
         marker = main.createTextNode('');
         paragraph.insertBefore(marker, before);
       }
-      const relPath = resolveRelationshipsPath(draft.mainPath);
+      const relPath = resolveRelationshipsPath(sourcePartPath);
       let rels: Document | undefined;
       const ensureRels = (): Document => {
         if (rels) return rels;
@@ -3548,7 +3549,7 @@ export class DocxDocument {
             const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
             relationship.setAttribute('Id', relationshipId);
             relationship.setAttribute('Type', IMAGE_REL);
-            relationship.setAttribute('Target', relativeTargetPath(draft.mainPath, partPath));
+            relationship.setAttribute('Target', relativeTargetPath(sourcePartPath, partPath));
             relsDocument.documentElement!.appendChild(relationship);
             run.appendChild(createDrawingElement(main, relationshipId, size, {
               alt: image.alt,
