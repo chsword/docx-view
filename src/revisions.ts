@@ -1,5 +1,5 @@
 import type { Document, Element, Node } from '@xmldom/xmldom';
-import type { ParagraphFormat, RevisionInfo, RevisionMark, RunFormat } from './types.js';
+import type { ParagraphFormat, RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, RunFormat } from './types.js';
 import { readParagraphProperties, readRunProperties } from './styles.js';
 import { WORD_NS, assertText, children, descendants, wordElement } from './xml.js';
 
@@ -20,6 +20,11 @@ const CHANGE_KIND = {
   trPrChange: 'rowFormatChange',
   tcPrChange: 'cellFormatChange',
 } as const satisfies Partial<Record<string, RevisionMark['kind']>>;
+const REVIEWER_PLACEHOLDERS: Record<Exclude<ReviewerAuthorKind, 'named'>, string> = {
+  unattributed: '(unattributed)',
+  empty: '(empty author)',
+  blank: '(blank author)',
+};
 const PARENT_PROPERTY_ORDER = {
   pPr: ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
     'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
@@ -146,6 +151,21 @@ export function visibleTextOf(element: Element): string {
 
 export function deletedTextOf(element: Element): string {
   return collectTextElements(element, 'deleted').map(elementText).join('');
+}
+
+export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {
+  if (author === undefined) return { kind: 'unattributed' };
+  if (author === '') return { kind: 'empty', author: '' };
+  if (!author.trim()) return { kind: 'blank', author };
+  return { kind: 'named', author };
+}
+
+export function reviewerBucketKey(author: ReviewerFilterAuthor): string {
+  return author.kind === 'named' ? `named:${author.author ?? ''}` : author.kind;
+}
+
+export function reviewerBucketLabel(author: ReviewerFilterAuthor): string {
+  return author.kind === 'named' ? (author.author ?? '') : REVIEWER_PLACEHOLDERS[author.kind];
 }
 
 export function readRevisionMark(element: Element, kind: RevisionMark['kind'], theme?: Parameters<typeof readRunProperties>[1]):

@@ -10,6 +10,7 @@ import type {
   DocumentSnapshot,
   ImageInfo,
   ParagraphInfo,
+  ReviewerFilterAuthor,
   RunFormat,
   RunInfo,
   SectionInfo,
@@ -20,6 +21,7 @@ import type {
 } from './types.js';
 import { pxToEmu } from './drawing.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
+import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 
@@ -77,29 +79,37 @@ function borderStyle(value: string): string {
 
 const DOCX_CLIPBOARD_MIME = 'application/x-docx-view+json';
 const MAX_REVIEW_FILTER_AUTHORS = 1_000;
-const UNATTRIBUTED_REVIEWER = '(unattributed)';
-const EMPTY_REVIEWER = '(empty author)';
-const BLANK_REVIEWER = '(blank author)';
 
 export interface EditorReviewFilter {
-  authors?: string[];
+  authors?: ReviewerFilterAuthor[];
   showRevisions?: boolean;
   showComments?: boolean;
   revisionView?: 'final' | 'original' | 'markup';
 }
 
 interface NormalizedReviewFilter {
-  authors?: string[];
+  authors?: ReviewerFilterAuthor[];
   showRevisions: boolean;
   showComments: boolean;
   revisionView: 'final' | 'original' | 'markup';
 }
 
-function reviewerBucketOf(author: string | undefined): string {
-  if (author === undefined) return UNATTRIBUTED_REVIEWER;
-  if (author === '') return EMPTY_REVIEWER;
-  if (!author.trim()) return BLANK_REVIEWER;
-  return author;
+interface ReviewRenderContext {
+  authors?: Set<string>;
+  deletedTextByRun: Map<string, string>;
+}
+
+function normalizeReviewFilterAuthor(author: ReviewerFilterAuthor, path = 'reviewFilter.authors[]'): ReviewerFilterAuthor {
+  if (!author || typeof author !== 'object' || Array.isArray(author)) throw new Error(`${path} must be an object.`);
+  if (!['named', 'unattributed', 'empty', 'blank'].includes(author.kind)) {
+    throw new Error(`${path}.kind must be one of: named, unattributed, empty, blank.`);
+  }
+  if (author.author !== undefined) assertText(author.author, `${path}.author`);
+  const normalized = reviewerBucketOf(author.author);
+  if (normalized.kind !== author.kind) {
+    throw new Error(`${path} does not match author kind.`);
+  }
+  return normalized;
 }
 
 function normalizeReviewFilter(filter: EditorReviewFilter | undefined): NormalizedReviewFilter {
@@ -119,10 +129,9 @@ function normalizeReviewFilter(filter: EditorReviewFilter | undefined): Normaliz
   if (filter?.revisionView !== undefined && !['final', 'original', 'markup'].includes(filter.revisionView)) {
     throw new Error('reviewFilter.revisionView must be one of: final, original, markup.');
   }
-  const authors = filter?.authors?.map((author) => {
-    assertText(author, 'reviewFilter.authors[]');
-    return author;
-  }).filter((author, index, all) => all.indexOf(author) === index);
+  const authors = filter?.authors?.map((author) => normalizeReviewFilterAuthor(author))
+    .filter((author, index, all) =>
+      all.findIndex((entry) => reviewerBucketKey(entry) === reviewerBucketKey(author)) === index);
   return {
     ...(authors?.length ? { authors } : {}),
     showRevisions: filter?.showRevisions ?? true,
@@ -138,7 +147,7 @@ function reviewFilterEqual(a: NormalizedReviewFilter, b: NormalizedReviewFilter)
     a.showComments === b.showComments &&
     a.revisionView === b.revisionView &&
     authorsA.length === authorsB.length &&
-    authorsA.every((value, index) => value === authorsB[index]);
+  authorsA.every((value, index) => reviewerBucketKey(value) === reviewerBucketKey(authorsB[index]!));
 }
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
@@ -239,8 +248,6 @@ export class DocxEditor {
   private renderAfterComposition = false;
   private destroyed = false;
   private reviewFilter: NormalizedReviewFilter;
-  private activeReviewAuthors?: Set<string>;
-  private activeReviewDeletedTextByRun = new Map<string, string>();
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
@@ -389,22 +396,23 @@ export class DocxEditor {
     this.paragraphs.clear();
     this.commentRunIds ??= new Map();
     this.commentParagraphIds ??= new Map();
-    this.activeReviewDeletedTextByRun ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
-    this.activeReviewDeletedTextByRun.clear();
-    this.activeReviewAuthors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors) : undefined;
+    const reviewContext: ReviewRenderContext = {
+      ...(this.reviewFilter.authors ? { authors: new Set(this.reviewFilter.authors.map((author) => reviewerBucketKey(author))) } : {}),
+      deletedTextByRun: new Map(),
+    };
     try {
       if (this.reviewFilter.revisionView === 'original') {
         for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
           if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
-          if (this.activeReviewAuthors && !this.activeReviewAuthors.has(reviewerBucketOf(revision.author))) continue;
+          if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
           const key = `${revision.paragraph}:${revision.run}`;
-          this.activeReviewDeletedTextByRun.set(key, `${this.activeReviewDeletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
+          reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
         }
       }
       for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
-        if (this.activeReviewAuthors && !this.activeReviewAuthors.has(reviewerBucketOf(comment.author))) continue;
+        if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(comment.author)))) continue;
         if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
         if ('runs' in comment.anchor) {
           for (const run of comment.anchor.runs) {
@@ -430,7 +438,7 @@ export class DocxEditor {
       } catch {
         defaultTabStopTwips = 720;
       }
-      this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
+      this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
       if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
       this.root.replaceChildren(fragment);
       if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
@@ -444,8 +452,7 @@ export class DocxEditor {
       if (range) this.restoreDocumentRange(range);
       this.updateRangeSelection(this.captureDocumentRange());
     } finally {
-      this.activeReviewAuthors = undefined;
-      this.activeReviewDeletedTextByRun.clear();
+      reviewContext.deletedTextByRun.clear();
     }
   }
 
@@ -561,10 +568,10 @@ export class DocxEditor {
     if (cell?.textDirection?.toLowerCase().includes('tb') || cell?.textDirection?.toLowerCase().includes('bt')) td.style.writingMode = 'vertical-rl';
   }
 
-  private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number): void {
+  private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number, reviewContext: ReviewRenderContext): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
-        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips));
+        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext));
       } else if (block.type === 'table') {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
@@ -587,7 +594,7 @@ export class DocxEditor {
             td.colSpan = Math.max(1, cell.colSpan);
             if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
             this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
-            this.appendBlocks(td, cell.blocks, defaultTabStopTwips);
+            this.appendBlocks(td, cell.blocks, defaultTabStopTwips, reviewContext);
           }
         }
         parent.appendChild(table);
@@ -699,7 +706,7 @@ export class DocxEditor {
     this.render();
   }
 
-  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number): HTMLParagraphElement {
+  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
@@ -751,7 +758,7 @@ export class DocxEditor {
     });
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
-    const visibleRun = this.reviewScopedRun(paragraph.index, run);
+      const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, defaultTabStopTwips, currentLineOffsetPx);
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
@@ -862,12 +869,12 @@ export class DocxEditor {
     return element;
   }
 
-  private reviewScopedRun(paragraphIndex: number, run: RunInfo): RunInfo {
+  private reviewScopedRun(paragraphIndex: number, run: RunInfo, reviewContext: ReviewRenderContext): RunInfo {
     if (!run.revisions?.length) return run;
     let revisions = run.revisions;
     if (!this.reviewFilter.showRevisions) revisions = [];
-    if (this.activeReviewAuthors) {
-      revisions = revisions.filter((revision) => this.activeReviewAuthors!.has(reviewerBucketOf(revision.author)));
+    if (reviewContext.authors) {
+      revisions = revisions.filter((revision) => reviewContext.authors!.has(reviewerBucketKey(reviewerBucketOf(revision.author))));
     }
     const hasInsertion = revisions.some((revision) => revision.kind === 'insertion');
     const hasDeletion = revisions.some((revision) => revision.kind === 'deletion');
@@ -875,7 +882,7 @@ export class DocxEditor {
     let text = run.text;
     if (view === 'original') {
       if (hasInsertion) text = '';
-      else if (hasDeletion) text = this.activeReviewDeletedTextByRun.get(`${paragraphIndex}:${run.index}`) ?? run.text;
+      else if (hasDeletion) text = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`) ?? run.text;
     } else if (view === 'final') {
       if (hasDeletion) text = '';
     }

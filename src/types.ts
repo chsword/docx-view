@@ -346,14 +346,22 @@ export interface RevisionInfo extends RevisionMark {
   previousFormat?: RunFormat | ParagraphFormat;
 }
 
+export type ReviewerAuthorKind = 'named' | 'unattributed' | 'empty' | 'blank';
+
 export interface ReviewerInfo {
-  author: string;
+  kind: ReviewerAuthorKind;
+  author?: string;
   initials?: string;
   revisionCount: number;
   commentCount: number;
   unresolvedCommentCount: number;
   firstDate?: string;
   lastDate?: string;
+}
+
+export interface ReviewerFilterAuthor {
+  kind: ReviewerAuthorKind;
+  author?: string;
 }
 
 export interface HistoryEntry {
