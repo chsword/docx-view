@@ -432,7 +432,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 37);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -693,7 +693,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 32);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 37);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -1329,6 +1329,8 @@ test('snapshot includes hyperlinks and bookmarks', () => {
   const snapshot = doc.getSnapshot();
   assert.equal(snapshot.hyperlinks.length, 1);
   assert.equal(snapshot.bookmarks.length, 1);
+});
+
 test('paragraph tabs/borders/shading read shape can be written back', () => {
   const doc = withBody('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs><w:pBdr><w:top w:val="single" w:sz="8" w:space="0" w:color="FF0000"/></w:pBdr><w:shd w:val="clear" w:fill="AABBCC"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
   const paragraph = doc.getParagraphs()[0];
