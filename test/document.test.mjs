@@ -3160,11 +3160,30 @@ test('pasteClipboardFragment rejects unsafe hyperlink urls', () => {
 
 test('pasteClipboardFragment enforces paragraph count limit', () => {
   const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
-  const paragraphs = Array.from({ length: 10001 }, () => ({ runs: [{ text: 'x' }] }));
+  const paragraphs = Array.from({ length: 1001 }, () => ({ runs: [{ text: 'x' }] }));
   assert.throws(() => doc.pasteClipboardFragment(
     { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
     { version: 1, text: '', paragraphs },
-  ), /clipboard paragraph count exceeds 10000/);
+  ), /clipboard paragraph count exceeds 1000/);
+});
+
+test('pasteClipboardFragment enforces run count limit', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const runs = Array.from({ length: 10001 }, () => ({ text: 'x' }));
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: '', paragraphs: [{ runs }] },
+  ), /clipboard run count exceeds 10000/);
+});
+
+test('pasteClipboardFragment wraps inserted runs with revisions when track changes is enabled', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 4 }, end: { paragraph: 0, offset: 4 } },
+    { version: 1, text: 'X', paragraphs: [{ runs: [{ text: 'X' }] }] },
+  );
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:t(?: xml:space="preserve")?>X<\/w:t><\/w:r><\/w:ins>/);
 });
 
 test('clipboard copy/paste round-trip keeps richer direct run format fields', () => {

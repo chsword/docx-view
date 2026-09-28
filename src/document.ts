@@ -107,9 +107,10 @@ const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 const HISTORY_MAX_ENTRIES = 50;
 const HISTORY_MAX_BYTES = 64 * 1024 * 1024;
 const HISTORY_MERGE_WINDOW_MS = 500;
-const CLIPBOARD_MAX_PARAGRAPHS = 10_000;
-const CLIPBOARD_MAX_RUNS = 50_000;
-const CLIPBOARD_MAX_IMAGES = 1_000;
+const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
+const CLIPBOARD_MAX_RUNS = 10_000;
+const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
+const CLIPBOARD_MAX_IMAGES = 200;
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -3645,6 +3646,9 @@ export class DocxDocument {
       if (run.text !== undefined) {
         const sanitized = sanitizeText(run.text);
         assertText(sanitized, 'clipboard run.text');
+        if (sanitized.length > CLIPBOARD_MAX_RUN_TEXT_LENGTH) {
+          throw new Error(`clipboard run.text exceeds ${CLIPBOARD_MAX_RUN_TEXT_LENGTH} characters.`);
+        }
         if (sanitized) normalized.text = sanitized;
       }
       if (run.format !== undefined) {
@@ -3860,7 +3864,10 @@ export class DocxDocument {
         paragraph.removeChild(current);
         current = nextNode;
       }
-      const insertRun = (targetParagraph: Element, before: Node | null, runFragment: ClipboardRun): void => {
+      marker.parentNode?.removeChild(marker);
+      const trackChanges = draft.trackChangesEnabled();
+      const trackedAuthor = trackChanges ? draft.trackedRevisionAuthor() : undefined;
+      const buildRunNode = (runFragment: ClipboardRun): { node: Node; trackedRuns: Element[] } | null => {
         const run = wordElement(main, 'r');
         if (runFragment.format) applyRunFormatTo(properties(run, 'rPr'), runFragment.format);
         if (runFragment.text) appendText(run, runFragment.text);
@@ -3884,7 +3891,7 @@ export class DocxDocument {
             docPrId: draft.nextDocPrId(main),
           }));
         }
-        if (!run.firstChild) return;
+        if (!run.firstChild) return null;
         const link = runFragment.hyperlink;
         if (link && (link.url || link.anchor)) {
           const hyperlink = wordElement(main, 'hyperlink');
@@ -3907,10 +3914,9 @@ export class DocxDocument {
           if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
           if (link.tooltip) hyperlink.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
           hyperlink.appendChild(run);
-          targetParagraph.insertBefore(hyperlink, before);
-        } else {
-          targetParagraph.insertBefore(run, before);
+          return { node: hyperlink, trackedRuns: [run] };
         }
+        return { node: run, trackedRuns: [run] };
       };
       const createParagraph = (): Element => wordElement(main, 'p');
       const applyParagraphMeta = (targetParagraph: Element, paragraphFragment: ClipboardParagraph): void => {
@@ -3927,30 +3933,36 @@ export class DocxDocument {
       };
       const blockParent = paragraph.parentNode as Element;
       const blockAnchor = paragraph.nextSibling;
+      const stagedBlocks = main.createDocumentFragment();
       let paragraphTarget: Element | null = null;
       let firstParagraphPlaced = false;
       for (const block of blocks) {
         if (block.type === 'paragraph') {
           const targetParagraph = firstParagraphPlaced ? createParagraph() : paragraph;
           if (firstParagraphPlaced) {
-            blockParent.insertBefore(targetParagraph, blockAnchor);
+            stagedBlocks.appendChild(targetParagraph);
           } else {
             firstParagraphPlaced = true;
           }
           applyParagraphMeta(targetParagraph, block.paragraph);
+          const trackedRuns: Element[] = [];
           for (const runFragment of block.paragraph.runs) {
-            insertRun(targetParagraph, firstParagraphPlaced && targetParagraph === paragraph ? marker : null, runFragment);
+            const built = buildRunNode(runFragment);
+            if (!built) continue;
+            targetParagraph.appendChild(built.node);
+            trackedRuns.push(...built.trackedRuns);
           }
+          if (trackChanges && trackedRuns.length) wrapRunsWithRevision(targetParagraph, trackedRuns, 'ins', trackedAuthor);
           paragraphTarget = targetParagraph;
           continue;
         }
         const rows = block.table.rows.map((row) => row.map((cell) =>
           cell.runs.map((run) => run.text ?? '').join('')));
         const table = buildTable(main, rows.length, Math.max(...rows.map((row) => row.length)), undefined, rows);
-        blockParent.insertBefore(table, blockAnchor);
+        stagedBlocks.appendChild(table);
         paragraphTarget = null;
       }
-      marker.parentNode?.removeChild(marker);
+      if (stagedBlocks.firstChild) blockParent.insertBefore(stagedBlocks, blockAnchor);
       const suffixTarget = paragraphTarget ?? ((blocks.length || fragment.text) ? (() => {
         const tail = createParagraph();
         blockParent.insertBefore(tail, blockAnchor);
