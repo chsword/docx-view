@@ -240,6 +240,7 @@ export class DocxEditor {
   private destroyed = false;
   private reviewFilter: NormalizedReviewFilter;
   private activeReviewAuthors?: Set<string>;
+  private activeReviewDeletedTextByRun = new Map<string, string>();
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
@@ -363,10 +364,10 @@ export class DocxEditor {
     });
     if (reviewFilterEqual(this.reviewFilter, next)) return;
     this.reviewFilter = next;
-    this.render({ skipFlush: true });
+    this.render();
   }
 
-  render(options: { skipFlush?: boolean } = {}): void {
+  render(): void {
     if (this.destroyed) return;
     this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
     if (this.composing) {
@@ -377,15 +378,25 @@ export class DocxEditor {
     const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
       ?? this.selectedImageInfo?.id
       ?? null;
-    if (!options.skipFlush) this.flush();
+    this.flush();
     this.applyPageSetup();
     this.paragraphs.clear();
     this.commentRunIds ??= new Map();
     this.commentParagraphIds ??= new Map();
+    this.activeReviewDeletedTextByRun ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
+    this.activeReviewDeletedTextByRun.clear();
     this.activeReviewAuthors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors) : undefined;
     try {
+      if (this.reviewFilter.revisionView === 'original') {
+        for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
+          if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
+          if (this.activeReviewAuthors && !this.activeReviewAuthors.has(reviewerBucketOf(revision.author))) continue;
+          const key = `${revision.paragraph}:${revision.run}`;
+          this.activeReviewDeletedTextByRun.set(key, `${this.activeReviewDeletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
+        }
+      }
       for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
         if (this.activeReviewAuthors && !this.activeReviewAuthors.has(reviewerBucketOf(comment.author))) continue;
         if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
@@ -428,6 +439,7 @@ export class DocxEditor {
       this.updateRangeSelection(this.captureDocumentRange());
     } finally {
       this.activeReviewAuthors = undefined;
+      this.activeReviewDeletedTextByRun.clear();
     }
   }
 
@@ -732,7 +744,7 @@ export class DocxEditor {
     });
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
-      const visibleRun = this.reviewScopedRun(run);
+    const visibleRun = this.reviewScopedRun(paragraph.index, run);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, defaultTabStopTwips, currentLineOffsetPx);
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
@@ -843,15 +855,27 @@ export class DocxEditor {
     return element;
   }
 
-  private reviewScopedRun(run: RunInfo): RunInfo {
+  private reviewScopedRun(paragraphIndex: number, run: RunInfo): RunInfo {
     if (!run.revisions?.length) return run;
     let revisions = run.revisions;
     if (!this.reviewFilter.showRevisions) revisions = [];
     if (this.activeReviewAuthors) {
       revisions = revisions.filter((revision) => this.activeReviewAuthors!.has(reviewerBucketOf(revision.author)));
     }
-    if (revisions.length === run.revisions.length && revisions.every((entry, index) => entry === run.revisions![index])) return run;
-    return { ...run, revisions: revisions.length ? revisions : undefined };
+    const hasInsertion = revisions.some((revision) => revision.kind === 'insertion');
+    const hasDeletion = revisions.some((revision) => revision.kind === 'deletion');
+    const view = this.reviewFilter.revisionView;
+    let text = run.text;
+    if (view === 'original') {
+      if (hasInsertion) text = '';
+      else if (hasDeletion) text = this.activeReviewDeletedTextByRun.get(`${paragraphIndex}:${run.index}`) ?? run.text;
+    } else if (view === 'final') {
+      if (hasDeletion) text = '';
+    }
+    if (text === run.text && revisions.length === run.revisions.length && revisions.every((entry, index) => entry === run.revisions![index])) {
+      return run;
+    }
+    return { ...run, text, revisions: revisions.length ? revisions : undefined };
   }
 
   private makeMark(text: string, label: string): HTMLElement {

@@ -557,14 +557,14 @@ test('handleClipboardCut prevents default for unsupported multi-paragraph ranges
 
 test('setReviewFilter updates render state without triggering onChange', () => {
   const editor = Object.create(DocxEditor.prototype);
-  let renderOptions = null;
+  let renderCalls = 0;
   let changes = 0;
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.options = { onChange: () => { changes++; } };
-  editor.render = (options) => { renderOptions = options; };
+  editor.render = () => { renderCalls++; };
   editor.setReviewFilter({ authors: ['Alice'], revisionView: 'final', showComments: false });
-  assert.deepEqual(renderOptions, { skipFlush: true });
+  assert.equal(renderCalls, 1);
   assert.equal(changes, 0);
   assert.deepEqual(editor.reviewFilter, {
     authors: ['Alice'],
@@ -582,6 +582,20 @@ test('setReviewFilter is a no-op when filter is unchanged', () => {
   editor.render = () => { renders++; };
   editor.setReviewFilter({ authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' });
   assert.equal(renders, 0);
+});
+
+test('setReviewFilter merges partial updates without clearing existing fields', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => {};
+  editor.setReviewFilter({ showComments: false });
+  assert.deepEqual(editor.reviewFilter, {
+    authors: ['Alice'],
+    showRevisions: true,
+    showComments: false,
+    revisionView: 'markup',
+  });
 });
 
 test('setReviewFilter validates authors as bounded text list', () => {
@@ -602,6 +616,23 @@ test('setReviewFilter validates show flags and revisionView enum', () => {
   assert.throws(() => editor.setReviewFilter({ showComments: 'yes' }), /showComments must be boolean/);
   assert.throws(() => editor.setReviewFilter({ showRevisions: 1 }), /showRevisions must be boolean/);
   assert.throws(() => editor.setReviewFilter({ revisionView: 'other' }), /revisionView must be one of/);
+});
+
+test('setReviewFilter flushes pending edits instead of discarding them', () => {
+  const doc = DocxDocument.create();
+  const { editor } = makeFlushEditor({
+    text: 'pending',
+    previous: '',
+    document: doc,
+  });
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.options = {};
+  editor.root = { ownerDocument: {} };
+  editor.render = function () { this.flush(); };
+  const before = doc.revision;
+  editor.setReviewFilter({ showComments: false });
+  assert.equal(doc.getParagraphs()[0].text, 'pending');
+  assert.equal(doc.revision, before + 1);
 });
 
 test('toggling reviewFilter fields does not mutate document revision, text, or XML bytes', () => {
@@ -638,4 +669,21 @@ test('reviewFilter author narrowing does not change unfiltered getRevisions outp
   editor.render = () => {};
   editor.setReviewFilter({ authors: ['Alice'] });
   assert.deepEqual(doc.getRevisions().map((item) => item.id), before);
+});
+
+test('reviewScopedRun applies revisionView final/original semantics without mutating source run', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'original' };
+  editor.activeReviewDeletedTextByRun = new Map([['0:0', 'deleted text']]);
+  const deletedRun = { index: 0, text: '', revisions: [{ id: 1, kind: 'deletion' }] };
+  const insertionRun = { index: 1, text: 'inserted', revisions: [{ id: 2, kind: 'insertion' }] };
+  const originalDeleted = editor.reviewScopedRun(0, deletedRun);
+  const originalInserted = editor.reviewScopedRun(0, insertionRun);
+  assert.equal(originalDeleted.text, 'deleted text');
+  assert.equal(originalInserted.text, '');
+  assert.equal(deletedRun.text, '');
+  assert.equal(insertionRun.text, 'inserted');
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'final' };
+  const finalDeleted = editor.reviewScopedRun(0, { index: 0, text: 'old', revisions: [{ id: 3, kind: 'deletion' }] });
+  assert.equal(finalDeleted.text, '');
 });
