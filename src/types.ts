@@ -359,10 +359,11 @@ export interface ReviewerInfo {
   lastDate?: string;
 }
 
-export interface ReviewerFilterAuthor {
-  kind: ReviewerAuthorKind;
-  author?: string;
-}
+export type ReviewerFilterAuthor =
+  | { kind: 'named'; author: string }
+  | { kind: 'unattributed'; author?: undefined }
+  | { kind: 'empty'; author: '' }
+  | { kind: 'blank'; author: string };
 
 export interface HistoryEntry {
   revision: number;

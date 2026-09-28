@@ -104,12 +104,23 @@ function normalizeReviewFilterAuthor(author: ReviewerFilterAuthor, path = 'revie
   if (!['named', 'unattributed', 'empty', 'blank'].includes(author.kind)) {
     throw new Error(`${path}.kind must be one of: named, unattributed, empty, blank.`);
   }
-  if (author.author !== undefined) assertText(author.author, `${path}.author`);
-  const normalized = reviewerBucketOf(author.author);
-  if (normalized.kind !== author.kind) {
-    throw new Error(`${path} does not match author kind.`);
+  const rawAuthor = (author as { author?: string }).author;
+  if (author.kind === 'unattributed') {
+    if (rawAuthor !== undefined) throw new Error(`${path}.author must be omitted for unattributed kind.`);
+    return { kind: 'unattributed' };
   }
-  return normalized;
+  if (rawAuthor === undefined) throw new Error(`${path}.author is required for ${author.kind} kind.`);
+  assertText(rawAuthor, `${path}.author`);
+  if (author.kind === 'named') {
+    if (!rawAuthor.trim()) throw new Error(`${path}.author must be non-empty for named kind.`);
+    return { kind: 'named', author: rawAuthor };
+  }
+  if (author.kind === 'empty') {
+    if (rawAuthor !== '') throw new Error(`${path}.author must be an empty string for empty kind.`);
+    return { kind: 'empty', author: '' };
+  }
+  if (rawAuthor.trim()) throw new Error(`${path}.author must be whitespace-only for blank kind.`);
+  return { kind: 'blank', author: rawAuthor };
 }
 
 function normalizeReviewFilter(filter: EditorReviewFilter | undefined): NormalizedReviewFilter {

@@ -617,9 +617,10 @@ test('setReviewFilter validates author kind and raw author consistency', () => {
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.flush = () => {};
   editor.render = () => {};
-  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'unattributed', author: 'Alice' }] }), /does not match author kind/);
-  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'empty', author: '  ' }] }), /does not match author kind/);
-  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'blank', author: 'Alice' }] }), /does not match author kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'unattributed', author: 'Alice' }] }), /must be omitted for unattributed kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'named' }] }), /is required for named kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'empty', author: '  ' }] }), /must be an empty string for empty kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'blank', author: 'Alice' }] }), /must be whitespace-only for blank kind/);
 });
 
 test('setReviewFilter validates show flags and revisionView enum', () => {

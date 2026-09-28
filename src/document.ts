@@ -77,7 +77,6 @@ import {
   markFormatRevision,
   markRevision,
   reviewerBucketKey,
-  reviewerBucketLabel,
   reviewerBucketOf,
   readParagraphRevisionMark,
   readRevisionMark,
@@ -3592,7 +3591,7 @@ export class DocxDocument {
       b.revisionCount - a.revisionCount ||
       b.commentCount - a.commentCount ||
       b.unresolvedCommentCount - a.unresolvedCommentCount ||
-      reviewerBucketLabel(a).localeCompare(reviewerBucketLabel(b)));
+      reviewerBucketKey(a).localeCompare(reviewerBucketKey(b)));
     this.reviewerInfoCache = { revision: this.revision, reviewers };
     return reviewers.map(cloneReviewerInfo);
   }

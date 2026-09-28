@@ -160,11 +160,11 @@ export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuth
   return { kind: 'named', author };
 }
 
-export function reviewerBucketKey(author: ReviewerFilterAuthor): string {
+export function reviewerBucketKey(author: { kind: ReviewerAuthorKind; author?: string }): string {
   return author.kind === 'named' ? `named:${author.author ?? ''}` : author.kind;
 }
 
-export function reviewerBucketLabel(author: ReviewerFilterAuthor): string {
+export function reviewerBucketLabel(author: { kind: ReviewerAuthorKind; author?: string }): string {
   return author.kind === 'named' ? (author.author ?? '') : REVIEWER_PLACEHOLDERS[author.kind];
 }
 
