@@ -76,6 +76,8 @@ import {
   hasRevisionMarkup,
   markFormatRevision,
   markRevision,
+  reviewerBucketKey,
+  reviewerBucketOf,
   readParagraphRevisionMark,
   readRevisionMark,
   readRunRevisionMarks,
@@ -118,9 +120,6 @@ const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
 const REVISION_ELEMENT_NAMES = new Set([
   'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
 ]);
-const UNATTRIBUTED_REVIEWER = '(unattributed)';
-const EMPTY_REVIEWER = '(empty author)';
-const BLANK_REVIEWER = '(blank author)';
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -2062,13 +2061,6 @@ function normalizeCommentDate(value: string | undefined): string | undefined {
   return Number.isFinite(Date.parse(value)) ? value : undefined;
 }
 
-function reviewerBucketOf(author: string | undefined): string {
-  if (author === undefined) return UNATTRIBUTED_REVIEWER;
-  if (author === '') return EMPTY_REVIEWER;
-  if (!author.trim()) return BLANK_REVIEWER;
-  return author;
-}
-
 function updateStyleLength(style: string | null, name: string, points: number): string {
   const normalized = (style ?? '').trim();
   const declaration = `${name}:${Math.max(0, points)}pt`;
@@ -3594,11 +3586,12 @@ export class DocxDocument {
         entry.lastDate = value;
       }
     };
-    const aggregateFor = (author: string): Aggregate => {
-      const existing = byAuthor.get(author);
+    const aggregateFor = (author: ReviewerInfo['author'], kind: ReviewerInfo['kind']): Aggregate => {
+      const existing = byAuthor.get(reviewerBucketKey({ author, kind }));
       if (existing) return existing;
       const created: Aggregate = {
-        author,
+        ...(author !== undefined ? { author } : {}),
+        kind,
         revisionCount: 0,
         commentCount: 0,
         unresolvedCommentCount: 0,
@@ -3606,16 +3599,18 @@ export class DocxDocument {
         initialsSeenOrder: new Map(),
         initialsOrderSeed: 0,
       };
-      byAuthor.set(author, created);
+      byAuthor.set(reviewerBucketKey(created), created);
       return created;
     };
     for (const revision of revisions) {
-      const entry = aggregateFor(reviewerBucketOf(revision.author));
+      const reviewer = reviewerBucketOf(revision.author);
+      const entry = aggregateFor(reviewer.author, reviewer.kind);
       entry.revisionCount++;
       dateUpdate(entry, revision.date);
     }
     for (const comment of comments) {
-      const entry = aggregateFor(reviewerBucketOf(comment.author));
+      const reviewer = reviewerBucketOf(comment.author);
+      const entry = aggregateFor(reviewer.author, reviewer.kind);
       entry.commentCount++;
       if (comment.resolved !== true) entry.unresolvedCommentCount++;
       dateUpdate(entry, comment.date);
@@ -3633,7 +3628,8 @@ export class DocxDocument {
           (entry.initialsSeenOrder.get(a[0]) ?? Number.MAX_SAFE_INTEGER) - (entry.initialsSeenOrder.get(b[0]) ?? Number.MAX_SAFE_INTEGER) ||
           a[0].localeCompare(b[0]))[0]?.[0];
       return {
-        author: entry.author,
+        ...(entry.author !== undefined ? { author: entry.author } : {}),
+        kind: entry.kind,
         ...(initials !== undefined ? { initials } : {}),
         revisionCount: entry.revisionCount,
         commentCount: entry.commentCount,
@@ -3645,7 +3641,7 @@ export class DocxDocument {
       b.revisionCount - a.revisionCount ||
       b.commentCount - a.commentCount ||
       b.unresolvedCommentCount - a.unresolvedCommentCount ||
-      a.author.localeCompare(b.author));
+      reviewerBucketKey(a).localeCompare(reviewerBucketKey(b)));
     this.reviewerInfoCache = { revision: this.revision, reviewers };
     return reviewers.map(cloneReviewerInfo);
   }

@@ -3225,8 +3225,9 @@ test('getReviewers aggregates revision and comment counts with date range', () =
   const comments = `<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="1" w:author="Alice" w:initials="AL" w:date="2026-01-01T00:00:00Z"><w:p w14:paraId="00000001"><w:r><w:t>one</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="Alice" w:initials="A" w:date="2026-01-05T00:00:00Z"><w:p w14:paraId="00000002"><w:r><w:t>two</w:t></w:r></w:p></w:comment></w:comments>`;
   const commentsEx = `<w15:commentsEx xmlns:w15="${W15_NS}"><w15:commentEx w15:paraId="00000001" w15:done="1"/><w15:commentEx w15:paraId="00000002" w15:done="0"/></w15:commentsEx>`;
   const doc = withCommentsDoc(body, comments, commentsEx);
-  const reviewer = doc.getReviewers().find((item) => item.author === 'Alice');
+  const reviewer = doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Alice');
   assert.deepEqual(reviewer, {
+    kind: 'named',
     author: 'Alice',
     initials: 'AL',
     revisionCount: 2,
@@ -3241,32 +3242,66 @@ test('getReviewers keeps missing, empty, and blank authors in explicit buckets',
   const body = '<w:p><w:ins w:id="1"><w:r><w:t>A</w:t></w:r></w:ins><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r><w:r><w:commentReference w:id="3"/></w:r></w:p>';
   const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1"><w:p><w:r><w:t>missing</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author=""><w:p><w:r><w:t>empty</w:t></w:r></w:p></w:comment><w:comment w:id="3" w:author="   "><w:p><w:r><w:t>blank</w:t></w:r></w:p></w:comment></w:comments>`;
   const doc = withCommentsDoc(body, comments);
-  const map = new Map(doc.getReviewers().map((item) => [item.author, item]));
-  assert.equal(map.get('(unattributed)')?.revisionCount, 1);
-  assert.equal(map.get('(unattributed)')?.commentCount, 1);
-  assert.equal(map.get('(empty author)')?.commentCount, 1);
-  assert.equal(map.get('(blank author)')?.commentCount, 1);
+  const map = new Map(doc.getReviewers().map((item) => [`${item.kind}:${item.author ?? ''}`, item]));
+  assert.equal(map.get('unattributed:')?.revisionCount, 1);
+  assert.equal(map.get('unattributed:')?.commentCount, 1);
+  assert.equal(map.get('empty:')?.commentCount, 1);
+  assert.equal(map.get('blank:   ')?.commentCount, 1);
+});
+
+test('getReviewers keeps named "(unattributed)" separate from missing authors', () => {
+  const body = '<w:p><w:ins w:id="1" w:author="(unattributed)"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="2"><w:r><w:t>B</w:t></w:r></w:ins></w:p>';
+  const doc = withBody(body);
+  const buckets = doc.getReviewers().map((item) => `${item.kind}:${item.author ?? ''}`);
+  assert.deepEqual(new Set(buckets), new Set(['named:(unattributed)', 'unattributed:']));
+});
+
+test('getReviewers keeps named "(empty author)" separate from empty authors', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author="(empty author)"><w:p><w:r><w:t>A</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author=""><w:p><w:r><w:t>B</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  const buckets = doc.getReviewers().map((item) => `${item.kind}:${item.author ?? ''}`);
+  assert.deepEqual(new Set(buckets), new Set(['named:(empty author)', 'empty:']));
+});
+
+test('getReviewers keeps named "(blank author)" separate from blank authors', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author="(blank author)"><w:p><w:r><w:t>A</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="   "><w:p><w:r><w:t>B</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  const buckets = doc.getReviewers().map((item) => `${item.kind}:${item.author ?? ''}`);
+  assert.deepEqual(new Set(buckets), new Set(['named:(blank author)', 'blank:   ']));
+});
+
+test('getReviewers keeps raw author values alongside reviewer kind', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r><w:r><w:commentReference w:id="3"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1"><w:p><w:r><w:t>M</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author=""><w:p><w:r><w:t>E</w:t></w:r></w:p></w:comment><w:comment w:id="3" w:author=" \t "><w:p><w:r><w:t>B</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  const map = new Map(doc.getReviewers().map((item) => [item.kind, item]));
+  assert.equal(map.get('unattributed')?.author, undefined);
+  assert.equal(map.get('empty')?.author, '');
+  assert.equal(map.get('blank')?.author?.trim(), '');
+  assert.ok((map.get('blank')?.author?.length ?? 0) > 0);
 });
 
 test('getReviewers picks the most frequent initials per author', () => {
   const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r><w:r><w:commentReference w:id="3"/></w:r></w:p>';
   const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author="Alice" w:initials="AA"><w:p><w:r><w:t>1</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="Alice" w:initials="A"><w:p><w:r><w:t>2</w:t></w:r></w:p></w:comment><w:comment w:id="3" w:author="Alice" w:initials="AA"><w:p><w:r><w:t>3</w:t></w:r></w:p></w:comment></w:comments>`;
   const doc = withCommentsDoc(body, comments);
-  assert.equal(doc.getReviewers().find((item) => item.author === 'Alice')?.initials, 'AA');
+  assert.equal(doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Alice')?.initials, 'AA');
 });
 
 test('getReviewers keeps initials selection stable on frequency ties by first appearance', () => {
   const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r></w:p>';
   const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author="Alice" w:initials="ZX"><w:p><w:r><w:t>1</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="Alice" w:initials="AB"><w:p><w:r><w:t>2</w:t></w:r></w:p></w:comment></w:comments>`;
   const doc = withCommentsDoc(body, comments);
-  assert.equal(doc.getReviewers().find((item) => item.author === 'Alice')?.initials, 'ZX');
+  assert.equal(doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Alice')?.initials, 'ZX');
 });
 
 test('getReviewers ignores invalid dates while computing firstDate/lastDate', () => {
   const body = '<w:p><w:ins w:id="1" w:author="Alice" w:date="bad"><w:r><w:t>A</w:t></w:r></w:ins><w:r><w:commentReference w:id="1"/></w:r></w:p>';
   const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author="Alice" w:date="2026-03-02T10:00:00Z"><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:comment></w:comments>`;
   const doc = withCommentsDoc(body, comments);
-  const reviewer = doc.getReviewers().find((item) => item.author === 'Alice');
+  const reviewer = doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Alice');
   assert.equal(reviewer?.firstDate, '2026-03-02T10:00:00Z');
   assert.equal(reviewer?.lastDate, '2026-03-02T10:00:00Z');
 });

@@ -1,13 +1,21 @@
 import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
-import type { AgentRequest, DocumentRange, DocumentSnapshot, OutlineNode, ParagraphFormat, RunFormat, StyleInfo } from '../src/index.js';
+import type {
+  AgentRequest,
+  DocumentRange,
+  DocumentSnapshot,
+  OutlineNode,
+  ParagraphFormat,
+  ReviewerFilterAuthor,
+  ReviewerInfo,
+  RunFormat,
+  StyleInfo,
+} from '../src/index.js';
+import { reviewerBucketKey, reviewerBucketLabel, reviewerBucketOf } from '../src/revisions.js';
 import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
-const UNATTRIBUTED_REVIEWER = '(unattributed)';
-const EMPTY_REVIEWER = '(empty author)';
-const BLANK_REVIEWER = '(blank author)';
 const CLEAR_RUN_FORMAT: RunFormat = {
   style: null,
   bold: null,
@@ -87,7 +95,7 @@ let selectedRangeFormat: RunFormat | null = null;
 let selectedCommentId: number | null = null;
 let formatPainter: { format: RunFormat; locked: boolean } | null = null;
 let applyingFormatPainter = false;
-let selectedReviewerAuthors: string[] | undefined;
+let selectedReviewerAuthors: ReviewerFilterAuthor[] | undefined;
 let reviewRevisionView: 'final' | 'original' | 'markup' = 'markup';
 let reviewShowRevisions = true;
 let reviewShowComments = true;
@@ -102,11 +110,18 @@ const editor = new DocxEditor(host, doc, {
   reviewFilter: { revisionView: reviewRevisionView, showComments: reviewShowComments, showRevisions: reviewShowRevisions },
 });
 
-function reviewerBucketOf(author: string | undefined): string {
-  if (author === undefined) return UNATTRIBUTED_REVIEWER;
-  if (author === '') return EMPTY_REVIEWER;
-  if (!author.trim()) return BLANK_REVIEWER;
-  return author;
+function reviewerSelectionKey(author: ReviewerFilterAuthor): string {
+  return reviewerBucketKey(author);
+}
+
+function reviewerSelectionFrom(reviewer: Pick<ReviewerInfo, 'author' | 'kind'>): ReviewerFilterAuthor {
+  return reviewer.kind === 'named'
+    ? { kind: reviewer.kind, author: reviewer.author ?? '' }
+    : reviewer.kind === 'blank'
+      ? { kind: reviewer.kind, author: reviewer.author ?? ' ' }
+      : reviewer.kind === 'empty'
+        ? { kind: reviewer.kind, author: '' }
+        : { kind: reviewer.kind };
 }
 
 function applyReviewFilter(): void {
@@ -442,9 +457,9 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   const authorFilter = element<HTMLInputElement>('comment-author-filter').value.trim();
   const resolvedFilter = element<HTMLSelectElement>('comment-resolved-filter').value;
   const list = element<HTMLUListElement>('comment-list');
-  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors) : undefined;
+  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors.map(reviewerSelectionKey)) : undefined;
   const comments = (reviewShowComments ? snapshot.comments : []).filter((comment) => {
-    if (selectedAuthors && !selectedAuthors.has(reviewerBucketOf(comment.author))) return false;
+    if (selectedAuthors && !selectedAuthors.has(reviewerBucketKey(reviewerBucketOf(comment.author)))) return false;
     if (authorFilter && !(comment.author ?? '').includes(authorFilter)) return false;
     if (resolvedFilter === 'resolved' && comment.resolved !== true) return false;
     if (resolvedFilter === 'open' && comment.resolved === true) return false;
@@ -477,31 +492,34 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
 function refreshReviewers(): void {
   const reviewers = doc.getReviewers();
   const list = element<HTMLUListElement>('reviewer-list');
-  const previousSelection = JSON.stringify(selectedReviewerAuthors ?? null);
-  const available = new Set(reviewers.map((reviewer) => reviewer.author));
+  const previousSelection = JSON.stringify((selectedReviewerAuthors ?? []).map(reviewerSelectionKey));
+  const available = new Set(reviewers.map((reviewer) => reviewerBucketKey(reviewerSelectionFrom(reviewer))));
   if (selectedReviewerAuthors?.length) {
-    selectedReviewerAuthors = selectedReviewerAuthors.filter((author) => available.has(author));
+    selectedReviewerAuthors = selectedReviewerAuthors.filter((author) => available.has(reviewerSelectionKey(author)));
     if (!selectedReviewerAuthors.length) selectedReviewerAuthors = undefined;
   }
-  if (previousSelection !== JSON.stringify(selectedReviewerAuthors ?? null)) applyReviewFilter();
-  const selected = new Set(selectedReviewerAuthors ?? reviewers.map((reviewer) => reviewer.author));
+  if (previousSelection !== JSON.stringify((selectedReviewerAuthors ?? []).map(reviewerSelectionKey))) applyReviewFilter();
+  const selected = new Set((selectedReviewerAuthors ?? reviewers.map((reviewer) => reviewerSelectionFrom(reviewer))).map(reviewerSelectionKey));
   list.replaceChildren(...reviewers.map((reviewer) => {
+    const reviewerAuthor = reviewerSelectionFrom(reviewer);
+    const key = reviewerSelectionKey(reviewerAuthor);
     const item = document.createElement('li');
     const label = document.createElement('label');
     label.className = 'reviewer-item';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.checked = selected.has(reviewer.author);
+    checkbox.checked = selected.has(key);
     checkbox.addEventListener('change', () => {
-      const set = new Set(selectedReviewerAuthors ?? reviewers.map((entry) => entry.author));
-      if (checkbox.checked) set.add(reviewer.author);
-      else set.delete(reviewer.author);
-      selectedReviewerAuthors = set.size === reviewers.length ? undefined : [...set];
+      const allEntries = reviewers.map((entry) => reviewerSelectionFrom(entry));
+      const selectedEntries = new Map((selectedReviewerAuthors ?? allEntries).map((entry) => [reviewerSelectionKey(entry), entry]));
+      if (checkbox.checked) selectedEntries.set(key, reviewerAuthor);
+      else selectedEntries.delete(key);
+      selectedReviewerAuthors = selectedEntries.size === reviewers.length ? undefined : [...selectedEntries.values()];
       applyReviewFilter();
       refreshComments();
     });
     const name = document.createElement('span');
-    name.textContent = `${reviewer.author}${reviewer.initials ? ` (${reviewer.initials})` : ''}`;
+    name.textContent = `${reviewerBucketLabel(reviewerSelectionFrom(reviewer))}${reviewer.initials ? ` (${reviewer.initials})` : ''}`;
     const count = document.createElement('span');
     count.className = 'reviewer-count';
     count.textContent = `修订 ${reviewer.revisionCount} · 批注 ${reviewer.commentCount} · 未解决 ${reviewer.unresolvedCommentCount}`;

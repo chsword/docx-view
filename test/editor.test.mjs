@@ -564,11 +564,11 @@ test('setReviewFilter updates render state without triggering onChange', () => {
   editor.options = { onChange: () => { changes++; } };
   editor.flush = () => {};
   editor.render = () => { renderCalls++; };
-  editor.setReviewFilter({ authors: ['Alice'], revisionView: 'final', showComments: false });
+  editor.setReviewFilter({ authors: [{ kind: 'named', author: 'Alice' }], revisionView: 'final', showComments: false });
   assert.equal(renderCalls, 1);
   assert.equal(changes, 0);
   assert.deepEqual(editor.reviewFilter, {
-    authors: ['Alice'],
+    authors: [{ kind: 'named', author: 'Alice' }],
     showRevisions: true,
     showComments: false,
     revisionView: 'final',
@@ -579,21 +579,21 @@ test('setReviewFilter is a no-op when filter is unchanged', () => {
   const editor = Object.create(DocxEditor.prototype);
   let renders = 0;
   editor.destroyed = false;
-  editor.reviewFilter = { authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.reviewFilter = { authors: [{ kind: 'named', author: 'Alice' }], showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.render = () => { renders++; };
-  editor.setReviewFilter({ authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' });
+  editor.setReviewFilter({ authors: [{ kind: 'named', author: 'Alice' }], showRevisions: true, showComments: true, revisionView: 'markup' });
   assert.equal(renders, 0);
 });
 
 test('setReviewFilter merges partial updates without clearing existing fields', () => {
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
-  editor.reviewFilter = { authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.reviewFilter = { authors: [{ kind: 'named', author: 'Alice' }], showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.flush = () => {};
   editor.render = () => {};
   editor.setReviewFilter({ showComments: false });
   assert.deepEqual(editor.reviewFilter, {
-    authors: ['Alice'],
+    authors: [{ kind: 'named', author: 'Alice' }],
     showRevisions: true,
     showComments: false,
     revisionView: 'markup',
@@ -607,8 +607,20 @@ test('setReviewFilter validates authors as bounded text list', () => {
   editor.flush = () => {};
   editor.render = () => {};
   assert.throws(() => editor.setReviewFilter({ authors: 'Alice' }), /authors must be an array/);
-  assert.throws(() => editor.setReviewFilter({ authors: ['A\u0000'] }), /reviewFilter\.authors\[\]/);
-  assert.throws(() => editor.setReviewFilter({ authors: Array.from({ length: 1001 }, (_, index) => String(index)) }), /at most 1000 items/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'named', author: 'A\u0000' }] }), /reviewFilter\.authors\[\]\.author/);
+  assert.throws(() => editor.setReviewFilter({ authors: Array.from({ length: 1001 }, (_, index) => ({ kind: 'named', author: String(index) })) }), /at most 1000 items/);
+});
+
+test('setReviewFilter validates author kind and raw author consistency', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
+  editor.render = () => {};
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'unattributed', author: 'Alice' }] }), /must be omitted for unattributed kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'named' }] }), /is required for named kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'empty', author: '  ' }] }), /must be an empty string for empty kind/);
+  assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'blank', author: 'Alice' }] }), /must be whitespace-only for blank kind/);
 });
 
 test('setReviewFilter validates show flags and revisionView enum', () => {
@@ -626,7 +638,7 @@ test('setReviewFilter flushes pending edits across all filter dimensions', () =>
   const cases = [
     { name: 'showComments', filter: { showComments: false } },
     { name: 'showRevisions', filter: { showRevisions: false } },
-    { name: 'authors', filter: { authors: ['Alice'] } },
+    { name: 'authors', filter: { authors: [{ kind: 'named', author: 'Alice' }] } },
     { name: 'revisionView original', filter: { revisionView: 'original' } },
     { name: 'revisionView final', filter: { revisionView: 'final' } },
   ];
@@ -719,23 +731,44 @@ test('reviewFilter author narrowing does not change unfiltered getRevisions outp
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.flush = () => {};
   editor.render = () => {};
-  editor.setReviewFilter({ authors: ['Alice'] });
+  editor.setReviewFilter({ authors: [{ kind: 'named', author: 'Alice' }] });
   assert.deepEqual(doc.getRevisions().map((item) => item.id), before);
 });
 
 test('reviewScopedRun applies revisionView final/original semantics without mutating source run', () => {
   const editor = Object.create(DocxEditor.prototype);
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'original' };
-  editor.activeReviewDeletedTextByRun = new Map([['0:0', 'deleted text']]);
+  const context = { deletedTextByRun: new Map([['0:0', 'deleted text']]) };
   const deletedRun = { index: 0, text: '', revisions: [{ id: 1, kind: 'deletion' }] };
   const insertionRun = { index: 1, text: 'inserted', revisions: [{ id: 2, kind: 'insertion' }] };
-  const originalDeleted = editor.reviewScopedRun(0, deletedRun);
-  const originalInserted = editor.reviewScopedRun(0, insertionRun);
+  const originalDeleted = editor.reviewScopedRun(0, deletedRun, context);
+  const originalInserted = editor.reviewScopedRun(0, insertionRun, context);
   assert.equal(originalDeleted.text, 'deleted text');
   assert.equal(originalInserted.text, '');
   assert.equal(deletedRun.text, '');
   assert.equal(insertionRun.text, 'inserted');
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'final' };
-  const finalDeleted = editor.reviewScopedRun(0, { index: 0, text: 'old', revisions: [{ id: 3, kind: 'deletion' }] });
+  const finalDeleted = editor.reviewScopedRun(0, { index: 0, text: 'old', revisions: [{ id: 3, kind: 'deletion' }] }, context);
   assert.equal(finalDeleted.text, '');
+});
+
+test('reviewScopedRun author filtering does not collide named and unattributed buckets', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.reviewFilter = {
+    authors: [{ kind: 'named', author: '(unattributed)' }],
+    showRevisions: true,
+    showComments: true,
+    revisionView: 'markup',
+  };
+  const context = { authors: new Set(['named:(unattributed)']), deletedTextByRun: new Map() };
+  const run = {
+    index: 0,
+    text: 'text',
+    revisions: [
+      { id: 1, kind: 'insertion', author: '(unattributed)' },
+      { id: 2, kind: 'insertion' },
+    ],
+  };
+  const filtered = editor.reviewScopedRun(0, run, context);
+  assert.deepEqual(filtered.revisions?.map((revision) => revision.id), [1]);
 });
