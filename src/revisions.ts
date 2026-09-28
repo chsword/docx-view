@@ -166,8 +166,9 @@ export function deletedTextOf(element: Element): string {
 export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {
   if (author === undefined) return { kind: 'unattributed' };
   if (author === '') return { kind: 'empty', author: '' };
-  if (!author.trim()) return { kind: 'blank', author };
-  return { kind: 'named', author };
+  const normalized = author.trim();
+  if (!normalized) return { kind: 'blank', author };
+  return { kind: 'named', author: normalized };
 }
 
 export function reviewerBucketKey(author: { kind: ReviewerAuthorKind; author?: string }): string {

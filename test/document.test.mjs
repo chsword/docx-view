@@ -3575,6 +3575,14 @@ test('getReviewers can construct all reviewer author kinds from revisions', () =
   assert.equal(map.get('named:Alice')?.revisionCount, 1);
 });
 
+test('getReviewers merges named authors that differ only by surrounding whitespace', () => {
+  const body = '<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>a</w:t></w:r></w:ins><w:ins w:id="2" w:author=" Alice"><w:r><w:t>b</w:t></w:r></w:ins><w:ins w:id="3" w:author="Alice "><w:r><w:t>c</w:t></w:r></w:ins></w:p>';
+  const doc = withBody(body);
+  assert.deepEqual(doc.getReviewers().map((item) => ({ kind: item.kind, author: item.author, revisionCount: item.revisionCount })), [
+    { kind: 'named', author: 'Alice', revisionCount: 3 },
+  ]);
+});
+
 test('getReviewers keeps named "(unattributed)" separate from missing authors', () => {
   const body = '<w:p><w:ins w:id="1" w:author="(unattributed)"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="2"><w:r><w:t>B</w:t></w:r></w:ins></w:p>';
   const doc = withBody(body);
@@ -4398,6 +4406,13 @@ test('acceptAllRevisions can filter by author', () => {
   assert.equal(doc.getParagraphs()[0].text, 'ABC');
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(16), true);
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(15), false);
+});
+
+test('acceptAllRevisions named bucket filter matches revisions with surrounding-author whitespace', () => {
+  const doc = withBody('<w:p><w:ins w:id="150" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="151" w:author=" Alice"><w:r><w:t>B</w:t></w:r></w:ins><w:ins w:id="152" w:author="Alice "><w:r><w:t>C</w:t></w:r></w:ins></w:p>');
+  doc.acceptAllRevisions({ authors: ['named:Alice'] });
+  assert.equal(doc.getParagraphs()[0].text, 'ABC');
+  assert.deepEqual(doc.getRevisions(), []);
 });
 
 test('acceptAllRevisions author filter accepts a full move pair when only one side matches', () => {

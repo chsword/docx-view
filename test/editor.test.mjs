@@ -1054,6 +1054,19 @@ test('filteredRevisionIds respects showRevisions and author filters', () => {
   assert.deepEqual(editor.filteredRevisionIds(), [2]);
 });
 
+test('filteredRevisionIds treats named author filter as trimmed identity', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.document = {
+    getRevisions: () => [
+      { id: 1, author: 'Alice' },
+      { id: 2, author: ' Alice' },
+      { id: 3, author: 'Alice ' },
+    ],
+  };
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup', authors: [{ kind: 'named', author: 'Alice' }] };
+  assert.deepEqual(editor.filteredRevisionIds(), [1, 2, 3]);
+});
+
 test('reviewColor stays stable for each author after accept/reject changes reviewer counts', () => {
   const doc = DocxDocument.create();
   doc.setTrackChanges(true);
