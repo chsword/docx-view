@@ -3,10 +3,12 @@ import type {
   BorderFormat,
   BordersFormat,
   CellFormat,
+  DocumentRange,
   DocumentBlock,
   DocumentSnapshot,
   ImageInfo,
   ParagraphInfo,
+  RunFormat,
   RunInfo,
   SectionInfo,
   TabStop,
@@ -162,6 +164,7 @@ export class DocxEditor {
   private footerKind: 'default' | 'first' | 'even' = 'default';
   private selected: number | null = null;
   private selectedImageInfo: ImageInfo | null = null;
+  private selectedRangeInfo: { range: DocumentRange; format: RunFormat } | null = null;
   private composing = false;
   private renderAfterComposition = false;
   private destroyed = false;
@@ -209,6 +212,17 @@ export class DocxEditor {
     return this.selectedImageInfo;
   }
 
+  get selectedRange(): DocumentRange | null {
+    return this.selectedRangeInfo ? {
+      start: { ...this.selectedRangeInfo.range.start },
+      end: { ...this.selectedRangeInfo.range.end },
+    } : null;
+  }
+
+  get selectedRangeFormat(): RunFormat | null {
+    return this.selectedRangeInfo ? { ...this.selectedRangeInfo.format } : null;
+  }
+
   /** Commit visible text before an external API operation or an export. */
   flush(): void {
     if (this.destroyed) return;
@@ -241,6 +255,7 @@ export class DocxEditor {
     this.document = document;
     this.selected = null;
     this.selectedImageInfo = null;
+    this.selectedRangeInfo = null;
     this.composing = false;
     this.renderAfterComposition = false;
     this.paragraphs.clear();
@@ -253,7 +268,7 @@ export class DocxEditor {
       this.renderAfterComposition = true;
       return;
     }
-    const caret = this.captureCaret();
+    const range = this.captureDocumentRange();
     const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
       ?? this.selectedImageInfo?.id
       ?? null;
@@ -280,7 +295,8 @@ export class DocxEditor {
         .find((node) => node.dataset.image === activeImageId)
         ?.focus({ preventScroll: true });
     }
-    if (caret) this.restoreCaret(caret);
+    if (range) this.restoreDocumentRange(range);
+    this.updateRangeSelection(this.captureDocumentRange());
   }
 
   destroy(): void {
@@ -291,6 +307,7 @@ export class DocxEditor {
     this.root.removeEventListener('keydown', this.handleRootKeydown);
     this.root.remove();
     this.paragraphs.clear();
+    this.selectedRangeInfo = null;
   }
 
   private readText(element: HTMLElement): string {
@@ -1024,6 +1041,195 @@ export class DocxEditor {
     return true;
   }
 
+  private textLength(node: Node): number {
+    if (node.nodeType === 3) return Array.from(node.textContent ?? '').length;
+    if (node.nodeType !== 1) return 0;
+    const current = node as HTMLElement;
+    if (current.dataset.image || current.contentEditable === 'false') return 0;
+    if (current.tagName === 'BR') return 1;
+    return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
+  }
+
+  private paragraphText(index: number): string {
+    return this.document.getParagraphs().find((item) => item.index === index)?.text ?? '';
+  }
+
+  private codeUnitsFromCodePoints(text: string, points: number): number {
+    let units = 0;
+    let count = 0;
+    for (const char of text) {
+      if (count >= points) break;
+      units += char.length;
+      count++;
+    }
+    return units;
+  }
+
+  private documentRange(range: DocumentRange): DocumentRange {
+    return {
+      start: {
+        paragraph: range.start.paragraph,
+        offset: this.codeUnitsFromCodePoints(this.paragraphText(range.start.paragraph), range.start.offset),
+      },
+      end: {
+        paragraph: range.end.paragraph,
+        offset: this.codeUnitsFromCodePoints(this.paragraphText(range.end.paragraph), range.end.offset),
+      },
+    };
+  }
+
+  private offsetWithin(root: HTMLElement, target: Node, targetOffset: number): number {
+    let offset = 0;
+    const walk = (node: Node): boolean => {
+      if (node === target) {
+        if (node.nodeType === 3) {
+          offset += Array.from((node.textContent ?? '').slice(0, Math.max(0, targetOffset))).length;
+          return true;
+        }
+        if (node.nodeType !== 1) return true;
+        const current = node as HTMLElement;
+        if (current.dataset.image || current.contentEditable === 'false') return true;
+        if (current.tagName === 'BR') {
+          offset += targetOffset > 0 ? 1 : 0;
+          return true;
+        }
+        const childNodes = Array.from(node.childNodes);
+        for (let i = 0; i < Math.min(targetOffset, childNodes.length); i++) {
+          offset += this.textLength(childNodes[i]!);
+        }
+        return true;
+      }
+      if (node.nodeType === 3) {
+        offset += Array.from(node.textContent ?? '').length;
+        return false;
+      }
+      if (node.nodeType !== 1) return false;
+      const current = node as HTMLElement;
+      if (current.dataset.image || current.contentEditable === 'false') return false;
+      if (current.tagName === 'BR') {
+        offset += 1;
+        return false;
+      }
+      for (const child of Array.from(node.childNodes)) {
+        if (walk(child)) return true;
+      }
+      return false;
+    };
+    walk(root);
+    return offset;
+  }
+
+  private positionFromOffset(root: HTMLElement, offset: number): [Node, number] {
+    const total = this.textLength(root);
+    let remaining = Math.max(0, Math.min(offset, total));
+    const locate = (node: Node): [Node, number] | null => {
+      if (node.nodeType === 3) {
+        const text = node.textContent ?? '';
+        const textLength = Array.from(text).length;
+        if (remaining <= textLength) return [node, this.codeUnitsFromCodePoints(text, remaining)];
+        remaining -= textLength;
+        return null;
+      }
+      if (node.nodeType !== 1) return null;
+      const current = node as HTMLElement;
+      if (current.dataset.image || current.contentEditable === 'false') return null;
+      if (current.tagName === 'BR') {
+        if (remaining <= 1) {
+          const parent = node.parentNode as Node;
+          const index = Array.prototype.indexOf.call(parent.childNodes, node);
+          return [parent, remaining === 0 ? index : index + 1];
+        }
+        remaining -= 1;
+        return null;
+      }
+      for (const child of Array.from(node.childNodes)) {
+        const found = locate(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return locate(root) ?? [root, root.childNodes.length];
+  }
+
+  private captureDocumentRange(): DocumentRange | null {
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection?.rangeCount) return null;
+    const raw = selection.getRangeAt(0);
+    if (!this.root.contains(raw.startContainer) || !this.root.contains(raw.endContainer)) return null;
+    const startElement = raw.startContainer.nodeType === 1 ? raw.startContainer as Element : raw.startContainer.parentElement;
+    const endElement = raw.endContainer.nodeType === 1 ? raw.endContainer as Element : raw.endContainer.parentElement;
+    const startContent = startElement?.closest<HTMLElement>('.docx-paragraph-content');
+    const endContent = endElement?.closest<HTMLElement>('.docx-paragraph-content');
+    const startParagraph = startContent?.closest<HTMLElement>('[data-paragraph]');
+    const endParagraph = endContent?.closest<HTMLElement>('[data-paragraph]');
+    if (!startContent || !endContent || !startParagraph || !endParagraph) return null;
+    const start = {
+      paragraph: Number(startParagraph.dataset.paragraph),
+      offset: this.offsetWithin(startContent, raw.startContainer, raw.startOffset),
+    };
+    const end = {
+      paragraph: Number(endParagraph.dataset.paragraph),
+      offset: this.offsetWithin(endContent, raw.endContainer, raw.endOffset),
+    };
+    if (!Number.isSafeInteger(start.paragraph) || !Number.isSafeInteger(end.paragraph)) return null;
+    const ordered = start.paragraph > end.paragraph || (start.paragraph === end.paragraph && start.offset > end.offset)
+      ? { start: end, end: start }
+      : { start, end };
+    return ordered;
+  }
+
+  private restoreDocumentRange(range: DocumentRange): void {
+    const start = this.paragraphs.get(range.start.paragraph)?.content;
+    const end = this.paragraphs.get(range.end.paragraph)?.content;
+    if (!start || !end) return;
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection) return;
+    const startPoint = this.positionFromOffset(start, range.start.offset);
+    const endPoint = this.positionFromOffset(end, range.end.offset);
+    const domRange = this.root.ownerDocument.createRange();
+    domRange.setStart(...startPoint);
+    domRange.setEnd(...endPoint);
+    selection.removeAllRanges();
+    selection.addRange(domRange);
+  }
+
+  private updateRangeSelection(range: DocumentRange | null): void {
+    const key = range
+      ? `${range.start.paragraph}:${range.start.offset}-${range.end.paragraph}:${range.end.offset}`
+      : '';
+    const previous = this.selectedRangeInfo
+      ? `${this.selectedRangeInfo.range.start.paragraph}:${this.selectedRangeInfo.range.start.offset}-${this.selectedRangeInfo.range.end.paragraph}:${this.selectedRangeInfo.range.end.offset}`
+      : '';
+    if (key === previous) return;
+    if (!range) {
+      const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+      this.selectedRangeInfo = null;
+      if (EventClass && previous) this.root.dispatchEvent(new EventClass('docx-rangechange', { bubbles: true, detail: null }));
+      return;
+    }
+    const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
+    let format: RunFormat = {};
+    try {
+      format = this.document.getDocumentRangeFormat(this.documentRange(range));
+    } catch (error) {
+      if (!(error instanceof Error) || !/Cross-container document ranges are not supported/.test(error.message)) throw error;
+      format = {};
+    }
+    this.selectedRangeInfo = {
+      range: {
+        start: { ...range.start },
+        end: { ...range.end },
+      },
+      format,
+    };
+    if (EventClass) {
+      this.root.dispatchEvent(new EventClass('docx-rangechange', {
+        bubbles: true,
+        detail: { range: this.selectedRange, format: this.selectedRangeFormat ?? {} },
+      }));
+    }
+  }
+
   private selectParagraph(index: number): void {
     if (this.selected === index) return;
     this.selected = index;
@@ -1040,12 +1246,16 @@ export class DocxEditor {
   private readonly handleSelection = (): void => {
     const selection = this.root.ownerDocument.getSelection();
     const node = selection?.anchorNode;
-    if (!node || !this.root.contains(node)) return;
+    if (!node || !this.root.contains(node)) {
+      this.updateRangeSelection(null);
+      return;
+    }
     const element = node.nodeType === 1 ? node as Element : node.parentElement;
     const paragraph = element?.closest<HTMLElement>('[data-paragraph]');
     if (paragraph && this.root.contains(paragraph)) this.selectParagraph(Number(paragraph.dataset.paragraph));
     const image = element?.closest<HTMLElement>('[data-image]');
     if (!image) this.selectImage(null);
+    this.updateRangeSelection(this.captureDocumentRange());
   };
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {

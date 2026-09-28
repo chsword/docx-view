@@ -19,6 +19,41 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
   if (value !== null && value !== undefined) validate(value);
 }
 
+const RUN_FORMAT_FIELDS = [
+  'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
+  'highlight', 'characterSpacing', 'border', 'shading',
+] as const;
+
+function validateTextRange(value: unknown): asserts value is { paragraph: number; start: number; end: number } {
+  object(value);
+  keys(value, ['paragraph', 'start', 'end']);
+  assertIndex(value.paragraph);
+  assertIndex(value.start);
+  assertIndex(value.end);
+  if (value.end < value.start) throw new Error('range.end must be greater than or equal to range.start.');
+}
+
+function validateDocumentRange(value: unknown): asserts value is {
+  start: { paragraph: number; offset: number };
+  end: { paragraph: number; offset: number };
+} {
+  object(value);
+  keys(value, ['start', 'end']);
+  object(value.start);
+  keys(value.start, ['paragraph', 'offset']);
+  object(value.end);
+  keys(value.end, ['paragraph', 'offset']);
+  assertIndex(value.start.paragraph);
+  assertIndex(value.start.offset);
+  assertIndex(value.end.paragraph);
+  assertIndex(value.end.offset);
+  if (value.start.paragraph > value.end.paragraph ||
+      (value.start.paragraph === value.end.paragraph && value.start.offset > value.end.offset)) {
+    throw new Error('range.start must not be after range.end.');
+  }
+}
+
 export function assertIndex(value: unknown): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new Error('Index/revision must be a non-negative safe integer.');
@@ -309,6 +344,24 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'formatRun':
         keys(op, ['type', 'paragraph', 'run', 'format']);
         assertIndex(op.paragraph); assertIndex(op.run); validateRunFormat(op.format); break;
+      case 'formatRange':
+        keys(op, ['type', 'range', 'format']);
+        validateTextRange(op.range); validateRunFormat(op.format); break;
+      case 'clearRangeFormat':
+        keys(op, ['type', 'range', 'fields']);
+        validateTextRange(op.range);
+        if ('fields' in op) {
+          if (!Array.isArray(op.fields)) throw new Error('fields must be an array.');
+          for (const field of op.fields) {
+            if (!RUN_FORMAT_FIELDS.includes(field as typeof RUN_FORMAT_FIELDS[number])) {
+              throw new Error(`Unsupported run format field: ${String(field)}`);
+            }
+          }
+        }
+        break;
+      case 'formatDocumentRange':
+        keys(op, ['type', 'range', 'format']);
+        validateDocumentRange(op.range); validateRunFormat(op.format); break;
       case 'setParagraphTabs':
         keys(op, ['type', 'index', 'tabs']); assertIndex(op.index); validateTabs(op.tabs); break;
       case 'setParagraphBorders':
@@ -490,6 +543,14 @@ const imageSizeShape = {
 const operation = (type: string, properties: Record<string, unknown>, required = Object.keys(properties)) =>
   shape({ type: { const: type }, ...properties }, ['type', ...required]);
 const hyperlinkTarget = shape({ paragraph: index, start: index, end: index });
+const textRange = shape({ paragraph: index, start: index, end: index });
+const documentRange = shape({
+  start: shape({ paragraph: index, offset: index }),
+  end: shape({ paragraph: index, offset: index }),
+}, ['start', 'end']);
+const runFormatField = {
+  enum: [...RUN_FORMAT_FIELDS],
+};
 const hyperlinkLink = shape({ url: text, anchor: text, tooltip: text }, []);
 const hyperlinkRef = {
   anyOf: [
@@ -622,6 +683,58 @@ export const AGENT_OPERATION_SCHEMA = {
             border: nullable(docBorderSide),
             shading: nullable(docShading),
           }, []) }),
+          operation('formatRange', {
+            range: textRange,
+            format: shape({
+              style: nullable(text),
+              bold: nullable({ type: 'boolean' }),
+              italic: nullable({ type: 'boolean' }),
+              underline: nullable({ type: 'boolean' }),
+              underlineStyle: nullable(text),
+              underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+              fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
+              fontFamily: nullable(text),
+              fontFamilyEastAsia: nullable(text),
+              color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+              strike: nullable({ type: 'boolean' }),
+              doubleStrike: nullable({ type: 'boolean' }),
+              verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
+              smallCaps: nullable({ type: 'boolean' }),
+              allCaps: nullable({ type: 'boolean' }),
+              highlight: nullable(text),
+              characterSpacing: nullable(signedInteger),
+              border: nullable(docBorderSide),
+              shading: nullable(docShading),
+            }, []),
+          }),
+          operation('clearRangeFormat', {
+            range: textRange,
+            fields: { type: 'array', items: runFormatField },
+          }, ['range']),
+          operation('formatDocumentRange', {
+            range: documentRange,
+            format: shape({
+              style: nullable(text),
+              bold: nullable({ type: 'boolean' }),
+              italic: nullable({ type: 'boolean' }),
+              underline: nullable({ type: 'boolean' }),
+              underlineStyle: nullable(text),
+              underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+              fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
+              fontFamily: nullable(text),
+              fontFamilyEastAsia: nullable(text),
+              color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+              strike: nullable({ type: 'boolean' }),
+              doubleStrike: nullable({ type: 'boolean' }),
+              verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
+              smallCaps: nullable({ type: 'boolean' }),
+              allCaps: nullable({ type: 'boolean' }),
+              highlight: nullable(text),
+              characterSpacing: nullable(signedInteger),
+              border: nullable(docBorderSide),
+              shading: nullable(docShading),
+            }, []),
+          }),
           operation('setParagraphTabs', { index, tabs: docTabs }),
           operation('setParagraphBorders', { index, borders: shape({
             top: docBorderSide,

@@ -1,6 +1,6 @@
 import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
-import type { AgentRequest, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
+import type { AgentRequest, DocumentRange, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
 import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
@@ -37,6 +37,8 @@ let doc = createSample();
 let filename = '产品计划.docx';
 let xmlRevision = -1;
 let imageAction: 'insert' | 'replace' = 'insert';
+let selectedRange: DocumentRange | null = null;
+let selectedRangeFormat: RunFormat | null = null;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
@@ -153,11 +155,14 @@ function loadStyleOptions(): void {
 function updateSelection(): void {
   const index = editor.selectedParagraph;
   const paragraph = doc.getParagraphs().find((item) => item.index === index);
-  element('selection-label').textContent = paragraph ? `已选择第 ${paragraph.index + 1} 段 · 格式应用于整段` : '点击正文选择段落';
+  const hasRange = !!selectedRange;
+  element('selection-label').textContent = hasRange
+    ? `已选择范围：第 ${selectedRange!.start.paragraph + 1} 段 ${selectedRange!.start.offset} 到 第 ${selectedRange!.end.paragraph + 1} 段 ${selectedRange!.end.offset}`
+    : paragraph ? `已选择第 ${paragraph.index + 1} 段` : '点击正文选择段落';
   for (const key of ['bold', 'italic', 'underline'] as const) {
     const button = element<HTMLButtonElement>(`format-${key}`);
-    button.disabled = !paragraph;
-    button.setAttribute('aria-pressed', String(Boolean(paragraph?.runs.length && paragraph.runs.every((item) => item[key]))));
+    button.disabled = !paragraph && !hasRange;
+    button.setAttribute('aria-pressed', String(Boolean(selectedRangeFormat?.[key])));
   }
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
@@ -167,16 +172,15 @@ function updateSelection(): void {
   const decimal = element<HTMLButtonElement>('list-decimal');
   const indent = element<HTMLButtonElement>('list-indent');
   const outdent = element<HTMLButtonElement>('list-outdent');
-  size.disabled = color.disabled = style.disabled = alignment.disabled = !paragraph;
+  size.disabled = color.disabled = !paragraph && !hasRange;
+  style.disabled = alignment.disabled = !paragraph;
   bullet.disabled = decimal.disabled = !paragraph;
   indent.disabled = !paragraph?.numbering || paragraph.numbering.level >= 8;
   outdent.disabled = !paragraph?.numbering || paragraph.numbering.level <= 0;
   bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
   decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
-  const firstRun = paragraph?.runs[0];
-  const effectiveRun = firstRun?.effective ?? firstRun;
-  size.value = effectiveRun?.fontSize ? String(effectiveRun.fontSize) : '';
-  const runColor = effectiveRun?.color;
+  size.value = selectedRangeFormat?.fontSize ? String(selectedRangeFormat.fontSize) : '';
+  const runColor = selectedRangeFormat?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
   style.value = paragraph?.style ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
@@ -221,17 +225,40 @@ function selectedCell(): { table: number; row: number; col: number; rowSpan: num
   };
 }
 
+function toDocumentRange(range: DocumentRange): DocumentRange {
+  const paragraphByIndex = new Map(doc.getParagraphs().map((paragraph) => [paragraph.index, paragraph.text]));
+  const toOffset = (paragraph: number, points: number): number => {
+    const text = paragraphByIndex.get(paragraph) ?? '';
+    let offset = 0;
+    let count = 0;
+    for (const char of text) {
+      if (count >= points) break;
+      offset += char.length;
+      count++;
+    }
+    return offset;
+  };
+  return {
+    start: { paragraph: range.start.paragraph, offset: toOffset(range.start.paragraph, range.start.offset) },
+    end: { paragraph: range.end.paragraph, offset: toOffset(range.end.paragraph, range.end.offset) },
+  };
+}
+
 function formatRuns(format: RunFormat): void {
-  const index = selectedIndex();
-  const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
-  if (!paragraph.runs.length) throw new Error('请先在空段落中输入文字，再设置文字格式。');
-  doc.applyOperations({
-    expectedRevision: doc.revision,
-    operations: paragraph.runs.map((run) => ({ type: 'formatRun', paragraph: index, run: run.index, format })),
-  });
+  const range = selectedRange;
+  if (range) doc.formatDocumentRange(toDocumentRange(range), format);
+  else {
+    const index = selectedIndex();
+    const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
+    if (!paragraph.runs.length) throw new Error('请先在空段落中输入文字，再设置文字格式。');
+    doc.formatDocumentRange({
+      start: { paragraph: index, offset: 0 },
+      end: { paragraph: index, offset: paragraph.text.length },
+    }, format);
+  }
   editor.render();
   refresh();
-  message(`已更新第 ${index + 1} 段格式。`);
+  message('已更新文字格式。');
 }
 
 function loadXmlParts(): void {
@@ -266,6 +293,8 @@ function setDocument(next: DocxDocument, name: string): void {
   editor.flush();
   editor.setDocument(next);
   doc = next;
+  selectedRange = null;
+  selectedRangeFormat = null;
   recentNumbering.clear();
   filename = name;
   element('document-name').textContent = filename;
@@ -275,12 +304,16 @@ function setDocument(next: DocxDocument, name: string): void {
 }
 
 host.addEventListener('docx-selectionchange', updateSelection);
+host.addEventListener('docx-rangechange', (event) => {
+  const detail = (event as CustomEvent<{ range: DocumentRange; format: RunFormat } | null>).detail;
+  selectedRange = detail?.range ?? null;
+  selectedRangeFormat = detail?.format ?? null;
+  updateSelection();
+});
 host.addEventListener('docx-imageselectionchange', updateImageSelection);
 for (const key of ['bold', 'italic', 'underline'] as const) {
   element(`format-${key}`).addEventListener('click', () => run(() => {
-    const index = selectedIndex();
-    const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
-    formatRuns({ [key]: !paragraph.runs.every((item) => item[key]) });
+    formatRuns({ [key]: !selectedRangeFormat?.[key] });
   }));
 }
 element<HTMLSelectElement>('font-size').addEventListener('change', (event) => {
