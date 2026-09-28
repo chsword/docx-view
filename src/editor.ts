@@ -21,7 +21,7 @@ import type {
 import { pxToEmu } from './drawing.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
-import { sanitizeText, sanitizeTextWithInfo } from './xml.js';
+import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -76,6 +76,70 @@ function borderStyle(value: string): string {
 }
 
 const DOCX_CLIPBOARD_MIME = 'application/x-docx-view+json';
+const MAX_REVIEW_FILTER_AUTHORS = 1_000;
+const UNATTRIBUTED_REVIEWER = '(unattributed)';
+const EMPTY_REVIEWER = '(empty author)';
+const BLANK_REVIEWER = '(blank author)';
+
+export interface EditorReviewFilter {
+  authors?: string[];
+  showRevisions?: boolean;
+  showComments?: boolean;
+  revisionView?: 'final' | 'original' | 'markup';
+}
+
+interface NormalizedReviewFilter {
+  authors?: string[];
+  showRevisions: boolean;
+  showComments: boolean;
+  revisionView: 'final' | 'original' | 'markup';
+}
+
+function reviewerBucketOf(author: string | undefined): string {
+  if (author === undefined) return UNATTRIBUTED_REVIEWER;
+  if (author === '') return EMPTY_REVIEWER;
+  if (!author.trim()) return BLANK_REVIEWER;
+  return author;
+}
+
+function normalizeReviewFilter(filter: EditorReviewFilter | undefined): NormalizedReviewFilter {
+  if (filter !== undefined && (!filter || typeof filter !== 'object' || Array.isArray(filter))) {
+    throw new Error('reviewFilter must be an object.');
+  }
+  if (filter?.authors !== undefined && !Array.isArray(filter.authors)) throw new Error('reviewFilter.authors must be an array.');
+  if (filter?.authors && filter.authors.length > MAX_REVIEW_FILTER_AUTHORS) {
+    throw new Error(`reviewFilter.authors must contain at most ${MAX_REVIEW_FILTER_AUTHORS} items.`);
+  }
+  if (filter?.showRevisions !== undefined && typeof filter.showRevisions !== 'boolean') {
+    throw new Error('reviewFilter.showRevisions must be boolean.');
+  }
+  if (filter?.showComments !== undefined && typeof filter.showComments !== 'boolean') {
+    throw new Error('reviewFilter.showComments must be boolean.');
+  }
+  if (filter?.revisionView !== undefined && !['final', 'original', 'markup'].includes(filter.revisionView)) {
+    throw new Error('reviewFilter.revisionView must be one of: final, original, markup.');
+  }
+  const authors = filter?.authors?.map((author) => {
+    assertText(author, 'reviewFilter.authors[]');
+    return author;
+  }).filter((author, index, all) => all.indexOf(author) === index);
+  return {
+    ...(authors?.length ? { authors } : {}),
+    showRevisions: filter?.showRevisions ?? true,
+    showComments: filter?.showComments ?? true,
+    revisionView: filter?.revisionView ?? 'markup',
+  };
+}
+
+function reviewFilterEqual(a: NormalizedReviewFilter, b: NormalizedReviewFilter): boolean {
+  const authorsA = a.authors ?? [];
+  const authorsB = b.authors ?? [];
+  return a.showRevisions === b.showRevisions &&
+    a.showComments === b.showComments &&
+    a.revisionView === b.revisionView &&
+    authorsA.length === authorsB.length &&
+    authorsA.every((value, index) => value === authorsB[index]);
+}
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
@@ -152,6 +216,7 @@ export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
   onError?: (error: Error, context: { paragraph: number }) => void;
   showFormattingMarks?: boolean;
+  reviewFilter?: EditorReviewFilter;
 }
 
 /** A browser-only, editable view of the supported DOCX paragraph/run/table subset. */
@@ -173,6 +238,7 @@ export class DocxEditor {
   private composing = false;
   private renderAfterComposition = false;
   private destroyed = false;
+  private reviewFilter: NormalizedReviewFilter;
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
@@ -215,6 +281,7 @@ export class DocxEditor {
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
     this.options = options;
+    this.reviewFilter = normalizeReviewFilter(options.reviewFilter);
     this.root = container.ownerDocument.createElement('div');
     this.root.className = 'docx-editor';
     this.root.setAttribute('aria-label', '文档编辑区域');
@@ -283,8 +350,18 @@ export class DocxEditor {
     this.render();
   }
 
-  render(): void {
+  setReviewFilter(filter: EditorReviewFilter = {}): void {
     if (this.destroyed) return;
+    this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
+    const next = normalizeReviewFilter(filter);
+    if (reviewFilterEqual(this.reviewFilter, next)) return;
+    this.reviewFilter = next;
+    this.render({ skipFlush: true });
+  }
+
+  render(options: { skipFlush?: boolean } = {}): void {
+    if (this.destroyed) return;
+    this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
     if (this.composing) {
       this.renderAfterComposition = true;
       return;
@@ -293,14 +370,16 @@ export class DocxEditor {
     const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
       ?? this.selectedImageInfo?.id
       ?? null;
-    this.flush();
+    if (!options.skipFlush) this.flush();
     this.applyPageSetup();
     this.paragraphs.clear();
     this.commentRunIds ??= new Map();
     this.commentParagraphIds ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
-    for (const comment of this.document.getComments()) {
+    const commentAuthors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors) : undefined;
+    for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
+      if (commentAuthors && !commentAuthors.has(reviewerBucketOf(comment.author))) continue;
       if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
       if ('runs' in comment.anchor) {
         for (const run of comment.anchor.runs) {

@@ -337,6 +337,16 @@ export interface RevisionInfo extends RevisionMark {
   previousFormat?: RunFormat | ParagraphFormat;
 }
 
+export interface ReviewerInfo {
+  author: string;
+  initials?: string;
+  revisionCount: number;
+  commentCount: number;
+  unresolvedCommentCount: number;
+  firstDate?: string;
+  lastDate?: string;
+}
+
 export interface HistoryEntry {
   revision: number;
   label?: string;

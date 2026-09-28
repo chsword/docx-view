@@ -554,3 +554,88 @@ test('handleClipboardCut prevents default for unsupported multi-paragraph ranges
   editor.handleClipboardCut({ preventDefault: () => { prevented = true; } }, {});
   assert.equal(prevented, true);
 });
+
+test('setReviewFilter updates render state without triggering onChange', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  let renderOptions = null;
+  let changes = 0;
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.options = { onChange: () => { changes++; } };
+  editor.render = (options) => { renderOptions = options; };
+  editor.setReviewFilter({ authors: ['Alice'], revisionView: 'final', showComments: false });
+  assert.deepEqual(renderOptions, { skipFlush: true });
+  assert.equal(changes, 0);
+  assert.deepEqual(editor.reviewFilter, {
+    authors: ['Alice'],
+    showRevisions: true,
+    showComments: false,
+    revisionView: 'final',
+  });
+});
+
+test('setReviewFilter is a no-op when filter is unchanged', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  let renders = 0;
+  editor.destroyed = false;
+  editor.reviewFilter = { authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => { renders++; };
+  editor.setReviewFilter({ authors: ['Alice'], showRevisions: true, showComments: true, revisionView: 'markup' });
+  assert.equal(renders, 0);
+});
+
+test('setReviewFilter validates authors as bounded text list', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => {};
+  assert.throws(() => editor.setReviewFilter({ authors: 'Alice' }), /authors must be an array/);
+  assert.throws(() => editor.setReviewFilter({ authors: ['A\u0000'] }), /reviewFilter\.authors\[\]/);
+  assert.throws(() => editor.setReviewFilter({ authors: Array.from({ length: 1001 }, (_, index) => String(index)) }), /at most 1000 items/);
+});
+
+test('setReviewFilter validates show flags and revisionView enum', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => {};
+  assert.throws(() => editor.setReviewFilter({ showComments: 'yes' }), /showComments must be boolean/);
+  assert.throws(() => editor.setReviewFilter({ showRevisions: 1 }), /showRevisions must be boolean/);
+  assert.throws(() => editor.setReviewFilter({ revisionView: 'other' }), /revisionView must be one of/);
+});
+
+test('toggling reviewFilter fields does not mutate document revision, text, or XML bytes', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'Alpha');
+  const beforeRevision = doc.revision;
+  const beforeText = doc.getParagraphs().map((paragraph) => paragraph.text);
+  const beforeXml = doc.getPartXml(doc.mainDocumentPath);
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => {};
+  editor.setReviewFilter({ showComments: false });
+  editor.setReviewFilter({ showComments: true, revisionView: 'original' });
+  editor.setReviewFilter({ showRevisions: false, revisionView: 'final' });
+  assert.equal(doc.revision, beforeRevision);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), beforeText);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), beforeXml);
+});
+
+test('reviewFilter author narrowing does not change unfiltered getRevisions output', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'Alice text');
+  doc.setRevisionAuthor('Bob');
+  doc.setParagraphText(0, 'Bob text');
+  const before = doc.getRevisions().map((item) => item.id);
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.render = () => {};
+  editor.setReviewFilter({ authors: ['Alice'] });
+  assert.deepEqual(doc.getRevisions().map((item) => item.id), before);
+});
