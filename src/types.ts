@@ -72,9 +72,18 @@ export interface StyleInfo {
   link?: string;
   aliases?: string[];
   isDefault?: boolean;
+  uiPriority?: number;
   quickFormat?: boolean;
   paragraph?: ParagraphFormat;
   run?: RunFormat;
+}
+
+export interface OutlineNode {
+  paragraph: number;
+  level: number;
+  text: string;
+  styleId?: string;
+  children: OutlineNode[];
 }
 
 export interface NumberingLevelDefinition {
@@ -453,13 +462,17 @@ export type AgentOperation =
   | { type: 'insertParagraph'; text: string; before?: number }
   | { type: 'deleteParagraph'; index: number }
   | { type: 'formatParagraph'; index: number; format: ParagraphFormat }
+  | { type: 'applyParagraphStyle'; index: number; styleId: string; options?: { clearDirectFormat?: boolean } }
   | { type: 'setParagraphNumbering'; index: number; numId: number; level?: number }
   | { type: 'clearParagraphNumbering'; index: number }
   | { type: 'setParagraphLevel'; index: number; delta: number }
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
   | { type: 'formatRange'; range: TextRange; format: RunFormat }
+  | { type: 'applyCharacterStyle'; range: TextRange; styleId: string; options?: { clearDirectFormat?: boolean } }
   | { type: 'clearRangeFormat'; range: TextRange; fields?: (keyof RunFormat)[] }
   | { type: 'formatDocumentRange'; range: DocumentRange; format: RunFormat }
+  | { type: 'setOutlineLevel'; index: number; level: number | null }
+  | { type: 'moveOutlineSection'; from: number; to: number }
   | { type: 'setParagraphTabs'; index: number; tabs: TabStop[] }
   | {
     type: 'setParagraphBorders';

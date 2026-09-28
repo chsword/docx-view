@@ -54,6 +54,14 @@ function validateDocumentRange(value: unknown): asserts value is {
   }
 }
 
+function validateStyleApplyOptions(value: unknown): asserts value is { clearDirectFormat?: boolean } {
+  object(value);
+  keys(value, ['clearDirectFormat']);
+  if ('clearDirectFormat' in value && value.clearDirectFormat !== undefined && typeof value.clearDirectFormat !== 'boolean') {
+    throw new Error('options.clearDirectFormat must be boolean.');
+  }
+}
+
 export function assertIndex(value: unknown): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new Error('Index/revision must be a non-negative safe integer.');
@@ -372,6 +380,12 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'index']); assertIndex(op.index); break;
       case 'formatParagraph':
         keys(op, ['type', 'index', 'format']); assertIndex(op.index); validateParagraphFormat(op.format); break;
+      case 'applyParagraphStyle':
+        keys(op, ['type', 'index', 'styleId', 'options']);
+        assertIndex(op.index);
+        assertText(op.styleId, 'styleId');
+        if ('options' in op && op.options !== undefined) validateStyleApplyOptions(op.options);
+        break;
       case 'setParagraphNumbering':
         keys(op, ['type', 'index', 'numId', 'level']);
         assertIndex(op.index); assertIndex(op.numId);
@@ -391,6 +405,12 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'formatRange':
         keys(op, ['type', 'range', 'format']);
         validateTextRange(op.range); validateRunFormat(op.format); break;
+      case 'applyCharacterStyle':
+        keys(op, ['type', 'range', 'styleId', 'options']);
+        validateTextRange(op.range);
+        assertText(op.styleId, 'styleId');
+        if ('options' in op && op.options !== undefined) validateStyleApplyOptions(op.options);
+        break;
       case 'clearRangeFormat':
         keys(op, ['type', 'range', 'fields']);
         validateTextRange(op.range);
@@ -406,6 +426,19 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'formatDocumentRange':
         keys(op, ['type', 'range', 'format']);
         validateDocumentRange(op.range); validateRunFormat(op.format); break;
+      case 'setOutlineLevel':
+        keys(op, ['type', 'index', 'level']);
+        assertIndex(op.index);
+        if (op.level !== null) {
+          assertIndex(op.level);
+          if (op.level > 8) throw new Error('level must be between 0 and 8 or null.');
+        }
+        break;
+      case 'moveOutlineSection':
+        keys(op, ['type', 'from', 'to']);
+        assertIndex(op.from);
+        assertIndex(op.to);
+        break;
       case 'setParagraphTabs':
         keys(op, ['type', 'index', 'tabs']); assertIndex(op.index); validateTabs(op.tabs); break;
       case 'setParagraphBorders':
@@ -628,6 +661,9 @@ const documentRange = shape({
   start: shape({ paragraph: index, offset: index }),
   end: shape({ paragraph: index, offset: index }),
 }, ['start', 'end']);
+const styleApplyOptions = shape({
+  clearDirectFormat: { type: 'boolean' },
+}, []);
 const revisionFilter = shape({
   authors: { type: 'array', maxItems: 1000, items: text },
 }, []);
@@ -750,6 +786,7 @@ export const AGENT_OPERATION_SCHEMA = {
             }, [])),
             shading: nullable(docShading),
           }, []) }),
+          operation('applyParagraphStyle', { index, styleId: text, options: styleApplyOptions }, ['index', 'styleId']),
           operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
           operation('clearParagraphNumbering', { index }),
           operation('setParagraphLevel', { index, delta: integer }),
@@ -798,6 +835,7 @@ export const AGENT_OPERATION_SCHEMA = {
               shading: nullable(docShading),
             }, []),
           }),
+          operation('applyCharacterStyle', { range: textRange, styleId: text, options: styleApplyOptions }, ['range', 'styleId']),
           operation('clearRangeFormat', {
             range: textRange,
             fields: { type: 'array', items: runFormatField },
@@ -826,6 +864,8 @@ export const AGENT_OPERATION_SCHEMA = {
               shading: nullable(docShading),
             }, []),
           }),
+          operation('setOutlineLevel', { index, level: nullable({ ...outlineLevel, maximum: 8 }) }),
+          operation('moveOutlineSection', { from: index, to: index }),
           operation('setParagraphTabs', { index, tabs: docTabs }),
           operation('setParagraphBorders', { index, borders: shape({
             top: docBorderSide,

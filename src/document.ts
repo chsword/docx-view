@@ -4,7 +4,7 @@ import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
+  NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
@@ -39,6 +39,7 @@ import {
   parseStyles,
   readParagraphProperties,
   readRunProperties,
+  resolveStyleChainOrDefault,
   type StylesContext,
 } from './styles.js';
 import { cellSpan, parseCellFormat, parseTableFormat, readTable, rowCells, tableGrid } from './table.js';
@@ -1777,6 +1778,15 @@ type CompareStep =
   | { kind: 'delete'; baseIndex: number }
   | { kind: 'insert'; revisedIndex: number };
 
+const PARAGRAPH_DIRECT_FIELDS = [
+  'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
+  'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
+  'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
+  'outlineLevel', 'tabs', 'borders', 'shading',
+] as const satisfies readonly (keyof ParagraphFormat)[];
+
+const OUTLINE_MAX_LEVEL = 8;
+
 function cloneRunFormatValue<T>(value: T): T {
   if (!value || typeof value !== 'object') return value;
   return JSON.parse(JSON.stringify(value)) as T;
@@ -1786,6 +1796,23 @@ function runFormatValueEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function headingOutlineLevel(name: string | undefined): number | undefined {
+  if (!name) return undefined;
+  const match = /^heading\s+([1-9])$/i.exec(name.trim());
+  if (!match) return undefined;
+  return Number(match[1]) - 1;
+}
+
+function cloneOutlineNode(node: OutlineNode): OutlineNode {
+  return {
+    paragraph: node.paragraph,
+    level: node.level,
+    text: node.text,
+    ...(node.styleId !== undefined ? { styleId: node.styleId } : {}),
+    children: node.children.map(cloneOutlineNode),
+  };
 }
 
 function directParagraphFormatOf(paragraph: Element): ParagraphFormat {
@@ -2223,6 +2250,7 @@ export class DocxDocument {
   private dirtyPartSizes = new Map<string, number>();
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
+  private outlineCache?: { revision: number; outline: OutlineNode[] };
   private noteStateCache?: { revision: number; state: NoteState };
   private commentStateCache?: { revision: number; comments: CommentInfo[] };
   private contentPartPathsCache?: { revision: number; paths: string[] };
@@ -2323,6 +2351,7 @@ export class DocxDocument {
     result.commentBindingsCache = undefined;
     result.revisionInfoCache = undefined;
     result.reviewerInfoCache = undefined;
+    result.outlineCache = undefined;
     result.imageDataUrls.clear();
     result.suppressHistory = false;
     return result;
@@ -2351,6 +2380,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.outlineCache = undefined;
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
@@ -2372,6 +2402,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.outlineCache = undefined;
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
@@ -2618,6 +2649,7 @@ export class DocxDocument {
       this.currentRevision++;
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
+      this.outlineCache = undefined;
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
@@ -2674,6 +2706,7 @@ export class DocxDocument {
     revision: number;
     numberingContextCache: NumberingContext | undefined;
     stylesCache: { revision: number; context: StylesContext } | undefined;
+    outlineCache: { revision: number; outline: OutlineNode[] } | undefined;
     noteStateCache: { revision: number; state: NoteState } | undefined;
     commentStateCache: { revision: number; comments: CommentInfo[] } | undefined;
     revisionInfoCache: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] } | undefined;
@@ -2689,6 +2722,7 @@ export class DocxDocument {
       revision: this.currentRevision,
       numberingContextCache: this.numberingContextCache,
       stylesCache: this.stylesCache,
+      outlineCache: this.outlineCache,
       noteStateCache: this.noteStateCache,
       commentStateCache: this.commentStateCache,
       revisionInfoCache: this.revisionInfoCache,
@@ -2706,6 +2740,7 @@ export class DocxDocument {
     this.currentRevision = state.revision;
     this.numberingContextCache = state.numberingContextCache;
     this.stylesCache = state.stylesCache;
+    this.outlineCache = state.outlineCache;
     this.noteStateCache = state.noteStateCache;
     this.commentStateCache = state.commentStateCache;
     this.revisionInfoCache = state.revisionInfoCache;
@@ -2910,6 +2945,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.outlineCache = undefined;
     this.noteStateCache = undefined;
     this.commentStateCache = undefined;
     this.revisionInfoCache = undefined;
@@ -3634,6 +3670,138 @@ export class DocxDocument {
     return style ? cloneStyleInfo(style) : undefined;
   }
 
+  getStyleGallery(): StyleInfo[] {
+    return this.getStylesContext().styles
+      .filter((style) => style.quickFormat)
+      .slice()
+      .sort((a, b) =>
+        (a.uiPriority ?? Number.MAX_SAFE_INTEGER) - (b.uiPriority ?? Number.MAX_SAFE_INTEGER) ||
+        a.name.localeCompare(b.name) ||
+        a.id.localeCompare(b.id))
+      .map(cloneStyleInfo);
+  }
+
+  private paragraphStyleChain(styleId: string | undefined): StyleInfo[] {
+    return resolveStyleChainOrDefault(this.getStylesContext(), styleId, 'paragraph').map(cloneStyleInfo);
+  }
+
+  private styleFormats(styleId: string, type: StyleInfo['type']): { paragraph: ParagraphFormat; run: RunFormat; chain: StyleInfo[] } {
+    const chain = resolveStyleChainOrDefault(this.getStylesContext(), styleId, type).map(cloneStyleInfo);
+    const paragraph: ParagraphFormat = {};
+    const run: RunFormat = {};
+    for (const style of chain) {
+      if (style.paragraph) {
+        for (const [key, value] of Object.entries(style.paragraph) as Array<[keyof ParagraphFormat, ParagraphFormat[keyof ParagraphFormat]]>) {
+          if (value !== undefined && value !== null) (paragraph as Record<string, unknown>)[key] = cloneRunFormatValue(value);
+        }
+      }
+      if (style.run) {
+        for (const [key, value] of Object.entries(style.run) as Array<[keyof RunFormat, RunFormat[keyof RunFormat]]>) {
+          if (value !== undefined && value !== null) (run as Record<string, unknown>)[key] = cloneRunFormatValue(value);
+        }
+      }
+    }
+    return { paragraph, run, chain };
+  }
+
+  private paragraphOutlineLevel(paragraph: ParagraphInfo): number | undefined {
+    if (paragraph.outlineLevel !== undefined && paragraph.outlineLevel !== null) {
+      return paragraph.outlineLevel >= 0 && paragraph.outlineLevel <= OUTLINE_MAX_LEVEL ? paragraph.outlineLevel : undefined;
+    }
+    for (const style of this.paragraphStyleChain(paragraph.style ?? undefined)) {
+      const level = headingOutlineLevel(style.name);
+      if (level !== undefined) return level;
+    }
+    return undefined;
+  }
+
+  private buildOutline(): OutlineNode[] {
+    const outline: OutlineNode[] = [];
+    const stack: OutlineNode[] = [];
+    for (const paragraph of this.getParagraphs()) {
+      const level = this.paragraphOutlineLevel(paragraph);
+      if (level === undefined) continue;
+      const node: OutlineNode = {
+        paragraph: paragraph.index,
+        level,
+        text: paragraph.text,
+        ...(paragraph.style ? { styleId: paragraph.style } : {}),
+        children: [],
+      };
+      while (stack.length && stack[stack.length - 1]!.level >= level) stack.pop();
+      if (stack.length) stack[stack.length - 1]!.children.push(node);
+      else outline.push(node);
+      stack.push(node);
+    }
+    return outline;
+  }
+
+  getOutline(): OutlineNode[] {
+    if (this.outlineCache?.revision === this.revision) return this.outlineCache.outline.map(cloneOutlineNode);
+    const outline = this.buildOutline();
+    this.outlineCache = { revision: this.revision, outline };
+    return outline.map(cloneOutlineNode);
+  }
+
+  private flattenOutline(nodes: OutlineNode[]): OutlineNode[] {
+    const flat: OutlineNode[] = [];
+    const walk = (items: OutlineNode[]): void => {
+      for (const item of items) {
+        flat.push(item);
+        walk(item.children);
+      }
+    };
+    walk(nodes);
+    return flat;
+  }
+
+  private bodyBlockEntries(document = this.getCachedPartDocument(this.mainPath)): Array<{ block: Element; parent: Element; paragraphs: number[] }> {
+    const body = bodyOf(document);
+    const paragraphIndex = new Map<Element, number>();
+    let nextIndex = 0;
+    const collectParagraphs = (parent: Element): void => {
+      for (const child of children(parent)) {
+        if (isTransparentWrapper(child)) {
+          collectParagraphs(child);
+          continue;
+        }
+        if (child.localName === 'p') {
+          paragraphIndex.set(child, nextIndex++);
+          continue;
+        }
+        if (child.localName === 'tbl') {
+          for (const row of childrenThroughTransparent(child, 'tr')) {
+            for (const cell of childrenThroughTransparent(row, 'tc')) collectParagraphs(cell);
+          }
+        }
+      }
+    };
+    const blockParagraphs = (block: Element): Element[] => {
+      if (block.localName === 'p') return [block];
+      if (block.localName !== 'tbl') return [];
+      const result: Element[] = [];
+      for (const row of childrenThroughTransparent(block, 'tr')) {
+        for (const cell of childrenThroughTransparent(row, 'tc')) {
+          for (const entry of blockElements(cell)) {
+            if (entry.localName === 'p') result.push(entry);
+            else result.push(...blockParagraphs(entry));
+          }
+        }
+      }
+      return result;
+    };
+    collectParagraphs(body);
+    return blockPositions(body)
+      .map(({ block, parent }) => ({
+        block,
+        parent,
+        paragraphs: blockParagraphs(block)
+          .map((paragraph) => paragraphIndex.get(paragraph))
+          .filter((index): index is number => index !== undefined),
+      }))
+      .filter((entry) => entry.paragraphs.length);
+  }
+
   getEffectiveParagraphFormat(index: number): ParagraphFormat {
     const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), index);
     return computeEffectiveParagraphFormat(this.getStylesContext(), paragraph);
@@ -3646,6 +3814,274 @@ export class DocxDocument {
     const runElement = ownRuns(paragraphElement)[run];
     if (!runElement) throw new Error(`Run ${run} does not exist.`);
     return computeEffectiveRunFormat(this.getStylesContext(), paragraphElement, runElement);
+  }
+
+  applyParagraphStyle(index: number, styleId: string, options: { clearDirectFormat?: boolean } = {}): void {
+    assertIndex(index);
+    assertText(styleId, 'styleId');
+    if (typeof options !== 'object' || !options || Array.isArray(options)) throw new Error('options must be an object.');
+    if ('clearDirectFormat' in options && options.clearDirectFormat !== undefined && typeof options.clearDirectFormat !== 'boolean') {
+      throw new Error('options.clearDirectFormat must be boolean.');
+    }
+    const style = this.getStyle(styleId);
+    if (!style || style.type !== 'paragraph') throw new Error(`Paragraph style not found: ${styleId}.`);
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    const clearDirectFormat = options.clearDirectFormat === true;
+    if (!clearDirectFormat) {
+      if (paragraph.style === styleId) return;
+      this.formatParagraph(index, { style: styleId }, { validateStyle: true });
+      return;
+    }
+    const preview = this.getPartDocument(this.mainPath);
+    const previewParagraph = paragraphAt(preview, index);
+    applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { style: styleId });
+    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+      if (field === 'style' || paragraph[field] === undefined) continue;
+      applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { [field]: null } as ParagraphFormat);
+    }
+    const previewRuns = ownRuns(previewParagraph);
+    for (const [runIndex, run] of previewRuns.entries()) {
+      for (const field of RUN_FORMAT_FIELDS) {
+        if (field === 'style' || paragraph.runs[runIndex]?.[field] === undefined) continue;
+        applyRunFormatTo(properties(run, 'rPr'), { [field]: null } as RunFormat);
+      }
+    }
+    const targetParagraph = computeEffectiveParagraphFormat(this.getStylesContext(), previewParagraph);
+    const targetRuns = previewRuns.map((run) => computeEffectiveRunFormat(this.getStylesContext(), previewParagraph, run));
+    const paragraphPatch: ParagraphFormat = { style: styleId };
+    let paragraphChanged = paragraph.style !== styleId;
+    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+      if (field === 'style') continue;
+      const direct = paragraph[field];
+      const target = targetParagraph[field];
+      if (direct !== undefined && target !== undefined && !runFormatValueEqual(direct, target)) {
+        (paragraphPatch as Record<string, unknown>)[field] = null;
+        paragraphChanged = true;
+      }
+    }
+    const runPatches = paragraph.runs.map((run) => {
+      const patch: RunFormat = {};
+      let changed = false;
+      for (const field of RUN_FORMAT_FIELDS) {
+        if (field === 'style') continue;
+        const direct = run[field];
+        const target = targetRuns[run.index]?.[field];
+        if (direct !== undefined && target !== undefined && !runFormatValueEqual(direct, target)) {
+          (patch as Record<string, unknown>)[field] = null;
+          changed = true;
+        }
+      }
+      return changed ? { run: run.index, patch } : undefined;
+    }).filter((entry): entry is { run: number; patch: RunFormat } => Boolean(entry));
+    if (!paragraphChanged && !runPatches.length) return;
+    this.withDraft((draft) => {
+      const document = draft.getCachedPartDocument(draft.mainPath);
+      const paragraphElement = paragraphAt(document, index);
+      if (paragraphChanged) {
+        if (draft.trackChangesEnabled()) draft.trackParagraphFormatChange(paragraphElement);
+        applyParagraphFormatTo(properties(paragraphElement, 'pPr'), paragraphPatch);
+      }
+      if (runPatches.length) {
+        const runs = ownRuns(paragraphElement);
+        for (const { run, patch } of runPatches) {
+          const element = runs[run];
+          if (!element) continue;
+          if (draft.trackChangesEnabled()) draft.trackRunFormatChange(element);
+          applyRunFormatTo(properties(element, 'rPr'), patch);
+        }
+      }
+      draft.dirtyPartXml.add(draft.mainPath);
+      draft.dirtyPartSizes.delete(draft.mainPath);
+    });
+  }
+
+  applyCharacterStyle(range: TextRange, styleId: string, options: { clearDirectFormat?: boolean } = {}): void {
+    assertText(styleId, 'styleId');
+    if (typeof options !== 'object' || !options || Array.isArray(options)) throw new Error('options must be an object.');
+    if ('clearDirectFormat' in options && options.clearDirectFormat !== undefined && typeof options.clearDirectFormat !== 'boolean') {
+      throw new Error('options.clearDirectFormat must be boolean.');
+    }
+    const style = this.getStyle(styleId);
+    if (!style || style.type !== 'character') throw new Error(`Character style not found: ${styleId}.`);
+    const clearDirectFormat = options.clearDirectFormat === true;
+    const preview = this.getPartDocument(this.mainPath);
+    const normalized = this.normalizeRangeOn(preview, range);
+    if (normalized.start === normalized.end) return;
+    const previewParagraph = normalized.paragraph;
+    this.splitRunAtOffset(previewParagraph, normalized.end);
+    this.splitRunAtOffset(previewParagraph, normalized.start);
+    const previewRuns = this.runsInRange(previewParagraph, normalized.start, normalized.end);
+    const directRuns = previewRuns.map((run) => readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
+    for (const run of previewRuns) {
+      applyRunFormatTo(properties(run, 'rPr'), { style: styleId });
+      for (const field of RUN_FORMAT_FIELDS) {
+        if (field === 'style') continue;
+        applyRunFormatTo(properties(run, 'rPr'), { [field]: null } as RunFormat);
+      }
+    }
+    const targetRuns = previewRuns.map((run) => computeEffectiveRunFormat(this.getStylesContext(), previewParagraph, run));
+    const patches = directRuns.map((direct, index) => {
+      const patch: RunFormat = {};
+      let changed = direct.style !== styleId;
+      if (direct.style !== styleId) patch.style = styleId;
+      if (clearDirectFormat) {
+        for (const field of RUN_FORMAT_FIELDS) {
+          if (field === 'style') continue;
+          const current = direct[field];
+          const target = targetRuns[index]?.[field];
+          if (current !== undefined && target !== undefined && !runFormatValueEqual(current, target)) {
+            (patch as Record<string, unknown>)[field] = null;
+            changed = true;
+          }
+        }
+      }
+      return changed ? { run: index, patch } : undefined;
+    }).filter((entry): entry is { run: number; patch: RunFormat } => Boolean(entry));
+    if (!patches.length) return;
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const current = this.normalizeRangeOn(document, range);
+      this.splitRunAtOffset(current.paragraph, current.end);
+      this.splitRunAtOffset(current.paragraph, current.start);
+      const runs = this.runsInRange(current.paragraph, current.start, current.end);
+      for (const { run, patch } of patches) {
+        const element = runs[run];
+        if (!element) continue;
+        if (this.trackChangesEnabled()) this.trackRunFormatChange(element);
+        applyRunFormatTo(properties(element, 'rPr'), patch);
+      }
+    });
+  }
+
+  createStyleFromSelection(range: DocumentRange, style: { id: string; name: string; basedOn?: string }): StyleInfo {
+    assertText(style.id, 'style.id');
+    assertText(style.name, 'style.name');
+    if (!style.id.trim()) throw new Error('style.id must not be empty or whitespace.');
+    if (!style.name.trim()) throw new Error('style.name must not be empty or whitespace.');
+    if (style.basedOn !== undefined) assertText(style.basedOn, 'style.basedOn');
+    if (this.getStyle(style.id)) throw new Error(`Style already exists: ${style.id}.`);
+    if (style.basedOn) {
+      const base = this.getStyle(style.basedOn);
+      if (!base || base.type !== 'paragraph') throw new Error(`Base paragraph style not found: ${style.basedOn}.`);
+    }
+    const preview = this.getPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preview, range);
+    const paragraphs = this.getParagraphs().slice(normalized.start.paragraph, normalized.end.paragraph + 1);
+    if (!paragraphs.length) throw new Error('Range does not contain any paragraphs.');
+    const paragraphFormats = paragraphs.map((paragraph) => this.directParagraphFormat(paragraph));
+    const paragraphFormat: ParagraphFormat = {};
+    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+      if (field === 'style') continue;
+      const first = paragraphFormats[0]?.[field];
+      if (first === undefined) continue;
+      if (paragraphFormats.every((format) => runFormatValueEqual(format[field], first))) {
+        (paragraphFormat as Record<string, unknown>)[field] = cloneRunFormatValue(first);
+      }
+    }
+    const runFormats: RunFormat[] = [];
+    const targetContext = this.getStylesContext();
+    for (let paragraphIndex = normalized.start.paragraph; paragraphIndex <= normalized.end.paragraph; paragraphIndex++) {
+      const paragraph = paragraphAt(preview, paragraphIndex);
+      const length = textOf(paragraph).length;
+      const start = paragraphIndex === normalized.start.paragraph ? normalized.start.offset : 0;
+      const end = paragraphIndex === normalized.end.paragraph ? normalized.end.offset : length;
+      if (start === end) continue;
+      this.splitRunAtOffset(paragraph, end);
+      this.splitRunAtOffset(paragraph, start);
+      for (const run of this.runsInRange(paragraph, start, end)) {
+        const effective = computeEffectiveRunFormat(targetContext, paragraph, run);
+        if (Object.keys(effective).length) runFormats.push(effective);
+      }
+    }
+    const runFormat = this.mergeRangeFormats(runFormats);
+    const baseRunFormat = style.basedOn ? this.styleFormats(style.basedOn, 'paragraph').run : {};
+    for (const field of RUN_FORMAT_FIELDS) {
+      if (field === 'style') continue;
+      if (runFormat[field] !== undefined && runFormatValueEqual(runFormat[field], baseRunFormat[field])) {
+        delete (runFormat as Record<string, unknown>)[field];
+      }
+    }
+    const nextStyle: StyleInfo = {
+      id: style.id,
+      name: style.name,
+      type: 'paragraph',
+      ...(style.basedOn ? { basedOn: style.basedOn } : {}),
+      ...(Object.keys(paragraphFormat).length ? { paragraph: paragraphFormat } : {}),
+      ...(Object.keys(runFormat).length ? { run: runFormat } : {}),
+    };
+    this.defineStyle(nextStyle);
+    return cloneStyleInfo(nextStyle);
+  }
+
+  setOutlineLevel(index: number, level: number | null): void {
+    assertIndex(index);
+    if (level !== null && (!Number.isSafeInteger(level) || level < 0 || level > OUTLINE_MAX_LEVEL)) {
+      throw new Error(`level must be null or an integer from 0 to ${OUTLINE_MAX_LEVEL}.`);
+    }
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    if ((paragraph.outlineLevel ?? null) === level) return;
+    this.formatParagraph(index, { outlineLevel: level });
+  }
+
+  moveOutlineSection(from: number, to: number): void {
+    assertIndex(from);
+    assertIndex(to);
+    const paragraphs = this.getParagraphs();
+    if (!paragraphs[from]) throw new Error(`Paragraph ${from} does not exist.`);
+    if (to > paragraphs.length) throw new Error(`Destination ${to} is out of bounds for ${paragraphs.length} paragraphs.`);
+    const tree = this.getOutline();
+    const outline = this.flattenOutline(tree);
+    const node = outline.find((entry) => entry.paragraph === from);
+    if (!node) throw new Error(`Paragraph ${from} is not an outline heading.`);
+    const subtree = this.flattenOutline([cloneOutlineNode(node)]);
+    const subtreeEnd = subtree.at(-1)?.paragraph ?? from;
+    const nextPeer = outline.find((entry) => entry.paragraph > subtreeEnd && entry.level <= node.level);
+    const endParagraph = nextPeer ? nextPeer.paragraph - 1 : paragraphs.length - 1;
+    const comments = this.getComments().filter((comment) =>
+      comment.anchor?.sourcePartPath === this.mainDocumentPath &&
+      !('runs' in comment.anchor) &&
+      comment.anchor.startParagraph <= endParagraph &&
+      comment.anchor.endParagraph >= from &&
+      (comment.anchor.startParagraph < from || comment.anchor.endParagraph > endParagraph));
+    if (comments.length) throw new Error('Cannot move a section that would split a comment range.');
+    const entries = this.bodyBlockEntries(this.getPartDocument(this.mainPath));
+    const startBlock = entries.findIndex((entry) => entry.paragraphs.includes(from));
+    if (startBlock === -1) throw new Error('Outline section must start on a movable top-level body block.');
+    const moved: number[] = [];
+    for (let index = startBlock; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (!entry.paragraphs.some((paragraph) => paragraph >= from && paragraph <= endParagraph)) break;
+      if (entry.paragraphs[0]! < from || entry.paragraphs[entry.paragraphs.length - 1]! > endParagraph) {
+        throw new Error('Outline section must align to whole top-level body blocks.');
+      }
+      moved.push(index);
+    }
+    if (!moved.length) throw new Error('Outline section must start on a movable top-level body block.');
+    const endBlock = moved[moved.length - 1]!;
+    const targetBlock = to === paragraphs.length ? entries.length : entries.findIndex((entry) => entry.paragraphs.includes(to));
+    if (targetBlock === -1) throw new Error(`Paragraph ${to} does not exist.`);
+    if (targetBlock >= startBlock && targetBlock <= endBlock + 1) return;
+    if ([...entries.slice(startBlock, endBlock + 1), ...(targetBlock < entries.length ? [entries[targetBlock]!] : [])]
+      .some((entry) => entry.parent.localName !== 'body')) {
+      throw new Error('moveOutlineSection only supports top-level body sections.');
+    }
+    this.withDraft((draft) => {
+      const document = draft.getCachedPartDocument(draft.mainPath);
+      const body = bodyOf(document);
+      const currentEntries = draft.bodyBlockEntries(document);
+      const blockCount = endBlock - startBlock + 1;
+      const fragment = document.createDocumentFragment();
+      for (const entry of currentEntries.slice(startBlock, endBlock + 1)) fragment.appendChild(entry.block);
+      const remaining = draft.bodyBlockEntries(document).filter((entry) => entry.parent === body);
+      const adjustedTarget = targetBlock > endBlock ? targetBlock - blockCount : targetBlock;
+      const anchor = adjustedTarget < remaining.length
+        ? remaining[adjustedTarget]!.block
+        : children(body, 'sectPr')[0] ?? null;
+      body.insertBefore(fragment, anchor);
+      draft.dirtyPartXml.add(draft.mainPath);
+      draft.dirtyPartSizes.delete(draft.mainPath);
+    });
   }
 
   getHyperlinks(): HyperlinkInfo[] {
@@ -4596,12 +5032,7 @@ export class DocxDocument {
 
   private directParagraphFormat(paragraph: ParagraphInfo): ParagraphFormat {
     const format: ParagraphFormat = {};
-    for (const key of [
-      'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
-      'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
-      'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
-      'outlineLevel', 'tabs', 'borders', 'shading',
-    ] as const) {
+    for (const key of PARAGRAPH_DIRECT_FIELDS) {
       const value = paragraph[key];
       if (value !== undefined) (format as Record<string, unknown>)[key] = cloneRunFormatValue(value);
     }
@@ -6347,6 +6778,9 @@ export class DocxDocument {
     assertText(styleName, 'style.name');
     const type = style.type;
     if (!['paragraph', 'character', 'table', 'numbering'].includes(type)) throw new Error(`Unsupported style type: ${String(type)}`);
+    if (style.uiPriority !== undefined && (!Number.isSafeInteger(style.uiPriority) || style.uiPriority < 0)) {
+      throw new Error('style.uiPriority must be a non-negative safe integer.');
+    }
     if (style.paragraph !== undefined) {
       validateParagraphFormat(style.paragraph);
       rejectNullFormatValues(style.paragraph, 'style.paragraph');
@@ -6422,6 +6856,7 @@ export class DocxDocument {
       if (style.basedOn) setWordValue(property(styleElement, 'basedOn'), style.basedOn);
       if (style.next) setWordValue(property(styleElement, 'next'), style.next);
       if (style.link) setWordValue(property(styleElement, 'link'), style.link);
+      if (style.uiPriority !== undefined) setWordValue(property(styleElement, 'uiPriority'), String(style.uiPriority));
       if (style.quickFormat) property(styleElement, 'qFormat');
       if (style.paragraph) applyParagraphFormatTo(property(styleElement, 'pPr'), style.paragraph);
       if (style.run) applyRunFormatTo(property(styleElement, 'rPr'), style.run);
@@ -6727,6 +7162,7 @@ export class DocxDocument {
       this.currentRevision++;
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
+      this.outlineCache = undefined;
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;
@@ -7467,13 +7903,17 @@ export class DocxDocument {
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
         case 'formatParagraph': draft.formatParagraph(operation.index, operation.format); break;
+        case 'applyParagraphStyle': draft.applyParagraphStyle(operation.index, operation.styleId, operation.options); break;
         case 'setParagraphNumbering': draft.setParagraphNumbering(operation.index, operation.numId, operation.level); break;
         case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
         case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'formatRange': draft.formatRange(operation.range, operation.format); break;
+        case 'applyCharacterStyle': draft.applyCharacterStyle(operation.range, operation.styleId, operation.options); break;
         case 'clearRangeFormat': draft.clearRangeFormat(operation.range, operation.fields); break;
         case 'formatDocumentRange': draft.formatDocumentRange(operation.range, operation.format); break;
+        case 'setOutlineLevel': draft.setOutlineLevel(operation.index, operation.level); break;
+        case 'moveOutlineSection': draft.moveOutlineSection(operation.from, operation.to); break;
         case 'setParagraphTabs': draft.setParagraphTabs(operation.index, operation.tabs); break;
         case 'setParagraphBorders': draft.setParagraphBorders(operation.index, operation.borders); break;
         case 'setParagraphShading': draft.setParagraphShading(operation.index, operation.shading); break;
@@ -7540,6 +7980,7 @@ export class DocxDocument {
       this.redoHistoryBytes = draft.redoHistoryBytes;
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
+      this.outlineCache = undefined;
       this.noteStateCache = undefined;
       this.commentStateCache = undefined;
       this.revisionInfoCache = undefined;

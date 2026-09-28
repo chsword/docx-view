@@ -1,6 +1,6 @@
 import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
-import type { AgentRequest, DocumentRange, DocumentSnapshot, ParagraphFormat, RunFormat } from '../src/index.js';
+import type { AgentRequest, DocumentRange, DocumentSnapshot, OutlineNode, ParagraphFormat, RunFormat, StyleInfo } from '../src/index.js';
 import { findReusableNumberingId } from '../src/numbering.js';
 import './style.css';
 
@@ -8,6 +8,48 @@ const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsA
 const UNATTRIBUTED_REVIEWER = '(unattributed)';
 const EMPTY_REVIEWER = '(empty author)';
 const BLANK_REVIEWER = '(blank author)';
+const CLEAR_RUN_FORMAT: RunFormat = {
+  style: null,
+  bold: null,
+  italic: null,
+  underline: null,
+  underlineStyle: null,
+  underlineColor: null,
+  fontSize: null,
+  fontFamily: null,
+  fontFamilyEastAsia: null,
+  color: null,
+  strike: null,
+  doubleStrike: null,
+  verticalAlign: null,
+  smallCaps: null,
+  allCaps: null,
+  highlight: null,
+  characterSpacing: null,
+  border: null,
+  shading: null,
+};
+const CLEAR_PARAGRAPH_FORMAT: ParagraphFormat = {
+  alignment: null,
+  indentLeft: null,
+  indentRight: null,
+  indentFirstLine: null,
+  indentHanging: null,
+  spacingBefore: null,
+  spacingAfter: null,
+  lineSpacing: null,
+  lineSpacingRule: null,
+  keepNext: null,
+  keepLines: null,
+  pageBreakBefore: null,
+  widowControl: null,
+  suppressLineNumbers: null,
+  suppressAutoHyphens: null,
+  outlineLevel: null,
+  tabs: null,
+  borders: null,
+  shading: null,
+};
 
 function element<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -49,6 +91,7 @@ let selectedReviewerAuthors: string[] | undefined;
 let reviewRevisionView: 'final' | 'original' | 'markup' = 'markup';
 let reviewShowRevisions = true;
 let reviewShowComments = true;
+let outlineDrag: { paragraph: number; end: number } | null = null;
 const status = element('status');
 const host = element('editor');
 const agentInput = element<HTMLTextAreaElement>('agent-input');
@@ -73,6 +116,91 @@ function applyReviewFilter(): void {
     showRevisions: reviewShowRevisions,
     revisionView: reviewRevisionView,
   });
+}
+
+function isMarkupView(): boolean {
+  return reviewRevisionView === 'markup';
+}
+
+function ensureMarkupView(): void {
+  if (!isMarkupView()) throw new Error('请先切回“标记视图”后再编辑样式或大纲。');
+}
+
+function defaultParagraphStyle(): StyleInfo | undefined {
+  return doc.getStyles().find((style) => style.type === 'paragraph' && style.isDefault)
+    ?? doc.getStyles().find((style) => style.type === 'paragraph');
+}
+
+function toolbarParagraphStyles(): StyleInfo[] {
+  const styles = doc.getStyleGallery().filter((style) => style.type === 'paragraph');
+  const defaultStyle = defaultParagraphStyle();
+  if (!defaultStyle || styles.some((style) => style.id === defaultStyle.id)) return styles;
+  return [defaultStyle, ...styles];
+}
+
+function flattenOutline(nodes: OutlineNode[]): OutlineNode[] {
+  const result: OutlineNode[] = [];
+  const walk = (items: OutlineNode[]) => {
+    for (const item of items) {
+      result.push(item);
+      walk(item.children);
+    }
+  };
+  walk(nodes);
+  return result;
+}
+
+function outlineSectionEnd(paragraph: number, flat = flattenOutline(doc.getOutline())): number {
+  const node = flat.find((entry) => entry.paragraph === paragraph);
+  if (!node) return paragraph;
+  const next = flat.find((entry) => entry.paragraph > paragraph && entry.level <= node.level);
+  return next ? next.paragraph - 1 : doc.getParagraphs().at(-1)?.index ?? paragraph;
+}
+
+function moveOutlineWithKeyboard(paragraph: number, direction: -1 | 1): void {
+  ensureMarkupView();
+  const outline = flattenOutline(doc.getOutline());
+  const index = outline.findIndex((entry) => entry.paragraph === paragraph);
+  if (index === -1) return;
+  const current = outline[index]!;
+  const currentEnd = outlineSectionEnd(current.paragraph, outline);
+  if (direction < 0) {
+    const previous = outline[index - 1];
+    if (!previous) return;
+    doc.moveOutlineSection(current.paragraph, previous.paragraph);
+    editor.render();
+    refresh();
+    focusParagraph(previous.paragraph);
+    message('已上移当前标题。');
+    return;
+  }
+  const next = outline[index + 1];
+  if (!next) return;
+  const target = outlineSectionEnd(next.paragraph, outline) + 1;
+  doc.moveOutlineSection(current.paragraph, target);
+  const movedParagraph = target > currentEnd ? target - (currentEnd - current.paragraph + 1) : target;
+  editor.render();
+  refresh();
+  focusParagraph(movedParagraph);
+  message('已下移当前标题。');
+}
+
+function setOutlineLevelWithKeyboard(paragraph: number, delta: -1 | 1): void {
+  ensureMarkupView();
+  const node = flattenOutline(doc.getOutline()).find((entry) => entry.paragraph === paragraph);
+  if (!node) return;
+  doc.setOutlineLevel(paragraph, Math.max(0, Math.min(8, node.level + delta)));
+  editor.render();
+  refresh();
+  focusParagraph(paragraph);
+  message(delta < 0 ? '已提升标题层级。' : '已降低标题层级。');
+}
+
+function focusParagraph(paragraph: number): void {
+  const target = host.querySelector<HTMLElement>(`.docx-paragraph[data-paragraph="${paragraph}"] .docx-paragraph-content`);
+  if (!target) return;
+  target.scrollIntoView({ block: 'nearest' });
+  target.focus();
 }
 
 function createSample(): DocxDocument {
@@ -155,6 +283,7 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element<HTMLSelectElement>('page-orientation').value = orientation;
   element<HTMLSelectElement>('page-size').value = pageSize;
   loadStyleOptions();
+  refreshOutline();
   updateSelection();
   updateImageSelection();
   refreshReviewers();
@@ -164,29 +293,103 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
 function loadStyleOptions(): void {
   const select = element<HTMLSelectElement>('paragraph-style');
   const previous = select.value;
-  select.replaceChildren(...[
-    (() => {
-      const option = document.createElement('option');
-      option.value = '';
-      option.textContent = '样式';
-      return option;
-    })(),
-    ...doc.getStyles()
-      .filter((style) => style.type === 'paragraph' && style.quickFormat)
-      .map((style) => {
-        const option = document.createElement('option');
-        option.value = style.id;
-        option.textContent = `${style.name} (${style.id})`;
-        return option;
-      }),
-  ]);
+  select.replaceChildren(...toolbarParagraphStyles().map((style) => {
+    const option = document.createElement('option');
+    option.value = style.id;
+    option.textContent = style.name;
+    return option;
+  }));
   if (Array.from(select.options).some((option) => option.value === previous)) select.value = previous;
+}
+
+function refreshOutline(): void {
+  const list = element<HTMLUListElement>('outline-list');
+  const outline = flattenOutline(doc.getOutline());
+  if (!outline.length) {
+    const empty = document.createElement('li');
+    empty.className = 'hint';
+    empty.textContent = '当前文档还没有标题层级。';
+    list.replaceChildren(empty);
+    return;
+  }
+  const editable = isMarkupView();
+  list.replaceChildren(...outline.map((node) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'outline-item';
+    if (editor.selectedParagraph === node.paragraph) button.classList.add('active');
+    button.draggable = editable;
+    button.style.paddingLeft = `${10 + node.level * 18}px`;
+    button.dataset.paragraph = String(node.paragraph);
+    button.dataset.level = String(node.level);
+    button.append(
+      Object.assign(document.createElement('span'), { className: 'outline-level', textContent: `H${node.level + 1}` }),
+      Object.assign(document.createElement('span'), { className: 'outline-text', textContent: node.text || '（空标题）' }),
+    );
+    button.addEventListener('click', () => focusParagraph(node.paragraph));
+    button.addEventListener('keydown', (event) => run(() => {
+      if (!editable || !event.altKey) return;
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveOutlineWithKeyboard(node.paragraph, -1);
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveOutlineWithKeyboard(node.paragraph, 1);
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setOutlineLevelWithKeyboard(node.paragraph, -1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setOutlineLevelWithKeyboard(node.paragraph, 1);
+      }
+    }));
+    button.addEventListener('dragstart', (event) => {
+      if (!editable) return;
+      outlineDrag = { paragraph: node.paragraph, end: outlineSectionEnd(node.paragraph, outline) };
+      event.dataTransfer?.setData('text/plain', String(node.paragraph));
+      event.dataTransfer!.effectAllowed = 'move';
+    });
+    button.addEventListener('dragend', () => { outlineDrag = null; button.classList.remove('drag-over'); });
+    button.addEventListener('dragover', (event) => {
+      if (!editable || !outlineDrag) return;
+      event.preventDefault();
+      button.classList.add('drag-over');
+      event.dataTransfer!.dropEffect = 'move';
+    });
+    button.addEventListener('dragleave', () => button.classList.remove('drag-over'));
+    button.addEventListener('drop', (event) => run(() => {
+      button.classList.remove('drag-over');
+      if (!editable || !outlineDrag) return;
+      ensureMarkupView();
+      event.preventDefault();
+      const targetParagraph = node.paragraph;
+      let movedParagraph = outlineDrag.paragraph;
+      if (targetParagraph !== outlineDrag.paragraph) {
+        doc.moveOutlineSection(outlineDrag.paragraph, targetParagraph);
+        movedParagraph = targetParagraph > outlineDrag.end
+          ? targetParagraph - (outlineDrag.end - outlineDrag.paragraph + 1)
+          : targetParagraph;
+      }
+      const rect = button.getBoundingClientRect();
+      const targetLevel = Math.max(0, Math.min(8, Math.floor(Math.max(0, event.clientX - rect.left - 12) / 24)));
+      doc.setOutlineLevel(movedParagraph, targetLevel);
+      outlineDrag = null;
+      editor.render();
+      refresh();
+      focusParagraph(movedParagraph);
+      message('已更新大纲顺序/层级。');
+    }));
+    item.append(button);
+    return item;
+  }));
 }
 
 function updateSelection(): void {
   const index = editor.selectedParagraph;
   const paragraph = doc.getParagraphs().find((item) => item.index === index);
   const hasRange = !!selectedRange;
+  const editable = isMarkupView();
   element('selection-label').textContent = hasRange
     ? `已选择范围：第 ${selectedRange!.start.paragraph + 1} 段 ${selectedRange!.start.offset} 到 第 ${selectedRange!.end.paragraph + 1} 段 ${selectedRange!.end.offset}`
     : paragraph ? `已选择第 ${paragraph.index + 1} 段` : '点击正文选择段落';
@@ -198,6 +401,7 @@ function updateSelection(): void {
   const painter = element<HTMLButtonElement>('format-painter');
   painter.disabled = !paragraph && !hasRange;
   painter.setAttribute('aria-pressed', String(Boolean(formatPainter)));
+  const clear = element<HTMLButtonElement>('clear-format');
   const size = element<HTMLSelectElement>('font-size');
   const color = element<HTMLInputElement>('font-color');
   const style = element<HTMLSelectElement>('paragraph-style');
@@ -206,17 +410,22 @@ function updateSelection(): void {
   const decimal = element<HTMLButtonElement>('list-decimal');
   const indent = element<HTMLButtonElement>('list-indent');
   const outdent = element<HTMLButtonElement>('list-outdent');
-  size.disabled = color.disabled = !paragraph && !hasRange;
-  style.disabled = alignment.disabled = !paragraph;
-  bullet.disabled = decimal.disabled = !paragraph;
-  indent.disabled = !paragraph?.numbering || paragraph.numbering.level >= 8;
-  outdent.disabled = !paragraph?.numbering || paragraph.numbering.level <= 0;
+  size.disabled = color.disabled = !editable || (!paragraph && !hasRange);
+  style.disabled = alignment.disabled = !editable || !paragraph;
+  clear.disabled = !editable || (!paragraph && !hasRange);
+  bullet.disabled = decimal.disabled = !editable || !paragraph;
+  indent.disabled = !editable || !paragraph?.numbering || paragraph.numbering.level >= 8;
+  outdent.disabled = !editable || !paragraph?.numbering || paragraph.numbering.level <= 0;
   bullet.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering?.isBullet)));
   decimal.setAttribute('aria-pressed', String(Boolean(paragraph?.numbering && !paragraph.numbering.isBullet)));
   size.value = selectedRangeFormat?.fontSize ? String(selectedRangeFormat.fontSize) : '';
   const runColor = selectedRangeFormat?.color;
   color.value = runColor && /^[0-9a-f]{6}$/i.test(runColor) ? `#${runColor}` : '#25334a';
-  style.value = paragraph?.style ?? '';
+  const currentStyle = paragraph?.style ? doc.getStyle(paragraph.style) : defaultParagraphStyle();
+  if (currentStyle && !Array.from(style.options).some((option) => option.value === currentStyle.id)) {
+    style.append(Object.assign(document.createElement('option'), { value: currentStyle.id, textContent: currentStyle.name }));
+  }
+  style.value = currentStyle?.id ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
   element('effective-format').textContent = paragraph ? JSON.stringify(paragraph.effective ?? {}, null, 2) : '点击正文选择段落';
 }
@@ -549,6 +758,26 @@ element('format-painter').addEventListener('dblclick', (event) => run(() => {
   event.preventDefault();
   activateFormatPainter(true);
 }));
+element('clear-format').addEventListener('click', () => run(() => {
+  ensureMarkupView();
+  const paragraph = doc.getParagraphs().find((item) => item.index === selectedIndex());
+  if (!paragraph && !selectedRange) throw new Error('请先选择要清除格式的段落或文本。');
+  if (selectedRange) doc.formatDocumentRange(selectedRange, CLEAR_RUN_FORMAT);
+  if (paragraph) {
+    const styleId = paragraph.style ?? defaultParagraphStyle()?.id;
+    if (styleId) doc.applyParagraphStyle(paragraph.index, styleId, { clearDirectFormat: true });
+    else doc.formatParagraph(paragraph.index, CLEAR_PARAGRAPH_FORMAT);
+    if (!selectedRange && paragraph.text.length) {
+      doc.formatDocumentRange({
+        start: { paragraph: paragraph.index, offset: 0 },
+        end: { paragraph: paragraph.index, offset: paragraph.text.length },
+      }, CLEAR_RUN_FORMAT);
+    }
+  }
+  editor.render();
+  refresh();
+  message('已清除直接格式。');
+}));
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   cancelFormatPainter();
@@ -578,10 +807,11 @@ element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event)
   const style = (event.target as HTMLSelectElement).value;
   if (!style) return;
   run(() => {
-    doc.formatParagraph(selectedIndex(), { style }, { validateStyle: true });
+    ensureMarkupView();
+    doc.applyParagraphStyle(selectedIndex(), style);
     editor.render();
     refresh();
-    message(`已应用段落样式 ${style}。`);
+    message(`已应用段落样式 ${doc.getStyle(style)?.name ?? style}。`);
   });
 });
 element('list-bullet').addEventListener('click', () => run(() => applyNumbering('bullet')));
