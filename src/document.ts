@@ -3510,12 +3510,45 @@ export class DocxDocument {
 
   private bodyBlockEntries(document = this.getCachedPartDocument(this.mainPath)): Array<{ block: Element; parent: Element; paragraphs: number[] }> {
     const body = bodyOf(document);
-    const paragraphIndex = new Map(descendants(body, 'p').map((paragraph, index) => [paragraph, index]));
+    const paragraphIndex = new Map<Element, number>();
+    let nextIndex = 0;
+    const collectParagraphs = (parent: Element): void => {
+      for (const child of children(parent)) {
+        if (isTransparentWrapper(child)) {
+          collectParagraphs(child);
+          continue;
+        }
+        if (child.localName === 'p') {
+          paragraphIndex.set(child, nextIndex++);
+          continue;
+        }
+        if (child.localName === 'tbl') {
+          for (const row of childrenThroughTransparent(child, 'tr')) {
+            for (const cell of childrenThroughTransparent(row, 'tc')) collectParagraphs(cell);
+          }
+        }
+      }
+    };
+    const blockParagraphs = (block: Element): Element[] => {
+      if (block.localName === 'p') return [block];
+      if (block.localName !== 'tbl') return [];
+      const result: Element[] = [];
+      for (const row of childrenThroughTransparent(block, 'tr')) {
+        for (const cell of childrenThroughTransparent(row, 'tc')) {
+          for (const entry of blockElements(cell)) {
+            if (entry.localName === 'p') result.push(entry);
+            else result.push(...blockParagraphs(entry));
+          }
+        }
+      }
+      return result;
+    };
+    collectParagraphs(body);
     return blockPositions(body)
       .map(({ block, parent }) => ({
         block,
         parent,
-        paragraphs: (block.localName === 'p' ? [block] : descendants(block, 'p'))
+        paragraphs: blockParagraphs(block)
           .map((paragraph) => paragraphIndex.get(paragraph))
           .filter((index): index is number => index !== undefined),
       }))
@@ -3553,13 +3586,28 @@ export class DocxDocument {
       this.formatParagraph(index, { style: styleId }, { validateStyle: true });
       return;
     }
-    const styleFormats = this.styleFormats(styleId, 'paragraph');
+    const preview = this.getPartDocument(this.mainPath);
+    const previewParagraph = paragraphAt(preview, index);
+    applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { style: styleId });
+    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+      if (field === 'style' || paragraph[field] === undefined) continue;
+      applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { [field]: null } as ParagraphFormat);
+    }
+    const previewRuns = ownRuns(previewParagraph);
+    for (const [runIndex, run] of previewRuns.entries()) {
+      for (const field of RUN_FORMAT_FIELDS) {
+        if (field === 'style' || paragraph.runs[runIndex]?.[field] === undefined) continue;
+        applyRunFormatTo(properties(run, 'rPr'), { [field]: null } as RunFormat);
+      }
+    }
+    const targetParagraph = computeEffectiveParagraphFormat(this.getStylesContext(), previewParagraph);
+    const targetRuns = previewRuns.map((run) => computeEffectiveRunFormat(this.getStylesContext(), previewParagraph, run));
     const paragraphPatch: ParagraphFormat = { style: styleId };
     let paragraphChanged = paragraph.style !== styleId;
     for (const field of PARAGRAPH_DIRECT_FIELDS) {
       if (field === 'style') continue;
       const direct = paragraph[field];
-      const target = styleFormats.paragraph[field];
+      const target = targetParagraph[field];
       if (direct !== undefined && target !== undefined && !runFormatValueEqual(direct, target)) {
         (paragraphPatch as Record<string, unknown>)[field] = null;
         paragraphChanged = true;
@@ -3571,7 +3619,7 @@ export class DocxDocument {
       for (const field of RUN_FORMAT_FIELDS) {
         if (field === 'style') continue;
         const direct = run[field];
-        const target = styleFormats.run[field];
+        const target = targetRuns[run.index]?.[field];
         if (direct !== undefined && target !== undefined && !runFormatValueEqual(direct, target)) {
           (patch as Record<string, unknown>)[field] = null;
           changed = true;
@@ -3615,9 +3663,18 @@ export class DocxDocument {
     if (normalized.start === normalized.end) return;
     this.splitRunAtOffset(normalized.paragraph, normalized.end);
     this.splitRunAtOffset(normalized.paragraph, normalized.start);
-    const styleFormats = this.styleFormats(styleId, 'character');
-    const patches = this.runsInRange(normalized.paragraph, normalized.start, normalized.end).map((run, index) => {
-      const direct = readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme);
+    const previewParagraph = normalized.paragraph;
+    const previewRuns = this.runsInRange(previewParagraph, normalized.start, normalized.end);
+    const directRuns = previewRuns.map((run) => readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
+    for (const run of previewRuns) {
+      applyRunFormatTo(properties(run, 'rPr'), { style: styleId });
+      for (const field of RUN_FORMAT_FIELDS) {
+        if (field === 'style') continue;
+        applyRunFormatTo(properties(run, 'rPr'), { [field]: null } as RunFormat);
+      }
+    }
+    const targetRuns = previewRuns.map((run) => computeEffectiveRunFormat(this.getStylesContext(), previewParagraph, run));
+    const patches = directRuns.map((direct, index) => {
       const patch: RunFormat = {};
       let changed = direct.style !== styleId;
       if (direct.style !== styleId) patch.style = styleId;
@@ -3625,7 +3682,7 @@ export class DocxDocument {
         for (const field of RUN_FORMAT_FIELDS) {
           if (field === 'style') continue;
           const current = direct[field];
-          const target = styleFormats.run[field];
+          const target = targetRuns[index]?.[field];
           if (current !== undefined && target !== undefined && !runFormatValueEqual(current, target)) {
             (patch as Record<string, unknown>)[field] = null;
             changed = true;
@@ -3673,6 +3730,7 @@ export class DocxDocument {
       }
     }
     const runFormats: RunFormat[] = [];
+    const targetContext = this.getStylesContext();
     for (let paragraphIndex = normalized.start.paragraph; paragraphIndex <= normalized.end.paragraph; paragraphIndex++) {
       const paragraph = paragraphAt(preview, paragraphIndex);
       const length = textOf(paragraph).length;
@@ -3682,11 +3740,18 @@ export class DocxDocument {
       this.splitRunAtOffset(paragraph, end);
       this.splitRunAtOffset(paragraph, start);
       for (const run of this.runsInRange(paragraph, start, end)) {
-        const direct = readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme);
-        if (Object.keys(direct).length) runFormats.push(direct);
+        const effective = computeEffectiveRunFormat(targetContext, paragraph, run);
+        if (Object.keys(effective).length) runFormats.push(effective);
       }
     }
     const runFormat = this.mergeRangeFormats(runFormats);
+    const baseRunFormat = style.basedOn ? this.styleFormats(style.basedOn, 'paragraph').run : {};
+    for (const field of RUN_FORMAT_FIELDS) {
+      if (field === 'style') continue;
+      if (runFormat[field] !== undefined && runFormatValueEqual(runFormat[field], baseRunFormat[field])) {
+        delete (runFormat as Record<string, unknown>)[field];
+      }
+    }
     const nextStyle: StyleInfo = {
       id: style.id,
       name: style.name,
@@ -3715,13 +3780,14 @@ export class DocxDocument {
     assertIndex(to);
     const paragraphs = this.getParagraphs();
     if (!paragraphs[from]) throw new Error(`Paragraph ${from} does not exist.`);
-    if (to > paragraphs.length || (to === paragraphs.length && !paragraphs.length)) {
-      throw new Error(`Paragraph ${to} does not exist.`);
-    }
-    const outline = this.flattenOutline(this.getOutline());
+    if (to > paragraphs.length) throw new Error(`Destination ${to} is out of bounds for ${paragraphs.length} paragraphs.`);
+    const tree = this.getOutline();
+    const outline = this.flattenOutline(tree);
     const node = outline.find((entry) => entry.paragraph === from);
     if (!node) throw new Error(`Paragraph ${from} is not an outline heading.`);
-    const nextPeer = outline.find((entry) => entry.paragraph > from && entry.level <= node.level);
+    const subtree = this.flattenOutline([cloneOutlineNode(node)]);
+    const subtreeEnd = subtree.at(-1)?.paragraph ?? from;
+    const nextPeer = outline.find((entry) => entry.paragraph > subtreeEnd && entry.level <= node.level);
     const endParagraph = nextPeer ? nextPeer.paragraph - 1 : paragraphs.length - 1;
     const comments = this.getComments().filter((comment) =>
       comment.anchor?.sourcePartPath === this.mainDocumentPath &&

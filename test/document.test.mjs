@@ -1789,6 +1789,19 @@ test('applyParagraphStyle can clear conflicting direct paragraph and run formatt
   assert.match(xml, /w:u w:val="single"/);
 });
 
+test('applyParagraphStyle clears direct formatting that would otherwise override inherited defaults', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>Clear</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:docDefaults><w:pPrDefault><w:pPr><w:jc w:val="left"/></w:pPr></w:pPrDefault></w:docDefaults>
+      <w:style w:type="paragraph" w:styleId="Styled"><w:name w:val="Styled"/></w:style>
+    </w:styles>`,
+  );
+  doc.applyParagraphStyle(0, 'Styled', { clearDirectFormat: true });
+  assert.equal(doc.getParagraphs()[0].effective.alignment, 'left');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:jc w:val="right"/);
+});
+
 test('applyParagraphStyle is a no-op when the style and conflicting direct format already match', () => {
   const doc = withStyles(
     '<w:p><w:pPr><w:pStyle w:val="Styled"/><w:spacing w:after="240"/></w:pPr><w:r><w:rPr><w:color w:val="336699"/></w:rPr><w:t>A</w:t></w:r></w:p>',
@@ -1830,6 +1843,19 @@ test('applyCharacterStyle can clear conflicting direct run formatting', () => {
   assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:color w:val="AA5500"/);
 });
 
+test('applyCharacterStyle clears direct formatting that would otherwise override inherited defaults', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:color w:val="AA5500"/></w:rPr><w:t>Word</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:docDefaults><w:rPrDefault><w:rPr><w:color w:val="224466"/></w:rPr></w:rPrDefault></w:docDefaults>
+      <w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/></w:style>
+    </w:styles>`,
+  );
+  doc.applyCharacterStyle({ paragraph: 0, start: 0, end: 4 }, 'Emphasis', { clearDirectFormat: true });
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.color, '224466');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:color w:val="AA5500"/);
+});
+
 test('createStyleFromSelection creates a paragraph style that reloads with ordered children', async () => {
   const doc = withBody('<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="80"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="445566"/></w:rPr><w:t>Pick</w:t></w:r></w:p>');
   const created = doc.createStyleFromSelection(
@@ -1846,6 +1872,23 @@ test('createStyleFromSelection creates a paragraph style that reloads with order
   assert.deepEqual(order.slice().sort((a, b) => a - b), order);
   const reopened = await DocxDocument.load(await doc.toUint8Array());
   assert.equal(reopened.getStyle('FromSelection').run.color, '445566');
+});
+
+test('createStyleFromSelection preserves effective run formatting from character styles', async () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:rStyle w:val="Emphasis"/></w:rPr><w:t>Pick</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:b/><w:color w:val="445566"/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  doc.createStyleFromSelection(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } },
+    { id: 'FromSelection', name: 'From Selection' },
+  );
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  const style = reopened.getStyle('FromSelection');
+  assert.equal(style.run.bold, true);
+  assert.equal(style.run.color, '445566');
 });
 
 test('createStyleFromSelection rejects duplicate ids', () => {
@@ -1963,6 +2006,40 @@ test('moveOutlineSection is a no-op when moving within the same section span', (
   const revision = doc.revision;
   doc.moveOutlineSection(0, 1);
   assert.equal(doc.revision, revision);
+});
+
+test('moveOutlineSection stops before the next sibling heading even when following sections contain deeper headings', () => {
+  const doc = withStyles(
+    [
+      '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Root</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Beta</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t>Beta body</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading4"/></w:pPr><w:r><w:t>Beta child</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t>Beta child body</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Gamma</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t>Gamma body</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Gamma child</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t>Gamma child body</w:t></w:r></w:p>',
+    ].join(''),
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/></w:style>
+    </w:styles>`,
+  );
+  doc.moveOutlineSection(1, 9);
+  assert.deepEqual(doc.getBlocks().map((block) => block.type === 'paragraph' ? block.paragraph.text : 'TABLE'), [
+    'Root',
+    'Gamma',
+    'Gamma body',
+    'Gamma child',
+    'Gamma child body',
+    'Beta',
+    'Beta body',
+    'Beta child',
+    'Beta child body',
+  ]);
 });
 
 test('applyOperations accepts new style and outline operations', () => {
