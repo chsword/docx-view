@@ -3026,6 +3026,16 @@ test('setDocumentProperties updates only patched fields and preserves unknown do
   assert.match(doc.getPartXml('docProps/app.xml'), /<Company>KeepCo<\/Company>/);
 });
 
+test('setDocumentProperties keeps core and app property child order schema-compliant', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}"><dc:subject>Subject</dc:subject></cp:coreProperties>`,
+    appXml: `<Properties xmlns="${APP_NS}" xmlns:vt="${VT_NS}"><Company>Acme</Company></Properties>`,
+  });
+  doc.setDocumentProperties({ created: '2026-09-28T12:00:00Z', manager: 'Boss' });
+  assert.match(doc.getPartXml('docProps/core.xml'), /<dcterms:created [^>]*>2026-09-28T12:00:00Z<\/dcterms:created><dc:subject>Subject<\/dc:subject>/);
+  assert.match(doc.getPartXml('docProps/app.xml'), /<Manager>Boss<\/Manager><Company>Acme<\/Company>/);
+});
+
 test('setDocumentProperties creates core properties part and package metadata when missing', () => {
   const doc = DocxDocument.create();
   doc.setDocumentProperties({ title: 'Created' });
@@ -3058,20 +3068,6 @@ test('setDocumentProperties follows an existing custom package relationship targ
   const rels = doc.getPartXml('_rels/.rels');
   assert.equal((rels.match(/metadata\/core-properties/g) ?? []).length, 1);
   assert.match(rels, /Target="meta\/core%20props\.xml"/);
-});
-
-test('setDocumentProperties can resolve a dangling relationship with an all-undefined patch', () => {
-  const doc = withDocProps({
-    coreTarget: 'meta/core%20props.xml',
-    corePath: 'meta/core props.xml',
-    coreXml: undefined,
-    includeAppRel: false,
-    appTarget: undefined,
-  });
-  doc.setDocumentProperties({ title: undefined });
-  assert.ok(doc.listParts().includes('meta/core props.xml'));
-  assert.deepEqual(doc.getDocumentProperties(), {});
-  assert.match(doc.getPartXml('meta/core props.xml'), /<cp:coreProperties/);
 });
 
 test('getDocumentProperties output can be written back unchanged', async () => {

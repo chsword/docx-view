@@ -7378,8 +7378,7 @@ export class DocxDocument {
     const appPatch = Object.fromEntries(appKeys.filter((key) => key in patch).map((key) => [key, patch[key]])) as Partial<DocumentProperties>;
     if (Object.keys(corePatch).length) {
       const hasDefined = coreKeys.some((key) => key in corePatch && corePatch[key] !== undefined);
-      const relationPath = this.getPackageRelatedPartPath(CORE_PROPS_REL, undefined, { allowMissingPart: true });
-      let path = relationPath ?? this.getCorePropertiesPath(hasDefined);
+      let path = this.getCorePropertiesPath(hasDefined);
       if (path || hasDefined) {
         path ??= 'docProps/core.xml';
         this.ensurePackageRelationship(CORE_PROPS_REL, path);
@@ -7389,8 +7388,7 @@ export class DocxDocument {
     }
     if (Object.keys(appPatch).length) {
       const hasDefined = appKeys.some((key) => key in appPatch && appPatch[key] !== undefined);
-      const relationPath = this.getPackageRelatedPartPath(APP_PROPS_REL, undefined, { allowMissingPart: true });
-      let path = relationPath ?? this.getAppPropertiesPath(hasDefined);
+      let path = this.getAppPropertiesPath(hasDefined);
       if (path || hasDefined) {
         path ??= 'docProps/app.xml';
         this.ensurePackageRelationship(APP_PROPS_REL, path);

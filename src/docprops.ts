@@ -41,6 +41,8 @@ const APP_FIELD_INFO: Record<typeof APP_KEYS[number], { qualifiedName: string; l
   company: { qualifiedName: 'Company', localName: 'Company' },
   manager: { qualifiedName: 'Manager', localName: 'Manager' },
 };
+const CORE_PROPERTY_ORDER = ['category', 'contentStatus', 'contentType', 'created', 'creator', 'description', 'identifier', 'keywords', 'language', 'lastModifiedBy', 'lastPrinted', 'modified', 'revision', 'subject', 'title', 'version'];
+const APP_PROPERTY_ORDER = ['Template', 'Manager', 'Company', 'Pages', 'Words', 'Characters', 'PresentationFormat', 'Lines', 'Paragraphs', 'Slides', 'Notes', 'TotalTime', 'HiddenSlides', 'MMClips', 'ScaleCrop', 'HeadingPairs', 'TitlesOfParts', 'LinksUpToDate', 'CharactersWithSpaces', 'SharedDoc', 'HyperlinkBase', 'HyperlinksChanged', 'AppVersion', 'DocSecurity'];
 
 function childInNamespace(parent: Element, namespace: string, localName: string): Element | undefined {
   for (let child = parent.firstChild; child; child = child.nextSibling) {
@@ -65,11 +67,14 @@ function setElementText(element: Element, value: string): void {
   element.appendChild(element.ownerDocument!.createTextNode(value));
 }
 
-function ensureChild(parent: Element, namespace: string, qualifiedName: string, localName: string): Element {
+function ensureChild(parent: Element, namespace: string, qualifiedName: string, localName: string, order: string[]): Element {
   const existing = childInNamespace(parent, namespace, localName);
   if (existing) return existing;
   const element = parent.ownerDocument!.createElementNS(namespace, qualifiedName);
-  parent.appendChild(element);
+  const position = order.indexOf(localName);
+  const following = Array.from({ length: parent.childNodes.length }, (_, index) => parent.childNodes.item(index))
+    .find((child) => child?.nodeType === 1 && order.indexOf((child as Element).localName ?? '') > position);
+  parent.insertBefore(element, following ?? null);
   return element;
 }
 
@@ -153,7 +158,7 @@ export function setCoreDocumentPropertiesOn(document: Document, patch: Partial<D
       removeChild(root, info.namespace, info.localName);
       continue;
     }
-    const element = ensureChild(root, info.namespace, info.qualifiedName, info.localName);
+    const element = ensureChild(root, info.namespace, info.qualifiedName, info.localName, CORE_PROPERTY_ORDER);
     if (info.numeric) {
       setElementText(element, String(value));
       continue;
@@ -174,6 +179,6 @@ export function setAppDocumentPropertiesOn(document: Document, patch: Partial<Do
       removeChild(root, APP_NS, info.localName);
       continue;
     }
-    setElementText(ensureChild(root, APP_NS, info.qualifiedName, info.localName), value);
+    setElementText(ensureChild(root, APP_NS, info.qualifiedName, info.localName, APP_PROPERTY_ORDER), value);
   }
 }
