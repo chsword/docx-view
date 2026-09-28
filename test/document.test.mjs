@@ -2124,6 +2124,14 @@ test('getRevisions reads table, row, and cell format changes', () => {
   ]);
 });
 
+test('getRevisions inside table cells uses the same paragraph index namespace as getParagraphs', () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:ins w:id="21"><w:r><w:t>cell</w:t></w:r></w:ins></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>');
+  const paragraphs = doc.getParagraphs();
+  const cellParagraph = paragraphs.find((paragraph) => paragraph.text === 'cell');
+  assert.ok(cellParagraph);
+  assert.deepEqual(doc.getRevisions(), [{ id: 21, kind: 'insertion', paragraph: cellParagraph.index, run: 0 }]);
+});
+
 test('moveFrom and moveTo revisions are downgraded to deletion and insertion', () => {
   const doc = withBody('<w:p><w:moveFrom w:id="17"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:moveTo w:id="18"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
   assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, kind: revision.kind })), [
