@@ -95,6 +95,11 @@ export interface CommandRegistry {
   run(id: string, ctx: CommandContext): Promise<void>;
 }
 
+export interface CommandControlState {
+  disabled: boolean;
+  pressed?: boolean;
+}
+
 function hasSelectionTarget(ctx: CommandContext): boolean {
   return ctx.selection.paragraph !== null || ctx.selection.range !== null;
 }
@@ -377,5 +382,16 @@ export function createCommandRegistry(commands: CommandDescriptor[]): CommandReg
       if (!command) throw new Error(`未知命令：${id}`);
       await command.run(ctx);
     },
+  };
+}
+
+export function getCommandControlState(
+  command: CommandDescriptor,
+  ctx: CommandContext,
+  options: { pressed?: boolean } = {},
+): CommandControlState {
+  return {
+    disabled: !command.enabled(ctx),
+    ...(options.pressed ? { pressed: Boolean(command.checked?.(ctx)) } : {}),
   };
 }

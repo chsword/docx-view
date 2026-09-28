@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCommandRegistry, createExampleCommandDescriptors } from '../examples/commands.ts';
+import { createCommandRegistry, createExampleCommandDescriptors, getCommandControlState } from '../examples/commands.ts';
 
 function makeContext(overrides = {}) {
   return {
@@ -112,8 +112,11 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['format.bold requires a paragraph or range', 'format.bold', makeContext(), false],
     ['format.bold accepts a selected paragraph', 'format.bold', makeContext({ selection: { paragraph: 2 } }), true],
     ['format.italic accepts a selected range', 'format.italic', makeContext({ selection: { range: { start: { paragraph: 1, offset: 0 }, end: { paragraph: 1, offset: 2 } }, collapsed: false } }), true],
+    ['format.underline accepts a selected paragraph', 'format.underline', makeContext({ selection: { paragraph: 2 } }), true],
     ['format.clear blocks readonly edits', 'format.clear', makeContext({ editable: false, selection: { paragraph: 0 } }), false],
     ['format.clear keeps markup edits enabled', 'format.clear', makeContext({ selection: { paragraph: 0 } }), true],
+    ['format.fontColor disables without selection target', 'format.fontColor', makeContext(), false],
+    ['format.fontColor enables with a selected paragraph', 'format.fontColor', makeContext({ selection: { paragraph: 0 } }), true],
     ['paragraph.style requires markup paragraph selection', 'paragraph.style', makeContext({ editable: false, selection: { paragraph: 0 } }), false],
     ['paragraph.alignment enables on markup paragraph selection', 'paragraph.alignment', makeContext({ selection: { paragraph: 0 } }), true],
     ['list.bullet disables outside a paragraph', 'list.bullet', makeContext(), false],
@@ -123,17 +126,28 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['list.indent enables below max level', 'list.indent', makeContext({ selection: { paragraph: 0 } }), true, { paragraphs: new Map([[0, { numbering: { level: 7, isBullet: true } }]]) }],
     ['list.outdent disables at base level', 'list.outdent', makeContext({ selection: { paragraph: 0 } }), false, { paragraphs: new Map([[0, { numbering: { level: 0, isBullet: true } }]]) }],
     ['list.outdent enables above base level', 'list.outdent', makeContext({ selection: { paragraph: 0 } }), true, { paragraphs: new Map([[0, { numbering: { level: 1, isBullet: false } }]]) }],
+    ['table.deleteRow disables without table context', 'table.deleteRow', makeContext(), false],
     ['table.insertRow disables without table context', 'table.insertRow', makeContext(), false],
     ['table.insertRow enables with table context', 'table.insertRow', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1 } }), true],
+    ['table.insertColumn enables with table context', 'table.insertColumn', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1 } }), true],
+    ['table.deleteColumn disables without table context', 'table.deleteColumn', makeContext(), false],
+    ['table.mergeCells enables with table context', 'table.mergeCells', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1 } }), true],
+    ['table.splitCell disables without table context', 'table.splitCell', makeContext(), false],
     ['image.replace disables without a selected image', 'image.replace', makeContext(), false],
+    ['image.insert is always enabled', 'image.insert', makeContext(), true],
+    ['image.delete disables without a selected image', 'image.delete', makeContext(), false],
+    ['image.delete enables with a selected image', 'image.delete', makeContext({ image: { relationshipId: 'rId7' } }), true],
     ['image.replace enables with a selected image', 'image.replace', makeContext({ image: { relationshipId: 'rId5' } }), true],
     ['image.setAlt disables without a selected image', 'image.setAlt', makeContext(), false],
     ['image.setAlt enables with a selected image', 'image.setAlt', makeContext({ image: { relationshipId: 'rId6' } }), true],
+    ['comment.new is always enabled', 'comment.new', makeContext(), true],
     ['comment.reply disables without a selected comment', 'comment.reply', makeContext(), false],
     ['comment.reply enables with a selected comment target', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],
     ['comment.reply enables with an active sidebar comment', 'comment.reply', makeContext({ activeCommentId: 43 }), true],
     ['review.acceptAll disables when no revisions are visible', 'review.acceptAll', makeContext(), false],
     ['review.acceptAll enables when revisions are visible', 'review.acceptAll', makeContext(), true, { revisionCount: 3 }],
+    ['review.rejectAll disables when no revisions are visible', 'review.rejectAll', makeContext(), false],
+    ['review.rejectAll enables when revisions are visible', 'review.rejectAll', makeContext(), true, { revisionCount: 2 }],
   ];
   for (const [name, commandId, ctx, expected, options] of cases) {
     await t.test(name, () => {
@@ -210,4 +224,19 @@ test('command registry rejects duplicate and unknown command ids', async () => {
 
   const { registry } = makeRegistry();
   await assert.rejects(() => registry.run('missing.command', makeContext()), /未知命令/);
+});
+
+test('comment action controls derive final disabled state from registry only', () => {
+  const { registry } = makeRegistry();
+  const selectionCtx = makeContext({ commentsAtPoint: [42], activeCommentId: null });
+  for (const commandId of ['comment.reply', 'comment.toggleResolved', 'comment.delete']) {
+    const state = getCommandControlState(registry.get(commandId), selectionCtx);
+    assert.equal(state.disabled, false);
+  }
+
+  const emptyCtx = makeContext({ commentsAtPoint: [], activeCommentId: null });
+  for (const commandId of ['comment.reply', 'comment.toggleResolved', 'comment.delete']) {
+    const state = getCommandControlState(registry.get(commandId), emptyCtx);
+    assert.equal(state.disabled, true);
+  }
 });

@@ -16,6 +16,7 @@ import { findReusableNumberingId } from '../src/numbering.js';
 import {
   createCommandRegistry,
   createExampleCommandDescriptors,
+  getCommandControlState,
   type CommandContext,
 } from './commands.js';
 import './style.css';
@@ -471,9 +472,6 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
     item.append(button);
     return item;
   }));
-  element<HTMLButtonElement>('reply-comment').disabled = selectedCommentId === null;
-  element<HTMLButtonElement>('resolve-comment').disabled = selectedCommentId === null;
-  element<HTMLButtonElement>('delete-comment').disabled = selectedCommentId === null;
   for (const node of host.querySelectorAll<HTMLElement>('[data-docx-comment-ids]')) {
     const ids = (node.dataset.docxCommentIds ?? '').split(',').map((value) => Number(value));
     node.classList.toggle('docx-comment-active', selectedCommentId !== null && ids.includes(selectedCommentId));
@@ -1038,8 +1036,9 @@ function syncCommandState(): void {
   for (const { elementId, commandId, pressed } of commandControls) {
     const control = element<HTMLElement>(elementId);
     const command = commandRegistry.get(commandId);
-    if ('disabled' in control) (control as HTMLButtonElement | HTMLSelectElement | HTMLInputElement).disabled = !command.enabled(ctx);
-    if (pressed) control.setAttribute('aria-pressed', String(Boolean(command.checked?.(ctx))));
+    const state = getCommandControlState(command, ctx, { pressed });
+    if ('disabled' in control) (control as HTMLButtonElement | HTMLSelectElement | HTMLInputElement).disabled = state.disabled;
+    if (pressed) control.setAttribute('aria-pressed', String(Boolean(state.pressed)));
   }
 }
 
