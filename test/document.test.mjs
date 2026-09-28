@@ -1994,6 +1994,7 @@ test('addComment creates comment parts and preserves visible paragraph text', ()
   assert.equal(comment.author, 'Alice');
   assert.equal(comment.anchor.paragraph, 0);
   assert.deepEqual(comment.anchor.runs, [0]);
+  assert.match(doc.getPartXml('word/comments.xml'), /<w:rPr><w:rStyle w:val="CommentText"\/><\/w:rPr><w:t xml:space="preserve">todo<\/w:t>/);
   assert.match(doc.getPartXml('word/comments.xml'), /todo/);
   assert.match(doc.getPartXml('word/commentsExtended.xml'), /w15:commentEx/);
 });

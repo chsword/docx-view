@@ -4937,6 +4937,8 @@ export class DocxDocument {
     paragraph.appendChild(makeCommentAnnotationRun(document));
     if (text) {
       const run = wordElement(document, 'r');
+      const props = properties(run, 'rPr');
+      setWordValue(property(props, 'rStyle'), commentParagraphStyle());
       appendText(run, text);
       paragraph.appendChild(run);
     }
@@ -5082,7 +5084,6 @@ export class DocxDocument {
         })();
     const id = this.nextCommentId();
     const paraId = this.nextCommentParaId();
-    const { commentsPath, commentsExtendedPath } = this.ensureCommentsParts(this.mainPath, true);
     const date = new Date().toISOString();
     this.updatePartXml(this.mainPath, (document) => {
       const startParagraph = paragraphAt(document, normalized.startParagraph);
@@ -5115,6 +5116,7 @@ export class DocxDocument {
       if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(referenceRun, endBoundary);
       else endParagraph.appendChild(referenceRun);
     });
+    const { commentsPath, commentsExtendedPath } = this.ensureCommentsParts(this.mainPath, true);
     this.updatePartXml(commentsPath, (document) => {
       const root = document.documentElement!;
       const commentElement = wordElement(document, 'comment');
@@ -5252,7 +5254,11 @@ export class DocxDocument {
             if (commentId === null || !deleteIds.has(commentId)) continue;
             const reference = children(run, 'commentReference')[0];
             if (reference) run.removeChild(reference);
-            if (children(run).every((child) => child.localName === 'rPr')) run.parentNode?.removeChild(run);
+            const hasMeaningfulContent = Array.from(run.childNodes).some((child) => {
+              if (child.nodeType === 1) return (child as Element).localName !== 'rPr';
+              return (child.textContent ?? '').trim().length > 0;
+            });
+            if (!hasMeaningfulContent) run.parentNode?.removeChild(run);
           }
         }
       });

@@ -210,7 +210,7 @@ test('insertText sanitizes invalid paste-like input before insertion', () => {
   assert.equal(inserted, 'abc\nd');
 });
 
-test('readText keeps non-decoration contentEditable=false nodes but skips docx marks', () => {
+test('readText skips non-editable decorations unless explicitly marked as document content', () => {
   const editor = Object.create(DocxEditor.prototype);
   const text = (value) => ({ nodeType: 3, textContent: value });
   const element = (tagName, { dataset = {}, contentEditable = 'inherit' } = {}, childNodes = []) => ({
@@ -221,7 +221,8 @@ test('readText keeps non-decoration contentEditable=false nodes but skips docx m
     childNodes,
   });
   const root = element('SPAN', {}, [
-    element('SPAN', { contentEditable: 'false' }, [text('keep')]),
+    element('SPAN', { contentEditable: 'false' }, [text('drop')]),
+    element('SPAN', { contentEditable: 'false', dataset: { docxContent: '1' } }, [text('keep')]),
     element('SPAN', { contentEditable: 'false', dataset: { docxMark: '1' } }, [text('drop')]),
   ]);
   assert.equal(editor.readText(root), 'keep');
