@@ -3360,9 +3360,9 @@ test('rejectRevision on inserted table-cell paragraph marker preserves required 
 });
 
 test('acceptRevision merges surviving content when only paragraph-mark deletion is tracked', () => {
-  const doc = withBody('<w:p><w:pPr><w:rPr><w:del w:id="101" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>上半</w:t></w:r></w:p><w:p><w:r><w:t>下半</w:t></w:r></w:p>');
+  const doc = withBody('<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:del w:id="101" w:author="Alice"/></w:rPr></w:pPr><w:r><w:t>上半</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="Quote"/></w:pPr><w:r><w:t>下半</w:t></w:r></w:p>');
   doc.acceptRevision(101);
-  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['上半下半']);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => [paragraph.text, paragraph.style]), [['上半下半', 'Quote']]);
   assert.equal(doc.getRevisions().length, 0);
 });
 
@@ -3392,6 +3392,24 @@ test('acceptRevision degrades to marker removal when paragraph-mark deletion par
   doc.acceptRevision(106);
   assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['甲', '乙']);
   assert.equal(doc.getRevisions().length, 0);
+});
+
+test('acceptAllRevisions merge path removes empty hyperlink and sdt wrapper shells', () => {
+  const doc = withBody(
+    `<w:p xmlns:r="${OFFICE_REL_NS}">
+      <w:pPr><w:rPr><w:del w:id="107" w:author="Alice"/></w:rPr></w:pPr>
+      <w:hyperlink w:anchor="x"><w:del w:id="108" w:author="Alice"><w:r><w:delText>link</w:delText></w:r></w:del></w:hyperlink>
+      <w:sdt><w:sdtPr/><w:sdtContent><w:del w:id="109" w:author="Alice"><w:r><w:delText>tag</w:delText></w:r></w:del></w:sdtContent></w:sdt>
+      <w:r><w:t>head</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>keep</w:t></w:r></w:p>`,
+  );
+  doc.acceptAllRevisions();
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['headkeep']);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /<w:hyperlink[^>]*\/>/);
+  assert.doesNotMatch(xml, /<w:sdt>(?:\s|<w:sdtPr\/>|<w:sdtContent\/>)*<\/w:sdt>/);
+  assert.doesNotMatch(xml, /<w:pPr\/>/);
 });
 
 test('acceptRevision on row insertion marker keeps the row and removes marker', () => {

@@ -951,6 +951,33 @@ function removeIfEmpty(element: Element | undefined): void {
   if (!element.attributes.length && !element.firstChild) element.parentNode?.removeChild(element);
 }
 
+function removeEmptyParagraphWrappers(paragraph: Element): void {
+  const removable = new Set(['hyperlink', 'sdt', 'sdtContent', 'smartTag', 'ins', 'del', 'moveFrom', 'moveTo', 'customXml']);
+  const hasMeaningfulText = (element: Element): boolean => {
+    for (let child = element.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 3) continue;
+      if ((child.nodeValue ?? '').trim().length) return true;
+    }
+    return false;
+  };
+  const walk = (node: Element): void => {
+    for (const child of [...children(node)]) walk(child);
+    if (node.namespaceURI !== WORD_NS) return;
+    if (node.localName === 'pPr') {
+      if (!node.attributes.length && !children(node).length && !hasMeaningfulText(node)) node.parentNode?.removeChild(node);
+      return;
+    }
+    const localName = node.localName ?? '';
+    if (!removable.has(localName)) return;
+    if (localName === 'sdt') {
+      if (!children(node, 'sdtContent')[0]) node.parentNode?.removeChild(node);
+      return;
+    }
+    if (!children(node).length && !hasMeaningfulText(node)) node.parentNode?.removeChild(node);
+  };
+  walk(paragraph);
+}
+
 function setOnOff(parent: Element, name: string, value: boolean, onValue = '1', offValue = '0'): void {
   setWordValue(property(parent, name), value ? onValue : offValue);
 }
@@ -3757,12 +3784,13 @@ export class DocxDocument {
     const next = index >= 0 ? blocks[index + 1] : undefined;
     if (!next || next.localName !== 'p') return false;
     if (children(next, 'pPr').some((props) => children(props, 'sectPr').length)) return false;
-    this.removeRevisionMarker(marker);
-    for (const child of [...children(next)]) {
+    const insertionPoint = children(next).find((child) => child.localName !== 'pPr') ?? null;
+    for (const child of [...children(paragraph)]) {
       if (child.localName === 'pPr') continue;
-      paragraph.appendChild(child);
+      next.insertBefore(child, insertionPoint);
     }
-    next.parentNode?.removeChild(next);
+    paragraph.parentNode?.removeChild(paragraph);
+    removeEmptyParagraphWrappers(next);
     return true;
   }
 
