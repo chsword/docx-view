@@ -3119,7 +3119,10 @@ export class DocxDocument {
   }
 
   private ensurePackageRelationship(relationType: string, targetPath: string): void {
-    const rels = this.getPartDocument('_rels/.rels');
+    const hasRelsPart = this.parts.has('_rels/.rels');
+    const rels = hasRelsPart
+      ? this.getPartDocument('_rels/.rels')
+      : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const root = rels.documentElement!;
     const existing = children(root, 'Relationship', REL_NS).find((relation) => {
       if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') return false;
@@ -3133,7 +3136,8 @@ export class DocxDocument {
     relationship.setAttribute('Type', relationType);
     relationship.setAttribute('Target', targetPath);
     root.appendChild(relationship);
-    this.setPartXml('_rels/.rels', serializeXml(rels));
+    if (hasRelsPart) this.setPartXml('_rels/.rels', serializeXml(rels));
+    else this.addPart('_rels/.rels', encodeXml(serializeXml(rels)), RELS_CONTENT_TYPE);
   }
 
   private getCorePropertiesPath(allowMissingPart = false): string | undefined {
@@ -7376,8 +7380,8 @@ export class DocxDocument {
       let path = this.getCorePropertiesPath(hasDefined);
       if (path || hasDefined) {
         path ??= 'docProps/core.xml';
-        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultCorePropertiesXml()), CORE_PROPS_TYPE);
         this.ensurePackageRelationship(CORE_PROPS_REL, path);
+        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultCorePropertiesXml()), CORE_PROPS_TYPE);
         this.updatePartXml(path, (document) => setCoreDocumentPropertiesOn(document, corePatch));
       }
     }
@@ -7386,8 +7390,8 @@ export class DocxDocument {
       let path = this.getAppPropertiesPath(hasDefined);
       if (path || hasDefined) {
         path ??= 'docProps/app.xml';
-        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultAppPropertiesXml()), APP_PROPS_TYPE);
         this.ensurePackageRelationship(APP_PROPS_REL, path);
+        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultAppPropertiesXml()), APP_PROPS_TYPE);
         this.updatePartXml(path, (document) => setAppDocumentPropertiesOn(document, appPatch));
       }
     }
