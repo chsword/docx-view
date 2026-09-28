@@ -323,6 +323,17 @@ function validateCommentInput(value: unknown, name = 'comment'): void {
   assertText(value.text, `${name}.text`);
 }
 
+function validateRevisionFilter(value: unknown): void {
+  object(value);
+  keys(value, ['authors']);
+  if ('authors' in value) {
+    if (!Array.isArray(value.authors) || value.authors.length > 1000) {
+      throw new Error('filter.authors must be an array of at most 1000 authors.');
+    }
+    value.authors.forEach((author, index) => assertText(author, `filter.authors[${index}]`));
+  }
+}
+
 export function validateRequest(value: unknown): asserts value is AgentRequest {
   object(value);
   keys(value, ['expectedRevision', 'operations']);
@@ -340,6 +351,16 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
       case 'setRevisionAuthor':
         keys(op, ['type', 'author']);
         assertText(op.author, 'author');
+        break;
+      case 'acceptRevision':
+      case 'rejectRevision':
+        keys(op, ['type', 'id']);
+        assertIndex(op.id);
+        break;
+      case 'acceptAllRevisions':
+      case 'rejectAllRevisions':
+        keys(op, ['type', 'filter']);
+        if ('filter' in op && op.filter !== undefined) validateRevisionFilter(op.filter);
         break;
       case 'setParagraphText':
         keys(op, ['type', 'index', 'text']); assertIndex(op.index); assertText(op.text); break;
@@ -607,6 +628,9 @@ const documentRange = shape({
   start: shape({ paragraph: index, offset: index }),
   end: shape({ paragraph: index, offset: index }),
 }, ['start', 'end']);
+const revisionFilter = shape({
+  authors: { type: 'array', maxItems: 1000, items: text },
+}, []);
 const runFormatField = {
   enum: [...RUN_FORMAT_FIELDS],
 };
@@ -690,6 +714,10 @@ export const AGENT_OPERATION_SCHEMA = {
         oneOf: [
           operation('setTrackChanges', { enabled: { type: 'boolean' } }),
           operation('setRevisionAuthor', { author: text }),
+          operation('acceptRevision', { id: index }),
+          operation('rejectRevision', { id: index }),
+          operation('acceptAllRevisions', { filter: revisionFilter }, []),
+          operation('rejectAllRevisions', { filter: revisionFilter }, []),
           operation('setParagraphText', { index, text }),
           operation('insertParagraph', { text, before: index }, ['text']),
           operation('deleteParagraph', { index }),
