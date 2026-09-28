@@ -772,3 +772,304 @@ test('reviewScopedRun author filtering does not collide named and unattributed b
   const filtered = editor.reviewScopedRun(0, run, context);
   assert.deepEqual(filtered.revisions?.map((revision) => revision.id), [1]);
 });
+
+test('readText skips deleted-text visualization nodes', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value });
+  const element = (tagName, { dataset = {}, contentEditable = 'inherit' } = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    dataset,
+    contentEditable,
+    childNodes,
+  });
+  const root = element('SPAN', {}, [
+    text('AB'),
+    element('SPAN', { dataset: { docxDeleted: '1' }, contentEditable: 'false' }, [text('C')]),
+    text('XDEF'),
+  ]);
+  assert.equal(editor.readText(root), 'ABXDEF');
+});
+
+test('focusRevision validates revision id input', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.filteredRevisionIds = () => [1];
+  editor.setActiveRevision = () => {};
+  editor.revisionRunIds = new Map();
+  editor.revisionParagraphIds = new Map();
+  assert.throws(() => editor.focusRevision(-1), /non-negative integer/);
+});
+
+test('focusRevision returns false for filtered-out revision', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.filteredRevisionIds = () => [2];
+  editor.setActiveRevision = () => {};
+  editor.revisionRunIds = new Map();
+  editor.revisionParagraphIds = new Map();
+  assert.equal(editor.focusRevision(1), false);
+});
+
+test('focusRevision activates and focuses mapped revision node', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.filteredRevisionIds = () => [3];
+  editor.setActiveRevision = (id) => calls.push(`active:${id}`);
+  editor.revisionRunIds = new Map([['3', [{ focus: () => calls.push('focus'), scrollIntoView: () => calls.push('scroll') }]]]);
+  editor.revisionParagraphIds = new Map();
+  assert.equal(editor.focusRevision(3), true);
+  assert.deepEqual(calls, ['active:3', 'focus', 'scroll']);
+});
+
+test('focusNextRevision cycles through filtered revision ids', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const focused = [];
+  editor.filteredRevisionIds = () => [10, 20];
+  editor.setActiveRevision = (id) => { editor.activeRevisionId = id; };
+  editor.revisionRunIds = new Map([
+    ['10', [{ focus: () => focused.push(10), scrollIntoView: () => {} }]],
+    ['20', [{ focus: () => focused.push(20), scrollIntoView: () => {} }]],
+  ]);
+  editor.revisionParagraphIds = new Map();
+  editor.activeRevisionId = null;
+  assert.equal(editor.focusNextRevision(), 10);
+  assert.equal(editor.focusNextRevision(), 20);
+  assert.deepEqual(focused, [10, 20]);
+});
+
+test('focusPreviousRevision cycles backwards through filtered revision ids', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const focused = [];
+  editor.filteredRevisionIds = () => [10, 20];
+  editor.setActiveRevision = (id) => { editor.activeRevisionId = id; };
+  editor.revisionRunIds = new Map([
+    ['10', [{ focus: () => focused.push(10), scrollIntoView: () => {} }]],
+    ['20', [{ focus: () => focused.push(20), scrollIntoView: () => {} }]],
+  ]);
+  editor.revisionParagraphIds = new Map();
+  editor.activeRevisionId = null;
+  assert.equal(editor.focusPreviousRevision(), 20);
+  assert.equal(editor.focusPreviousRevision(), 10);
+  assert.deepEqual(focused, [20, 10]);
+});
+
+test('acceptRevision flushes, applies, rerenders, and emits onChange once', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.flush = () => calls.push('flush');
+  editor.document = {
+    revision: 1,
+    acceptRevision: () => { editor.document.revision = 2; },
+    getSnapshot: () => ({ revision: 2 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = () => calls.push('clear');
+  assert.equal(editor.acceptRevision(1), true);
+  assert.deepEqual(calls, ['flush', 'render', 'change', 'clear']);
+});
+
+test('acceptRevision returns false when document revision is unchanged', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.flush = () => calls.push('flush');
+  editor.document = {
+    revision: 3,
+    acceptRevision: () => {},
+    getSnapshot: () => ({ revision: 3 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = () => calls.push('clear');
+  assert.equal(editor.acceptRevision(1), false);
+  assert.deepEqual(calls, ['flush']);
+});
+
+test('rejectRevision clears active revision after successful mutation', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.flush = () => calls.push('flush');
+  editor.document = {
+    revision: 4,
+    rejectRevision: () => { editor.document.revision = 5; },
+    getSnapshot: () => ({ revision: 5 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = (id) => calls.push(`active:${id}`);
+  assert.equal(editor.rejectRevision(2), true);
+  assert.deepEqual(calls, ['flush', 'render', 'change', 'active:null']);
+});
+
+test('acceptAllRevisions and rejectAllRevisions are no-ops when revision is unchanged', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.flush = () => calls.push('flush');
+  editor.document = {
+    revision: 7,
+    acceptAllRevisions: () => {},
+    rejectAllRevisions: () => {},
+    getSnapshot: () => ({ revision: 7 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = () => calls.push('clear');
+  assert.equal(editor.acceptAllRevisions({}), false);
+  assert.equal(editor.rejectAllRevisions({}), false);
+  assert.deepEqual(calls, ['flush', 'flush']);
+});
+
+test('acceptAllRevisions honors non-named reviewer filters via atomic applyOperations', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.flush = () => {};
+  const calls = [];
+  editor.document = {
+    revision: 1,
+    getRevisions: () => [{ id: 2 }, { id: 3, author: '' }],
+    applyOperations: ({ operations }) => {
+      calls.push(operations.map((operation) => `${operation.type}:${operation.id}`).join(','));
+      editor.document.revision = 2;
+    },
+    getSnapshot: () => ({ revision: 2 }),
+  };
+  editor.render = () => {};
+  editor.options = {};
+  editor.setActiveRevision = () => {};
+  assert.equal(editor.acceptAllRevisions({ authors: [{ kind: 'unattributed' }, { kind: 'empty', author: '' }] }), true);
+  assert.deepEqual(calls, ['acceptRevision:2,acceptRevision:3']);
+});
+
+test('rejectAllRevisions with reviewer filter skips mutation when nothing matches', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.flush = () => {};
+  const calls = [];
+  editor.document = {
+    revision: 9,
+    getRevisions: () => [{ id: 1, author: 'Alice' }],
+    applyOperations: () => calls.push('apply'),
+    getSnapshot: () => ({ revision: 9 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = () => calls.push('active');
+  assert.equal(editor.rejectAllRevisions({ authors: [{ kind: 'named', author: 'Bob' }] }), false);
+  assert.deepEqual(calls, []);
+});
+
+test('setActiveRevision toggles docx-revision-active class by id membership', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const states = [];
+  const node = {
+    dataset: { docxRevisionIds: '1,2' },
+    classList: { toggle: (_name, active) => states.push(active) },
+  };
+  editor.root = { querySelectorAll: () => [node] };
+  editor.setActiveRevision(2);
+  editor.setActiveRevision(3);
+  assert.deepEqual(states, [true, false]);
+});
+
+test('appendDeletedRunVisualization + readText keeps deleted visualization text out of writeback text', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'ABXDEF');
+  const editor = Object.create(DocxEditor.prototype);
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.revisionRunIds = new Map();
+  editor.root = {
+    ownerDocument: {
+      createElement: (tagName) => ({
+        nodeType: 1,
+        tagName: tagName.toUpperCase(),
+        dataset: {},
+        contentEditable: 'inherit',
+        style: {},
+        childNodes: [],
+        append(child) { this.childNodes.push(child); },
+        setAttribute: () => {},
+      }),
+      createTextNode: (value) => ({ nodeType: 3, textContent: value }),
+    },
+  };
+  const content = {
+    nodeType: 1,
+    tagName: 'SPAN',
+    dataset: {},
+    contentEditable: 'inherit',
+    childNodes: [
+      { nodeType: 3, textContent: 'AB' },
+      { nodeType: 3, textContent: 'DEF' },
+    ],
+    append(node) { this.childNodes.splice(1, 0, node); },
+  };
+  const run = { index: 0, revisions: [{ id: 1, kind: 'deletion', author: 'Alice' }] };
+  const context = { deletedTextByRun: new Map([['0:0', 'X']]), revisionColors: new Map() };
+  editor.appendDeletedRunVisualization(content, 0, run, context);
+  assert.equal(editor.readText(content), 'ABDEF');
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'final' };
+  editor.appendDeletedRunVisualization(content, 0, run, context);
+  assert.equal(content.childNodes.length, 3);
+});
+
+test('filteredRevisionIds respects showRevisions and author filters', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.document = {
+    getRevisions: () => [
+      { id: 1, author: 'Alice' },
+      { id: 2, author: 'Bob' },
+    ],
+  };
+  editor.reviewFilter = { showRevisions: false, showComments: true, revisionView: 'markup' };
+  assert.deepEqual(editor.filteredRevisionIds(), []);
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup', authors: [{ kind: 'named', author: 'Bob' }] };
+  assert.deepEqual(editor.filteredRevisionIds(), [2]);
+});
+
+test('reviewColor stays stable for each author after accept/reject changes reviewer counts', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Bob');
+  doc.setParagraphText(0, 'B1');
+  doc.setParagraphText(0, 'B2');
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'A1');
+  const editor = Object.create(DocxEditor.prototype);
+  const beforeContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const beforeBob = editor.reviewColor('Bob', beforeContext);
+  const beforeAlice = editor.reviewColor('Alice', beforeContext);
+  const bobRevision = doc.getRevisions().find((revision) => revision.author === 'Bob');
+  assert.ok(bobRevision);
+  doc.acceptRevision(bobRevision.id);
+  const afterContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  assert.equal(editor.reviewColor('Bob', afterContext), beforeBob);
+  assert.equal(editor.reviewColor('Alice', afterContext), beforeAlice);
+});
+
+test('appendDeletedRunVisualization emits a non-editable deleted marker only in markup view', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const appended = [];
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.root = {
+    ownerDocument: {
+      createElement: () => ({
+        dataset: {},
+        style: {},
+        className: '',
+        setAttribute: () => {},
+      }),
+    },
+  };
+  editor.registerRevisionNode = () => {};
+  const parent = { append: (node) => appended.push(node) };
+  editor.appendDeletedRunVisualization(parent, 0, { index: 0, revisions: [{ id: 1, kind: 'deletion', author: 'Alice' }] }, {
+    deletedTextByRun: new Map([['0:0', 'old']]),
+    revisionColors: new Map([['named:Alice', '#2E75B6']]),
+  });
+  assert.equal(appended.length, 1);
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'final' };
+  editor.appendDeletedRunVisualization(parent, 0, { index: 0, revisions: [{ id: 1, kind: 'deletion', author: 'Alice' }] }, {
+    deletedTextByRun: new Map([['0:0', 'old']]),
+    revisionColors: new Map([['named:Alice', '#2E75B6']]),
+  });
+  assert.equal(appended.length, 1);
+});

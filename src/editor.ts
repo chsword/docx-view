@@ -97,6 +97,18 @@ interface NormalizedReviewFilter {
 interface ReviewRenderContext {
   authors?: Set<string>;
   deletedTextByRun: Map<string, string>;
+  revisionColors: Map<string, string>;
+}
+
+const REVISION_COLOR_PALETTE = ['#2E75B6', '#C0504D', '#9BBB59', '#8064A2', '#4BACC6', '#F79646', '#1F497D', '#843C0C'];
+
+function revisionColorIndexForKey(key: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % REVISION_COLOR_PALETTE.length;
 }
 
 function normalizeReviewFilterAuthor(author: ReviewerFilterAuthor, path = 'reviewFilter.authors[]'): ReviewerFilterAuthor {
@@ -262,6 +274,9 @@ export class DocxEditor {
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
+  private revisionRunIds = new Map<string, HTMLElement[]>();
+  private revisionParagraphIds = new Map<number, HTMLElement[]>();
+  private activeRevisionId: number | null = null;
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -391,6 +406,128 @@ export class DocxEditor {
     this.render();
   }
 
+  private filteredRevisionIds(): number[] {
+    if (!this.reviewFilter.showRevisions) return [];
+    const authors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors.map((author) => reviewerBucketKey(author))) : null;
+    return this.document
+      .getRevisions()
+      .filter((revision) => !authors || authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+      .map((revision) => revision.id);
+  }
+
+  private setActiveRevision(id: number | null): void {
+    this.activeRevisionId = id;
+    if (typeof this.root.querySelectorAll !== 'function') return;
+    for (const node of this.root.querySelectorAll<HTMLElement>('[data-docx-revision-ids]')) {
+      const ids = (node.dataset.docxRevisionIds ?? '')
+        .split(',')
+        .map((value) => Number(value))
+        .filter((value) => Number.isSafeInteger(value));
+      node.classList.toggle('docx-revision-active', id !== null && ids.includes(id));
+    }
+  }
+
+  private applyRevisionAction(action: () => void): boolean {
+    const previous = this.document.revision;
+    action();
+    if (this.document.revision === previous) return false;
+    this.render();
+    this.options.onChange?.(this.document.getSnapshot());
+    return true;
+  }
+
+  acceptRevision(id: number): boolean {
+    this.flush();
+    const accepted = this.applyRevisionAction(() => this.document.acceptRevision(id));
+    if (accepted) this.setActiveRevision(null);
+    return accepted;
+  }
+
+  rejectRevision(id: number): boolean {
+    this.flush();
+    const rejected = this.applyRevisionAction(() => this.document.rejectRevision(id));
+    if (rejected) this.setActiveRevision(null);
+    return rejected;
+  }
+
+  acceptAllRevisions(filter: { authors?: ReviewerFilterAuthor[] } = {}): boolean {
+    this.flush();
+    const accepted = this.applyRevisionAction(() => {
+      if (!filter.authors?.length) {
+        this.document.acceptAllRevisions();
+        return;
+      }
+      const authors = new Set(filter.authors.map((author) => reviewerBucketKey(author)));
+      const operations = this.document
+        .getRevisions()
+        .filter((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+        .map((revision) => ({ type: 'acceptRevision' as const, id: revision.id }));
+      if (!operations.length) return;
+      this.document.applyOperations({ operations });
+    });
+    if (accepted) this.setActiveRevision(null);
+    return accepted;
+  }
+
+  rejectAllRevisions(filter: { authors?: ReviewerFilterAuthor[] } = {}): boolean {
+    this.flush();
+    const rejected = this.applyRevisionAction(() => {
+      if (!filter.authors?.length) {
+        this.document.rejectAllRevisions();
+        return;
+      }
+      const authors = new Set(filter.authors.map((author) => reviewerBucketKey(author)));
+      const operations = this.document
+        .getRevisions()
+        .filter((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+        .map((revision) => ({ type: 'rejectRevision' as const, id: revision.id }));
+      if (!operations.length) return;
+      this.document.applyOperations({ operations });
+    });
+    if (rejected) this.setActiveRevision(null);
+    return rejected;
+  }
+
+  focusNextRevision(): number | null {
+    const ids = this.filteredRevisionIds();
+    if (!ids.length) {
+      this.setActiveRevision(null);
+      return null;
+    }
+    const current = this.activeRevisionId === null ? -1 : ids.indexOf(this.activeRevisionId);
+    const nextId = ids[(current + 1) % ids.length]!;
+    this.setActiveRevision(nextId);
+    const target = this.revisionRunIds.get(String(nextId))?.[0] ?? this.revisionParagraphIds.get(nextId)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
+    return nextId;
+  }
+
+  focusPreviousRevision(): number | null {
+    const ids = this.filteredRevisionIds();
+    if (!ids.length) {
+      this.setActiveRevision(null);
+      return null;
+    }
+    const current = this.activeRevisionId === null ? ids.length : ids.indexOf(this.activeRevisionId);
+    const previousId = ids[(current - 1 + ids.length) % ids.length]!;
+    this.setActiveRevision(previousId);
+    const target = this.revisionRunIds.get(String(previousId))?.[0] ?? this.revisionParagraphIds.get(previousId)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
+    return previousId;
+  }
+
+  focusRevision(id: number): boolean {
+    if (!Number.isSafeInteger(id) || id < 0) throw new Error('revision id must be a non-negative integer.');
+    if (!this.filteredRevisionIds().includes(id)) return false;
+    this.setActiveRevision(id);
+    const target = this.revisionRunIds.get(String(id))?.[0] ?? this.revisionParagraphIds.get(id)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+
   render(): void {
     if (this.destroyed) return;
     this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
@@ -409,18 +546,21 @@ export class DocxEditor {
     this.commentParagraphIds ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
+    this.revisionRunIds ??= new Map();
+    this.revisionParagraphIds ??= new Map();
+    this.revisionRunIds.clear();
+    this.revisionParagraphIds.clear();
     const reviewContext: ReviewRenderContext = {
       ...(this.reviewFilter.authors ? { authors: new Set(this.reviewFilter.authors.map((author) => reviewerBucketKey(author))) } : {}),
       deletedTextByRun: new Map(),
+      revisionColors: new Map(),
     };
     try {
-      if (this.reviewFilter.revisionView === 'original') {
-        for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
-          if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
-          if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
-          const key = `${revision.paragraph}:${revision.run}`;
-          reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
-        }
+      for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
+        if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
+        if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
+        const key = `${revision.paragraph}:${revision.run}`;
+        reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
       }
       for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
         if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(comment.author)))) continue;
@@ -462,8 +602,10 @@ export class DocxEditor {
       }
       if (range) this.restoreDocumentRange(range);
       this.updateRangeSelection(this.captureDocumentRange());
+      this.setActiveRevision(this.activeRevisionId);
     } finally {
       reviewContext.deletedTextByRun.clear();
+      reviewContext.revisionColors.clear();
     }
   }
 
@@ -484,6 +626,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return '';
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return '';
+      if (current.dataset.docxDeleted !== undefined) return '';
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return '';
       if (current.tagName === 'BR') return '\n';
       const text = Array.from(current.childNodes).map(walk).join('');
@@ -756,6 +899,44 @@ export class DocxEditor {
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     if (!this.isMarkupReviewView()) content.setAttribute('aria-readonly', 'true');
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    const runRevisionIds = new Set<number>();
+    const hasRunRevision = this.reviewFilter.showRevisions && paragraph.runs.some((run) =>
+      run.revisions?.some((revision) => {
+        const visible = !reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)));
+        if (visible) runRevisionIds.add(revision.id);
+        return visible;
+      }));
+    const visibleParagraphRevision = this.reviewFilter.showRevisions && paragraph.paragraphRevision &&
+      (!reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(paragraph.paragraphRevision.author))))
+      ? paragraph.paragraphRevision
+      : undefined;
+    if ((hasRunRevision || visibleParagraphRevision) && this.reviewFilter.revisionView === 'markup') {
+      const marker = this.makeMark('▎', '修订变更条');
+      marker.classList.add('docx-change-bar');
+      marker.style.position = 'absolute';
+      marker.style.left = '-0.9em';
+      marker.style.top = '0';
+      marker.style.bottom = '0';
+      marker.style.display = 'flex';
+      marker.style.alignItems = 'stretch';
+      marker.style.color = this.reviewColor(visibleParagraphRevision?.author, reviewContext);
+      marker.style.opacity = '0.9';
+      marker.textContent = '│';
+      marker.title = '';
+      marker.setAttribute('role', 'presentation');
+      marker.setAttribute('aria-hidden', 'true');
+      element.append(marker);
+      const markerRevisionIds = new Set<number>(runRevisionIds);
+      if (visibleParagraphRevision) markerRevisionIds.add(visibleParagraphRevision.id);
+      if (markerRevisionIds.size) {
+        element.dataset.docxRevisionIds = [...markerRevisionIds].join(',');
+      }
+      for (const id of markerRevisionIds) {
+        const list = this.revisionParagraphIds.get(id) ?? [];
+        list.push(element);
+        this.revisionParagraphIds.set(id, list);
+      }
+    }
     const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
     if (paragraphCommentIds?.length) {
       element.classList.add('docx-comment-anchor');
@@ -770,7 +951,8 @@ export class DocxEditor {
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
-      currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, defaultTabStopTwips, currentLineOffsetPx);
+      currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
+      this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
         marker.className = 'docx-note-ref';
@@ -903,6 +1085,60 @@ export class DocxEditor {
     return { ...run, text, revisions: revisions.length ? revisions : undefined };
   }
 
+  private reviewColor(author: string | undefined, reviewContext: ReviewRenderContext): string {
+    const key = reviewerBucketKey(reviewerBucketOf(author));
+    let color = reviewContext.revisionColors.get(key);
+    if (!color) {
+      color = REVISION_COLOR_PALETTE[revisionColorIndexForKey(key)]!;
+      reviewContext.revisionColors.set(key, color);
+    }
+    return color;
+  }
+
+  private revisionAriaDescription(revisions: RunInfo['revisions']): string {
+    if (!revisions?.length) return '';
+    const labels = [];
+    if (revisions.some((revision) => revision.kind === 'insertion')) labels.push('插入');
+    if (revisions.some((revision) => revision.kind === 'deletion')) labels.push('删除');
+    const author = revisions.find((revision) => revision.author !== undefined)?.author;
+    return author ? `修订：${labels.join(' / ') || '变更'}，作者 ${author}` : `修订：${labels.join(' / ') || '变更'}`;
+  }
+
+  private registerRevisionNode(ids: number[], node: HTMLElement): void {
+    if (!ids.length) return;
+    node.dataset.docxRevisionIds = ids.join(',');
+    node.tabIndex = -1;
+    for (const id of ids) {
+      const key = String(id);
+      const list = this.revisionRunIds.get(key) ?? [];
+      list.push(node);
+      this.revisionRunIds.set(key, list);
+    }
+  }
+
+  private appendDeletedRunVisualization(
+    paragraphElement: HTMLElement,
+    paragraphIndex: number,
+    run: RunInfo,
+    reviewContext: ReviewRenderContext,
+  ): void {
+    if (this.reviewFilter.revisionView !== 'markup' || !run.revisions?.some((revision) => revision.kind === 'deletion')) return;
+    const deletedText = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`);
+    if (!deletedText) return;
+    const marker = this.root.ownerDocument.createElement('span');
+    marker.className = 'docx-deleted-text';
+    marker.dataset.docxDeleted = '1';
+    marker.contentEditable = 'false';
+    marker.textContent = deletedText;
+    marker.style.textDecoration = 'line-through';
+    marker.style.opacity = '0.85';
+    const authorRevision = run.revisions.find((revision) => revision.kind === 'deletion');
+    marker.style.color = this.reviewColor(authorRevision?.author, reviewContext);
+    marker.setAttribute('aria-label', `修订删除文本：${deletedText}`);
+    this.registerRevisionNode(run.revisions.map((revision) => revision.id), marker);
+    paragraphElement.append(marker);
+  }
+
   private makeMark(text: string, label: string): HTMLElement {
     const mark = this.root.ownerDocument.createElement('span');
     mark.className = 'docx-mark';
@@ -990,6 +1226,7 @@ export class DocxEditor {
     paragraphElement: HTMLElement,
     paragraph: ParagraphInfo,
     run: RunInfo,
+    reviewContext: ReviewRenderContext,
     defaultTabStopTwips: number,
     currentLineOffsetPx: number,
   ): number {
@@ -1026,6 +1263,18 @@ export class DocxEditor {
       if (unsafe) runSpan.style.textDecoration = 'underline wavy red';
     }
     applyRunStyle(runSpan, run);
+    if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup') {
+      const hasInsertion = run.revisions.some((revision) => revision.kind === 'insertion');
+      const hasDeletion = run.revisions.some((revision) => revision.kind === 'deletion');
+      const author = run.revisions.find((revision) => revision.author !== undefined)?.author;
+      const revisionColor = this.reviewColor(author, reviewContext);
+      const textDecoration = [hasInsertion ? 'underline' : '', hasDeletion ? 'line-through' : ''].filter(Boolean).join(' ');
+      if (textDecoration) runSpan.style.textDecoration = textDecoration;
+      if (textDecoration) runSpan.style.textDecorationColor = revisionColor;
+      const description = this.revisionAriaDescription(run.revisions);
+      if (description) runSpan.setAttribute('aria-description', description);
+      this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
+    }
     const segments = run.text.split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
@@ -1534,6 +1783,7 @@ export class DocxEditor {
     if (node.nodeType !== 1) return 0;
     const current = node as HTMLElement;
     if (current.dataset.image || current.dataset.docxMark !== undefined) return 0;
+    if (current.dataset.docxDeleted !== undefined) return 0;
     if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return 0;
     if (current.tagName === 'BR') return 1;
     return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
@@ -1578,6 +1828,7 @@ export class DocxEditor {
         if (node.nodeType !== 1) return true;
         const current = node as HTMLElement;
         if (current.dataset.image || current.dataset.docxMark !== undefined) return true;
+        if (current.dataset.docxDeleted !== undefined) return true;
         if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return true;
         if (current.tagName === 'BR') {
           offset += targetOffset > 0 ? 1 : 0;
@@ -1596,6 +1847,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return false;
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return false;
+      if (current.dataset.docxDeleted !== undefined) return false;
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return false;
       if (current.tagName === 'BR') {
         offset += 1;
@@ -1624,6 +1876,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return null;
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return null;
+      if (current.dataset.docxDeleted !== undefined) return null;
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return null;
       if (current.tagName === 'BR') {
         if (remaining <= 1) {
