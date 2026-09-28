@@ -180,7 +180,7 @@ export function parseDocumentProtection(settingsDocument: Document | null): Docu
   const enforcement = protection.getAttributeNS(WORD_NS, 'enforcement') ?? protection.getAttribute('w:enforcement');
   const enforced = enforcement === null ? undefined : !['0', 'false', 'off'].includes(enforcement.toLowerCase());
   return {
-    enabled: enforced !== false,
+    enabled: enforced === true,
     ...(edit && DOCUMENT_PROTECTION_EDITS.has(edit as DocumentProtection['edit']) ? { edit: edit as DocumentProtection['edit'] } : {}),
     ...(enforced !== undefined ? { enforced } : {}),
   };

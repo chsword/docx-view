@@ -3124,11 +3124,12 @@ export class DocxDocument {
       ? this.getPartDocument('_rels/.rels')
       : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const root = rels.documentElement!;
+    const normalizedTargetPath = decodePackageTarget(targetPath);
     const existing = children(root, 'Relationship', REL_NS).find((relation) => {
       if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') return false;
       const target = relation.getAttribute('Target');
       if (!target) return false;
-      return decodePackageTarget(target) === targetPath;
+      return decodePackageTarget(target) === normalizedTargetPath;
     });
     if (existing) return;
     const relationship = rels.createElementNS(REL_NS, 'Relationship');

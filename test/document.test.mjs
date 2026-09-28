@@ -3129,6 +3129,11 @@ test('getDocumentProtection reads current declaration', () => {
   assert.deepEqual(doc.getDocumentProtection(), { enabled: true, edit: 'comments', enforced: true });
 });
 
+test('getDocumentProtection treats missing enforcement as disabled', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="comments"/></w:settings>`);
+  assert.deepEqual(doc.getDocumentProtection(), { enabled: false, edit: 'comments' });
+});
+
 test('setDocumentProtection inserts documentProtection in CT_Settings order', () => {
   const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:revisionView/><w:doNotTrackMoves/></w:settings>`);
   doc.setDocumentProtection({ enabled: true, edit: 'trackedChanges' });
