@@ -313,9 +313,14 @@ export class DocxEditor {
     return this.selectedRangeInfo ? { ...this.selectedRangeInfo.format } : null;
   }
 
+  private isMarkupReviewView(): boolean {
+    return (this.reviewFilter ?? normalizeReviewFilter(this.options?.reviewFilter)).revisionView === 'markup';
+  }
+
   /** Commit visible text before an external API operation or an export. */
   flush(): void {
     if (this.destroyed) return;
+    if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
       const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
@@ -725,11 +730,12 @@ export class DocxEditor {
       element.dataset.numberingFormat = paragraph.numbering.format;
     }
     content.className = 'docx-paragraph-content';
-    content.contentEditable = 'true';
+    content.contentEditable = this.isMarkupReviewView() ? 'true' : 'false';
     content.spellcheck = false;
     content.setAttribute('role', 'textbox');
     content.setAttribute('aria-multiline', 'true');
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
+    if (!this.isMarkupReviewView()) content.setAttribute('aria-readonly', 'true');
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
     const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
     if (paragraphCommentIds?.length) {

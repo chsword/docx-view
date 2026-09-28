@@ -635,6 +635,26 @@ test('setReviewFilter flushes pending edits instead of discarding them', () => {
   assert.equal(doc.revision, before + 1);
 });
 
+test('flush is a no-op in original review view to avoid projected-text writeback', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'ABXDEF');
+  const beforeRevision = doc.revision;
+  const beforeRevisions = doc.getRevisions().map((revision) => ({ ...revision }));
+  const { editor } = makeFlushEditor({
+    text: 'ABCDEFZ',
+    previous: 'ABCDEF',
+    document: doc,
+  });
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'original' };
+  editor.options = {};
+  editor.flush();
+  assert.equal(doc.revision, beforeRevision);
+  assert.deepEqual(doc.getRevisions(), beforeRevisions);
+  assert.equal(doc.getParagraphs()[0].text, 'ABXDEF');
+});
+
 test('toggling reviewFilter fields does not mutate document revision, text, or XML bytes', () => {
   const doc = DocxDocument.create();
   doc.setTrackChanges(true);
