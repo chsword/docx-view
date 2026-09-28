@@ -3764,6 +3764,17 @@ export class DocxDocument {
     if (this.tableCellLocationCache?.revision === this.revision) return this.tableCellLocationCache.locations;
     const locations = new Map<number, TableCellLocation>();
     let tableIndex = 0;
+    const findActiveVertical = (
+      active: Map<number, { start: number; end: number; location: TableCellLocation }>,
+      start: number,
+      span: number,
+    ): { start: number; end: number; location: TableCellLocation } | undefined => {
+      for (let index = start; index < start + span; index++) {
+        const merge = active.get(index);
+        if (merge && merge.start <= start && merge.end >= start + span) return merge;
+      }
+      return undefined;
+    };
     const setActiveVertical = (
       target: Map<number, { start: number; end: number; location: TableCellLocation }>,
       start: number,
@@ -3804,9 +3815,9 @@ export class DocxDocument {
             colSpan,
             nested: false,
           };
-          const vertical = activeVertical.get(col);
+          const vertical = findActiveVertical(activeVertical, col, colSpan);
           if (cell.isMergeContinuation) {
-            if (cell.rowSpan === 0 && vertical && vertical.start <= col && vertical.end >= col + colSpan) {
+            if (cell.rowSpan === 0 && vertical) {
               location = vertical.location;
               setActiveVertical(nextActive, col, col + colSpan, vertical.location);
             } else if (activeHorizontalLocation && activeHorizontalEnd === col) {
