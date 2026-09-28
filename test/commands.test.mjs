@@ -126,6 +126,8 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['table.insertRow remains enabled without table context', 'table.insertRow', makeContext(), true],
     ['image.replace disables without a selected image', 'image.replace', makeContext(), false],
     ['image.replace enables with a selected image', 'image.replace', makeContext({ image: { relationshipId: 'rId5' } }), true],
+    ['image.setAlt disables without a selected image', 'image.setAlt', makeContext(), false],
+    ['image.setAlt enables with a selected image', 'image.setAlt', makeContext({ image: { relationshipId: 'rId6' } }), true],
     ['comment.reply disables without a selected comment', 'comment.reply', makeContext(), false],
     ['comment.reply enables with a selected comment', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],
     ['review.acceptAll disables when no revisions are visible', 'review.acceptAll', makeContext(), false],

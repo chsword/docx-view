@@ -293,7 +293,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'image.setAlt',
       title: '设置图片替代文本',
       group: 'image',
-      enabled: () => true,
+      enabled: (ctx) => ctx.image !== null,
       run: () => deps.actions.setImageAlt(deps.getImageAltValue()),
     },
     {

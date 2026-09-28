@@ -628,6 +628,23 @@ function selectedCell(): { table: number; row: number; col: number; rowSpan: num
   };
 }
 
+function currentTableContext(): ReturnType<typeof selectedCell> | null {
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+  if (!cell) return null;
+  const tableElement = cell.closest('.docx-table');
+  if (!tableElement || tableElement.parentElement?.closest('.docx-table')) return null;
+  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
+  if (table < 0) return null;
+  return {
+    table,
+    row: Number(cell.dataset.rowStart ?? 0),
+    col: Number(cell.dataset.gridStart ?? 0),
+    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
+    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
+  };
+}
+
 function toDocumentRange(range: DocumentRange): DocumentRange {
   const paragraphByIndex = new Map(doc.getParagraphs().map((paragraph) => [paragraph.index, paragraph.text]));
   const toOffset = (paragraph: number, points: number): number => {
@@ -980,7 +997,7 @@ function buildCommandContext(source: CommandContext['source'] = 'ribbon'): Comma
       format: selectedRangeFormat,
       collapsed: !range || (range.start.paragraph === range.end.paragraph && range.start.offset === range.end.offset),
     },
-    table: null,
+    table: currentTableContext(),
     image: editor.selectedImage ?? null,
     hyperlink: null,
     revisionsAtPoint: [],
