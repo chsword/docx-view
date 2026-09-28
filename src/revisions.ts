@@ -1,0 +1,188 @@
+import type { Document, Element, Node } from '@xmldom/xmldom';
+import type { ParagraphFormat, RevisionInfo, RevisionMark, RunFormat } from './types.js';
+import { readParagraphProperties, readRunProperties } from './styles.js';
+import { WORD_NS, assertText, children, descendants, wordElement } from './xml.js';
+
+const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange'] as const;
+const VISIBLE_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
+const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
+const WRAPPER_KIND = {
+  ins: 'insertion',
+  moveTo: 'insertion',
+  del: 'deletion',
+  moveFrom: 'deletion',
+} as const satisfies Partial<Record<string, RevisionMark['kind']>>;
+const CHANGE_KIND = {
+  rPrChange: 'runFormatChange',
+  pPrChange: 'paragraphFormatChange',
+  tblPrChange: 'tableFormatChange',
+  trPrChange: 'rowFormatChange',
+  tcPrChange: 'cellFormatChange',
+} as const satisfies Partial<Record<string, RevisionMark['kind']>>;
+const PARENT_PROPERTY_ORDER = {
+  trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight', 'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
+} as const;
+
+function revisionAttribute(element: Element, name: string): string | undefined {
+  return element.getAttributeNS(WORD_NS, name) ?? element.getAttribute(`w:${name}`) ?? undefined;
+}
+
+function revisionIdOf(element: Element): number | undefined {
+  const raw = revisionAttribute(element, 'id');
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function revisionAuthorOf(element: Element): string | undefined {
+  const author = revisionAttribute(element, 'author')?.trim();
+  return author ? author : undefined;
+}
+
+function revisionDateOf(element: Element): string | undefined {
+  const date = revisionAttribute(element, 'date')?.trim();
+  return date && Number.isFinite(Date.parse(date)) ? date : undefined;
+}
+
+function isDeletedWrapper(element: Element): boolean {
+  return element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '');
+}
+
+function collectTextElements(element: Element, mode: 'visible' | 'deleted'): Element[] {
+  const result: Element[] = [];
+  const walk = (node: Node, deletedDepth = 0): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const current = child as Element;
+      if (current.namespaceURI === WORD_NS) {
+        const localName = current.localName ?? '';
+        if (localName === 'p') continue;
+        const inDeleted = deletedDepth > 0 || localName === 'delText';
+        if (mode === 'visible' && VISIBLE_TEXT_NAMES.has(localName) && !inDeleted) {
+          result.push(current);
+          continue;
+        }
+        if (mode === 'deleted' && DELETED_TEXT_NAMES.has(localName) && inDeleted) {
+          result.push(current);
+          continue;
+        }
+      }
+      walk(current, deletedDepth + (isDeletedWrapper(current) ? 1 : 0));
+    }
+  };
+  walk(element);
+  return result;
+}
+
+function elementText(element: Element): string {
+  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
+  if (element.localName === 'tab') return '\t';
+  if (element.localName === 'noBreakHyphen') return '\u2011';
+  if (element.localName === 'softHyphen') return '\u00ad';
+  if (element.localName === 'sym') {
+    const value = revisionAttribute(element, 'char');
+    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
+    return String.fromCharCode(Number.parseInt(value, 16));
+  }
+  return '\n';
+}
+
+function previousFormatOf(element: Element, theme: Parameters<typeof readRunProperties>[1]): RunFormat | ParagraphFormat | undefined {
+  const compact = <T extends object>(value: T): T =>
+    Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+  switch (element.localName) {
+    case 'rPrChange': {
+      const format = compact(readRunProperties(children(element, 'rPr')[0], theme));
+      return Object.values(format).some((value) => value !== undefined) ? format : undefined;
+    }
+    case 'pPrChange': {
+      const format = compact(readParagraphProperties(children(element, 'pPr')[0]));
+      return Object.values(format).some((value) => value !== undefined) ? format : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function orderedRevisionChild(parent: Element, name: string): Element {
+  let result = children(parent, name)[0];
+  if (result) return result;
+  result = wordElement(parent.ownerDocument!, name);
+  const order: string[] = [...(PARENT_PROPERTY_ORDER[parent.localName as keyof typeof PARENT_PROPERTY_ORDER] ?? [])];
+  const position = order.indexOf(name);
+  const following = position === -1 ? undefined : children(parent).find((child) => order.indexOf(child.localName ?? '') > position);
+  parent.insertBefore(result, following ?? null);
+  return result;
+}
+
+export function hasRevisionMarkup(root: Document | Element): boolean {
+  return REVISION_NAMES.some((name) => descendants(root as Document | Element, name).length > 0);
+}
+
+export function visibleTextOf(element: Element): string {
+  return collectTextElements(element, 'visible').map(elementText).join('');
+}
+
+export function deletedTextOf(element: Element): string {
+  return collectTextElements(element, 'deleted').map(elementText).join('');
+}
+
+export function readRevisionMark(element: Element, kind: RevisionMark['kind'], theme?: Parameters<typeof readRunProperties>[1]):
+  (RevisionMark & Pick<RevisionInfo, 'previousFormat'>) | undefined {
+  const id = revisionIdOf(element);
+  if (id === undefined) return undefined;
+  return {
+    id,
+    kind,
+    author: revisionAuthorOf(element),
+    date: revisionDateOf(element),
+    previousFormat: theme ? previousFormatOf(element, theme) : undefined,
+  };
+}
+
+export function readRunRevisionMarks(run: Element, paragraph: Element, theme: Parameters<typeof readRunProperties>[1]):
+  (RevisionMark & Pick<RevisionInfo, 'previousFormat'>)[] {
+  const result: (RevisionMark & Pick<RevisionInfo, 'previousFormat'>)[] = [];
+  const push = (element: Element | undefined, kind: RevisionMark['kind'] | undefined): void => {
+    if (!element || !kind) return;
+    const mark = readRevisionMark(element, kind, theme);
+    if (mark) result.push(mark);
+  };
+  for (let parent = run.parentNode; parent && parent !== paragraph; parent = parent.parentNode) {
+    if (parent.nodeType !== 1) continue;
+    const element = parent as Element;
+    if (element.namespaceURI !== WORD_NS) continue;
+    push(element, WRAPPER_KIND[element.localName as keyof typeof WRAPPER_KIND]);
+  }
+  const props = children(run, 'rPr')[0];
+  if (!props) return result;
+  push(children(props, 'ins')[0], 'insertion');
+  push(children(props, 'del')[0], 'deletion');
+  push(children(props, 'rPrChange')[0], 'runFormatChange');
+  return result;
+}
+
+export function readParagraphRevisionMark(paragraph: Element, theme: Parameters<typeof readRunProperties>[1]):
+  (RevisionMark & Pick<RevisionInfo, 'previousFormat'>) | undefined {
+  const props = children(paragraph, 'pPr')[0];
+  const change = props ? children(props, 'pPrChange')[0] : undefined;
+  return change ? readRevisionMark(change, 'paragraphFormatChange', theme) : undefined;
+}
+
+export function markRevision(parent: Element, kind: 'ins' | 'del', author?: string, date?: string): Element {
+  if (author !== undefined) assertText(author, 'author');
+  if (date !== undefined) assertText(date, 'date');
+  const document = parent.ownerDocument!;
+  const used = Array.from(document.getElementsByTagNameNS(WORD_NS, '*'))
+    .map((element) => revisionIdOf(element))
+    .filter((value): value is number => value !== undefined);
+  const marker = orderedRevisionChild(parent, kind);
+  marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
+  if (author?.trim()) marker.setAttributeNS(WORD_NS, 'w:author', author.trim());
+  else { marker.removeAttributeNS(WORD_NS, 'author'); marker.removeAttribute('w:author'); }
+  if (date?.trim()) marker.setAttributeNS(WORD_NS, 'w:date', date.trim());
+  else { marker.removeAttributeNS(WORD_NS, 'date'); marker.removeAttribute('w:date'); }
+  marker.removeAttributeNS(WORD_NS, 'val');
+  marker.removeAttribute('w:val');
+  return marker;
+}

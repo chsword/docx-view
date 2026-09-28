@@ -118,6 +118,7 @@ export interface NumberingInfo {
 export interface RunInfo extends RunFormat {
   index: number;
   text: string;
+  revisions?: RevisionMark[];
   effective?: RunFormat;
   hyperlink?: { url?: string; anchor?: string; tooltip?: string; unsafe: boolean };
   image?: ImageInfo;
@@ -129,6 +130,7 @@ export interface ParagraphInfo extends ParagraphFormat {
   index: number;
   text: string;
   runs: RunInfo[];
+  paragraphRevision?: RevisionMark;
   effective?: ParagraphFormat;
   numbering?: NumberingInfo;
   images: ImageInfo[];
@@ -317,6 +319,20 @@ export interface DocumentSnapshot {
   styles: StyleInfo[];
   hyperlinks: HyperlinkInfo[];
   bookmarks: BookmarkInfo[];
+}
+
+export interface RevisionMark {
+  id: number;
+  kind: 'insertion' | 'deletion' | 'runFormatChange' | 'paragraphFormatChange' | 'tableFormatChange' | 'rowFormatChange' | 'cellFormatChange';
+  author?: string;
+  date?: string;
+}
+
+export interface RevisionInfo extends RevisionMark {
+  paragraph: number;
+  run?: number;
+  deletedText?: string;
+  previousFormat?: RunFormat | ParagraphFormat;
 }
 
 export interface NoteSettingsValue {

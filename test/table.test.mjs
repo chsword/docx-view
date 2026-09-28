@@ -328,6 +328,30 @@ test('formatTableRow writes row height and header properties', () => {
   assert.match(xml, /<w:tblHeader\/>/);
 });
 
+test('formatTableRow writes legal tracked row insertion/deletion markup with ids', async () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.formatTableRow(0, 0, { inserted: true, deleted: true });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:ins w:id="\d+"\/>/);
+  assert.match(xml, /<w:del w:id="\d+"\/>/);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reopened.getTable(0).rows[0].format.inserted, true);
+  assert.equal(reopened.getTable(0).rows[0].format.deleted, true);
+});
+
+test('formatTableRow(false) removes tracked row markup instead of writing boolean val', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:trPr><w:ins w:id="4"/><w:del w:id="5"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr>
+  `));
+  doc.formatTableRow(0, 0, { inserted: false, deleted: false });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.doesNotMatch(xml, /w:ins/);
+  assert.doesNotMatch(xml, /w:del/);
+  assert.doesNotMatch(xml, /w:val="0"/);
+});
+
 test('formatCell writes cell formatting and preserves merge metadata fields', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A']]);

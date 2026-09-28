@@ -3,7 +3,7 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, DocumentBlock, DocumentSnapshot, HyperlinkInfo, ImageInfo, NoteInfo,
   DocumentRange, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, SectionInfo, SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo,
+  RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo, SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo,
   TextRange,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
@@ -50,8 +50,17 @@ import {
 import {
   defaultNotePartXml, formatNoteMarker, noteContentType, noteRefName, noteReferenceName, noteReferenceStyle,
   noteRelationshipType, parseCustomMark, parseDocumentNoteSettings, parseNoteEntries, parseSectionNoteSettings,
-  setNoteSettingsOn, type NoteKind,
+  setNoteSettingsOn, setTrackChangesOn, type NoteKind,
 } from './notes.js';
+import {
+  deletedTextOf,
+  hasRevisionMarkup,
+  markRevision,
+  readParagraphRevisionMark,
+  readRevisionMark,
+  readRunRevisionMarks,
+  visibleTextOf,
+} from './revisions.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
 const MAX_PART = 16 * 1024 * 1024;
@@ -235,18 +244,20 @@ function clearParagraphContent(paragraph: Element): void {
 
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
-  function walk(node: Node): void {
+  function walk(node: Node, deletedDepth = 0): void {
     for (let child = node.firstChild; child; child = child.nextSibling) {
       if (child.nodeType !== 1) continue;
       const element = child as Element;
       if (element.namespaceURI === WORD_NS) {
+        const localName = element.localName ?? '';
         if (element.localName === 'p') continue;
-        if (['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? '')) {
+        const inDeleted = deletedDepth > 0 || localName === 'delText';
+        if (!inDeleted && ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(localName)) {
           result.push(element);
           continue;
         }
       }
-      walk(element);
+      walk(element, deletedDepth + (element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '') ? 1 : 0));
     }
   }
   walk(element);
@@ -264,7 +275,7 @@ function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
 }
 
 function elementText(element: Element): string {
-  if (element.localName === 't') return element.textContent ?? '';
+  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
   if (element.localName === 'tab') return '\t';
   if (element.localName === 'noBreakHyphen') return '\u2011';
   if (element.localName === 'softHyphen') return '\u00ad';
@@ -288,7 +299,7 @@ function fieldPlaceholder(root: Element): string | undefined {
 }
 
 function textOf(element: Element): string {
-  const text = textElements(element).map(elementText).join('');
+  const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
   if (text) return text;
   return fieldPlaceholder(element) ?? '';
 }
@@ -459,6 +470,34 @@ function isDescendantOfWithin(node: Node, ancestor: Node, stopAt: Node): boolean
   return false;
 }
 
+function nearestWordAncestor(node: Node | null, localName: string): Element | undefined {
+  for (let current = node; current; current = current.parentNode) {
+    if (current.nodeType !== 1) continue;
+    const element = current as Element;
+    if (element.namespaceURI === WORD_NS && element.localName === localName) return element;
+  }
+  return undefined;
+}
+
+function revisionParagraphAnchor(element: Element): Element | undefined {
+  const ancestorParagraph = nearestWordAncestor(element, 'p');
+  if (ancestorParagraph) return ancestorParagraph;
+  const descendantParagraph = descendants(element, 'p')[0];
+  if (descendantParagraph) return descendantParagraph;
+  for (let current = element.parentNode; current; current = current.parentNode) {
+    if (current.nodeType !== 1) continue;
+    const paragraph = descendants(current as Element, 'p')[0];
+    if (paragraph) return paragraph;
+  }
+  return undefined;
+}
+
+function revisionRunAnchor(paragraph: Element, element: Element): Element | undefined {
+  const ancestorRun = nearestWordAncestor(element, 'r');
+  if (ancestorRun && isDescendantOfWithin(ancestorRun, paragraph, paragraph.parentNode ?? paragraph)) return ancestorRun;
+  return ownRuns(paragraph).find((run) => isDescendantOfWithin(run, element, paragraph));
+}
+
 function runHyperlinkInfo(run: Element, paragraph: Element, relationships?: Map<string, RelationshipTarget>): RunInfo['hyperlink'] {
   let parent = run.parentNode;
   while (parent && parent !== paragraph) {
@@ -611,6 +650,7 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
   paragraphIndex: number, imageContext?: ImageReadContext,
   noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): RunInfo {
   const direct = readRunProperties(children(run, 'rPr')[0], styles.theme);
+  const revisions = readRunRevisionMarks(run, paragraph, styles.theme);
   const images = imageContext
     ? readRunImages(run, paragraphIndex, index, imageContext.relationships, imageContext.getContentType, imageContext.sourcePartPath)
     : [];
@@ -620,6 +660,12 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
     index,
     text: textOf(run),
     ...direct,
+    revisions: revisions.length ? revisions.map(({ id, kind, author, date }) => ({
+      id,
+      kind,
+      ...(author !== undefined ? { author } : {}),
+      ...(date !== undefined ? { date } : {}),
+    })) : undefined,
     effective: computeEffectiveRunFormat(styles, paragraph, run),
     hyperlink: runHyperlinkInfo(run, paragraph, imageContext?.relationships),
     images,
@@ -632,6 +678,7 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
   imageContext?: ImageReadContext,
   noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): ParagraphInfo {
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
+  const paragraphRevision = readParagraphRevisionMark(paragraph, styles.theme);
   const runElements = ownRuns(paragraph);
   const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber));
   return {
@@ -639,6 +686,12 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
     text: textOf(paragraph),
     ...direct,
     runs,
+    paragraphRevision: paragraphRevision ? {
+      id: paragraphRevision.id,
+      kind: paragraphRevision.kind,
+      ...(paragraphRevision.author !== undefined ? { author: paragraphRevision.author } : {}),
+      ...(paragraphRevision.date !== undefined ? { date: paragraphRevision.date } : {}),
+    } : undefined,
     effective: computeEffectiveParagraphFormat(styles, paragraph),
     numbering,
     images: runs.flatMap(run => run.images ?? []),
@@ -1165,8 +1218,14 @@ function setRowFormat(row: Element, format: RowFormat): void {
   if (format.cantSplit !== undefined) boolValue(props, 'cantSplit', format.cantSplit);
   if (format.header !== undefined) boolValue(props, 'tblHeader', format.header);
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
-  if (format.deleted !== undefined) boolValue(props, 'del', format.deleted);
-  if (format.inserted !== undefined) boolValue(props, 'ins', format.inserted);
+  if (format.deleted !== undefined) {
+    removeWordChildren(props, 'del');
+    if (format.deleted) markRevision(props, 'del');
+  }
+  if (format.inserted !== undefined) {
+    removeWordChildren(props, 'ins');
+    if (format.inserted) markRevision(props, 'ins');
+  }
 }
 
 function setCellFormat(cell: Element, format: CellFormat): void {
@@ -1597,6 +1656,7 @@ export class DocxDocument {
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
   private noteStateCache?: { revision: number; state: NoteState };
+  private revisionInfoCache?: { revision: number; revisions: RevisionInfo[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -1795,6 +1855,7 @@ export class DocxDocument {
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
       this.noteStateCache = undefined;
+      this.revisionInfoCache = undefined;
       this.imageDataUrls.clear();
     } catch (error) {
       this.restoreState(previous);
@@ -1845,6 +1906,7 @@ export class DocxDocument {
     numberingContextCache: NumberingContext | undefined;
     stylesCache: { revision: number; context: StylesContext } | undefined;
     noteStateCache: { revision: number; state: NoteState } | undefined;
+    revisionInfoCache: { revision: number; revisions: RevisionInfo[] } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -1857,6 +1919,7 @@ export class DocxDocument {
       numberingContextCache: this.numberingContextCache,
       stylesCache: this.stylesCache,
       noteStateCache: this.noteStateCache,
+      revisionInfoCache: this.revisionInfoCache,
       imageDataUrls: new Map(this.imageDataUrls),
     };
   }
@@ -1871,6 +1934,7 @@ export class DocxDocument {
     this.numberingContextCache = state.numberingContextCache;
     this.stylesCache = state.stylesCache;
     this.noteStateCache = state.noteStateCache;
+    this.revisionInfoCache = state.revisionInfoCache;
     this.imageDataUrls = state.imageDataUrls;
   }
 
@@ -1919,6 +1983,7 @@ export class DocxDocument {
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
     this.noteStateCache = undefined;
+    this.revisionInfoCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -2352,6 +2417,97 @@ export class DocxDocument {
         });
       }
     }
+    return result;
+  }
+
+  getRevisions(filter: { authors?: string[]; kinds?: RevisionInfo['kind'][] } = {}): RevisionInfo[] {
+    const revisions = this.collectRevisions();
+    if (!filter.authors && !filter.kinds) return revisions;
+    const authors = filter.authors ? new Set(filter.authors) : undefined;
+    const kinds = filter.kinds ? new Set(filter.kinds) : undefined;
+    return revisions.filter((revision) =>
+      (!authors || (revision.author !== undefined && authors.has(revision.author))) &&
+      (!kinds || kinds.has(revision.kind)));
+  }
+
+  private collectRevisions(): RevisionInfo[] {
+    if (this.revisionInfoCache?.revision === this.revision) return this.revisionInfoCache.revisions;
+    const document = this.getCachedPartDocument(this.mainPath);
+    if (!hasRevisionMarkup(document)) {
+      this.revisionInfoCache = { revision: this.revision, revisions: [] };
+      return this.revisionInfoCache.revisions;
+    }
+    const body = bodyOf(document);
+    const theme = this.getStylesContext().theme;
+    const paragraphs = descendants(body, 'p');
+    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    const runIndexByParagraph = new Map<Element, Map<Element, number>>();
+    const runIndexOf = (paragraph: Element, run: Element): number | undefined => {
+      let entries = runIndexByParagraph.get(paragraph);
+      if (!entries) {
+        entries = new Map(ownRuns(paragraph).map((item, index) => [item, index]));
+        runIndexByParagraph.set(paragraph, entries);
+      }
+      return entries.get(run);
+    };
+    const result: RevisionInfo[] = [];
+    const push = (element: Element, kind: RevisionInfo['kind']): void => {
+      const paragraph = revisionParagraphAnchor(element);
+      if (!paragraph) return;
+      const paragraphNumber = paragraphIndex.get(paragraph);
+      if (paragraphNumber === undefined) return;
+      const mark = readRevisionMark(element, kind, theme);
+      if (!mark) return;
+      const run = revisionRunAnchor(paragraph, element);
+      const deletedText = ['del', 'moveFrom'].includes(element.localName ?? '') ? deletedTextOf(element) || undefined : undefined;
+      const runNumber = run ? runIndexOf(paragraph, run) : undefined;
+      const info: RevisionInfo = {
+        id: mark.id,
+        kind: mark.kind,
+        paragraph: paragraphNumber,
+        ...(mark.author !== undefined ? { author: mark.author } : {}),
+        ...(mark.date !== undefined ? { date: mark.date } : {}),
+        ...(runNumber !== undefined ? { run: runNumber } : {}),
+        ...(deletedText !== undefined ? { deletedText } : {}),
+        ...(mark.previousFormat !== undefined ? { previousFormat: mark.previousFormat } : {}),
+      };
+      result.push(info);
+    };
+    const walk = (node: Node): void => {
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        if (element.namespaceURI !== WORD_NS) continue;
+        switch (element.localName) {
+          case 'ins':
+          case 'moveTo':
+            push(element, 'insertion');
+            break;
+          case 'del':
+          case 'moveFrom':
+            push(element, 'deletion');
+            break;
+          case 'rPrChange':
+            push(element, 'runFormatChange');
+            break;
+          case 'pPrChange':
+            push(element, 'paragraphFormatChange');
+            break;
+          case 'tblPrChange':
+            push(element, 'tableFormatChange');
+            break;
+          case 'trPrChange':
+            push(element, 'rowFormatChange');
+            break;
+          case 'tcPrChange':
+            push(element, 'cellFormatChange');
+            break;
+        }
+        walk(element);
+      }
+    };
+    walk(body);
+    this.revisionInfoCache = { revision: this.revision, revisions: result };
     return result;
   }
 
@@ -3856,12 +4012,9 @@ export class DocxDocument {
     });
   }
 
-  getSettings(): { defaultTabStop: number; evenAndOddHeaders: boolean; [key: string]: unknown } {
-    const base = { defaultTabStop: 720, evenAndOddHeaders: false };
-    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
-    const path = this.getRelatedPartPath(SETTINGS_REL, this.parts.has(conventional)
-      ? conventional
-      : this.parts.has('word/settings.xml') ? 'word/settings.xml' : undefined);
+  getSettings(): { defaultTabStop: number; evenAndOddHeaders: boolean; trackChanges: boolean; [key: string]: unknown } {
+    const base = { defaultTabStop: 720, evenAndOddHeaders: false, trackChanges: false };
+    const path = this.getSettingsPath();
     if (!path) return base;
     try {
       const root = this.getPartDocument(path).documentElement;
@@ -3871,10 +4024,25 @@ export class DocxDocument {
       const value = raw !== null && raw !== undefined && /^-?\d+$/.test(raw) ? Number(raw) : 720;
       const odd = children(root, 'evenAndOddHeaders')[0];
       const enabled = odd ? !['0', 'false', 'off'].includes((wordValue(odd) ?? '1').toLowerCase()) : false;
-      return { ...base, defaultTabStop: Number.isFinite(value) && value > 0 ? value : 720, evenAndOddHeaders: enabled };
+      const track = children(root, 'trackChanges')[0];
+      const trackChanges = track ? !['0', 'false', 'off'].includes((wordValue(track) ?? '1').toLowerCase()) : false;
+      return { ...base, defaultTabStop: Number.isFinite(value) && value > 0 ? value : 720, evenAndOddHeaders: enabled, trackChanges };
     } catch {
       return base;
     }
+  }
+
+  setTrackChanges(enabled: boolean): void {
+    if (this.getSettings().trackChanges === enabled) return;
+    this.withDraft((draft) => draft.setTrackChangesDirect(enabled));
+  }
+
+  private setTrackChangesDirect(enabled: boolean): void {
+    let path = this.getSettingsPath();
+    if (!path) path = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
+    if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
+    this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
+    this.updatePartXml(path, (document) => setTrackChangesOn(document, enabled));
   }
 
   defineStyle(style: StyleInfo): void {
@@ -4283,6 +4451,7 @@ export class DocxDocument {
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
     this.noteStateCache = undefined;
+    this.revisionInfoCache = undefined;
     this.imageDataUrls.clear();
     return result;
   }
@@ -4587,6 +4756,7 @@ export class DocxDocument {
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
     this.noteStateCache = undefined;
+    this.revisionInfoCache = undefined;
     this.imageDataUrls.clear();
     return { ...snapshot, revision: this.revision };
   }

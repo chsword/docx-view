@@ -11,7 +11,7 @@ export {
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS } from './xml.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, DocumentBlock,
-  DocumentSnapshot, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
+  DocumentSnapshot, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, RevisionInfo, RevisionMark,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange,
