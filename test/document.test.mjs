@@ -2046,11 +2046,17 @@ test('setTrackChanges(false) writes explicit off value after being enabled', () 
   assert.match(doc.getPartXml('word/settings.xml'), /<w:trackChanges w:val="0"\/>/);
 });
 
-test('setTrackChanges is a no-op when the effective value is unchanged', () => {
-  const missing = DocxDocument.create();
-  const missingRevision = missing.revision;
-  missing.setTrackChanges(false);
-  assert.equal(missing.revision, missingRevision);
+test('setTrackChanges(false) writes explicit off markup when settings were previously implicit', () => {
+  const doc = DocxDocument.create();
+  doc.setTrackChanges(false);
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:trackChanges w:val="0"\/>/);
+});
+
+test('setTrackChanges is a no-op when the explicit XML state is unchanged', () => {
+  const disabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges w:val="0"/></w:settings>`);
+  const disabledRevision = disabled.revision;
+  disabled.setTrackChanges(false);
+  assert.equal(disabled.revision, disabledRevision);
   const enabled = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:trackChanges/></w:settings>`);
   const enabledRevision = enabled.revision;
   enabled.setTrackChanges(true);

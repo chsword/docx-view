@@ -4039,7 +4039,7 @@ export class DocxDocument {
   }
 
   setTrackChanges(enabled: boolean): void {
-    if (this.getSettings().trackChanges === enabled) return;
+    if (this.hasExplicitTrackChangesSetting(enabled)) return;
     this.withDraft((draft) => draft.setTrackChangesDirect(enabled));
   }
 
@@ -4049,6 +4049,21 @@ export class DocxDocument {
     if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
     this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
     this.updatePartXml(path, (document) => setTrackChangesOn(document, enabled));
+  }
+
+  private hasExplicitTrackChangesSetting(enabled: boolean): boolean {
+    const path = this.getSettingsPath();
+    if (!path || !this.parts.has(path)) return false;
+    try {
+      const root = this.getPartDocument(path).documentElement;
+      if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') return false;
+      const trackChanges = children(root, 'trackChanges')[0];
+      if (!trackChanges) return false;
+      const current = !['0', 'false', 'off'].includes((wordValue(trackChanges) ?? '1').toLowerCase());
+      return current === enabled;
+    } catch {
+      return false;
+    }
   }
 
   defineStyle(style: StyleInfo): void {
