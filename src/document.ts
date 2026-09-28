@@ -2026,7 +2026,7 @@ export class DocxDocument {
     return context;
   }
 
-  private getNoteState(body: Element): NoteState {
+  private getNoteState(): NoteState {
     if (this.noteStateCache?.revision === this.revision) return this.noteStateCache.state;
     const footnotePath = this.getNotePartPath('footnote');
     const endnotePath = this.getNotePartPath('endnote');
@@ -2036,7 +2036,7 @@ export class DocxDocument {
           refs: [],
           entries: { footnote: new Map(), endnote: new Map() },
         }
-      : this.collectNoteState(body);
+      : this.collectNoteState(bodyOf(this.getCachedPartDocument(this.mainPath)));
     this.noteStateCache = { revision: this.revision, state };
     return state;
   }
@@ -2176,22 +2176,19 @@ export class DocxDocument {
 
   getParagraphs(): ParagraphInfo[] {
     const document = this.getCachedPartDocument(this.mainPath);
-    const body = bodyOf(document);
-    return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState(body));
+    return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
   }
 
   getBlocks(): DocumentBlock[] {
     const document = this.getCachedPartDocument(this.mainPath);
     const styles = this.getStylesContext();
-    const body = bodyOf(document);
-    const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.mainPath, this.getNoteState(body));
+    const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.mainPath, this.getNoteState());
     return this.buildBlocksFrom(document, paragraphs);
   }
 
   getSnapshot(): DocumentSnapshot {
     const document = this.getCachedPartDocument(this.mainPath);
-    const body = bodyOf(document);
-    const noteState = this.getNoteState(body);
+    const noteState = this.getNoteState();
     const stylesContext = this.getStylesContext();
     const numberingContext = this.getNumberingContext();
     const paragraphs = this.buildParagraphs(document, stylesContext, numberingContext, this.mainPath, noteState);
@@ -2209,13 +2206,11 @@ export class DocxDocument {
   }
 
   getFootnotes(): NoteInfo[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    return this.getNotesWith('footnote', this.getNoteState(body));
+    return this.getNotesWith('footnote', this.getNoteState());
   }
 
   getEndnotes(): NoteInfo[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    return this.getNotesWith('endnote', this.getNoteState(body));
+    return this.getNotesWith('endnote', this.getNoteState());
   }
 
   private getNotesWith(kind: NoteKind, state: NoteState): NoteInfo[] {
