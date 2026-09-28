@@ -3479,13 +3479,9 @@ export class DocxDocument {
     const preview = this.getCachedPartDocument(this.mainPath);
     const normalized = this.normalizeDocumentRange(preview, range);
     if (normalized.start.paragraph !== normalized.end.paragraph) return false;
-    const hasRichContent = fragment.paragraphs.some((paragraph) => paragraph.runs.some((run) =>
-      !!run.text || !!run.images?.length || !!run.hyperlink || !!run.format && Object.keys(run.format).length));
-    if (!hasRichContent) {
-      this.setParagraphText(normalized.start.paragraph,
-        `${this.getParagraphs()[normalized.start.paragraph]?.text.slice(0, normalized.start.offset) ?? ''}${fragment.text}${this.getParagraphs()[normalized.start.paragraph]?.text.slice(normalized.end.offset) ?? ''}`);
-      return true;
-    }
+    const normalizedParagraphs: ClipboardParagraph[] = fragment.paragraphs.length
+      ? fragment.paragraphs
+      : (fragment.text ? fragment.text.split('\n').map((text) => ({ runs: [{ text }] as ClipboardRun[] })) : []);
     this.withDraft((draft) => {
       draft.materializeAllParts();
       let next = new Map(draft.parts);
@@ -3529,7 +3525,7 @@ export class DocxDocument {
         rels = bytes ? parseXml(decodeXml(bytes)) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
         return rels;
       };
-      fragment.paragraphs.forEach((paragraphFragment, paragraphIndex) => {
+      normalizedParagraphs.forEach((paragraphFragment, paragraphIndex) => {
         for (const runFragment of paragraphFragment.runs) {
           if (!runFragment || (typeof runFragment !== 'object')) continue;
           const run = wordElement(main, 'r');
@@ -3581,7 +3577,7 @@ export class DocxDocument {
             paragraph.insertBefore(run, marker);
           }
         }
-        if (paragraphIndex < fragment.paragraphs.length - 1) {
+        if (paragraphIndex < normalizedParagraphs.length - 1) {
           const breakRun = wordElement(main, 'r');
           appendText(breakRun, '\n');
           paragraph.insertBefore(breakRun, marker);

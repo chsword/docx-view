@@ -2835,3 +2835,23 @@ test('pasteClipboardFragment applies 100-paragraph payload in one transaction', 
   assert.equal(doc.revision, before + 1);
   assert.equal(doc.getParagraphs()[0].text.includes('p99'), true);
 });
+
+test('clipboard copy/paste round-trip keeps richer direct run format fields', () => {
+  const source = withBody('<w:p><w:r><w:t>format</w:t></w:r></w:p>');
+  source.formatRange({ paragraph: 0, start: 0, end: 6 }, {
+    strike: true,
+    underline: true,
+    underlineStyle: 'dotted',
+    fontFamily: 'Arial',
+    highlight: 'yellow',
+  });
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 6 } });
+  const target = withBody('<w:p><w:r><w:t>xxxxxx</w:t></w:r></w:p>');
+  target.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 6 } }, fragment);
+  const run = target.getParagraphs()[0].runs.find((item) => item.text === 'format');
+  assert.equal(run?.strike, true);
+  assert.equal(run?.underline, true);
+  assert.equal(run?.underlineStyle, 'dotted');
+  assert.equal(run?.fontFamily, 'Arial');
+  assert.equal(run?.highlight, 'yellow');
+});

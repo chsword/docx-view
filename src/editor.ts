@@ -1192,8 +1192,16 @@ export class DocxEditor {
         return;
       }
       if (tag === 'table') {
-        for (const row of Array.from(element.querySelectorAll('tr'))) {
-          const cells = Array.from(row.querySelectorAll('th,td'));
+        const rows = Array.from(element.children).flatMap((child) => {
+          const name = child.tagName.toLowerCase();
+          if (name === 'tr') return [child];
+          if (['thead', 'tbody', 'tfoot'].includes(name)) {
+            return Array.from(child.children).filter((item) => item.tagName.toLowerCase() === 'tr');
+          }
+          return [];
+        });
+        for (const row of rows) {
+          const cells = Array.from(row.children).filter((child) => ['th', 'td'].includes(child.tagName.toLowerCase()));
           const runs: ClipboardRun[] = [];
           cells.forEach((cell, index) => {
             if (index > 0) runs.push({ text: '\t', format: {} });
@@ -1229,6 +1237,7 @@ export class DocxEditor {
   private handleClipboardCut(event: ClipboardEvent, content: HTMLElement): void {
     const range = this.currentDocumentRange();
     if (!range || range.start.paragraph !== range.end.paragraph) return;
+    if (range.start.offset === range.end.offset) return;
     const fragment = this.document.copyClipboardFragment(range);
     if (!this.writeClipboardFragment(event.clipboardData, fragment)) return;
     const before = this.document.revision;
@@ -1255,7 +1264,7 @@ export class DocxEditor {
     const range = this.currentDocumentRange();
     if (!range) return;
     const plain = data.getData('text/plain') ?? '';
-    const own = this.parseClipboardFragment(data.getData(DOCX_CLIPBOARD_MIME)) ?? this.parseClipboardFragmentFromHtml(data.getData('text/html'));
+    const own = this.parseClipboardFragment(data.getData(DOCX_CLIPBOARD_MIME));
     if (own) {
       try {
         const before = this.document.revision;

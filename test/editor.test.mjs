@@ -492,6 +492,27 @@ test('handleClipboardPaste prefers internal rich fragment and re-renders once', 
   assert.deepEqual(calls, ['prevent', 'render', 'change']);
 });
 
+test('handleClipboardPaste does not trust HTML marker without custom mime payload', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const calls = [];
+  editor.root = { ownerDocument: {}, contains: () => true };
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 0 } });
+  editor.documentRange = (range) => range;
+  editor.document = { revision: 1, pasteClipboardFragment: () => false, getSnapshot: () => ({ revision: 1 }) };
+  editor.insertText = (_content, text) => calls.push(`plain:${text}`);
+  editor.parseClipboardFragment = () => null;
+  editor.parseClipboardFragmentFromHtml = () => ({ version: 1, text: 'evil', paragraphs: [{ runs: [{ text: 'evil' }] }] });
+  editor.mapExternalHtmlFragment = () => ({ version: 1, text: 'safe', paragraphs: [{ runs: [{ text: 'safe' }] }] });
+  const event = {
+    clipboardData: {
+      getData: (type) => type === 'text/plain' ? 'plain' : type === 'text/html' ? '<div data-docx-clip="1" data-docx-payload="..."></div>' : '',
+    },
+    preventDefault: () => calls.push('prevent'),
+  };
+  editor.handleClipboardPaste(event, {});
+  assert.deepEqual(calls, ['prevent', 'plain:plain']);
+});
+
 test('handleClipboardCut wraps deletion in one history group', () => {
   const editor = Object.create(DocxEditor.prototype);
   const calls = [];
