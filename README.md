@@ -99,6 +99,7 @@ console.log(reopened.getSnapshot());
 | `copyClipboardFragment(range)` / `pasteClipboardFragment(range, fragment)` | 内部富文本剪贴板 API：run 直接格式、超链接、内嵌图片、段落格式与样式引用、编号（含多级）和表格；粘贴按落点切分段落，图片按目标文档关系与 media 部件重建（不复用源 `rId`） |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
+| `DocxDocument.compare(base, revised, options?)` | 比较两份主文档并返回新的带修订实例；纯文本/格式差异细化到段落与 run，表格及含图片的段落按粗粒度删除 + 插入处理 |
 | `getRevisions(filter?)` / `acceptRevision(id)` / `rejectRevision(id)` / `acceptAllRevisions(filter?)` / `rejectAllRevisions(filter?)` | 读取并逐条/批量接受或拒绝修订（支持按作者筛选）；`moveFrom` / `moveTo` 当前按删除 / 插入降级处理 |
 | `getReviewers()` | 聚合主文档修订与主文档锚点批注的审阅者统计（修订数、批注数、未解决批注数、时间范围）；结果默认按 `revisionCount`、`commentCount`、`unresolvedCommentCount` 降序，再按 `author` 升序 |
 | `insertTable(rows)` / `insertTableAt(rows, cols, before?, format?)` | 在正文中插入表格；支持空白表格、基础表格格式和正文块级定位 |
@@ -118,7 +119,7 @@ console.log(reopened.getSnapshot());
 | `getSettings()` / `setTrackChanges(enabled)` / `setRevisionAuthor(author)` | 读取常用文档设置（当前返回 `{ defaultTabStop, evenAndOddHeaders, trackChanges }`），显式开启/关闭 `w:trackChanges`（关闭时写 `w:val="0"`，不删除元素），并设置后续记录修订写入使用的作者名 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
-索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。`insertSectionBreak(paragraph)` 的 `paragraph` 表示“该段落结束处插入分节”；`deleteSectionBreak(section)` 删除第 `section` 节末尾的分节符并与下一节合并。高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*` 与 `getReviewers()` 当前都只作用于主文档。当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。记录修订开启后，文本/段落/图片/表格行等编辑会写入 `w:ins` / `w:del` / `rPrChange` / `pPrChange`；此时 `deleteParagraph()` 会保留原段落节点并把内容标记为删除，因此按索引循环删除时应在每步后重新读取段落列表。接受“仅段落标记删除（`w:pPr/w:rPr/w:del`）”时会优先合并到同容器中的下一段；若当前段/下一段含 `sectPr`、当前段后继不是段落、或已到容器末尾，则降级为仅移除该删除标记。若未显式调用 `setRevisionAuthor(author)`，默认作者名为 `docx-view`。
+索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。`insertSectionBreak(paragraph)` 的 `paragraph` 表示“该段落结束处插入分节”；`deleteSectionBreak(section)` 删除第 `section` 节末尾的分节符并与下一节合并。高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*`、`getReviewers()` 与 `DocxDocument.compare()` 当前都只作用于主文档。`compare()` 返回的是新实例（`revision` 从 0 开始），不会修改输入文档；它对纯段落文字/格式做细粒度修订，对表格和含图片的段落仅做粗粒度删除 + 插入，不比较页眉/页脚/脚注/尾注。超过 1000 个主文档段落的输入会直接抛错，避免段落级对齐的 O(N²) 内存开销。当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。记录修订开启后，文本/段落/图片/表格行等编辑会写入 `w:ins` / `w:del` / `rPrChange` / `pPrChange`；此时 `deleteParagraph()` 会保留原段落节点并把内容标记为删除，因此按索引循环删除时应在每步后重新读取段落列表。接受“仅段落标记删除（`w:pPr/w:rPr/w:del`）”时会优先合并到同容器中的下一段；若当前段/下一段含 `sectPr`、当前段后继不是段落、或已到容器末尾，则降级为仅移除该删除标记。若未显式调用 `setRevisionAuthor(author)`，默认作者名为 `docx-view`。
 节范围是闭区间：`startParagraph <= i <= endParagraph`。当某节暂时没有段落时，返回 `endParagraph < startParagraph`（例如 `[1,0]`）表示空区间。
 | `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `getComments()` / `addComment()` / `replyComment()` / `setCommentResolved()` / `setCommentText()` / `deleteComment()` | 读取和编辑批注、回复链与解决状态 |
