@@ -1621,6 +1621,79 @@ test('separator placeholders are excluded from visible footnotes', () => {
   assert.equal(doc.getFootnotes().length, 1);
 });
 
+test('note state fast path skips collection when main document has no note relationships', () => {
+  const doc = withBody(Array.from({ length: 500 }, (_, index) => `<w:p><w:r><w:t>p${index}</w:t></w:r></w:p>`).join(''));
+  const original = doc.collectNoteState;
+  let calls = 0;
+  doc.collectNoteState = function (...args) {
+    calls++;
+    return original.apply(this, args);
+  };
+  assert.equal(doc.getParagraphs().length, 500);
+  assert.equal(doc.getBlocks().length, 500);
+  const snapshot = doc.getSnapshot();
+  assert.equal(snapshot.paragraphs.length, 500);
+  assert.equal(snapshot.footnotes.length, 0);
+  assert.equal(snapshot.endnotes.length, 0);
+  assert.equal(calls, 0);
+});
+
+test('note state cache is reused across repeated reads until revision changes', () => {
+  const doc = withBody(Array.from({ length: 20 }, (_, index) => `<w:p><w:r><w:t>p${index}</w:t></w:r></w:p>`).join(''));
+  for (let index = 0; index < 20; index++) doc.insertFootnote(index, 1, `note ${index + 1}`);
+  const original = doc.collectNoteState;
+  let calls = 0;
+  doc.collectNoteState = function (...args) {
+    calls++;
+    return original.apply(this, args);
+  };
+  assert.equal(doc.getParagraphs().length, 20);
+  assert.equal(doc.getSnapshot().footnotes.length, 20);
+  assert.equal(doc.getFootnotes().length, 20);
+  assert.equal(calls, 1);
+  doc.setNoteText('footnote', 1, 'updated');
+  assert.equal(doc.getFootnotes()[0].blocks[0].paragraph.text.trim(), 'updated');
+  assert.equal(calls, 2);
+});
+
+test('note state cache invalidates after note mutations and direct part rewrites', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'body');
+  doc.getSnapshot();
+  const footnote = doc.insertFootnote(0, 1, 'alpha');
+  assert.equal(doc.getFootnotes()[0].id, footnote.id);
+  doc.getSnapshot();
+  const endnote = doc.insertEndnote(0, 2, 'omega');
+  assert.equal(doc.getEndnotes()[0].id, endnote.id);
+
+  doc.getSnapshot();
+  doc.setNoteText('footnote', footnote.id, 'beta');
+  assert.equal(doc.getFootnotes().find((item) => item.id === footnote.id)?.blocks[0]?.paragraph.text.trim(), 'beta');
+
+  doc.getSnapshot();
+  doc.setNoteSettings({ footnote: { numFmt: 'lowerRoman' } });
+  assert.equal(doc.getFootnotes().find((item) => item.id === footnote.id)?.marker, 'i');
+
+  doc.getSnapshot();
+  doc.setPartXml('word/footnotes.xml', doc.getPartXml('word/footnotes.xml').replace('beta', 'gamma'));
+  assert.equal(doc.getFootnotes().find((item) => item.id === footnote.id)?.blocks[0]?.paragraph.text.trim(), 'gamma');
+
+  doc.getSnapshot();
+  doc.updatePartXml('word/footnotes.xml', (document) => {
+    document.getElementsByTagNameNS(WORD_NS, 't')[0].textContent = 'delta';
+  });
+  assert.equal(doc.getFootnotes().find((item) => item.id === footnote.id)?.blocks[0]?.paragraph.text.trim(), 'delta');
+
+  doc.getSnapshot();
+  doc.convertNote('footnote', footnote.id);
+  assert.equal(doc.getFootnotes().length, 0);
+  assert.equal(doc.getEndnotes().some((item) => item.id === footnote.id), true);
+
+  doc.getSnapshot();
+  doc.deleteNote('endnote', footnote.id);
+  assert.equal(doc.getEndnotes().some((item) => item.id === footnote.id), false);
+});
+
 test('setNoteText replaces non-marker note body content', () => {
   const doc = withBody('<w:p><w:r><w:footnoteReference w:id="1"/></w:r></w:p>');
   doc.addPart('word/footnotes.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">

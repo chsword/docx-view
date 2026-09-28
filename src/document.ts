@@ -1562,6 +1562,7 @@ export class DocxDocument {
   private dirtyPartSizes = new Map<string, number>();
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
+  private noteStateCache?: { revision: number; state: NoteState };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -1759,6 +1760,7 @@ export class DocxDocument {
       this.currentRevision++;
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
+      this.noteStateCache = undefined;
       this.imageDataUrls.clear();
     } catch (error) {
       this.restoreState(previous);
@@ -1808,6 +1810,7 @@ export class DocxDocument {
     revision: number;
     numberingContextCache: NumberingContext | undefined;
     stylesCache: { revision: number; context: StylesContext } | undefined;
+    noteStateCache: { revision: number; state: NoteState } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -1819,6 +1822,7 @@ export class DocxDocument {
       revision: this.currentRevision,
       numberingContextCache: this.numberingContextCache,
       stylesCache: this.stylesCache,
+      noteStateCache: this.noteStateCache,
       imageDataUrls: new Map(this.imageDataUrls),
     };
   }
@@ -1832,6 +1836,7 @@ export class DocxDocument {
     this.currentRevision = state.revision;
     this.numberingContextCache = state.numberingContextCache;
     this.stylesCache = state.stylesCache;
+    this.noteStateCache = state.noteStateCache;
     this.imageDataUrls = state.imageDataUrls;
   }
 
@@ -1879,6 +1884,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.noteStateCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -2020,6 +2026,21 @@ export class DocxDocument {
     return context;
   }
 
+  private getNoteState(body: Element): NoteState {
+    if (this.noteStateCache?.revision === this.revision) return this.noteStateCache.state;
+    const footnotePath = this.getNotePartPath('footnote');
+    const endnotePath = this.getNotePartPath('endnote');
+    const state = !footnotePath && !endnotePath
+      ? {
+          byKind: { footnote: new Map(), endnote: new Map() },
+          refs: [],
+          entries: { footnote: new Map(), endnote: new Map() },
+        }
+      : this.collectNoteState(body);
+    this.noteStateCache = { revision: this.revision, state };
+    return state;
+  }
+
   private getNumberingContext(): NumberingContext {
     if (this.numberingContextCache?.revision === this.revision && this.numberingContextCache.mainPath === this.mainPath) {
       return this.numberingContextCache;
@@ -2156,21 +2177,21 @@ export class DocxDocument {
   getParagraphs(): ParagraphInfo[] {
     const document = this.getCachedPartDocument(this.mainPath);
     const body = bodyOf(document);
-    return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.collectNoteState(body));
+    return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState(body));
   }
 
   getBlocks(): DocumentBlock[] {
     const document = this.getCachedPartDocument(this.mainPath);
     const styles = this.getStylesContext();
     const body = bodyOf(document);
-    const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.mainPath, this.collectNoteState(body));
+    const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.mainPath, this.getNoteState(body));
     return this.buildBlocksFrom(document, paragraphs);
   }
 
   getSnapshot(): DocumentSnapshot {
     const document = this.getCachedPartDocument(this.mainPath);
     const body = bodyOf(document);
-    const noteState = this.collectNoteState(body);
+    const noteState = this.getNoteState(body);
     const stylesContext = this.getStylesContext();
     const numberingContext = this.getNumberingContext();
     const paragraphs = this.buildParagraphs(document, stylesContext, numberingContext, this.mainPath, noteState);
@@ -2188,13 +2209,13 @@ export class DocxDocument {
   }
 
   getFootnotes(): NoteInfo[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    return this.getNotesWith('footnote', this.collectNoteState(body));
+    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
+    return this.getNotesWith('footnote', this.getNoteState(body));
   }
 
   getEndnotes(): NoteInfo[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    return this.getNotesWith('endnote', this.collectNoteState(body));
+    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
+    return this.getNotesWith('endnote', this.getNoteState(body));
   }
 
   private getNotesWith(kind: NoteKind, state: NoteState): NoteInfo[] {
@@ -4023,6 +4044,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.noteStateCache = undefined;
     this.imageDataUrls.clear();
     return result;
   }
@@ -4323,6 +4345,7 @@ export class DocxDocument {
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
+    this.noteStateCache = undefined;
     this.imageDataUrls.clear();
     return { ...snapshot, revision: this.revision };
   }
