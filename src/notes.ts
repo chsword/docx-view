@@ -1,5 +1,5 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { NoteSettings, NoteSettingsValue } from './types.js';
+import type { DocumentProtection, NoteSettings, NoteSettingsValue } from './types.js';
 import { WORD_NS, children, descendants, setWordValue, wordElement, wordValue } from './xml.js';
 
 export type NoteKind = 'footnote' | 'endnote';
@@ -18,7 +18,7 @@ export function notePartPath(kind: NoteKind): string {
   return `word/${kind}s.xml`;
 }
 
-const SETTINGS_ORDER = [
+export const SETTINGS_ORDER = [
   'writeProtection', 'view', 'zoom', 'removePersonalInformation', 'removeDateAndTime', 'doNotDisplayPageBoundaries',
   'displayBackgroundShape', 'printPostScriptOverText', 'printFractionalCharacterWidth', 'printFormsData',
   'embedTrueTypeFonts', 'embedSystemFonts', 'saveSubsetFonts', 'saveFormsData', 'mirrorMargins', 'alignBordersAndEdges',
@@ -39,6 +39,7 @@ const SETTINGS_ORDER = [
 ];
 
 const NOTE_PR_ORDER = ['pos', 'numFmt', 'numStart', 'numRestart', 'numId', 'suppressRef'];
+const DOCUMENT_PROTECTION_EDITS = new Set<DocumentProtection['edit']>(['readOnly', 'comments', 'trackedChanges', 'forms', 'none']);
 
 export function orderedProperty(parent: Element, name: string, order: string[]): Element {
   let result = children(parent, name)[0];
@@ -153,6 +154,55 @@ export function setTrackChangesOn(settingsDocument: Document, enabled: boolean):
   } else {
     setWordValue(trackChanges, '0');
   }
+}
+
+export function assertDocumentProtection(value: unknown): asserts value is DocumentProtection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('document protection must be an object.');
+  for (const key of Object.keys(value)) {
+    if (!['enabled', 'edit', 'enforced'].includes(key)) throw new Error(`Unknown document protection field: ${key}.`);
+  }
+  const protection = value as Partial<DocumentProtection>;
+  if (typeof protection.enabled !== 'boolean') throw new Error('document protection enabled must be boolean.');
+  if ('edit' in protection && protection.edit !== undefined && !DOCUMENT_PROTECTION_EDITS.has(protection.edit)) {
+    throw new Error('document protection edit must be one of readOnly, comments, trackedChanges, forms, none.');
+  }
+  if ('enforced' in protection && protection.enforced !== undefined && typeof protection.enforced !== 'boolean') {
+    throw new Error('document protection enforced must be boolean.');
+  }
+}
+
+export function parseDocumentProtection(settingsDocument: Document | null): DocumentProtection {
+  const root = settingsDocument?.documentElement;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') return { enabled: false };
+  const protection = children(root, 'documentProtection')[0];
+  if (!protection) return { enabled: false };
+  const edit = protection.getAttributeNS(WORD_NS, 'edit') ?? protection.getAttribute('w:edit') ?? undefined;
+  const enforcement = protection.getAttributeNS(WORD_NS, 'enforcement') ?? protection.getAttribute('w:enforcement');
+  const enforced = enforcement === null ? undefined : !['0', 'false', 'off'].includes(enforcement.toLowerCase());
+  return {
+    enabled: enforced !== false,
+    ...(edit && DOCUMENT_PROTECTION_EDITS.has(edit as DocumentProtection['edit']) ? { edit: edit as DocumentProtection['edit'] } : {}),
+    ...(enforced !== undefined ? { enforced } : {}),
+  };
+}
+
+export function setDocumentProtectionOn(settingsDocument: Document, value: DocumentProtection): void {
+  const root = settingsDocument.documentElement;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') throw new Error('Invalid settings.xml root.');
+  const existing = children(root, 'documentProtection')[0];
+  if (!existing && !value.enabled && !('edit' in value) && !('enforced' in value)) return;
+  const protection = existing ?? orderedProperty(root, 'documentProtection', SETTINGS_ORDER);
+  if ('edit' in value) {
+    if (value.edit === undefined) {
+      protection.removeAttributeNS(WORD_NS, 'edit');
+      protection.removeAttribute('w:edit');
+    } else {
+      protection.setAttributeNS(WORD_NS, 'w:edit', value.edit);
+    }
+  } else if (!existing && value.enabled) {
+    protection.setAttributeNS(WORD_NS, 'w:edit', 'readOnly');
+  }
+  protection.setAttributeNS(WORD_NS, 'w:enforcement', (value.enforced ?? value.enabled) ? '1' : '0');
 }
 
 export interface ParsedNoteEntry {

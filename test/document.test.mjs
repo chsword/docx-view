@@ -22,6 +22,18 @@ const COMMENTS_EXTENDED_TYPE = 'application/vnd.ms-word.commentsExtended+xml';
 const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
 const W15_NS = 'http://schemas.microsoft.com/office/word/2012/wordml';
 const SETTINGS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml';
+const CORE_PROPS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties';
+const APP_PROPS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties';
+const CORE_PROPS_TYPE = 'application/vnd.openxmlformats-package.core-properties+xml';
+const APP_PROPS_TYPE = 'application/vnd.openxmlformats-officedocument.extended-properties+xml';
+const OFFICE_DOCUMENT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
+const CORE_NS = 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties';
+const DC_NS = 'http://purl.org/dc/elements/1.1/';
+const DCTERMS_NS = 'http://purl.org/dc/terms/';
+const DCMITYPE_NS = 'http://purl.org/dc/dcmitype/';
+const XSI_NS = 'http://www.w3.org/2001/XMLSchema-instance';
+const APP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties';
+const VT_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -79,6 +91,20 @@ function withSettingsXml(settingsXml, target = 'settings.xml') {
   const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
   doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="${target}"/></Relationships>`), RELS_TYPE);
   doc.addPart(`word/${target}`, encoder.encode(settingsXml), SETTINGS_TYPE);
+  return doc;
+}
+
+function withDocProps({ coreXml, appXml, coreTarget = 'docProps/core.xml', corePath = coreTarget, includeCoreRel = coreTarget !== undefined, appTarget = 'docProps/app.xml', appPath = appTarget, includeAppRel = appTarget !== undefined }) {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const relationships = [
+    `<Relationship Id="rId1" Type="${OFFICE_DOCUMENT_REL}" Target="word/document.xml"/>`,
+  ];
+  let nextId = 2;
+  if (includeCoreRel) relationships.push(`<Relationship Id="rId${nextId++}" Type="${CORE_PROPS_REL}" Target="${coreTarget}"/>`);
+  if (includeAppRel) relationships.push(`<Relationship Id="rId${nextId++}" Type="${APP_PROPS_REL}" Target="${appTarget}"/>`);
+  doc.setPartXml('_rels/.rels', `<Relationships xmlns="${REL_NS}">${relationships.join('')}</Relationships>`);
+  if (coreXml !== undefined) doc.addPart(corePath, encoder.encode(coreXml), CORE_PROPS_TYPE);
+  if (appXml !== undefined) doc.addPart(appPath, encoder.encode(appXml), APP_PROPS_TYPE);
   return doc;
 }
 
@@ -2944,6 +2970,211 @@ test('setTrackChanges is a no-op when the explicit XML state is unchanged', () =
   const enabledRevision = enabled.revision;
   enabled.setTrackChanges(true);
   assert.equal(enabled.revision, enabledRevision);
+});
+
+test('getDocumentProperties reads core and app properties from standard docProps parts', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}">
+      <dc:title>Title</dc:title><dc:subject>Subject</dc:subject><dc:creator>Alice</dc:creator><cp:lastModifiedBy>Bob</cp:lastModifiedBy>
+      <cp:keywords>one two</cp:keywords><dc:description>Notes</dc:description><cp:category>Cat</cp:category>
+      <dcterms:created xsi:type="dcterms:W3CDTF">2026-09-28T12:00:00Z</dcterms:created>
+      <dcterms:modified xsi:type="dcterms:W3CDTF">2026-09-29T01:02:03Z</dcterms:modified>
+      <cp:revision>7</cp:revision>
+    </cp:coreProperties>`,
+    appXml: `<Properties xmlns="${APP_NS}" xmlns:vt="${VT_NS}"><Company>Acme</Company><Manager>Carol</Manager><Pages>9</Pages></Properties>`,
+  });
+  assert.deepEqual(doc.getDocumentProperties(), {
+    title: 'Title',
+    subject: 'Subject',
+    creator: 'Alice',
+    lastModifiedBy: 'Bob',
+    keywords: 'one two',
+    description: 'Notes',
+    category: 'Cat',
+    created: '2026-09-28T12:00:00Z',
+    modified: '2026-09-29T01:02:03Z',
+    revisionNumber: 7,
+    company: 'Acme',
+    manager: 'Carol',
+  });
+});
+
+test('getDocumentProperties resolves nonstandard package-root relationship targets', () => {
+  const doc = withDocProps({
+    coreTarget: 'meta/core%20props.xml',
+    corePath: 'meta/core props.xml',
+    appTarget: 'meta/app.xml',
+    appPath: 'meta/app.xml',
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}"><dc:title>Custom</dc:title></cp:coreProperties>`,
+    appXml: `<Properties xmlns="${APP_NS}" xmlns:vt="${VT_NS}"><Manager>Reviewer</Manager></Properties>`,
+  });
+  assert.deepEqual(doc.getDocumentProperties(), { title: 'Custom', manager: 'Reviewer' });
+});
+
+test('setDocumentProperties updates only patched fields and preserves unknown docProps content', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}">
+      <dc:title>Old</dc:title><cp:keywords>Keep</cp:keywords><cp:contentStatus>Draft</cp:contentStatus>
+    </cp:coreProperties>`,
+    appXml: `<Properties xmlns="${APP_NS}" xmlns:vt="${VT_NS}"><Company>KeepCo</Company><Pages>42</Pages></Properties>`,
+  });
+  doc.setDocumentProperties({ title: 'New' });
+  assert.equal(doc.getDocumentProperties().title, 'New');
+  assert.match(doc.getPartXml('docProps/core.xml'), /<cp:keywords>Keep<\/cp:keywords>/);
+  assert.match(doc.getPartXml('docProps/core.xml'), /<cp:contentStatus>Draft<\/cp:contentStatus>/);
+  assert.match(doc.getPartXml('docProps/app.xml'), /<Pages>42<\/Pages>/);
+  assert.match(doc.getPartXml('docProps/app.xml'), /<Company>KeepCo<\/Company>/);
+});
+
+test('setDocumentProperties creates core properties part and package metadata when missing', () => {
+  const doc = DocxDocument.create();
+  doc.setDocumentProperties({ title: 'Created' });
+  assert.deepEqual(doc.getDocumentProperties(), { title: 'Created' });
+  assert.match(doc.getPartXml('_rels/.rels'), /metadata\/core-properties" Target="docProps\/core\.xml"/);
+  assert.match(doc.getPartXml('[Content_Types].xml'), /PartName="\/docProps\/core\.xml" ContentType="application\/vnd\.openxmlformats-package\.core-properties\+xml"/);
+  assert.match(doc.getPartXml('docProps/core.xml'), /<dc:title>Created<\/dc:title>/);
+});
+
+test('setDocumentProperties creates app properties part and package metadata when missing', () => {
+  const doc = DocxDocument.create();
+  doc.setDocumentProperties({ company: 'Acme' });
+  assert.deepEqual(doc.getDocumentProperties(), { company: 'Acme' });
+  assert.match(doc.getPartXml('_rels/.rels'), /relationships\/extended-properties" Target="docProps\/app\.xml"/);
+  assert.match(doc.getPartXml('[Content_Types].xml'), /PartName="\/docProps\/app\.xml" ContentType="application\/vnd\.openxmlformats-officedocument\.extended-properties\+xml"/);
+  assert.match(doc.getPartXml('docProps/app.xml'), /<Company>Acme<\/Company>/);
+});
+
+test('setDocumentProperties follows an existing custom package relationship target and avoids duplicate core relationships', () => {
+  const doc = withDocProps({
+    coreTarget: 'meta/core%20props.xml',
+    corePath: 'meta/core props.xml',
+    coreXml: undefined,
+    includeAppRel: false,
+    appTarget: undefined,
+  });
+  doc.setDocumentProperties({ title: 'Encoded' });
+  assert.equal(doc.getDocumentProperties().title, 'Encoded');
+  assert.ok(doc.listParts().includes('meta/core props.xml'));
+  const rels = doc.getPartXml('_rels/.rels');
+  assert.equal((rels.match(/metadata\/core-properties/g) ?? []).length, 1);
+  assert.match(rels, /Target="meta\/core%20props\.xml"/);
+});
+
+test('getDocumentProperties output can be written back unchanged', async () => {
+  const doc = withDocProps({
+    coreTarget: 'meta/core.xml',
+    corePath: 'meta/core.xml',
+    appTarget: 'meta/app.xml',
+    appPath: 'meta/app.xml',
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}">
+      <dc:title>Roundtrip</dc:title><cp:lastModifiedBy>Bob</cp:lastModifiedBy><cp:revision>12</cp:revision>
+      <dcterms:modified xsi:type="dcterms:W3CDTF">2026-09-28T13:00:00Z</dcterms:modified>
+    </cp:coreProperties>`,
+    appXml: `<Properties xmlns="${APP_NS}" xmlns:vt="${VT_NS}"><Company>Acme</Company><Manager>Carol</Manager></Properties>`,
+  });
+  const before = packagePartsSignature(doc);
+  const props = doc.getDocumentProperties();
+  const revision = doc.revision;
+  doc.setDocumentProperties(props);
+  assert.equal(doc.revision, revision);
+  assert.deepEqual(packagePartsSignature(doc), before);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(reopened.getDocumentProperties(), props);
+});
+
+test('cp:revision and doc.revision stay independent', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}"><cp:revision>5</cp:revision></cp:coreProperties>`,
+    includeAppRel: false,
+    appTarget: undefined,
+  });
+  const startRevision = doc.revision;
+  doc.setDocumentProperties({ title: 'Meta' });
+  assert.equal(doc.revision, startRevision + 1);
+  assert.equal(doc.getDocumentProperties().revisionNumber, 5);
+  doc.setParagraphText(0, 'Body');
+  assert.equal(doc.revision, startRevision + 2);
+  assert.equal(doc.getDocumentProperties().revisionNumber, 5);
+  doc.setDocumentProperties({ revisionNumber: 9 });
+  assert.equal(doc.getDocumentProperties().revisionNumber, 9);
+  assert.equal(doc.revision, startRevision + 3);
+});
+
+test('setDocumentProperties validates date and rolls back on failure', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}"><dc:title>Stable</dc:title></cp:coreProperties>`,
+    includeAppRel: false,
+    appTarget: undefined,
+  });
+  const beforeParts = packagePartsSignature(doc);
+  const beforeRevision = doc.revision;
+  assert.throws(() => doc.setDocumentProperties({ created: 'not-a-date' }), /ISO 8601/);
+  assert.equal(doc.revision, beforeRevision);
+  assert.deepEqual(packagePartsSignature(doc), beforeParts);
+});
+
+test('setDocumentProperties is a no-op when the serialized values are unchanged', () => {
+  const doc = withDocProps({
+    coreXml: `<cp:coreProperties xmlns:cp="${CORE_NS}" xmlns:dc="${DC_NS}" xmlns:dcterms="${DCTERMS_NS}" xmlns:dcmitype="${DCMITYPE_NS}" xmlns:xsi="${XSI_NS}"><dc:title>Same</dc:title></cp:coreProperties>`,
+    includeAppRel: false,
+    appTarget: undefined,
+  });
+  const revision = doc.revision;
+  doc.setDocumentProperties({ title: 'Same' });
+  assert.equal(doc.revision, revision);
+});
+
+test('getDocumentProtection reads current declaration', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="comments" w:enforcement="1"/></w:settings>`);
+  assert.deepEqual(doc.getDocumentProtection(), { enabled: true, edit: 'comments', enforced: true });
+});
+
+test('setDocumentProtection inserts documentProtection in CT_Settings order', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:revisionView/><w:doNotTrackMoves/></w:settings>`);
+  doc.setDocumentProtection({ enabled: true, edit: 'trackedChanges' });
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:revisionView\/><w:documentProtection w:edit="trackedChanges" w:enforcement="1"\/><w:doNotTrackMoves\/>/);
+});
+
+test('setDocumentProtection uses an existing custom settings relationship target and avoids duplicates', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="custom/settings%20review.xml"/></Relationships>`), RELS_TYPE);
+  doc.setDocumentProtection({ enabled: true, edit: 'comments' });
+  assert.ok(doc.listParts().includes('word/custom/settings review.xml'));
+  const rels = doc.getPartXml('word/_rels/document.xml.rels');
+  assert.equal((rels.match(/relationships\/settings/g) ?? []).length, 1);
+  assert.match(doc.getPartXml('word/custom/settings review.xml'), /w:documentProtection w:edit="comments" w:enforcement="1"/);
+});
+
+test('setDocumentProtection preserves existing hash and salt attributes', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="readOnly" w:enforcement="1" w:cryptProviderType="rsaAES" w:cryptAlgorithmSid="14" w:hash="abcd" w:salt="ef01"/></w:settings>`);
+  doc.setDocumentProtection({ enabled: true, edit: 'comments' });
+  const xml = doc.getPartXml('word/settings.xml');
+  assert.match(xml, /w:documentProtection [^>]*w:edit="comments"/);
+  assert.match(xml, /w:hash="abcd"/);
+  assert.match(xml, /w:salt="ef01"/);
+  assert.match(xml, /w:cryptProviderType="rsaAES"/);
+});
+
+test('readOnly document protection does not disable editing APIs', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="readOnly" w:enforcement="1"/></w:settings>`);
+  doc.setParagraphText(0, 'Still editable');
+  assert.equal(doc.getParagraphs()[0].text, 'Still editable');
+  assert.deepEqual(doc.getDocumentProtection(), { enabled: true, edit: 'readOnly', enforced: true });
+});
+
+test('setDocumentProtection is a no-op when the declaration is unchanged', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:documentProtection w:edit="comments" w:enforcement="1"/></w:settings>`);
+  const revision = doc.revision;
+  doc.setDocumentProtection({ enabled: true, edit: 'comments', enforced: true });
+  assert.equal(doc.revision, revision);
+});
+
+test('permStart and permEnd survive DOCX round-trips', async () => {
+  const doc = withBody('<w:p><w:permStart w:id="7" w:ed="alice"/><w:r><w:t>A</w:t></w:r><w:permEnd w:id="7"/></w:p>');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  const xml = reopened.getPartXml(reopened.mainDocumentPath);
+  assert.match(xml, /<w:permStart [^>]*w:id="7"/);
+  assert.match(xml, /<w:permEnd [^>]*w:id="7"/);
 });
 
 test('repeating the same write call keeps revision/history stable when part bytes are unchanged', () => {

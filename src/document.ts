@@ -3,10 +3,22 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
-  HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
+  DocumentProperties, DocumentProtection, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
 } from './types.js';
+import {
+  APP_PROPS_REL,
+  APP_PROPS_TYPE,
+  CORE_PROPS_REL,
+  CORE_PROPS_TYPE,
+  assertDocumentPropertiesPatch,
+  defaultAppPropertiesXml,
+  defaultCorePropertiesXml,
+  parseDocumentProperties,
+  setAppDocumentPropertiesOn,
+  setCoreDocumentPropertiesOn,
+} from './docprops.js';
 import type { NumberingModel } from './numbering.js';
 import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
 import {
@@ -50,9 +62,9 @@ import {
   parseFldSimpleHyperlink,
 } from './hyperlink.js';
 import {
-  defaultNotePartXml, formatNoteMarker, noteContentType, noteRefName, noteReferenceName, noteReferenceStyle,
-  noteRelationshipType, parseCustomMark, parseDocumentNoteSettings, parseNoteEntries, parseSectionNoteSettings,
-  setNoteSettingsOn, setTrackChangesOn, type NoteKind,
+  assertDocumentProtection, defaultNotePartXml, formatNoteMarker, noteContentType, noteRefName, noteReferenceName, noteReferenceStyle,
+  noteRelationshipType, parseCustomMark, parseDocumentNoteSettings, parseDocumentProtection, parseNoteEntries, parseSectionNoteSettings,
+  setDocumentProtectionOn, setNoteSettingsOn, setTrackChangesOn, type NoteKind,
 } from './notes.js';
 import {
   COMMENTS_EXTENDED_REL,
@@ -3006,7 +3018,7 @@ export class DocxDocument {
     }
   }
 
-  private getRelatedPartPath(type: string, fallback?: string): string | undefined {
+  private getRelatedPartPath(type: string, fallback?: string, options: { allowMissingPart?: boolean } = {}): string | undefined {
     const relPath = relsPath(this.mainPath);
     if (this.parts.has(relPath)) {
       try {
@@ -3022,19 +3034,20 @@ export class DocxDocument {
             } catch {
               continue;
             }
-            if (path && this.parts.has(path)) return path;
+            if (path && (options.allowMissingPart || this.parts.has(path))) return path;
           }
         }
       } catch { /* Fall back to conventional paths for malformed optional rels parts. */ }
     }
-    return fallback && this.parts.has(fallback) ? fallback : undefined;
+    return fallback && (options.allowMissingPart || this.parts.has(fallback)) ? fallback : undefined;
   }
 
-  private getSettingsPath(): string | undefined {
+  private getSettingsPath(allowMissingPart = false): string | undefined {
     const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
-    return this.getRelatedPartPath(SETTINGS_REL, this.parts.has(conventional)
+    const fallback = this.parts.has(conventional)
       ? conventional
-      : this.parts.has('word/settings.xml') ? 'word/settings.xml' : undefined);
+      : this.parts.has('word/settings.xml') ? 'word/settings.xml' : allowMissingPart ? conventional : undefined;
+    return this.getRelatedPartPath(SETTINGS_REL, fallback, { allowMissingPart });
   }
 
   private getNotePartPath(kind: NoteKind): string | undefined {
@@ -3051,10 +3064,25 @@ export class DocxDocument {
       ? this.getPartDocument(relsPathOfMain)
       : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const root = rels.documentElement!;
+    let resolvedTargetPath: string | undefined;
+    try {
+      resolvedTargetPath = resolveTargetPath(this.mainPath, targetPath);
+    } catch {
+      resolvedTargetPath = undefined;
+    }
     const existing = children(root, 'Relationship', REL_NS).find((relation) =>
       relation.getAttribute('Type') === relationType &&
       relation.getAttribute('TargetMode') !== 'External' &&
-      relation.getAttribute('Target') === targetPath);
+      (() => {
+        if (!resolvedTargetPath) return relation.getAttribute('Target') === targetPath;
+        const target = relation.getAttribute('Target');
+        if (!target) return false;
+        try {
+          return resolveTargetPath(this.mainPath, decodeURIComponent(target)) === resolvedTargetPath;
+        } catch {
+          return false;
+        }
+      })());
     if (!existing) {
       const relationship = rels.createElementNS(REL_NS, 'Relationship');
       relationship.setAttribute('Id', nextRelationshipId(root));
@@ -3064,6 +3092,58 @@ export class DocxDocument {
       if (hasRelsPart) this.setPartXml(relsPathOfMain, serializeXml(rels));
       else this.addPart(relsPathOfMain, encodeXml(serializeXml(rels)), 'application/vnd.openxmlformats-package.relationships+xml');
     }
+  }
+
+  private getPackageRelatedPartPath(type: string, fallback?: string, options: { allowMissingPart?: boolean } = {}): string | undefined {
+    try {
+      const root = this.getCachedPartDocument('_rels/.rels').documentElement;
+      if (root?.namespaceURI !== REL_NS || root.localName !== 'Relationships') {
+        return fallback && (options.allowMissingPart || this.parts.has(fallback)) ? fallback : undefined;
+      }
+      for (const relation of children(root, 'Relationship', REL_NS)) {
+        if (relation.getAttribute('Type') !== type || relation.getAttribute('TargetMode') === 'External') continue;
+        const target = relation.getAttribute('Target');
+        if (!target) continue;
+        try {
+          const path = decodePackageTarget(target);
+          if (path) {
+            validatePath(path);
+            if (options.allowMissingPart || this.parts.has(path)) return path;
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch { /* Fall back to conventional paths for malformed package rels. */ }
+    return fallback && (options.allowMissingPart || this.parts.has(fallback)) ? fallback : undefined;
+  }
+
+  private ensurePackageRelationship(relationType: string, targetPath: string): void {
+    const rels = this.getPartDocument('_rels/.rels');
+    const root = rels.documentElement!;
+    const existing = children(root, 'Relationship', REL_NS).find((relation) => {
+      if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') return false;
+      const target = relation.getAttribute('Target');
+      if (!target) return false;
+      return decodePackageTarget(target) === targetPath;
+    });
+    if (existing) return;
+    const relationship = rels.createElementNS(REL_NS, 'Relationship');
+    relationship.setAttribute('Id', nextRelationshipId(root));
+    relationship.setAttribute('Type', relationType);
+    relationship.setAttribute('Target', targetPath);
+    root.appendChild(relationship);
+    this.setPartXml('_rels/.rels', serializeXml(rels));
+  }
+
+  private getCorePropertiesPath(allowMissingPart = false): string | undefined {
+    const fallback = this.parts.has('docProps/core.xml') ? 'docProps/core.xml' : allowMissingPart ? 'docProps/core.xml' : undefined;
+    return this.getPackageRelatedPartPath(CORE_PROPS_REL, fallback, { allowMissingPart });
+  }
+
+  private getAppPropertiesPath(allowMissingPart = false): string | undefined {
+    const fallback = this.parts.has('docProps/app.xml') ? 'docProps/app.xml' : allowMissingPart ? 'docProps/app.xml' : undefined;
+    return this.getPackageRelatedPartPath(APP_PROPS_REL, fallback, { allowMissingPart });
   }
 
   private ensureNotePart(kind: NoteKind): void {
@@ -6799,7 +6879,7 @@ export class DocxDocument {
   }
 
   private setTrackChangesDirect(enabled: boolean): void {
-    let path = this.getSettingsPath();
+    let path = this.getSettingsPath(true);
     if (!path) path = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
     if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
     this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
@@ -7264,11 +7344,73 @@ export class DocxDocument {
   }
 
   private setNoteSettingsDirect(settings: Partial<NoteSettings>): void {
-    let path = this.getSettingsPath();
+    let path = this.getSettingsPath(true);
     if (!path) path = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
     if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
     this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
     this.updatePartXml(path, (document) => setNoteSettingsOn(document, settings));
+  }
+
+  getDocumentProperties(): DocumentProperties {
+    const corePath = this.getCorePropertiesPath();
+    const appPath = this.getAppPropertiesPath();
+    return parseDocumentProperties(
+      corePath && this.parts.has(corePath) ? this.getPartDocument(corePath) : null,
+      appPath && this.parts.has(appPath) ? this.getPartDocument(appPath) : null,
+    );
+  }
+
+  setDocumentProperties(patch: Partial<DocumentProperties>): void {
+    assertDocumentPropertiesPatch(patch);
+    if (!Object.keys(patch).length) return;
+    this.withDraft((draft) => draft.setDocumentPropertiesDirect(patch));
+  }
+
+  private setDocumentPropertiesDirect(patch: Partial<DocumentProperties>): void {
+    const coreKeys = ['title', 'subject', 'creator', 'lastModifiedBy', 'keywords', 'description', 'category', 'created', 'modified', 'revisionNumber'] as const;
+    const appKeys = ['company', 'manager'] as const;
+    const corePatch = Object.fromEntries(coreKeys.filter((key) => key in patch).map((key) => [key, patch[key]])) as Partial<DocumentProperties>;
+    const appPatch = Object.fromEntries(appKeys.filter((key) => key in patch).map((key) => [key, patch[key]])) as Partial<DocumentProperties>;
+    if (Object.keys(corePatch).length) {
+      const hasDefined = coreKeys.some((key) => key in corePatch && corePatch[key] !== undefined);
+      let path = this.getCorePropertiesPath(hasDefined);
+      if (path || hasDefined) {
+        path ??= 'docProps/core.xml';
+        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultCorePropertiesXml()), CORE_PROPS_TYPE);
+        this.ensurePackageRelationship(CORE_PROPS_REL, path);
+        this.updatePartXml(path, (document) => setCoreDocumentPropertiesOn(document, corePatch));
+      }
+    }
+    if (Object.keys(appPatch).length) {
+      const hasDefined = appKeys.some((key) => key in appPatch && appPatch[key] !== undefined);
+      let path = this.getAppPropertiesPath(hasDefined);
+      if (path || hasDefined) {
+        path ??= 'docProps/app.xml';
+        if (!this.parts.has(path)) this.addPart(path, encodeXml(defaultAppPropertiesXml()), APP_PROPS_TYPE);
+        this.ensurePackageRelationship(APP_PROPS_REL, path);
+        this.updatePartXml(path, (document) => setAppDocumentPropertiesOn(document, appPatch));
+      }
+    }
+  }
+
+  getDocumentProtection(): DocumentProtection {
+    const path = this.getSettingsPath();
+    return parseDocumentProtection(path && this.parts.has(path) ? this.getPartDocument(path) : null);
+  }
+
+  setDocumentProtection(value: DocumentProtection): void {
+    assertDocumentProtection(value);
+    const current = this.getDocumentProtection();
+    if (current.enabled === value.enabled && current.edit === value.edit && current.enforced === value.enforced) return;
+    this.withDraft((draft) => draft.setDocumentProtectionDirect(value));
+  }
+
+  private setDocumentProtectionDirect(value: DocumentProtection): void {
+    let path = this.getSettingsPath(true);
+    if (!path) path = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
+    if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
+    this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
+    this.updatePartXml(path, (document) => setDocumentProtectionOn(document, value));
   }
 
   insertFootnote(paragraph: number, run: number, text: string, options: { customMark?: string } = {}): NoteInfo {
