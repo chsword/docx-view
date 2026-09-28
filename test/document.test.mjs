@@ -88,6 +88,20 @@ function trackedDoc(bodyXml = '<w:p><w:r><w:t>A</w:t></w:r></w:p>') {
   return doc;
 }
 
+function paragraphTexts(doc) {
+  return doc.getParagraphs().map((paragraph) => paragraph.text);
+}
+
+async function compareRoundTrip(base, revised, options) {
+  const compared = DocxDocument.compare(base, revised, options);
+  const bytes = await compared.toUint8Array();
+  const accepted = await DocxDocument.load(bytes);
+  accepted.acceptAllRevisions();
+  const rejected = await DocxDocument.load(bytes);
+  rejected.rejectAllRevisions();
+  return { compared, bytes, accepted, rejected };
+}
+
 test('create, edit, export and reopen a DOCX in Node without browser globals', async () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, '你好 DOCX & <world> 😀');
@@ -1898,6 +1912,22 @@ test('createStyleFromSelection rejects duplicate ids', () => {
     { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 0 } },
     { id: 'Taken', name: 'Taken Again' },
   ), /already exists/i);
+});
+
+test('createStyleFromSelection rejects empty or blank ids and names without writing styles.xml', () => {
+  for (const style of [
+    { id: '', name: 'Valid Name', message: /style\.id must not be empty or whitespace\./i },
+    { id: '   ', name: 'Valid Name', message: /style\.id must not be empty or whitespace\./i },
+    { id: 'ValidId', name: '', message: /style\.name must not be empty or whitespace\./i },
+    { id: 'ValidId', name: '   ', message: /style\.name must not be empty or whitespace\./i },
+  ]) {
+    const doc = withBody('<w:p><w:r><w:t>Pick</w:t></w:r></w:p>');
+    assert.throws(() => doc.createStyleFromSelection(
+      { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } },
+      style,
+    ), style.message);
+    assert.equal(doc.listParts().includes('word/styles.xml'), false);
+  }
 });
 
 test('getOutline infers levels from style names instead of style ids', () => {
@@ -3791,13 +3821,12 @@ test('acceptAllRevisions processes 20+ revisions and increments revision once', 
   assert.equal(doc.getRevisions().length, 0);
 });
 
-test('acceptAllRevisions failure rolls back parts and revision', () => {
+test('acceptAllRevisions removes a single-row deleted table', () => {
   const doc = withBody('<w:tbl><w:tr><w:trPr><w:del w:id="300"/></w:trPr><w:tc><w:p><w:r><w:t>only</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
   const beforeRevision = doc.revision;
-  const beforeXml = doc.getPartXml(doc.mainDocumentPath);
-  assert.throws(() => doc.acceptAllRevisions(), /only table row/);
-  assert.equal(doc.revision, beforeRevision);
-  assert.equal(doc.getPartXml(doc.mainDocumentPath), beforeXml);
+  doc.acceptAllRevisions();
+  assert.equal(doc.revision, beforeRevision + 1);
+  assert.equal(doc.getBlocks().filter((block) => block.type === 'table').length, 0);
 });
 
 test('acceptAllRevisions is a no-op when author filter matches nothing', () => {
@@ -3856,4 +3885,181 @@ test('agent schema and runtime validation support revision accept/reject operati
   const snapshot = doc.applyOperations({ operations: [{ type: 'acceptRevision', id: 21 }] });
   assert.equal(snapshot.paragraphs[0].text, 'A');
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'acceptAllRevisions', filter: { authors: new Array(1001).fill('A') } }] }), /at most 1000 authors/);
+});
+
+test('compare roundtrip accept/reject restores revised/base text', async () => {
+  const base = withBody('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p><w:p><w:r><w:t>Tail</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>Hello brave world</w:t></w:r></w:p><w:p><w:r><w:t>Tail</w:t></w:r></w:p>');
+  const { accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice', date: '2026-09-28T00:00:00Z' });
+  assert.deepEqual(paragraphTexts(accepted), paragraphTexts(revised));
+  assert.deepEqual(paragraphTexts(rejected), paragraphTexts(base));
+});
+
+test('compare does not mutate input documents or their revisions', async () => {
+  const base = withBody('<w:p><w:r><w:t>Base</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>Revised</w:t></w:r></w:p>');
+  const beforeBaseBytes = await base.toUint8Array();
+  const beforeRevisedBytes = await revised.toUint8Array();
+  const beforeBaseRevision = base.revision;
+  const beforeRevisedRevision = revised.revision;
+  DocxDocument.compare(base, revised, { author: 'Alice' });
+  assert.equal(base.revision, beforeBaseRevision);
+  assert.equal(revised.revision, beforeRevisedRevision);
+  assert.deepEqual(await base.toUint8Array(), beforeBaseBytes);
+  assert.deepEqual(await revised.toUint8Array(), beforeRevisedBytes);
+});
+
+test('compare returns a new document whose revision starts at 0', () => {
+  const compared = DocxDocument.compare(
+    withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+    withBody('<w:p><w:r><w:t>B</w:t></w:r></w:p>'),
+  );
+  assert.equal(compared.revision, 0);
+});
+
+test('compare keeps identical documents revision-free', () => {
+  const compared = DocxDocument.compare(
+    withBody('<w:p><w:r><w:t>Same</w:t></w:r></w:p>'),
+    withBody('<w:p><w:r><w:t>Same</w:t></w:r></w:p>'),
+  );
+  assert.deepEqual(compared.getRevisions(), []);
+});
+
+test('compare tracks pure paragraph insertion', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'insertion'), true);
+  assert.deepEqual(paragraphTexts(accepted), ['A', 'B']);
+  assert.deepEqual(paragraphTexts(rejected), ['A']);
+});
+
+test('compare tracks pure paragraph deletion', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'deletion'), true);
+  assert.deepEqual(paragraphTexts(accepted), ['A']);
+  assert.deepEqual(paragraphTexts(rejected), ['A', 'B']);
+});
+
+test('compare tracks partial text replacement with insertion and deletion markers', () => {
+  const compared = DocxDocument.compare(
+    withBody('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>'),
+    withBody('<w:p><w:r><w:t>Hello Earth</w:t></w:r></w:p>'),
+    { author: 'Alice', date: '2026-09-28T00:00:00Z' },
+  );
+  const kinds = compared.getRevisions().map((revision) => revision.kind);
+  assert.equal(kinds.includes('deletion'), true);
+  assert.equal(kinds.includes('insertion'), true);
+  assert.match(compared.getPartXml(compared.mainDocumentPath), /<w:del [^>]*w:date="2026-09-28T00:00:00Z"/);
+});
+
+test('compare handles paragraph reorder as delete plus insert', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p><w:p><w:r><w:t>C</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>B</w:t></w:r></w:p><w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>C</w:t></w:r></w:p>');
+  const { accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.deepEqual(paragraphTexts(accepted), ['B', 'A', 'C']);
+  assert.deepEqual(paragraphTexts(rejected), ['A', 'B', 'C']);
+});
+
+test('compare writes run format changes as rPrChange and reject restores base formatting', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t>A</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'runFormatChange'), true);
+  assert.match(compared.getPartXml(compared.mainDocumentPath), /<w:rPr><w:b w:val="1"\/><w:sz w:val="28"\/><w:szCs w:val="28"\/><w:rPrChange /);
+  assert.equal(accepted.getParagraphs()[0].runs[0].bold, true);
+  assert.equal(accepted.getParagraphs()[0].runs[0].fontSize, 14);
+  assert.equal(rejected.getParagraphs()[0].runs[0].bold, undefined);
+});
+
+test('compare writes paragraph format changes as pPrChange and reject restores base paragraph format', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'paragraphFormatChange'), true);
+  assert.match(compared.getPartXml(compared.mainDocumentPath), /<w:pPr><w:jc w:val="center"\/><w:pPrChange /);
+  assert.equal(accepted.getParagraphs()[0].alignment, 'center');
+  assert.equal(rejected.getParagraphs()[0].alignment, undefined);
+});
+
+test('compare keeps revision child order for run and paragraph format changes', () => {
+  const compared = DocxDocument.compare(
+    withBody('<w:p><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>'),
+    withBody('<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>A</w:t></w:r></w:p>'),
+    { author: 'Alice' },
+  );
+  const xml = compared.getPartXml(compared.mainDocumentPath);
+  assert.match(xml, /<w:pPr><w:jc w:val="center"\/><w:pPrChange /);
+  assert.match(xml, /<w:rPr><w:b w:val="1"\/><w:rPrChange /);
+});
+
+test('compare treats table changes as coarse row deletion plus insertion', async () => {
+  const base = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>old</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  const revised = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>new</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.deepEqual(compared.getRevisions().map((revision) => revision.kind), ['insertion', 'deletion']);
+  assert.deepEqual(accepted.getTable(0).rows[0].cells[0].blocks[0].paragraph.text, 'new');
+  assert.deepEqual(rejected.getTable(0).rows[0].cells[0].blocks[0].paragraph.text, 'old');
+});
+
+test('compare rejects oversized paragraph counts with a clear error', () => {
+  const paragraphs = Array.from({ length: 1001 }, (_, index) => `<w:p><w:r><w:t>p${index}</w:t></w:r></w:p>`).join('');
+  assert.throws(
+    () => DocxDocument.compare(withBody(paragraphs), withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>')),
+    /at most 1000 main-document paragraphs/,
+  );
+});
+
+test('compare can stack on a document that already contains revisions', async () => {
+  const base = DocxDocument.compare(
+    withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+    withBody('<w:p><w:r><w:t>AB</w:t></w:r></w:p>'),
+    { author: 'Alice' },
+  );
+  const revised = withBody('<w:p><w:r><w:t>ABC</w:t></w:r></w:p>');
+  const { accepted } = await compareRoundTrip(base, revised, { author: 'Bob' });
+  assert.deepEqual(paragraphTexts(accepted), ['ABC']);
+  assert.equal(DocxDocument.compare(base, revised, { author: 'Bob' }).getRevisions().length >= 2, true);
+});
+
+test('compare can apply insertion and run-format change in the same paragraph', async () => {
+  const base = withBody('<w:p><w:r><w:t>AB</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>A</w:t></w:r><w:r><w:t>B</w:t></w:r><w:r><w:t>!</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'runFormatChange'), true);
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'insertion'), true);
+  assert.deepEqual(paragraphTexts(accepted), ['AB!']);
+  assert.equal(rejected.getParagraphs()[0].runs[0].bold, undefined);
+});
+
+test('compare degrades zero-length formatted runs to coarse paragraph replacement', async () => {
+  const base = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr></w:r><w:r><w:t>A</w:t></w:r></w:p>');
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'runFormatChange'), false);
+  assert.equal(compared.getRevisions().some((revision) => revision.kind === 'insertion'), true);
+  assert.deepEqual(paragraphTexts(accepted), ['A']);
+  assert.deepEqual(paragraphTexts(rejected), ['A']);
+});
+
+test('compare preserves marker-only wrapper content when deleting a no-run paragraph', () => {
+  const base = withBody('<w:p><w:sdt><w:sdtPr/><w:sdtContent><w:bookmarkStart w:id="1" w:name="keep"/><w:bookmarkEnd w:id="1"/></w:sdtContent></w:sdt></w:p><w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const revised = withBody('<w:p><w:r><w:t>tail</w:t></w:r></w:p>');
+  const compared = DocxDocument.compare(base, revised, { author: 'Alice' });
+  const xml = compared.getPartXml(compared.mainDocumentPath);
+  assert.match(xml, /bookmarkStart/);
+  assert.match(xml, /bookmarkEnd/);
+});
+
+test('compare validates compare options through assertText', () => {
+  assert.throws(
+    () => DocxDocument.compare(withBody('<w:p/>'), withBody('<w:p/>'), { author: 'bad\u0000' }),
+    /author/,
+  );
+  assert.throws(
+    () => DocxDocument.compare(withBody('<w:p/>'), withBody('<w:p/>'), { date: 'bad\u0000' }),
+    /date/,
+  );
 });
