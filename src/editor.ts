@@ -97,7 +97,10 @@ interface NormalizedReviewFilter {
 interface ReviewRenderContext {
   authors?: Set<string>;
   deletedTextByRun: Map<string, string>;
+  revisionColors: Map<string, string>;
 }
+
+const REVISION_COLOR_PALETTE = ['#2E75B6', '#C0504D', '#9BBB59', '#8064A2', '#4BACC6', '#F79646', '#1F497D', '#843C0C'];
 
 function normalizeReviewFilterAuthor(author: ReviewerFilterAuthor, path = 'reviewFilter.authors[]'): ReviewerFilterAuthor {
   if (!author || typeof author !== 'object' || Array.isArray(author)) throw new Error(`${path} must be an object.`);
@@ -262,6 +265,9 @@ export class DocxEditor {
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
+  private revisionRunIds = new Map<string, HTMLElement[]>();
+  private revisionParagraphIds = new Map<number, HTMLElement[]>();
+  private activeRevisionId: number | null = null;
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -391,6 +397,98 @@ export class DocxEditor {
     this.render();
   }
 
+  private filteredRevisionIds(): number[] {
+    if (!this.reviewFilter.showRevisions) return [];
+    const authors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors.map((author) => reviewerBucketKey(author))) : null;
+    return this.document
+      .getRevisions()
+      .filter((revision) => !authors || authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+      .map((revision) => revision.id);
+  }
+
+  private setActiveRevision(id: number | null): void {
+    this.activeRevisionId = id;
+    if (typeof this.root.querySelectorAll !== 'function') return;
+    for (const node of this.root.querySelectorAll<HTMLElement>('[data-docx-revision-ids]')) {
+      const ids = (node.dataset.docxRevisionIds ?? '')
+        .split(',')
+        .map((value) => Number(value))
+        .filter((value) => Number.isSafeInteger(value));
+      node.classList.toggle('docx-revision-active', id !== null && ids.includes(id));
+    }
+  }
+
+  private applyRevisionAction(action: () => void): boolean {
+    const previous = this.document.revision;
+    action();
+    if (this.document.revision === previous) return false;
+    this.render();
+    this.options.onChange?.(this.document.getSnapshot());
+    return true;
+  }
+
+  acceptRevision(id: number): boolean {
+    this.flush();
+    const accepted = this.applyRevisionAction(() => this.document.acceptRevision(id));
+    if (accepted) this.setActiveRevision(null);
+    return accepted;
+  }
+
+  rejectRevision(id: number): boolean {
+    this.flush();
+    const rejected = this.applyRevisionAction(() => this.document.rejectRevision(id));
+    if (rejected) this.setActiveRevision(null);
+    return rejected;
+  }
+
+  acceptAllRevisions(filter: { authors?: string[] } = {}): boolean {
+    this.flush();
+    const accepted = this.applyRevisionAction(() => this.document.acceptAllRevisions(filter));
+    if (accepted) this.setActiveRevision(null);
+    return accepted;
+  }
+
+  rejectAllRevisions(filter: { authors?: string[] } = {}): boolean {
+    this.flush();
+    const rejected = this.applyRevisionAction(() => this.document.rejectAllRevisions(filter));
+    if (rejected) this.setActiveRevision(null);
+    return rejected;
+  }
+
+  focusNextRevision(): number | null {
+    const ids = this.filteredRevisionIds();
+    if (!ids.length) {
+      this.setActiveRevision(null);
+      return null;
+    }
+    const current = this.activeRevisionId === null ? -1 : ids.indexOf(this.activeRevisionId);
+    const nextId = ids[(current + 1) % ids.length]!;
+    this.setActiveRevision(nextId);
+    (this.revisionRunIds.get(String(nextId))?.[0] ?? this.revisionParagraphIds.get(nextId)?.[0])?.focus({ preventScroll: true });
+    return nextId;
+  }
+
+  focusPreviousRevision(): number | null {
+    const ids = this.filteredRevisionIds();
+    if (!ids.length) {
+      this.setActiveRevision(null);
+      return null;
+    }
+    const current = this.activeRevisionId === null ? ids.length : ids.indexOf(this.activeRevisionId);
+    const previousId = ids[(current - 1 + ids.length) % ids.length]!;
+    this.setActiveRevision(previousId);
+    (this.revisionRunIds.get(String(previousId))?.[0] ?? this.revisionParagraphIds.get(previousId)?.[0])?.focus({ preventScroll: true });
+    return previousId;
+  }
+
+  focusRevision(id: number): boolean {
+    if (!Number.isSafeInteger(id) || id < 0) throw new Error('revision id must be a non-negative integer.');
+    if (!this.filteredRevisionIds().includes(id)) return false;
+    this.setActiveRevision(id);
+    (this.revisionRunIds.get(String(id))?.[0] ?? this.revisionParagraphIds.get(id)?.[0])?.focus({ preventScroll: true });
+    return true;
+  }
+
   render(): void {
     if (this.destroyed) return;
     this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
@@ -409,18 +507,31 @@ export class DocxEditor {
     this.commentParagraphIds ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
+    this.revisionRunIds ??= new Map();
+    this.revisionParagraphIds ??= new Map();
+    this.revisionRunIds.clear();
+    this.revisionParagraphIds.clear();
     const reviewContext: ReviewRenderContext = {
       ...(this.reviewFilter.authors ? { authors: new Set(this.reviewFilter.authors.map((author) => reviewerBucketKey(author))) } : {}),
       deletedTextByRun: new Map(),
+      revisionColors: new Map(),
     };
     try {
-      if (this.reviewFilter.revisionView === 'original') {
-        for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
-          if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
-          if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
-          const key = `${revision.paragraph}:${revision.run}`;
-          reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
-        }
+      for (const [index, reviewer] of this.document.getReviewers().entries()) {
+        const key = reviewer.kind === 'named'
+          ? reviewerBucketKey({ kind: 'named', author: reviewer.author ?? '' })
+          : reviewer.kind === 'empty'
+            ? reviewerBucketKey({ kind: 'empty', author: '' })
+            : reviewer.kind === 'blank'
+              ? reviewerBucketKey({ kind: 'blank', author: reviewer.author ?? ' ' })
+              : reviewerBucketKey({ kind: 'unattributed' });
+        reviewContext.revisionColors.set(key, REVISION_COLOR_PALETTE[index % REVISION_COLOR_PALETTE.length]!);
+      }
+      for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
+        if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
+        if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
+        const key = `${revision.paragraph}:${revision.run}`;
+        reviewContext.deletedTextByRun.set(key, `${reviewContext.deletedTextByRun.get(key) ?? ''}${revision.deletedText}`);
       }
       for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
         if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(comment.author)))) continue;
@@ -462,8 +573,10 @@ export class DocxEditor {
       }
       if (range) this.restoreDocumentRange(range);
       this.updateRangeSelection(this.captureDocumentRange());
+      this.setActiveRevision(this.activeRevisionId);
     } finally {
       reviewContext.deletedTextByRun.clear();
+      reviewContext.revisionColors.clear();
     }
   }
 
@@ -484,6 +597,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return '';
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return '';
+      if (current.dataset.docxDeleted !== undefined) return '';
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return '';
       if (current.tagName === 'BR') return '\n';
       const text = Array.from(current.childNodes).map(walk).join('');
@@ -756,6 +870,33 @@ export class DocxEditor {
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     if (!this.isMarkupReviewView()) content.setAttribute('aria-readonly', 'true');
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    const hasRunRevision = this.reviewFilter.showRevisions && paragraph.runs.some((run) =>
+      run.revisions?.some((revision) => !reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))));
+    const visibleParagraphRevision = this.reviewFilter.showRevisions && paragraph.paragraphRevision &&
+      (!reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(paragraph.paragraphRevision.author))))
+      ? paragraph.paragraphRevision
+      : undefined;
+    if ((hasRunRevision || visibleParagraphRevision) && this.reviewFilter.revisionView === 'markup') {
+      const marker = this.makeMark('▎', '修订变更条');
+      marker.classList.add('docx-change-bar');
+      marker.style.position = 'absolute';
+      marker.style.left = '-0.9em';
+      marker.style.top = '0';
+      marker.style.bottom = '0';
+      marker.style.display = 'flex';
+      marker.style.alignItems = 'stretch';
+      marker.style.color = this.reviewColor(visibleParagraphRevision?.author, reviewContext);
+      marker.style.opacity = '0.9';
+      marker.textContent = '│';
+      element.append(marker);
+      if (visibleParagraphRevision) {
+        const id = visibleParagraphRevision.id;
+        element.dataset.docxRevisionIds = String(id);
+        const list = this.revisionParagraphIds.get(id) ?? [];
+        list.push(element);
+        this.revisionParagraphIds.set(id, list);
+      }
+    }
     const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
     if (paragraphCommentIds?.length) {
       element.classList.add('docx-comment-anchor');
@@ -770,7 +911,8 @@ export class DocxEditor {
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
-      currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, defaultTabStopTwips, currentLineOffsetPx);
+      currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
+      this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
         marker.className = 'docx-note-ref';
@@ -903,6 +1045,44 @@ export class DocxEditor {
     return { ...run, text, revisions: revisions.length ? revisions : undefined };
   }
 
+  private reviewColor(author: string | undefined, reviewContext: ReviewRenderContext): string {
+    return reviewContext.revisionColors.get(reviewerBucketKey(reviewerBucketOf(author))) ?? REVISION_COLOR_PALETTE[0]!;
+  }
+
+  private registerRevisionNode(ids: number[], node: HTMLElement): void {
+    if (!ids.length) return;
+    node.dataset.docxRevisionIds = ids.join(',');
+    node.tabIndex = 0;
+    for (const id of ids) {
+      const key = String(id);
+      const list = this.revisionRunIds.get(key) ?? [];
+      list.push(node);
+      this.revisionRunIds.set(key, list);
+    }
+  }
+
+  private appendDeletedRunVisualization(
+    paragraphElement: HTMLElement,
+    paragraphIndex: number,
+    run: RunInfo,
+    reviewContext: ReviewRenderContext,
+  ): void {
+    if (this.reviewFilter.revisionView !== 'markup' || !run.revisions?.some((revision) => revision.kind === 'deletion')) return;
+    const deletedText = reviewContext.deletedTextByRun.get(`${paragraphIndex}:${run.index}`);
+    if (!deletedText) return;
+    const marker = this.root.ownerDocument.createElement('span');
+    marker.className = 'docx-deleted-text';
+    marker.dataset.docxDeleted = '1';
+    marker.contentEditable = 'false';
+    marker.textContent = deletedText;
+    marker.style.textDecoration = 'line-through';
+    marker.style.opacity = '0.85';
+    const authorRevision = run.revisions.find((revision) => revision.kind === 'deletion');
+    marker.style.color = this.reviewColor(authorRevision?.author, reviewContext);
+    this.registerRevisionNode(run.revisions.map((revision) => revision.id), marker);
+    paragraphElement.append(marker);
+  }
+
   private makeMark(text: string, label: string): HTMLElement {
     const mark = this.root.ownerDocument.createElement('span');
     mark.className = 'docx-mark';
@@ -990,6 +1170,7 @@ export class DocxEditor {
     paragraphElement: HTMLElement,
     paragraph: ParagraphInfo,
     run: RunInfo,
+    reviewContext: ReviewRenderContext,
     defaultTabStopTwips: number,
     currentLineOffsetPx: number,
   ): number {
@@ -1026,6 +1207,15 @@ export class DocxEditor {
       if (unsafe) runSpan.style.textDecoration = 'underline wavy red';
     }
     applyRunStyle(runSpan, run);
+    if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup') {
+      const hasInsertion = run.revisions.some((revision) => revision.kind === 'insertion');
+      const hasDeletion = run.revisions.some((revision) => revision.kind === 'deletion');
+      const author = run.revisions.find((revision) => revision.author !== undefined)?.author;
+      runSpan.style.color = this.reviewColor(author, reviewContext);
+      const textDecoration = [hasInsertion ? 'underline' : '', hasDeletion ? 'line-through' : ''].filter(Boolean).join(' ');
+      if (textDecoration) runSpan.style.textDecoration = textDecoration;
+      this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
+    }
     const segments = run.text.split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
@@ -1534,6 +1724,7 @@ export class DocxEditor {
     if (node.nodeType !== 1) return 0;
     const current = node as HTMLElement;
     if (current.dataset.image || current.dataset.docxMark !== undefined) return 0;
+    if (current.dataset.docxDeleted !== undefined) return 0;
     if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return 0;
     if (current.tagName === 'BR') return 1;
     return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
@@ -1578,6 +1769,7 @@ export class DocxEditor {
         if (node.nodeType !== 1) return true;
         const current = node as HTMLElement;
         if (current.dataset.image || current.dataset.docxMark !== undefined) return true;
+        if (current.dataset.docxDeleted !== undefined) return true;
         if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return true;
         if (current.tagName === 'BR') {
           offset += targetOffset > 0 ? 1 : 0;
@@ -1596,6 +1788,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return false;
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return false;
+      if (current.dataset.docxDeleted !== undefined) return false;
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return false;
       if (current.tagName === 'BR') {
         offset += 1;
@@ -1624,6 +1817,7 @@ export class DocxEditor {
       if (node.nodeType !== 1) return null;
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return null;
+      if (current.dataset.docxDeleted !== undefined) return null;
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return null;
       if (current.tagName === 'BR') {
         if (remaining <= 1) {

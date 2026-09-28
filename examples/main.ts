@@ -93,6 +93,7 @@ let imageAction: 'insert' | 'replace' = 'insert';
 let selectedRange: DocumentRange | null = null;
 let selectedRangeFormat: RunFormat | null = null;
 let selectedCommentId: number | null = null;
+let selectedRevisionId: number | null = null;
 let formatPainter: { format: RunFormat; locked: boolean } | null = null;
 let applyingFormatPainter = false;
 let selectedReviewerAuthors: ReviewerFilterAuthor[] | undefined;
@@ -303,6 +304,7 @@ function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   updateImageSelection();
   refreshReviewers();
   refreshComments(snapshot);
+  refreshRevisions();
 }
 
 function loadStyleOptions(): void {
@@ -487,6 +489,78 @@ function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
   element<HTMLButtonElement>('reply-comment').disabled = selectedCommentId === null;
   element<HTMLButtonElement>('resolve-comment').disabled = selectedCommentId === null;
   element<HTMLButtonElement>('delete-comment').disabled = selectedCommentId === null;
+  for (const node of host.querySelectorAll<HTMLElement>('[data-docx-comment-ids]')) {
+    const ids = (node.dataset.docxCommentIds ?? '').split(',').map((value) => Number(value));
+    node.classList.toggle('docx-comment-active', selectedCommentId !== null && ids.includes(selectedCommentId));
+  }
+}
+
+function revisionSummaryText(revision: ReturnType<DocxDocument['getRevisions']>[number]): string {
+  if (revision.kind === 'deletion') return revision.deletedText ? `删除：“${revision.deletedText}”` : '删除';
+  if (revision.kind === 'insertion') return '插入';
+  if (revision.kind === 'runFormatChange') return '文字格式修订';
+  if (revision.kind === 'paragraphFormatChange') return '段落格式修订';
+  if (revision.kind === 'tableFormatChange') return '表格格式修订';
+  if (revision.kind === 'rowFormatChange') return '行格式修订';
+  return '单元格格式修订';
+}
+
+function refreshRevisions(): void {
+  const list = element<HTMLUListElement>('revision-list');
+  const selectedAuthors = selectedReviewerAuthors ? new Set(selectedReviewerAuthors.map(reviewerSelectionKey)) : undefined;
+  const revisions = (reviewShowRevisions ? doc.getRevisions() : []).filter((revision) =>
+    !selectedAuthors || selectedAuthors.has(reviewerBucketKey(reviewerBucketOf(revision.author))));
+  if (selectedRevisionId !== null && !revisions.some((revision) => revision.id === selectedRevisionId)) selectedRevisionId = null;
+  list.replaceChildren(...revisions.map((revision) => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.className = selectedRevisionId === revision.id ? 'active' : '';
+    button.addEventListener('click', () => {
+      selectedRevisionId = revision.id;
+      editor.focusRevision(revision.id);
+      refreshRevisions();
+    });
+    const meta = document.createElement('div');
+    meta.className = 'comment-meta';
+    meta.textContent = `${revision.author ?? '匿名'} · #${revision.id} · 第 ${revision.paragraph + 1} 段${revision.run !== undefined ? ` / run ${revision.run}` : ''}`;
+    const body = document.createElement('div');
+    body.className = 'comment-body';
+    body.textContent = revisionSummaryText(revision);
+    const actions = document.createElement('div');
+    actions.className = 'comment-panel-actions';
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.className = 'button subtle';
+    accept.textContent = '接受';
+    accept.addEventListener('click', (event) => {
+      event.stopPropagation();
+      run(() => {
+        editor.acceptRevision(revision.id);
+        selectedRevisionId = null;
+        refresh();
+      });
+    });
+    const reject = document.createElement('button');
+    reject.type = 'button';
+    reject.className = 'button subtle';
+    reject.textContent = '拒绝';
+    reject.addEventListener('click', (event) => {
+      event.stopPropagation();
+      run(() => {
+        editor.rejectRevision(revision.id);
+        selectedRevisionId = null;
+        refresh();
+      });
+    });
+    actions.append(accept, reject);
+    button.append(meta, body, actions);
+    item.append(button);
+    return item;
+  }));
+  element<HTMLButtonElement>('review-prev-revision').disabled = !revisions.length;
+  element<HTMLButtonElement>('review-next-revision').disabled = !revisions.length;
+  element<HTMLButtonElement>('review-accept-all').disabled = !revisions.length;
+  element<HTMLButtonElement>('review-reject-all').disabled = !revisions.length;
 }
 
 function refreshReviewers(): void {
@@ -517,6 +591,7 @@ function refreshReviewers(): void {
       selectedReviewerAuthors = selectedEntries.size === reviewers.length ? undefined : [...selectedEntries.values()];
       applyReviewFilter();
       refreshComments();
+      refreshRevisions();
     });
     const name = document.createElement('span');
     name.textContent = `${reviewerBucketLabel(reviewerSelectionFrom(reviewer))}${reviewer.initials ? ` (${reviewer.initials})` : ''}`;
@@ -664,6 +739,7 @@ function setDocument(next: DocxDocument, name: string): void {
   selectedRange = null;
   selectedRangeFormat = null;
   selectedCommentId = null;
+  selectedRevisionId = null;
   recentNumbering.clear();
   filename = name;
   element('document-name').textContent = filename;
@@ -713,6 +789,7 @@ element<HTMLSelectElement>('review-revision-view').addEventListener('change', (e
 element<HTMLInputElement>('review-show-revisions').addEventListener('change', (event) => {
   reviewShowRevisions = (event.target as HTMLInputElement).checked;
   applyReviewFilter();
+  refreshRevisions();
 });
 element<HTMLInputElement>('review-show-comments').addEventListener('change', (event) => {
   reviewShowComments = (event.target as HTMLInputElement).checked;
@@ -724,12 +801,14 @@ element('review-select-all').addEventListener('click', () => {
   applyReviewFilter();
   refreshReviewers();
   refreshComments();
+  refreshRevisions();
 });
 element('review-clear-authors').addEventListener('click', () => {
   selectedReviewerAuthors = [];
   applyReviewFilter();
   refreshReviewers();
   refreshComments();
+  refreshRevisions();
 });
 element('comment-author-filter').addEventListener('input', () => refreshComments());
 element('comment-resolved-filter').addEventListener('change', () => refreshComments());
@@ -741,6 +820,32 @@ element('new-comment').addEventListener('click', () => run(() => {
   editor.render();
   refresh();
   message('已添加批注。');
+}));
+element('review-prev-revision').addEventListener('click', () => run(() => {
+  const id = editor.focusPreviousRevision();
+  selectedRevisionId = id;
+  refreshRevisions();
+}));
+element('review-next-revision').addEventListener('click', () => run(() => {
+  const id = editor.focusNextRevision();
+  selectedRevisionId = id;
+  refreshRevisions();
+}));
+element('review-accept-all').addEventListener('click', () => run(() => {
+  const filterAuthors = selectedReviewerAuthors
+    ?.filter((entry) => entry.kind === 'named')
+    .map((entry) => entry.author);
+  editor.acceptAllRevisions(filterAuthors?.length ? { authors: filterAuthors } : {});
+  selectedRevisionId = null;
+  refresh();
+}));
+element('review-reject-all').addEventListener('click', () => run(() => {
+  const filterAuthors = selectedReviewerAuthors
+    ?.filter((entry) => entry.kind === 'named')
+    .map((entry) => entry.author);
+  editor.rejectAllRevisions(filterAuthors?.length ? { authors: filterAuthors } : {});
+  selectedRevisionId = null;
+  refresh();
 }));
 element('reply-comment').addEventListener('click', () => run(() => {
   if (selectedCommentId === null) throw new Error('请先选择一条批注。');
