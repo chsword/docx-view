@@ -112,6 +112,8 @@ const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
+const COMPARE_MAX_PARAGRAPHS = 1_000;
+const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
 const REVISION_ELEMENT_NAMES = new Set([
   'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
 ]);
@@ -1754,6 +1756,26 @@ const RUN_FORMAT_FIELDS = [
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
   'highlight', 'characterSpacing', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];
+const PARAGRAPH_FORMAT_FIELDS = [
+  'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
+  'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
+  'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
+  'outlineLevel', 'tabs', 'borders', 'shading',
+] as const satisfies readonly (keyof ParagraphFormat)[];
+
+interface CompareBlockInfo {
+  kind: 'paragraph' | 'table';
+  text: string;
+  opaque: boolean;
+  exactKey: string;
+  element: Element;
+}
+
+type CompareStep =
+  | { kind: 'equal'; baseIndex: number; revisedIndex: number }
+  | { kind: 'modify'; baseIndex: number; revisedIndex: number }
+  | { kind: 'delete'; baseIndex: number }
+  | { kind: 'insert'; revisedIndex: number };
 
 function cloneRunFormatValue<T>(value: T): T {
   if (!value || typeof value !== 'object') return value;
@@ -1764,6 +1786,183 @@ function runFormatValueEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function directParagraphFormatOf(paragraph: Element): ParagraphFormat {
+  return compactDefined(readParagraphProperties(children(paragraph, 'pPr')[0]));
+}
+
+function directRunFormatOf(run: Element, theme: StylesContext['theme']): RunFormat {
+  return compactDefined(readRunProperties(children(run, 'rPr')[0], theme));
+}
+
+function buildFormatPatch<T extends object>(
+  source: Partial<T>,
+  target: Partial<T>,
+  fields: readonly (keyof T)[],
+): Partial<Record<keyof T, unknown>> {
+  const patch: Partial<Record<keyof T, unknown>> = {};
+  for (const field of fields) {
+    const sourceValue = source[field];
+    const targetValue = target[field];
+    if (runFormatValueEqual(sourceValue, targetValue)) continue;
+    patch[field] = targetValue === undefined ? null : cloneRunFormatValue(targetValue);
+  }
+  return patch;
+}
+
+function hasOpaqueParagraphContent(paragraph: Element): boolean {
+  return descendants(paragraph, 'drawing').length > 0 ||
+    descendants(paragraph, 'pict').length > 0 ||
+    descendants(paragraph, 'object').length > 0;
+}
+
+function hasUnalignableCompareRuns(paragraph: Element): boolean {
+  return ownRuns(paragraph).some((run) => {
+    if (textOf(run).length !== 0) return false;
+    return children(run, 'rPr').length > 0 || children(run).some((child) => child.localName !== 'rPr');
+  });
+}
+
+function preservesParagraphMarkers(node: Element): boolean {
+  if (isParagraphAnchorMarker(node)) return true;
+  if (node.namespaceURI !== WORD_NS) return false;
+  if (node.localName === 'sdt') {
+    return children(node).every((child) => ['sdtPr', 'sdtEndPr'].includes(child.localName ?? '') || preservesParagraphMarkers(child));
+  }
+  if (!isTransparentWordWrapper(node)) return false;
+  return children(node).every((child) => preservesParagraphMarkers(child));
+}
+
+function buildCompareBlocks(body: Element): CompareBlockInfo[] {
+  return blockElements(body).map((element) => ({
+    kind: element.localName === 'tbl' ? 'table' : 'paragraph',
+    text: element.localName === 'p' ? textOf(element) : '',
+    opaque: element.localName === 'tbl' || hasOpaqueParagraphContent(element) || hasUnalignableCompareRuns(element),
+    exactKey: element.toString(),
+    element,
+  }));
+}
+
+function sharedTextLength(a: string, b: string): number {
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) suffix++;
+  return prefix + suffix;
+}
+
+function canPairCompareBlocks(base: CompareBlockInfo, revised: CompareBlockInfo): boolean {
+  if (base.kind !== 'paragraph' || revised.kind !== 'paragraph') return false;
+  if (base.opaque || revised.opaque) return false;
+  if (base.text === revised.text) return true;
+  const longest = Math.max(base.text.length, revised.text.length, 1);
+  return sharedTextLength(base.text, revised.text) / longest >= COMPARE_PARAGRAPH_PAIR_THRESHOLD;
+}
+
+function alignCompareBlocks(base: CompareBlockInfo[], revised: CompareBlockInfo[]): CompareStep[] {
+  const rows = base.length + 1;
+  const cols = revised.length + 1;
+  const costs = new Uint32Array(rows * cols);
+  const moves = new Uint8Array(rows * cols);
+  const at = (row: number, col: number): number => row * cols + col;
+  for (let row = 1; row < rows; row++) {
+    costs[at(row, 0)] = row;
+    moves[at(row, 0)] = 2;
+  }
+  for (let col = 1; col < cols; col++) {
+    costs[at(0, col)] = col;
+    moves[at(0, col)] = 3;
+  }
+  for (let row = 1; row < rows; row++) {
+    for (let col = 1; col < cols; col++) {
+      const baseBlock = base[row - 1]!;
+      const revisedBlock = revised[col - 1]!;
+      const exact = baseBlock.exactKey === revisedBlock.exactKey;
+      const pairable = exact || canPairCompareBlocks(baseBlock, revisedBlock);
+      const diagonal = pairable ? costs[at(row - 1, col - 1)]! + (exact ? 0 : 1) : Number.MAX_SAFE_INTEGER;
+      const deletion = costs[at(row - 1, col)]! + 1;
+      const insertion = costs[at(row, col - 1)]! + 1;
+      let best = diagonal;
+      let move = exact ? 0 : 1;
+      if (deletion < best) {
+        best = deletion;
+        move = 2;
+      }
+      if (insertion < best) {
+        best = insertion;
+        move = 3;
+      }
+      costs[at(row, col)] = best;
+      moves[at(row, col)] = move;
+    }
+  }
+  const steps: CompareStep[] = [];
+  let row = base.length;
+  let col = revised.length;
+  while (row > 0 || col > 0) {
+    const move = moves[at(row, col)];
+    if ((move === 0 || move === 1) && row > 0 && col > 0) {
+      steps.push(move === 0
+        ? { kind: 'equal', baseIndex: row - 1, revisedIndex: col - 1 }
+        : { kind: 'modify', baseIndex: row - 1, revisedIndex: col - 1 });
+      row--;
+      col--;
+      continue;
+    }
+    if (move === 2 && row > 0) {
+      steps.push({ kind: 'delete', baseIndex: row - 1 });
+      row--;
+      continue;
+    }
+    if (col > 0) {
+      steps.push({ kind: 'insert', revisedIndex: col - 1 });
+      col--;
+      continue;
+    }
+    steps.push({ kind: 'delete', baseIndex: row - 1 });
+    row--;
+  }
+  return steps.reverse();
+}
+
+function cloneNodeIntoDocument(document: Document, node: Node): Node {
+  switch (node.nodeType) {
+    case 1: {
+      const source = node as Element;
+      const clone = document.createElementNS(source.namespaceURI, source.tagName);
+      for (let index = 0; index < source.attributes.length; index++) {
+        const attribute = source.attributes.item(index);
+        if (!attribute) continue;
+        clone.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+      }
+      for (let child = source.firstChild; child; child = child.nextSibling) {
+        clone.appendChild(cloneNodeIntoDocument(document, child));
+      }
+      return clone;
+    }
+    case 3:
+      return document.createTextNode(node.nodeValue ?? '');
+    case 4:
+      return document.createCDATASection(node.nodeValue ?? '');
+    case 7: {
+      const instruction = node as Node & { target?: string; data?: string };
+      return document.createProcessingInstruction(instruction.target ?? '', instruction.data ?? node.nodeValue ?? '');
+    }
+    case 8:
+      return document.createComment(node.nodeValue ?? '');
+    default:
+      return document.createTextNode(node.nodeValue ?? '');
+  }
+}
+
+function blockInsertionReference(body: Element, blockIndex: number): Node | null {
+  const blocks = blockElements(body);
+  return blocks[blockIndex] ?? children(body, 'sectPr')[0] ?? null;
 }
 
 function isHighSurrogateCodeUnit(code: number): boolean {
@@ -2080,6 +2279,53 @@ export class DocxDocument {
       parts.set(entry.name, data);
     }
     return new DocxDocument(parts);
+  }
+
+  static compare(base: DocxDocument, revised: DocxDocument, options: { author?: string; date?: string } = {}): DocxDocument {
+    if (!(base instanceof DocxDocument) || !(revised instanceof DocxDocument)) {
+      throw new Error('DocxDocument.compare() expects DocxDocument instances.');
+    }
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('compare options must be an object.');
+    if (Object.keys(options).some((key) => !['author', 'date'].includes(key))) throw new Error('Unknown compare option.');
+    if (options.author !== undefined) assertText(options.author, 'author');
+    if (options.date !== undefined) assertText(options.date, 'date');
+    const baseBody = bodyOf(base.getCachedPartDocument(base.mainPath));
+    const revisedBody = bodyOf(revised.getCachedPartDocument(revised.mainPath));
+    const baseParagraphCount = descendants(baseBody, 'p').length;
+    const revisedParagraphCount = descendants(revisedBody, 'p').length;
+    if (baseParagraphCount > COMPARE_MAX_PARAGRAPHS || revisedParagraphCount > COMPARE_MAX_PARAGRAPHS) {
+      throw new Error(
+        `DocxDocument.compare() supports at most ${COMPARE_MAX_PARAGRAPHS} main-document paragraphs per input document ` +
+        `(received ${baseParagraphCount} and ${revisedParagraphCount}).`,
+      );
+    }
+    const result = new DocxDocument(new Map(base.parts));
+    result.suppressHistory = true;
+    result.revisionAuthor = options.author;
+    result.setTrackChangesDirect(true);
+    const baseBlocks = buildCompareBlocks(baseBody);
+    const revisedBlocks = buildCompareBlocks(revisedBody);
+    result.applyComparedBlocks(alignCompareBlocks(baseBlocks, revisedBlocks), revisedBlocks, revised.getStylesContext(), options.author, options.date);
+    result.materializeAllParts();
+    result.currentRevision = 0;
+    result.undoHistory = [];
+    result.redoHistory = [];
+    result.undoHistoryBytes = 0;
+    result.redoHistoryBytes = 0;
+    result.pendingMergedHistory = undefined;
+    result.nextHistoryLabel = undefined;
+    result.nextHistoryAction = { kind: 'other' };
+    result.numberingContextCache = undefined;
+    result.stylesCache = undefined;
+    result.noteStateCache = undefined;
+    result.commentStateCache = undefined;
+    result.contentPartPathsCache = undefined;
+    result.commentBindingsCache = undefined;
+    result.revisionInfoCache = undefined;
+    result.reviewerInfoCache = undefined;
+    result.imageDataUrls.clear();
+    result.suppressHistory = false;
+    return result;
   }
 
   get revision(): number { return this.currentRevision; }
@@ -3800,6 +4046,10 @@ export class DocxDocument {
     if (!row || !table) return;
     const index = tableRows(table).findIndex((item) => item === row);
     if (index < 0) return;
+    if (tableRows(table).length <= 1) {
+      table.parentNode?.removeChild(table);
+      return;
+    }
     deleteTableRowElement(table, index);
   }
 
@@ -4039,29 +4289,49 @@ export class DocxDocument {
     return Object.keys(format).length ? format : undefined;
   }
 
-  private trackRunFormatChange(run: Element): void {
+  private trackRunFormatChange(run: Element, author?: string, date?: string): void {
     const previous = this.trackedRunFormatSnapshot(run) ?? {};
-    const snapshot = markFormatRevision(
-      properties(run, 'rPr'),
+    const props = properties(run, 'rPr');
+    markFormatRevision(
+      props,
       'rPrChange',
       'rPr',
-      this.trackedRevisionAuthor(),
+      this.trackedRevisionAuthor(author),
+      date,
     );
-    if (!snapshot.firstChild && !snapshot.attributes.length) applyRunFormatTo(snapshot, previous);
+    const marker = children(props, 'rPrChange')[0];
+    let snapshot = marker ? children(marker, 'rPr')[0] : undefined;
+    if (marker && !snapshot) {
+      snapshot = wordElement(props.ownerDocument!, 'rPr');
+      marker.appendChild(snapshot);
+    }
+    if (!marker || !snapshot) return;
+    if (snapshot.parentNode !== marker) marker.appendChild(snapshot);
+    if (!snapshot.firstChild && !snapshot.attributes.length && Object.keys(previous).length) applyRunFormatTo(snapshot, previous);
   }
 
-  private trackParagraphFormatChange(paragraph: Element): void {
+  private trackParagraphFormatChange(paragraph: Element, author?: string, date?: string): void {
     const previous = this.trackedParagraphFormatSnapshot(paragraph) ?? {};
-    const snapshot = markFormatRevision(
-      properties(paragraph, 'pPr'),
+    const props = properties(paragraph, 'pPr');
+    markFormatRevision(
+      props,
       'pPrChange',
       'pPr',
-      this.trackedRevisionAuthor(),
+      this.trackedRevisionAuthor(author),
+      date,
     );
-    if (!snapshot.firstChild && !snapshot.attributes.length) applyParagraphFormatTo(snapshot, previous);
+    const marker = children(props, 'pPrChange')[0];
+    let snapshot = marker ? children(marker, 'pPr')[0] : undefined;
+    if (marker && !snapshot) {
+      snapshot = wordElement(props.ownerDocument!, 'pPr');
+      marker.appendChild(snapshot);
+    }
+    if (!marker || !snapshot) return;
+    if (snapshot.parentNode !== marker) marker.appendChild(snapshot);
+    if (!snapshot.firstChild && !snapshot.attributes.length && Object.keys(previous).length) applyParagraphFormatTo(snapshot, previous);
   }
 
-  private insertTrackedText(paragraph: Element, start: number, text: string): void {
+  private insertTrackedText(paragraph: Element, start: number, text: string, author?: string, date?: string): void {
     if (!text) return;
     this.splitRunAtOffset(paragraph, start);
     const runs = ownRuns(paragraph);
@@ -4098,19 +4368,189 @@ export class DocxDocument {
     }
     const run = wordElement(parent.ownerDocument!, 'r');
     appendText(run, text);
-    const wrapper = createRevisionWrapper(parent.ownerDocument!, 'ins', this.trackedRevisionAuthor());
+    const wrapper = createRevisionWrapper(parent.ownerDocument!, 'ins', this.trackedRevisionAuthor(author), date);
     wrapper.appendChild(run);
     parent.insertBefore(wrapper, reference);
   }
 
-  private replaceSpanTracked(paragraph: Element, start: number, end: number, replacement: string): void {
+  private replaceSpanTracked(paragraph: Element, start: number, end: number, replacement: string, author?: string, date?: string): void {
     if (start !== end) {
       this.splitRunAtOffset(paragraph, end);
       this.splitRunAtOffset(paragraph, start);
       const runs = this.runsInRange(paragraph, start, end);
-      wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+      wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor(author), date);
     }
-    this.insertTrackedText(paragraph, start, replacement);
+    this.insertTrackedText(paragraph, start, replacement, author, date);
+  }
+
+  private applyComparedBlocks(
+    steps: CompareStep[],
+    revisedBlocks: CompareBlockInfo[],
+    revisedStyles: StylesContext,
+    author?: string,
+    date?: string,
+  ): void {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    for (let blockIndex = 0, stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+      const step = steps[stepIndex]!;
+      const current = blockElements(body)[blockIndex];
+      switch (step.kind) {
+        case 'equal':
+          blockIndex++;
+          break;
+        case 'modify':
+          if (!current || current.localName !== 'p') throw new Error('Compared paragraph does not exist.');
+          this.compareParagraphAgainst(current, revisedBlocks[step.revisedIndex]!.element, revisedStyles, author, date);
+          blockIndex++;
+          break;
+        case 'delete':
+          if (!current) throw new Error('Compared block does not exist.');
+          this.markComparedBlockDeleted(current, author, date);
+          blockIndex++;
+          break;
+        case 'insert':
+          this.insertComparedBlock(body, blockIndex, revisedBlocks[step.revisedIndex]!.element, author, date);
+          blockIndex++;
+          break;
+      }
+    }
+    this.dirtyPartXml.add(this.mainPath);
+    this.dirtyPartSizes.delete(this.mainPath);
+  }
+
+  private insertComparedBlock(body: Element, blockIndex: number, source: Element, author?: string, date?: string): void {
+    const clone = cloneNodeIntoDocument(body.ownerDocument!, source) as Element;
+    body.insertBefore(clone, blockInsertionReference(body, blockIndex));
+    if (clone.localName === 'p') {
+      const runs = ownRuns(clone);
+      if (runs.length) wrapRunsWithRevision(clone, runs, 'ins', this.trackedRevisionAuthor(author), date);
+      markRevision(property(properties(clone, 'pPr'), 'rPr'), 'ins', this.trackedRevisionAuthor(author), date, 'paraRPr');
+      return;
+    }
+    if (clone.localName === 'tbl') {
+      for (const row of tableRows(clone)) markRevision(tableProperty(row, 'trPr'), 'ins', this.trackedRevisionAuthor(author), date);
+    }
+  }
+
+  private markComparedBlockDeleted(block: Element, author?: string, date?: string): void {
+    if (block.localName === 'p') {
+      if (children(block, 'pPr').some(props => children(props, 'sectPr').length)) return;
+      const runs = ownRuns(block);
+      if (runs.length) wrapRunsWithRevision(block, runs, 'del', this.trackedRevisionAuthor(author), date);
+      else {
+        for (const child of [...children(block)]) {
+          if (child.localName === 'pPr' || preservesParagraphMarkers(child)) continue;
+          block.removeChild(child);
+        }
+      }
+      markRevision(property(properties(block, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor(author), date, 'paraRPr');
+      return;
+    }
+    if (block.localName === 'tbl') {
+      for (const row of tableRows(block)) markRevision(tableProperty(row, 'trPr'), 'del', this.trackedRevisionAuthor(author), date);
+    }
+  }
+
+  private compareParagraphAgainst(
+    paragraph: Element,
+    revisedParagraph: Element,
+    revisedStyles: StylesContext,
+    author?: string,
+    date?: string,
+  ): void {
+    const baseTheme = this.getStylesContext().theme;
+    const baseParagraphFormat = directParagraphFormatOf(paragraph);
+    const baseParagraphClone = paragraph.cloneNode(true) as Element;
+    const old = textOf(paragraph);
+    const revisedText = textOf(revisedParagraph);
+    let start = 0;
+    while (start < old.length && start < revisedText.length && old[start] === revisedText[start]) start++;
+    let end = old.length;
+    let replacementEnd = revisedText.length;
+    while (end > start && replacementEnd > start && old[end - 1] === revisedText[replacementEnd - 1]) {
+      end--;
+      replacementEnd--;
+    }
+    if (start > 0 && /[\ud800-\udbff]/.test(old[start - 1]!)) start--;
+    if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
+    if (old !== revisedText) this.replaceSpanTracked(paragraph, start, end, revisedText.slice(start, replacementEnd), author, date);
+    const paragraphPatch = buildFormatPatch(
+      baseParagraphFormat,
+      directParagraphFormatOf(revisedParagraph),
+      PARAGRAPH_FORMAT_FIELDS,
+    ) as ParagraphFormat;
+    if (Object.keys(paragraphPatch).length) {
+      this.trackParagraphFormatChange(paragraph, author, date);
+      applyParagraphFormatTo(properties(paragraph, 'pPr'), paragraphPatch);
+    }
+    const revisedVisibleRuns = ownRuns(revisedParagraph)
+      .map((run) => ({ run, text: textOf(run) }))
+      .filter((entry) => entry.text.length > 0);
+    let offset = 0;
+    for (const entry of revisedVisibleRuns.slice(0, -1)) {
+      offset += entry.text.length;
+      this.splitRunAtOffset(paragraph, offset);
+    }
+    const currentVisibleRuns = ownRuns(paragraph)
+      .map((run) => ({ run, text: textOf(run) }))
+      .filter((entry) => entry.text.length > 0);
+    if (currentVisibleRuns.length !== revisedVisibleRuns.length ||
+        currentVisibleRuns.some((entry, index) => entry.text !== revisedVisibleRuns[index]!.text)) {
+      return;
+    }
+    for (let index = 0, runOffset = 0; index < currentVisibleRuns.length; index++) {
+      const currentRun = currentVisibleRuns[index]!.run;
+      const revisedRun = revisedVisibleRuns[index]!.run;
+      const runStart = runOffset;
+      const runEnd = runStart + currentVisibleRuns[index]!.text.length;
+      runOffset = runEnd;
+      const originalFormat = this.originalComparedRunFormat(baseParagraphClone, baseTheme, runStart, runEnd, start, end, replacementEnd);
+      const runPatch = buildFormatPatch(
+        originalFormat ?? directRunFormatOf(currentRun, baseTheme),
+        directRunFormatOf(revisedRun, revisedStyles.theme),
+        RUN_FORMAT_FIELDS,
+      ) as RunFormat;
+      if (!Object.keys(runPatch).length) continue;
+      if (!this.runInsideInsertion(currentRun, paragraph) && originalFormat) this.trackRunFormatChange(currentRun, author, date);
+      applyRunFormatTo(properties(currentRun, 'rPr'), runPatch);
+    }
+  }
+
+  private originalComparedRunFormat(
+    baseParagraph: Element,
+    theme: StylesContext['theme'],
+    revisedStart: number,
+    revisedEnd: number,
+    replaceStart: number,
+    baseReplaceEnd: number,
+    revisedReplaceEnd: number,
+  ): RunFormat | undefined {
+    let baseStart = revisedStart;
+    let baseEnd = revisedEnd;
+    if (revisedEnd <= replaceStart) {
+      baseStart = revisedStart;
+      baseEnd = revisedEnd;
+    } else if (revisedStart >= revisedReplaceEnd) {
+      baseStart = revisedStart - revisedReplaceEnd + baseReplaceEnd;
+      baseEnd = revisedEnd - revisedReplaceEnd + baseReplaceEnd;
+    } else {
+      return undefined;
+    }
+    this.splitRunAtOffset(baseParagraph, baseEnd);
+    this.splitRunAtOffset(baseParagraph, baseStart);
+    const originalRuns = this.runsInRange(baseParagraph, baseStart, baseEnd);
+    if (originalRuns.length !== 1) return undefined;
+    return directRunFormatOf(originalRuns[0]!, theme);
+  }
+
+  private runInsideInsertion(run: Element, paragraph: Element): boolean {
+    for (let parent = run.parentNode; parent && parent !== paragraph; parent = parent.parentNode) {
+      if (parent.nodeType !== 1) continue;
+      const element = parent as Element;
+      if (element.namespaceURI === WORD_NS && ['ins', 'moveTo'].includes(element.localName ?? '')) return true;
+    }
+    return false;
   }
 
   private applyRunFormatRangeOnParagraph(paragraph: Element, start: number, end: number, format: RunFormat): void {
