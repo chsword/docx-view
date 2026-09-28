@@ -692,6 +692,10 @@ function revisionAuthorOf(element: Element): string | undefined {
   return author ? author : undefined;
 }
 
+function revisionAuthorRawOf(element: Element): string | undefined {
+  return element.getAttributeNS(WORD_NS, 'author') ?? element.getAttribute('w:author') ?? undefined;
+}
+
 function revisionNameOf(element: Element): string | undefined {
   const value = element.getAttributeNS(WORD_NS, 'name') ?? element.getAttribute('w:name') ?? undefined;
   const name = value?.trim();
@@ -4431,15 +4435,21 @@ export class DocxDocument {
 
   acceptAllRevisions(filter: { authors?: string[] } = {}): void {
     const authors = this.normalizeRevisionAuthorFilter(filter);
-    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    const revisions = this.getRevisions();
     if (!revisions.length) return;
+    if (authors && !revisions.some((revision) =>
+      (revision.author !== undefined && authors.has(revision.author)) ||
+      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'accept'));
   }
 
   rejectAllRevisions(filter: { authors?: string[] } = {}): void {
     const authors = this.normalizeRevisionAuthorFilter(filter);
-    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    const revisions = this.getRevisions();
     if (!revisions.length) return;
+    if (authors && !revisions.some((revision) =>
+      (revision.author !== undefined && authors.has(revision.author)) ||
+      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'reject'));
   }
 
@@ -4499,8 +4509,10 @@ export class DocxDocument {
       }
       const selected = new Set<Element>();
       const matchesAuthor = (marker: Element): boolean => {
-        const author = revisionAuthorOf(marker);
-        return author !== undefined && authors.has(author);
+        const raw = revisionAuthorRawOf(marker);
+        const normalized = revisionAuthorOf(marker);
+        const bucket = reviewerBucketKey(reviewerBucketOf(raw));
+        return (raw !== undefined && authors.has(raw)) || (normalized !== undefined && authors.has(normalized)) || authors.has(bucket);
       };
       for (const marker of markers) {
         if (!isMoveRevisionMarker(marker)) {

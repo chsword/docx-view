@@ -4140,6 +4140,13 @@ test('rejectAllRevisions author filter rejects a full move pair when only one si
   assert.deepEqual(doc.getRevisions(), []);
 });
 
+test('acceptAllRevisions author filter supports reviewer bucket keys for move pairs', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="57" w:name="m6"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t>/</w:t></w:r><w:moveTo w:id="58" w:author="Bob" w:name="m6"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  doc.acceptAllRevisions({ authors: ['unattributed'] });
+  assert.equal(doc.getParagraphs()[0].text, '/new');
+  assert.deepEqual(doc.getRevisions(), []);
+});
+
 test('acceptRevision on one move pair does not affect another pair with same name', () => {
   const doc = withBody('<w:p><w:moveFrom w:id="50" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="51" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:r><w:t>|</w:t></w:r><w:moveFrom w:id="52" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="53" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
   doc.acceptRevision(50);
