@@ -433,6 +433,8 @@ export interface ClipboardFragment {
 }
 
 export type AgentOperation =
+  | { type: 'setTrackChanges'; enabled: boolean }
+  | { type: 'setRevisionAuthor'; author: string }
   | { type: 'setParagraphText'; index: number; text: string }
   | { type: 'insertParagraph'; text: string; before?: number }
   | { type: 'deleteParagraph'; index: number }

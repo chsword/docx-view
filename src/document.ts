@@ -70,8 +70,10 @@ import {
   parseCommentExEntries,
 } from './comments.js';
 import {
+  createRevisionWrapper,
   deletedTextOf,
   hasRevisionMarkup,
+  markFormatRevision,
   markRevision,
   readParagraphRevisionMark,
   readRevisionMark,
@@ -293,6 +295,30 @@ function clearParagraphContent(paragraph: Element): void {
   }
 }
 
+function isParagraphAnchorMarker(element: Element): boolean {
+  return [
+    'bookmarkStart',
+    'bookmarkEnd',
+    'commentRangeStart',
+    'commentRangeEnd',
+    'proofErr',
+    'permStart',
+    'permEnd',
+    'moveFromRangeStart',
+    'moveFromRangeEnd',
+    'moveToRangeStart',
+    'moveToRangeEnd',
+    'customXmlInsRangeStart',
+    'customXmlInsRangeEnd',
+    'customXmlDelRangeStart',
+    'customXmlDelRangeEnd',
+    'customXmlMoveFromRangeStart',
+    'customXmlMoveFromRangeEnd',
+    'customXmlMoveToRangeStart',
+    'customXmlMoveToRangeEnd',
+  ].includes(element.localName ?? '');
+}
+
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
   function walk(node: Node, deletedDepth = 0): void {
@@ -353,6 +379,10 @@ function textOf(element: Element): string {
   const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
   if (text) return text;
   return fieldPlaceholder(element) ?? '';
+}
+
+function compactDefined<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
 
 function appendText(parent: Element, text: string, before: Node | null = null): void {
@@ -421,6 +451,52 @@ function replaceSpan(paragraph: Element, start: number, end: number, replacement
       if (insertHere) inserted = true;
     }
     offset = next;
+  }
+}
+
+function revisionTextElement(run: Element, name: 't' | 'delText'): void {
+  const document = run.ownerDocument!;
+  for (const element of descendants(run, 't')) {
+    const replacement = wordElement(document, name);
+    for (let index = 0; index < element.attributes.length; index++) {
+      const attribute = element.attributes.item(index);
+      if (!attribute) continue;
+      replacement.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+    }
+    while (element.firstChild) replacement.appendChild(element.firstChild);
+    element.parentNode?.replaceChild(replacement, element);
+  }
+}
+
+function wrapRunsWithRevision(
+  paragraph: Element,
+  runs: Element[],
+  kind: 'ins' | 'del',
+  author?: string,
+  date?: string,
+  options: { convertText?: boolean } = {},
+): void {
+  const selected = new Set(runs);
+  for (let index = 0; index < runs.length; index++) {
+    const run = runs[index]!;
+    if (!selected.has(run)) continue;
+    const parent = run.parentNode?.nodeType === 1 ? run.parentNode as Element : undefined;
+    if (!parent) continue;
+    const group: Element[] = [run];
+    let cursor = run.nextSibling;
+    while (cursor?.nodeType === 1 && selected.has(cursor as Element)) {
+      group.push(cursor as Element);
+      cursor = cursor.nextSibling;
+    }
+    const wrapper = createRevisionWrapper(parent.ownerDocument!, kind, author, date);
+    parent.insertBefore(wrapper, group[0]!);
+    for (const entry of group) {
+      wrapper.appendChild(entry);
+      selected.delete(entry);
+    }
+  }
+  if (kind === 'del' && options.convertText !== false) {
+    for (const run of runs) revisionTextElement(run, 'delText');
   }
 }
 
@@ -1455,6 +1531,35 @@ function paragraphDirectChild(paragraph: Element, node: Node): Node {
   return current;
 }
 
+function cloneRunShell(run: Element): Element {
+  const clone = wordElement(run.ownerDocument!, 'r');
+  const props = children(run, 'rPr')[0];
+  if (props) clone.appendChild(props.cloneNode(true));
+  return clone;
+}
+
+function isolateRunChild(run: Element, child: Element): Element {
+  const content = [...run.childNodes].filter((node) => !(node.nodeType === 1 && (node as Element).localName === 'rPr'));
+  const targetIndex = content.indexOf(child);
+  if (targetIndex === -1) throw new Error('Target child is not inside the requested run.');
+  if (content.length === 1) return run;
+  const parent = run.parentNode;
+  if (!parent) throw new Error('Run is detached.');
+  const isolated = cloneRunShell(run);
+  if (targetIndex > 0) {
+    parent.insertBefore(isolated, run.nextSibling);
+    if (targetIndex < content.length - 1) {
+      const after = cloneRunShell(run);
+      for (const node of content.slice(targetIndex + 1)) after.appendChild(node);
+      parent.insertBefore(after, isolated.nextSibling);
+    }
+  } else {
+    parent.insertBefore(isolated, run);
+  }
+  isolated.appendChild(child);
+  return isolated;
+}
+
 function nearestParagraph(node: Node | null): Element | null {
   let current = node;
   while (current) {
@@ -1756,6 +1861,7 @@ export class DocxDocument {
   private nextHistoryLabel?: string;
   private nextHistoryAction: HistoryAction = { kind: 'other' };
   private pendingMergedHistory?: { label?: string; action: HistoryAction; at: number };
+  private revisionAuthor?: string;
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -3374,6 +3480,90 @@ export class DocxDocument {
     return { paragraph, start: normalized.start, end: normalized.end };
   }
 
+  private trackedRunFormatSnapshot(run: Element): RunFormat | undefined {
+    const format = compactDefined(readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
+    return Object.keys(format).length ? format : undefined;
+  }
+
+  private trackedParagraphFormatSnapshot(paragraph: Element): ParagraphFormat | undefined {
+    const format = compactDefined(readParagraphProperties(children(paragraph, 'pPr')[0]));
+    return Object.keys(format).length ? format : undefined;
+  }
+
+  private trackRunFormatChange(run: Element): void {
+    const previous = this.trackedRunFormatSnapshot(run) ?? {};
+    const snapshot = markFormatRevision(
+      properties(run, 'rPr'),
+      'rPrChange',
+      'rPr',
+      this.trackedRevisionAuthor(),
+    );
+    if (!snapshot.firstChild && !snapshot.attributes.length) applyRunFormatTo(snapshot, previous);
+  }
+
+  private trackParagraphFormatChange(paragraph: Element): void {
+    const previous = this.trackedParagraphFormatSnapshot(paragraph) ?? {};
+    const snapshot = markFormatRevision(
+      properties(paragraph, 'pPr'),
+      'pPrChange',
+      'pPr',
+      this.trackedRevisionAuthor(),
+    );
+    if (!snapshot.firstChild && !snapshot.attributes.length) applyParagraphFormatTo(snapshot, previous);
+  }
+
+  private insertTrackedText(paragraph: Element, start: number, text: string): void {
+    if (!text) return;
+    this.splitRunAtOffset(paragraph, start);
+    const runs = ownRuns(paragraph);
+    let cursor = 0;
+    let parent = paragraph;
+    let reference: Node | null = null;
+    let previous: Element | undefined;
+    for (const candidate of runs) {
+      const length = textOf(candidate).length;
+      const next = cursor + length;
+      if (length === 0) {
+        previous = candidate;
+        continue;
+      }
+      if (start <= cursor || start < next) {
+        parent = candidate.parentNode?.nodeType === 1 ? candidate.parentNode as Element : paragraph;
+        reference = candidate;
+        break;
+      }
+      cursor = next;
+      previous = candidate;
+    }
+    if (!reference && previous) {
+      let node: Node = previous;
+      let container: Node | null = node.parentNode;
+      while (container?.nodeType === 1 && container !== paragraph && !node.nextSibling) {
+        node = container;
+        container = node.parentNode;
+      }
+      if (container?.nodeType === 1) {
+        parent = container as Element;
+        reference = node.nextSibling;
+      }
+    }
+    const run = wordElement(parent.ownerDocument!, 'r');
+    appendText(run, text);
+    const wrapper = createRevisionWrapper(parent.ownerDocument!, 'ins', this.trackedRevisionAuthor());
+    wrapper.appendChild(run);
+    parent.insertBefore(wrapper, reference);
+  }
+
+  private replaceSpanTracked(paragraph: Element, start: number, end: number, replacement: string): void {
+    if (start !== end) {
+      this.splitRunAtOffset(paragraph, end);
+      this.splitRunAtOffset(paragraph, start);
+      const runs = this.runsInRange(paragraph, start, end);
+      wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+    }
+    this.insertTrackedText(paragraph, start, replacement);
+  }
+
   private applyRunFormatRangeOnParagraph(paragraph: Element, start: number, end: number, format: RunFormat): void {
     if (start === end) return;
     this.splitRunAtOffset(paragraph, end);
@@ -4338,7 +4528,11 @@ export class DocxDocument {
       placement: options.placement ?? 'inline',
       docPrId: this.nextDocPrId(main),
     }));
-    if (insertBefore) paragraph.insertBefore(run, insertBefore);
+    if (this.trackChangesEnabled()) {
+      const wrapper = createRevisionWrapper(paragraph.ownerDocument!, 'ins', this.trackedRevisionAuthor());
+      wrapper.appendChild(run);
+      paragraph.insertBefore(wrapper, insertBefore);
+    } else if (insertBefore) paragraph.insertBefore(run, insertBefore);
     else paragraph.appendChild(run);
     const insertedRunIndex = ownRuns(paragraph).indexOf(run);
     next.set(this.mainPath, encodeXml(serializeXml(main)));
@@ -4476,6 +4670,18 @@ export class DocxDocument {
     if (!run) throw new Error(`Run ${info.run} does not exist.`);
     const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
     if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
+    if (this.trackChangesEnabled()) {
+      this.updatePartXmlInternal(sourcePart, (document) => {
+        const paragraph = paragraphAt(document, info.paragraph);
+        const trackedRun = ownRuns(paragraph)[info.run];
+        if (!trackedRun) throw new Error(`Run ${info.run} does not exist.`);
+        const trackedImage = imageElementForRun(trackedRun, info.relationshipId, info.ordinal ?? 0);
+        if (!trackedImage) throw new Error(`Image ${info.relationshipId} does not exist.`);
+        const isolatedRun = isolateRunChild(trackedRun, trackedImage);
+        wrapRunsWithRevision(paragraph, [isolatedRun], 'del', this.trackedRevisionAuthor(), undefined, { convertText: false });
+      });
+      return;
+    }
     run.removeChild(imageElement);
     this.materializeAllParts();
     const next = new Map(this.parts);
@@ -4859,7 +5065,11 @@ export class DocxDocument {
       // Never cut a surrogate pair at a shared UTF-16 prefix/suffix.
       if (start > 0 && /[\ud800-\udbff]/.test(old[start - 1]!)) start--;
       if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
-      if (old !== normalized) replaceSpan(paragraph, start, end, normalized.slice(start, replacementEnd));
+      if (old !== normalized) {
+        const replacement = normalized.slice(start, replacementEnd);
+        if (this.trackChangesEnabled()) this.replaceSpanTracked(paragraph, start, end, replacement);
+        else replaceSpan(paragraph, start, end, replacement);
+      }
     });
   }
 
@@ -4867,6 +5077,11 @@ export class DocxDocument {
     assertText(text);
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = newParagraph(document, text);
+      if (this.trackChangesEnabled()) {
+        const runs = children(paragraph, 'r');
+        wrapRunsWithRevision(paragraph, runs, 'ins', this.trackedRevisionAuthor());
+        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'ins', this.trackedRevisionAuthor(), undefined, 'paraRPr');
+      }
       if (before !== undefined) {
         const target = paragraphAt(document, before);
         target.parentNode!.insertBefore(paragraph, target);
@@ -4880,6 +5095,21 @@ export class DocxDocument {
   deleteParagraph(index: number): void {
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
+      if (this.trackChangesEnabled()) {
+        if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
+          throw new Error('Cannot delete a section-break paragraph while track changes is enabled; edit its XML explicitly.');
+        }
+        const runs = ownRuns(paragraph);
+        if (runs.length) wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+        else {
+          for (const child of [...children(paragraph)]) {
+            if (child.localName === 'pPr' || isParagraphAnchorMarker(child)) continue;
+            paragraph.removeChild(child);
+          }
+        }
+        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor(), undefined, 'paraRPr');
+        return;
+      }
       const parent = paragraph.parentNode as Element;
       let container: Element | undefined;
       try { container = paragraphContainer(paragraph); } catch {}
@@ -4916,7 +5146,9 @@ export class DocxDocument {
       throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
     }
     this.updatePartXmlInternal(this.mainPath, document => {
-      const props = properties(paragraphAt(document, index), 'pPr');
+      const paragraph = paragraphAt(document, index);
+      if (this.trackChangesEnabled()) this.trackParagraphFormatChange(paragraph);
+      const props = properties(paragraph, 'pPr');
       applyParagraphFormatTo(props, format);
     });
   }
@@ -4927,6 +5159,7 @@ export class DocxDocument {
     this.updatePartXmlInternal(this.mainPath, document => {
       const element = ownRuns(paragraphAt(document, paragraph))[run];
       if (!element) throw new Error(`Run ${run} does not exist.`);
+      if (this.trackChangesEnabled()) this.trackRunFormatChange(element);
       const props = properties(element, 'rPr');
       applyRunFormatTo(props, format);
     });
@@ -4940,6 +5173,15 @@ export class DocxDocument {
     if (!this.runsInRange(preflight.paragraph, preflight.start, preflight.end).length) return;
     this.updatePartXmlInternal(this.mainPath, document => {
       const normalized = this.normalizeRangeOn(document, range);
+      if (this.trackChangesEnabled()) {
+        this.splitRunAtOffset(normalized.paragraph, normalized.end);
+        this.splitRunAtOffset(normalized.paragraph, normalized.start);
+        for (const run of this.runsInRange(normalized.paragraph, normalized.start, normalized.end)) {
+          this.trackRunFormatChange(run);
+          applyRunFormatTo(properties(run, 'rPr'), format);
+        }
+        return;
+      }
       this.applyRunFormatRangeOnParagraph(normalized.paragraph, normalized.start, normalized.end, format);
     });
   }
@@ -4986,7 +5228,16 @@ export class DocxDocument {
           const length = textOf(paragraph).length;
           const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
           const end = index === normalized.end.paragraph ? normalized.end.offset : length;
-          draft.applyRunFormatRangeOnParagraph(paragraph, start, end, format);
+          if (draft.trackChangesEnabled()) {
+            draft.splitRunAtOffset(paragraph, end);
+            draft.splitRunAtOffset(paragraph, start);
+            for (const run of draft.runsInRange(paragraph, start, end)) {
+              draft.trackRunFormatChange(run);
+              applyRunFormatTo(properties(run, 'rPr'), format);
+            }
+          } else {
+            draft.applyRunFormatRangeOnParagraph(paragraph, start, end, format);
+          }
         }
       });
     });
@@ -5073,6 +5324,19 @@ export class DocxDocument {
     } catch {
       return base;
     }
+  }
+
+  setRevisionAuthor(author: string): void {
+    assertText(author, 'author');
+    this.revisionAuthor = author;
+  }
+
+  private trackedRevisionAuthor(author?: string): string | undefined {
+    return author ?? this.revisionAuthor;
+  }
+
+  private trackChangesEnabled(): boolean {
+    return this.getSettings().trackChanges;
   }
 
   setTrackChanges(enabled: boolean): void {
@@ -5269,6 +5533,7 @@ export class DocxDocument {
         ?? (rows.at(-1)?.parentNode?.nodeType === 1 ? rows.at(-1)!.parentNode as Element : undefined)
         ?? element;
       parent.insertBefore(tr, anchor);
+      if (this.trackChangesEnabled()) markRevision(tableProperty(tr, 'trPr'), 'ins', this.trackedRevisionAuthor());
     });
   }
 
@@ -5279,6 +5544,10 @@ export class DocxDocument {
       const row = rows[at];
       if (!row) throw new Error(`Row ${at} does not exist.`);
       if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
+      if (this.trackChangesEnabled()) {
+        markRevision(tableProperty(row, 'trPr'), 'del', this.trackedRevisionAuthor());
+        return;
+      }
       const next = rows[at + 1];
       if (next) {
         const nextPositions = new Map(rowCells(next).map(position => [position.start, position]));
@@ -5500,6 +5769,7 @@ export class DocxDocument {
     this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
     draft.currentRevision = this.currentRevision;
+    draft.revisionAuthor = this.revisionAuthor;
     draft.undoHistory = this.undoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
       bytes: state.bytes,
@@ -5525,6 +5795,7 @@ export class DocxDocument {
       this.dirtyPartXml = draft.dirtyPartXml;
       this.dirtyPartSizes = draft.dirtyPartSizes;
       this.mainPath = draft.mainPath;
+      this.revisionAuthor = draft.revisionAuthor;
       this.currentRevision++;
       this.numberingContextCache = undefined;
       this.stylesCache = undefined;
@@ -6235,6 +6506,7 @@ export class DocxDocument {
     this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
     draft.currentRevision = this.currentRevision;
+    draft.revisionAuthor = this.revisionAuthor;
     draft.undoHistory = this.undoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
       bytes: state.bytes,
@@ -6256,6 +6528,8 @@ export class DocxDocument {
     try {
       for (const operation of request.operations) {
         switch (operation.type) {
+        case 'setTrackChanges': draft.setTrackChanges(operation.enabled); break;
+        case 'setRevisionAuthor': draft.setRevisionAuthor(operation.author); break;
         case 'setParagraphText': draft.setParagraphText(operation.index, operation.text); break;
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
@@ -6325,6 +6599,7 @@ export class DocxDocument {
       this.dirtyPartXml = draft.dirtyPartXml;
       this.dirtyPartSizes = draft.dirtyPartSizes;
       this.mainPath = draft.mainPath;
+      this.revisionAuthor = draft.revisionAuthor;
       this.currentRevision++;
       this.undoHistory = draft.undoHistory;
       this.redoHistory = draft.redoHistory;

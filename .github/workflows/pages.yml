@@ -32,6 +32,8 @@ jobs:
         run: npm run check
       - name: Test library
         run: npm test
+      - name: Performance regression checks
+        run: npm run test:perf
       - name: Build static examples
         run: npm run build:examples
       - name: Upload Pages artifact
