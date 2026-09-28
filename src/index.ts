@@ -13,6 +13,6 @@ export type {
   AgentOperation, AgentRequest, BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo,
   NoteInfo, NoteSettings, NoteSettingsValue,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, ShadingFormat, StyleInfo, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
+  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
   WidthFormat,
 } from './types.js';

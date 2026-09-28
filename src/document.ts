@@ -1,8 +1,9 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  NumberingInfo, ParagraphFormat, ParagraphInfo, RowFormat, RunFormat, RunInfo, StyleInfo, TableFormat, TableInfo,
+  AgentRequest, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
+  NumberingDefinition, NumberingInfo, ParagraphFormat, ParagraphInfo, RowFormat, RunFormat, RunInfo, Shading,
+  StyleInfo, TableFormat, TableInfo, TabStop,
 } from './types.js';
 import type { NumberingModel } from './numbering.js';
 import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
@@ -14,9 +15,20 @@ import {
 import type { RelationshipTarget } from './drawing.js';
 import {
   assertText, children, childrenThroughTransparent, CONTENT_TYPES_NS, descendants, isTransparentWordWrapper,
-  OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath, WORD_NS, wordElement, wordValue,
+  isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, serializeXml, setWordValue, validatePath,
+  WORD_NS, wordElement, wordValue,
 } from './xml.js';
-import { assertIndex, validateParagraphFormat, validateRequest, validateRows, validateRunFormat } from './operations.js';
+import {
+  assertIndex,
+  validateBorderSide,
+  validateDocShading,
+  validateParagraphBorders,
+  validateParagraphFormat,
+  validateRequest,
+  validateRows,
+  validateRunFormat,
+  validateTabs,
+} from './operations.js';
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
@@ -48,6 +60,7 @@ const SETTINGS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/rela
 const SETTINGS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml';
 const encoder = new TextEncoder();
 const IMAGE_LIMIT = 16 * 1024 * 1024;
+const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 
 function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
   const result: Element[] = [];
@@ -127,6 +140,38 @@ function paragraphAt(document: Document, index: number): Element {
   return paragraph;
 }
 
+function isTransparentWrapper(element: Element): boolean {
+  return isTransparentWordWrapper(element);
+}
+
+function blockPositions(parent: Element): { block: Element; parent: Element }[] {
+  return children(parent).flatMap(child => {
+    if (isTransparentWrapper(child)) return blockPositions(child);
+    return ['p', 'tbl'].includes(child.localName ?? '') ? [{ block: child, parent }] : [];
+  });
+}
+
+function blockElements(parent: Element): Element[] {
+  return blockPositions(parent).map(position => position.block);
+}
+
+function paragraphContainer(paragraph: Element): Element {
+  let parent = paragraph.parentNode;
+  while (parent && parent.nodeType === 1) {
+    const element = parent as Element;
+    if (element.namespaceURI === WORD_NS && ['body', 'tc'].includes(element.localName ?? '')) return element;
+    if (!isTransparentWrapper(element)) break;
+    parent = element.parentNode;
+  }
+  throw new Error('Paragraph is not inside a body or table cell container.');
+}
+
+function clearParagraphContent(paragraph: Element): void {
+  for (const child of [...children(paragraph)]) {
+    if (child.localName !== 'pPr') paragraph.removeChild(child);
+  }
+}
+
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
   function walk(node: Node): void {
@@ -135,7 +180,7 @@ function textElements(element: Element): Element[] {
       const element = child as Element;
       if (element.namespaceURI === WORD_NS) {
         if (element.localName === 'p') continue;
-        if (['t', 'tab', 'br', 'cr'].includes(element.localName ?? '')) {
+        if (['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? '')) {
           result.push(element);
           continue;
         }
@@ -158,7 +203,17 @@ function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
 }
 
 function elementText(element: Element): string {
-  return element.localName === 't' ? element.textContent ?? '' : element.localName === 'tab' ? '\t' : '\n';
+  if (element.localName === 't') return element.textContent ?? '';
+  if (element.localName === 'tab') return '\t';
+  if (element.localName === 'noBreakHyphen') return '\u2011';
+  if (element.localName === 'softHyphen') return '\u00ad';
+  if (element.localName === 'sym') {
+    const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
+    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
+    const code = Number.parseInt(value, 16);
+    return Number.isFinite(code) && isValidXmlCharCode(code) ? String.fromCharCode(code) : '�';
+  }
+  return '\n';
 }
 
 function textOf(element: Element): string {
@@ -489,6 +544,40 @@ function setOnOff(parent: Element, name: string, value: boolean, onValue = '1', 
   setWordValue(property(parent, name), value ? onValue : offValue);
 }
 
+function normalizeHexOrAuto(value: string): string {
+  return value.toLowerCase() === 'auto' ? 'auto' : value.toUpperCase();
+}
+
+function writeBorderSide(element: Element, border: NonNullable<RunFormat['border']>): void {
+  setWordValue(element, border.style);
+  element.setAttributeNS(WORD_NS, 'w:sz', String(Math.max(0, Math.min(border.size, 2048))));
+  element.setAttributeNS(WORD_NS, 'w:space', String(Math.max(0, border.space)));
+  element.setAttributeNS(WORD_NS, 'w:color', normalizeHexOrAuto(border.color));
+  if (border.shadow !== undefined) element.setAttributeNS(WORD_NS, 'w:shadow', border.shadow ? '1' : '0');
+  else removeWordAttribute(element, 'shadow');
+}
+
+function writeShading(element: Element, shading: Shading): void {
+  setWordValue(element, shading.pattern);
+  element.setAttributeNS(WORD_NS, 'w:fill', normalizeHexOrAuto(shading.fill));
+  if (shading.color !== undefined) element.setAttributeNS(WORD_NS, 'w:color', normalizeHexOrAuto(shading.color));
+  else removeWordAttribute(element, 'color');
+}
+
+function normalizeTabsForWrite(tabs: TabStop[]): TabStop[] {
+  const byPosition = new Map<number, TabStop>();
+  for (const tab of tabs) {
+    if (!Number.isFinite(tab.position)) continue;
+    const position = Math.floor(tab.position);
+    if (tab.alignment === 'clear') {
+      byPosition.delete(position);
+      continue;
+    }
+    byPosition.set(position, { ...tab, position });
+  }
+  return [...byPosition.values()].sort((a, b) => a.position - b.position);
+}
+
 function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
   if ('style' in format) {
     if (format.style === null) removeProperty(props, 'pStyle');
@@ -503,10 +592,48 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     ['keepLines', 'keepLines'],
     ['pageBreakBefore', 'pageBreakBefore'],
     ['widowControl', 'widowControl'],
+    ['suppressLineNumbers', 'suppressLineNumbers'],
+    ['suppressAutoHyphens', 'suppressAutoHyphens'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
     else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
+  }
+  if ('tabs' in format) {
+    if (format.tabs === null || (Array.isArray(format.tabs) && format.tabs.length === 0)) {
+      removeProperty(props, 'tabs');
+    } else if (format.tabs !== undefined) {
+      const tabsElement = property(props, 'tabs');
+      for (const child of children(tabsElement, 'tab')) tabsElement.removeChild(child);
+      for (const tab of normalizeTabsForWrite(format.tabs)) {
+        const entry = wordElement(tabsElement.ownerDocument!, 'tab');
+        setWordValue(entry, tab.alignment);
+        entry.setAttributeNS(WORD_NS, 'w:pos', String(tab.position));
+        if (tab.leader !== undefined) entry.setAttributeNS(WORD_NS, 'w:leader', tab.leader);
+        else removeWordAttribute(entry, 'leader');
+        tabsElement.appendChild(entry);
+      }
+      removeIfEmpty(tabsElement);
+    }
+  }
+  if ('borders' in format) {
+    if (format.borders === null) {
+      removeProperty(props, 'pBdr');
+    } else if (format.borders !== undefined) {
+      const borderElement = children(props, 'pBdr')[0] ?? property(props, 'pBdr');
+      for (const child of children(borderElement)) borderElement.removeChild(child);
+      for (const side of ['top', 'left', 'bottom', 'right', 'between', 'bar'] as const) {
+        const border = format.borders[side];
+        if (!border) continue;
+        const child = property(borderElement, side);
+        writeBorderSide(child, border);
+      }
+      removeIfEmpty(borderElement);
+    }
+  }
+  if ('shading' in format) {
+    if (format.shading === null) removeProperty(props, 'shd');
+    else if (format.shading !== undefined) writeShading(property(props, 'shd'), format.shading);
   }
   if (['indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging'].some(key => key in format)) {
     const indent = children(props, 'ind')[0] ?? property(props, 'ind');
@@ -636,6 +763,15 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     if (format.characterSpacing === null) removeProperty(props, 'spacing');
     else if (format.characterSpacing !== undefined) setWordValue(property(props, 'spacing'), String(format.characterSpacing));
   }
+  if ('border' in format) {
+    if (format.border === null) removeProperty(props, 'bdr');
+    else if (format.border !== undefined) writeBorderSide(property(props, 'bdr'), format.border);
+  }
+  if ('shading' in format) {
+    if (format.shading === null) removeProperty(props, 'shd');
+    else if (format.shading !== undefined) writeShading(property(props, 'shd'), format.shading);
+  }
+  removeIfEmpty(props);
 }
 
 function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: string): void {
@@ -1259,6 +1395,9 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  private documents = new Map<string, Document>();
+  private dirtyPartXml = new Set<string>();
+  private dirtyPartSizes = new Map<string, number>();
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
@@ -1309,7 +1448,7 @@ export class DocxDocument {
   }
 
   private getContentType(path: string): string | undefined {
-    const types = this.getPartDocument('[Content_Types].xml').documentElement!;
+    const types = this.getCachedPartDocument('[Content_Types].xml').documentElement!;
     return children(types, 'Override', CONTENT_TYPES_NS)
       .find(type => type.getAttribute('PartName') === `/${path}`)?.getAttribute('ContentType')
       ?? children(types, 'Default', CONTENT_TYPES_NS)
@@ -1318,7 +1457,7 @@ export class DocxDocument {
   }
 
   private createContentTypeResolver(): (path: string) => string | undefined {
-    const types = this.getPartDocument('[Content_Types].xml').documentElement!;
+    const types = this.getCachedPartDocument('[Content_Types].xml').documentElement!;
     const overrides = new Map(children(types, 'Override', CONTENT_TYPES_NS)
       .map((type) => [type.getAttribute('PartName') ?? '', type.getAttribute('ContentType') ?? '']));
     const defaults = new Map(children(types, 'Default', CONTENT_TYPES_NS)
@@ -1330,7 +1469,7 @@ export class DocxDocument {
   private relationshipsFor(partPath: string): Map<string, RelationshipTarget> {
     const relPath = resolveRelationshipsPath(partPath);
     if (!this.hasPart(relPath)) return new Map();
-    const rels = this.getPartDocument(relPath).documentElement!;
+    const rels = this.getCachedPartDocument(relPath).documentElement!;
     const entries: [string, RelationshipTarget][] = children(rels, 'Relationship', REL_NS).flatMap((rel) => {
       const target = rel.getAttribute('Target') ?? undefined;
       const id = rel.getAttribute('Id') ?? '';
@@ -1352,6 +1491,7 @@ export class DocxDocument {
 
   getPartBytes(path: string): Uint8Array {
     validatePath(path);
+    this.materializePart(path);
     const bytes = this.parts.get(path);
     if (!bytes) throw new Error(`Package part not found: ${path}`);
     return Uint8Array.from(bytes);
@@ -1360,7 +1500,9 @@ export class DocxDocument {
   getPartXml(path: string): string { return decodeXml(this.getPartBytes(path)); }
 
   /** Returns a detached DOM; use updatePartXml to persist changes. */
-  getPartDocument(path: string): Document { return parseXml(this.getPartXml(path)); }
+  getPartDocument(path: string): Document {
+    return parseXml(serializeXml(this.getCachedPartDocument(path)));
+  }
 
   updatePartXml(path: string, update: (document: Document) => void): void {
     const document = this.getPartDocument(path);
@@ -1368,41 +1510,90 @@ export class DocxDocument {
     this.setPartXml(path, serializeXml(document));
   }
 
+  private updatePartXmlInternal(path: string, update: (document: Document) => void): void {
+    validatePath(path);
+    const previous = this.captureState();
+    try {
+      const document = this.getCachedPartDocument(path);
+      update(document);
+      this.dirtyPartXml.add(path);
+      this.dirtyPartSizes.delete(path);
+      this.finalizeMutation(path);
+    } catch (error) {
+      this.restoreState(previous);
+      throw error;
+    }
+  }
+
   setPartXml(path: string, xml: string): void {
     if (typeof xml !== 'string' || xml.length > MAX_PART) throw new Error('XML part exceeds size limit.');
-    parseXml(xml);
-    this.setPartBytes(path, encodeXml(xml));
+    const previous = this.captureState();
+    try {
+      validatePath(path);
+      if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
+      const document = parseXml(xml);
+      this.documents.set(path, document);
+      this.parts.set(path, encodeXml(xml));
+      this.dirtyPartXml.delete(path);
+      this.dirtyPartSizes.delete(path);
+      this.finalizeMutation(path);
+    } catch (error) {
+      this.restoreState(previous);
+      throw error;
+    }
   }
 
   /** Replaces an existing part. Relationships/content types remain under caller control. */
   setPartBytes(path: string, bytes: Uint8Array): void {
-    validatePath(path);
-    if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
-    const next = new Map(this.parts);
-    next.set(path, Uint8Array.from(bytes));
-    this.commitParts(next);
+    const previous = this.captureState();
+    try {
+      this.replacePartBytes(path, bytes);
+      this.finalizeMutation(path);
+    } catch (error) {
+      this.restoreState(previous);
+      throw error;
+    }
   }
 
   addPart(path: string, bytes: Uint8Array, contentType: string): void {
-    validatePath(path);
-    assertText(contentType, 'contentType');
-    if (!contentType || this.parts.has(path)) throw new Error('New part requires a unique path and content type.');
-    const types = this.getPartDocument('[Content_Types].xml');
-    const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
-    override.setAttribute('PartName', `/${path}`);
-    override.setAttribute('ContentType', contentType);
-    types.documentElement!.appendChild(override);
-    const next = new Map(this.parts);
-    next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
-    next.set(path, Uint8Array.from(bytes));
-    this.commitParts(next);
+    const previous = this.captureState();
+    try {
+      validatePath(path);
+      assertText(contentType, 'contentType');
+      if (!contentType || this.parts.has(path)) throw new Error('New part requires a unique path and content type.');
+      const types = this.getCachedPartDocument('[Content_Types].xml');
+      const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+      override.setAttribute('PartName', `/${path}`);
+      override.setAttribute('ContentType', contentType);
+      types.documentElement!.appendChild(override);
+      this.parts.set(path, Uint8Array.from(bytes));
+      this.documents.delete(path);
+      this.dirtyPartXml.add('[Content_Types].xml');
+      this.dirtyPartSizes.delete(path);
+      this.finalizeMutation('[Content_Types].xml');
+    } catch (error) {
+      this.restoreState(previous);
+      throw error;
+    }
   }
 
   private commitParts(parts: Map<string, Uint8Array>): void {
-    const draft = new DocxDocument(parts);
-    this.parts = draft.parts;
-    this.mainPath = draft.mainPath;
-    this.currentRevision++;
+    const previous = this.captureState();
+    try {
+      this.parts = parts;
+      this.documents = new Map();
+      this.dirtyPartXml = new Set();
+      this.dirtyPartSizes = new Map();
+      this.assertPackageLimits();
+      this.mainPath = this.validatePackage();
+      this.currentRevision++;
+      this.numberingContextCache = undefined;
+      this.stylesCache = undefined;
+      this.imageDataUrls.clear();
+    } catch (error) {
+      this.restoreState(previous);
+      throw error;
+    }
   }
 
   private validatePackage(): string {
@@ -1413,7 +1604,7 @@ export class DocxDocument {
       total += bytes.byteLength;
       if (bytes.byteLength > MAX_PART || total > MAX_TOTAL) throw new Error('Package exceeds size limits.');
     }
-    const rels = this.getPartDocument('_rels/.rels').documentElement;
+    const rels = this.getCachedPartDocument('_rels/.rels').documentElement;
     if (rels?.namespaceURI !== REL_NS || rels.localName !== 'Relationships') {
       throw new Error('Invalid root package relationships.');
     }
@@ -1423,7 +1614,7 @@ export class DocxDocument {
     }
     const path = decodeURIComponent(main[0]!.getAttribute('Target') ?? '').replace(/^\//, '');
     validatePath(path);
-    const types = this.getPartDocument('[Content_Types].xml').documentElement;
+    const types = this.getCachedPartDocument('[Content_Types].xml').documentElement;
     if (types?.namespaceURI !== CONTENT_TYPES_NS || types.localName !== 'Types') {
       throw new Error('Invalid content types part.');
     }
@@ -1432,24 +1623,124 @@ export class DocxDocument {
       ?? children(types, 'Default', CONTENT_TYPES_NS)
         .find(type => type.getAttribute('Extension') === path.split('.').pop())?.getAttribute('ContentType');
     if (type !== MAIN_TYPE) throw new Error('Package is not a supported .docx document (macros/strict OOXML are not supported).');
-    bodyOf(this.getPartDocument(path));
+    bodyOf(this.getCachedPartDocument(path));
     return path;
   }
 
+  private captureState(): {
+    parts: Map<string, Uint8Array>;
+    documents: Map<string, Document>;
+    dirtyPartXml: Set<string>;
+    dirtyPartSizes: Map<string, number>;
+    mainPath: string;
+    revision: number;
+    numberingContextCache: NumberingContext | undefined;
+    stylesCache: { revision: number; context: StylesContext } | undefined;
+    imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
+  } {
+    return {
+      parts: new Map(this.parts),
+      documents: new Map(this.documents),
+      dirtyPartXml: new Set(this.dirtyPartXml),
+      dirtyPartSizes: new Map(this.dirtyPartSizes),
+      mainPath: this.mainPath,
+      revision: this.currentRevision,
+      numberingContextCache: this.numberingContextCache,
+      stylesCache: this.stylesCache,
+      imageDataUrls: new Map(this.imageDataUrls),
+    };
+  }
+
+  private restoreState(state: ReturnType<DocxDocument['captureState']>): void {
+    this.parts = state.parts;
+    this.documents = state.documents;
+    this.dirtyPartXml = state.dirtyPartXml;
+    this.dirtyPartSizes = state.dirtyPartSizes;
+    this.mainPath = state.mainPath;
+    this.currentRevision = state.revision;
+    this.numberingContextCache = state.numberingContextCache;
+    this.stylesCache = state.stylesCache;
+    this.imageDataUrls = state.imageDataUrls;
+  }
+
+  private getCachedPartDocument(path: string): Document {
+    validatePath(path);
+    let document = this.documents.get(path);
+    if (document) return document;
+    const bytes = this.parts.get(path);
+    if (!bytes) throw new Error(`Package part not found: ${path}`);
+    document = parseXml(decodeXml(bytes));
+    this.documents.set(path, document);
+    return document;
+  }
+
+  private materializePart(path: string): void {
+    if (!this.dirtyPartXml.has(path)) return;
+    const document = this.documents.get(path);
+    if (!document) throw new Error(`Package part not found: ${path}`);
+    this.parts.set(path, encodeXml(serializeXml(document)));
+    this.dirtyPartXml.delete(path);
+    this.dirtyPartSizes.delete(path);
+  }
+
+  private materializeAllParts(): void {
+    for (const path of [...this.dirtyPartXml]) this.materializePart(path);
+  }
+
+  private replacePartBytes(path: string, bytes: Uint8Array): void {
+    validatePath(path);
+    if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
+    this.parts.set(path, Uint8Array.from(bytes));
+    this.documents.delete(path);
+    this.dirtyPartXml.delete(path);
+    this.dirtyPartSizes.delete(path);
+  }
+
+  private finalizeMutation(path: string): void {
+    this.assertPackageLimits();
+    if (STRUCTURE_PARTS.has(path)) {
+      this.materializeAllParts();
+      this.mainPath = this.validatePackage();
+    } else if (path === this.mainPath) {
+      bodyOf(this.getCachedPartDocument(this.mainPath));
+    }
+    this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.imageDataUrls.clear();
+  }
+
+  private assertPackageLimits(): void {
+    if (this.parts.size > MAX_PARTS) throw new Error('Too many package parts.');
+    let total = 0;
+    for (const [path, bytes] of this.parts) {
+      validatePath(path);
+      const size = this.dirtyPartSizes.get(path) ?? bytes.byteLength;
+      total += size;
+      if (size > MAX_PART || total > MAX_TOTAL) throw new Error('Package exceeds size limits.');
+    }
+  }
+
   private getRelatedPartPath(type: string, fallback?: string): string | undefined {
-    const resolved = this.relationshipsFor(this.mainPath);
-    const relPath = resolveRelationshipsPath(this.mainPath);
+    const relPath = relsPath(this.mainPath);
     if (this.parts.has(relPath)) {
-      const rels = this.getPartDocument(relPath).documentElement;
-      if (rels) {
-        for (const relation of children(rels, 'Relationship', REL_NS)) {
-          if (relation.getAttribute('Type') !== type) continue;
-          const id = relation.getAttribute('Id') ?? '';
-          const target = resolved.get(id);
-          if (target?.mode === 'External' || !target?.partPath) continue;
-          if (this.parts.has(target.partPath)) return target.partPath;
+      try {
+        const document = this.getCachedPartDocument(relPath).documentElement;
+        if (!document) return fallback && this.parts.has(fallback) ? fallback : undefined;
+        for (const relation of children(document, 'Relationship', REL_NS)) {
+          if (relation.getAttribute('Type') === type && relation.getAttribute('TargetMode') !== 'External') {
+            const target = relation.getAttribute('Target');
+            if (!target) continue;
+            let path: string | undefined;
+            try {
+              path = resolveTargetPath(this.mainPath, decodeURIComponent(target));
+            } catch {
+              continue;
+            }
+            if (path && this.parts.has(path)) return path;
+          }
         }
-      }
+      } catch { /* Fall back to conventional paths for malformed optional rels parts. */ }
     }
     return fallback && this.parts.has(fallback) ? fallback : undefined;
   }
@@ -1550,8 +1841,8 @@ export class DocxDocument {
     const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
     let stylesRoot: Element | undefined;
     let themeRoot: Element | undefined;
-    try { stylesRoot = stylesPath ? this.getPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
-    try { themeRoot = themePath ? this.getPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
+    try { stylesRoot = stylesPath ? this.getCachedPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
+    try { themeRoot = themePath ? this.getCachedPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
     const context = parseStyles(stylesRoot, themeRoot);
     this.stylesCache = { revision: this.revision, context };
     return context;
@@ -1563,8 +1854,8 @@ export class DocxDocument {
     }
     const numberingPath = this.getNumberingPath();
     const stylesPath = this.getStylesPath();
-    const numbering = numberingPath && this.parts.has(numberingPath) ? this.getPartDocument(numberingPath) : undefined;
-    const styles = stylesPath && this.parts.has(stylesPath) ? this.getPartDocument(stylesPath) : undefined;
+    const numbering = numberingPath && this.parts.has(numberingPath) ? this.getCachedPartDocument(numberingPath) : undefined;
+    const styles = stylesPath && this.parts.has(stylesPath) ? this.getCachedPartDocument(stylesPath) : undefined;
     const context = {
       revision: this.revision,
       mainPath: this.mainPath,
@@ -1577,7 +1868,7 @@ export class DocxDocument {
   }
 
   private buildParagraphs(
-    document = this.getPartDocument(this.mainPath),
+    document = this.getCachedPartDocument(this.mainPath),
     styles = this.getStylesContext(),
     numbering = this.getNumberingContext(),
     noteState?: NoteState,
@@ -1634,7 +1925,7 @@ export class DocxDocument {
   }
 
   getBlocks(): DocumentBlock[] {
-    const document = this.getPartDocument(this.mainPath);
+    const document = this.getCachedPartDocument(this.mainPath);
     const styles = this.getStylesContext();
     const body = bodyOf(document);
     const paragraphs = this.buildParagraphs(document, styles, this.getNumberingContext(), this.collectNoteState(body));
@@ -1642,7 +1933,7 @@ export class DocxDocument {
   }
 
   getSnapshot(): DocumentSnapshot {
-    const document = this.getPartDocument(this.mainPath);
+    const document = this.getCachedPartDocument(this.mainPath);
     const body = bodyOf(document);
     const noteState = this.collectNoteState(body);
     const stylesContext = this.getStylesContext();
@@ -1712,13 +2003,13 @@ export class DocxDocument {
   }
 
   getEffectiveParagraphFormat(index: number): ParagraphFormat {
-    const paragraph = paragraphAt(this.getPartDocument(this.mainPath), index);
+    const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), index);
     return computeEffectiveParagraphFormat(this.getStylesContext(), paragraph);
   }
 
   getEffectiveRunFormat(paragraph: number, run: number): RunFormat {
     assertIndex(run);
-    const document = this.getPartDocument(this.mainPath);
+    const document = this.getCachedPartDocument(this.mainPath);
     const paragraphElement = paragraphAt(document, paragraph);
     const runElement = ownRuns(paragraphElement)[run];
     if (!runElement) throw new Error(`Run ${run} does not exist.`);
@@ -1730,7 +2021,7 @@ export class DocxDocument {
     assertIndex(level);
     if (numId < 1) throw new Error('numId must be at least 1. Use clearParagraphNumbering() to remove numbering.');
     if (level > 8) throw new Error('level must be between 0 and 8.');
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       const numPr = property(props, 'numPr');
       setWordValue(numberingProperty(numPr, 'ilvl'), String(level));
@@ -1742,7 +2033,7 @@ export class DocxDocument {
     const paragraph = this.getParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     const styleHasNumbering = paragraph.style ? this.getNumberingContext().model.paragraphStyles.has(paragraph.style) : false;
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       const existing = children(props, 'numPr')[0];
       if (existing) props.removeChild(existing);
@@ -1774,11 +2065,12 @@ export class DocxDocument {
       if (seenLevels.has(level.level)) throw new Error('Numbering definition contains duplicate levels.');
       seenLevels.add(level.level);
     }
+    this.materializeAllParts();
     const next = new Map(this.parts);
-    const types = this.getPartDocument('[Content_Types].xml');
+    const types = this.getCachedPartDocument('[Content_Types].xml');
     const relationsPath = relsPath(this.mainPath);
     const rels = next.has(relationsPath)
-      ? this.getPartDocument(relationsPath)
+      ? this.getCachedPartDocument(relationsPath)
       : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     let numberingPath = this.getNumberingPath();
     if (!numberingPath) {
@@ -1790,7 +2082,7 @@ export class DocxDocument {
       rels.documentElement!.appendChild(relationship);
     }
     const numberingDocument = next.has(numberingPath)
-      ? this.getPartDocument(numberingPath)
+      ? this.getCachedPartDocument(numberingPath)
       : parseXml(`<w:numbering xmlns:w="${WORD_NS}"/>`);
     const numberingRoot = numberingDocument.documentElement!;
     const existingAbstractIds = children(numberingRoot, 'abstractNum')
@@ -1973,7 +2265,7 @@ export class DocxDocument {
     if (options.alt !== undefined) assertText(options.alt, 'alt');
     const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
-    const main = this.getPartDocument(this.mainPath);
+    const main = this.getCachedPartDocument(this.mainPath);
     const paragraphs = descendants(bodyOf(main), 'p');
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
@@ -1986,7 +2278,7 @@ export class DocxDocument {
     const relPath = resolveRelationshipsPath(this.mainPath);
     const next = this.ensureMediaContentType(partPath, options.contentType);
     next.set(partPath, Uint8Array.from(options.bytes));
-    const rels = this.hasPart(relPath) ? this.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const rels = this.hasPart(relPath) ? this.getCachedPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
     const relationshipId = this.nextRelationshipId(rels);
     const relationship = rels.createElementNS(REL_NS, 'Relationship');
     relationship.setAttribute('Id', relationshipId);
@@ -2034,6 +2326,7 @@ export class DocxDocument {
     if (info.isExternal || !info.partPath) throw new Error('External images cannot be replaced.');
     const inferredType = contentType ?? detectImageContentType(bytes) ?? info.contentType;
     if (!inferredType) throw new Error('contentType is required when the image format cannot be inferred from bytes.');
+    this.materializeAllParts();
     let next = new Map(this.parts);
     let path = info.partPath;
     if (inferredType) {
@@ -2047,7 +2340,7 @@ export class DocxDocument {
         for (const relPath of this.listParts().filter((entry) => entry.endsWith('.rels'))) {
           const sourcePart = sourcePartFromRelationshipsPath(relPath);
           if (!sourcePart) continue;
-          const rels = this.getPartDocument(relPath);
+          const rels = this.getCachedPartDocument(relPath);
           let changed = false;
           for (const rel of children(rels.documentElement!, 'Relationship', REL_NS)) {
             if (rel.getAttribute('Type') !== IMAGE_REL || rel.getAttribute('TargetMode') === 'External') continue;
@@ -2081,7 +2374,7 @@ export class DocxDocument {
         nextWidth = Math.round(size.heightEmu * (info.widthEmu / info.heightEmu));
       }
     }
-    this.updatePartXml(info.sourcePartPath ?? this.mainPath, (document) => {
+    this.updatePartXmlInternal(info.sourcePartPath ?? this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
@@ -2107,7 +2400,7 @@ export class DocxDocument {
     assertText(alt, 'alt');
     if (title !== undefined) assertText(title, 'title');
     const info = this.resolveImage(image);
-    this.updatePartXml(info.sourcePartPath ?? this.mainPath, (document) => {
+    this.updatePartXmlInternal(info.sourcePartPath ?? this.mainPath, (document) => {
       const run = ownRuns(paragraphAt(document, info.paragraph))[info.run];
       if (!run) throw new Error(`Run ${info.run} does not exist.`);
       const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
@@ -2133,18 +2426,19 @@ export class DocxDocument {
   deleteImage(image: ImageInfo | string): void {
     const info = this.resolveImage(image);
     const sourcePart = info.sourcePartPath ?? this.mainPath;
-    const main = this.getPartDocument(sourcePart);
+    const main = this.getCachedPartDocument(sourcePart);
     const run = ownRuns(paragraphAt(main, info.paragraph))[info.run];
     if (!run) throw new Error(`Run ${info.run} does not exist.`);
     const imageElement = imageElementForRun(run, info.relationshipId, info.ordinal ?? 0);
     if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
     run.removeChild(imageElement);
+    this.materializeAllParts();
     const next = new Map(this.parts);
     if (isEmptyRun(run)) run.parentNode!.removeChild(run);
     next.set(sourcePart, encodeXml(serializeXml(main)));
     const relPath = resolveRelationshipsPath(sourcePart);
     if (this.hasPart(relPath)) {
-      const rels = this.getPartDocument(relPath);
+      const rels = this.getCachedPartDocument(relPath);
       const relationship = children(rels.documentElement!, 'Relationship', REL_NS)
         .find((rel) => rel.getAttribute('Id') === info.relationshipId);
       if (relationship && !documentUsesRelationship(main, relationship.getAttribute('Id') ?? '')) {
@@ -2171,7 +2465,7 @@ export class DocxDocument {
   setParagraphText(index: number, text: string): void {
     assertText(text);
     const normalized = text.replace(/\r\n?/g, '\n');
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const old = textOf(paragraph);
       let start = 0;
@@ -2190,7 +2484,7 @@ export class DocxDocument {
 
   insertParagraph(text: string, before?: number): void {
     assertText(text);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = newParagraph(document, text);
       if (before !== undefined) {
         const target = paragraphAt(document, before);
@@ -2203,20 +2497,35 @@ export class DocxDocument {
   }
 
   deleteParagraph(index: number): void {
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
       const parent = paragraph.parentNode as Element;
-      const container = nearestNonTransparentAncestor(parent);
+      let container: Element | undefined;
+      try { container = paragraphContainer(paragraph); } catch {}
       // A cell must end with a paragraph, and section properties must not be silently lost.
       if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
         throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
       }
-      parent.removeChild(paragraph);
-      const paragraphs = childrenThroughTransparent(container, 'p');
-      if ((container.localName === 'tc' && !paragraphs.length) ||
-          (container.localName === 'body' && !paragraphs.length)) {
-        container.insertBefore(newParagraph(document, ''), children(container, 'sectPr')[0] ?? null);
+      if (container) {
+        const blocks = blockElements(container);
+        const remaining = blocks.filter(block => block !== paragraph);
+        const indexInContainer = blocks.indexOf(paragraph);
+        const mustKeepParagraph =
+          (container.localName === 'body' && (
+            !remaining.length ||
+            remaining.at(-1)?.localName === 'tbl' ||
+            (indexInContainer > 0 &&
+             indexInContainer < blocks.length - 1 &&
+             blocks[indexInContainer - 1]?.localName === 'tbl' &&
+             blocks[indexInContainer + 1]?.localName === 'tbl')
+          )) ||
+          (container.localName === 'tc' && remaining.at(-1)?.localName !== 'p');
+        if (mustKeepParagraph) {
+          clearParagraphContent(paragraph);
+          return;
+        }
       }
+      parent.removeChild(paragraph);
     });
   }
 
@@ -2225,7 +2534,7 @@ export class DocxDocument {
     if (options.validateStyle && typeof format.style === 'string' && !this.getStyle(format.style)) {
       throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
     }
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const props = properties(paragraphAt(document, index), 'pPr');
       applyParagraphFormatTo(props, format);
     });
@@ -2234,12 +2543,76 @@ export class DocxDocument {
   formatRun(paragraph: number, run: number, format: RunFormat): void {
     assertIndex(run);
     validateRunFormat(format);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = ownRuns(paragraphAt(document, paragraph))[run];
       if (!element) throw new Error(`Run ${run} does not exist.`);
       const props = properties(element, 'rPr');
       applyRunFormatTo(props, format);
     });
+  }
+
+  setParagraphTabs(index: number, tabs: TabStop[]): void {
+    validateTabs(tabs);
+    this.formatParagraph(index, { tabs: tabs.length ? tabs : null });
+  }
+
+  setParagraphBorders(index: number, borders: ParagraphFormat['borders']): void {
+    validateParagraphBorders(borders);
+    this.formatParagraph(index, { borders });
+  }
+
+  setParagraphShading(index: number, shading: Shading): void {
+    validateDocShading(shading);
+    this.formatParagraph(index, { shading });
+  }
+
+  insertBreak(paragraph: number, run: number, type: 'textWrapping' | 'page' | 'column'): void {
+    assertIndex(run);
+    if (!['textWrapping', 'page', 'column'].includes(type)) throw new Error('Invalid break type.');
+    this.updatePartXml(this.mainPath, document => {
+      const target = ownRuns(paragraphAt(document, paragraph))[run];
+      if (!target) throw new Error(`Run ${run} does not exist.`);
+      const br = wordElement(document, 'br');
+      if (type !== 'textWrapping') br.setAttributeNS(WORD_NS, 'w:type', type);
+      target.appendChild(br);
+    });
+  }
+
+  insertSymbol(paragraph: number, run: number, font: string, charCode: number): void {
+    assertIndex(run);
+    assertText(font, 'font');
+    if (!Number.isInteger(charCode) || charCode < 0 || charCode > 0xFFFF || !isValidXmlCharCode(charCode)) {
+      throw new Error('charCode must be an XML-valid BMP code point.');
+    }
+    this.updatePartXml(this.mainPath, document => {
+      const target = ownRuns(paragraphAt(document, paragraph))[run];
+      if (!target) throw new Error(`Run ${run} does not exist.`);
+      const symbol = wordElement(document, 'sym');
+      symbol.setAttributeNS(WORD_NS, 'w:font', font);
+      symbol.setAttributeNS(WORD_NS, 'w:char', charCode.toString(16).toUpperCase().padStart(4, '0'));
+      target.appendChild(symbol);
+    });
+  }
+
+  getSettings(): { defaultTabStop: number; evenAndOddHeaders: boolean; [key: string]: unknown } {
+    const base = { defaultTabStop: 720, evenAndOddHeaders: false };
+    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}settings.xml`;
+    const path = this.getRelatedPartPath(SETTINGS_REL, this.parts.has(conventional)
+      ? conventional
+      : this.parts.has('word/settings.xml') ? 'word/settings.xml' : undefined);
+    if (!path) return base;
+    try {
+      const root = this.getPartDocument(path).documentElement;
+      if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') return base;
+      const tab = children(root, 'defaultTabStop')[0];
+      const raw = tab?.getAttributeNS(WORD_NS, 'val') ?? tab?.getAttribute('w:val');
+      const value = raw !== null && raw !== undefined && /^-?\d+$/.test(raw) ? Number(raw) : 720;
+      const odd = children(root, 'evenAndOddHeaders')[0];
+      const enabled = odd ? !['0', 'false', 'off'].includes((wordValue(odd) ?? '1').toLowerCase()) : false;
+      return { ...base, defaultTabStop: Number.isFinite(value) && value > 0 ? value : 720, evenAndOddHeaders: enabled };
+    } catch {
+      return base;
+    }
   }
 
   defineStyle(style: StyleInfo): void {
@@ -2272,6 +2645,9 @@ export class DocxDocument {
         relation.setAttribute('Target', basename(path));
         relsRoot.appendChild(relation);
         draft.parts.set(relsPath(draft.mainPath), encodeXml(serializeXml(relsDocument)));
+        draft.documents.delete(relsPath(draft.mainPath));
+        draft.dirtyPartXml.delete(relsPath(draft.mainPath));
+        draft.dirtyPartSizes.delete(relsPath(draft.mainPath));
       }
       if (!draft.parts.has(path)) {
         const types = draft.getPartDocument('[Content_Types].xml');
@@ -2283,8 +2659,14 @@ export class DocxDocument {
           override.setAttribute('ContentType', STYLES_TYPE);
           typesRoot.appendChild(override);
           draft.parts.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+          draft.documents.delete('[Content_Types].xml');
+          draft.dirtyPartXml.delete('[Content_Types].xml');
+          draft.dirtyPartSizes.delete('[Content_Types].xml');
         }
         draft.parts.set(path, encodeXml(`<w:styles xmlns:w="${WORD_NS}"/>`));
+        draft.documents.delete(path);
+        draft.dirtyPartXml.delete(path);
+        draft.dirtyPartSizes.delete(path);
       }
       return path;
     })();
@@ -2326,7 +2708,7 @@ export class DocxDocument {
   replaceText(search: string, replacement: string): void {
     assertText(search, 'search'); assertText(replacement, 'replacement');
     if (!search) throw new Error('search must not be empty.');
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       for (const paragraph of descendants(bodyOf(document), 'p')) {
         const text = textOf(paragraph);
         const matches: number[] = [];
@@ -2338,7 +2720,7 @@ export class DocxDocument {
 
   insertTable(rows: string[][]): void {
     validateRows(rows);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const body = bodyOf(document);
       const section = children(body, 'sectPr')[0] ?? null;
       const table = buildTable(document, rows.length, Math.max(...rows.map(row => row.length)), undefined, rows);
@@ -2350,7 +2732,7 @@ export class DocxDocument {
   insertTableAt(rows: number, cols: number, before?: number, format?: TableFormat): void {
     assertIndex(rows); assertIndex(cols);
     if (rows < 1 || cols < 1) throw new Error('Table must contain at least one row and one column.');
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const table = buildTable(document, rows, cols, format);
       const body = bodyOf(document);
       const section = children(body, 'sectPr')[0] ?? null;
@@ -2371,7 +2753,7 @@ export class DocxDocument {
   }
 
   getTable(index: number): TableInfo {
-    const document = this.getPartDocument(this.mainPath);
+    const document = this.getCachedPartDocument(this.mainPath);
     const paragraphs = this.buildParagraphs(document);
     const body = bodyOf(document);
     const indices = new Map(descendants(body, 'p').map((paragraph, i) => [paragraph, paragraphs[i]!]));
@@ -2388,7 +2770,7 @@ export class DocxDocument {
   insertTableRow(table: number, at: number): void {
     assertIndex(table);
     assertIndex(at);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const rows = tableRows(element);
       if (at > rows.length) throw new Error(`Row ${at} does not exist.`);
@@ -2403,7 +2785,7 @@ export class DocxDocument {
   }
 
   deleteTableRow(table: number, at: number): void {
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const rows = tableRows(element);
       const row = rows[at];
@@ -2430,7 +2812,7 @@ export class DocxDocument {
   insertTableColumn(table: number, at: number): void {
     assertIndex(table);
     assertIndex(at);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const grid = ensureTableGrid(element);
       const widths = tableGrid(element);
@@ -2472,7 +2854,7 @@ export class DocxDocument {
   }
 
   deleteTableColumn(table: number, at: number): void {
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const grid = ensureTableGrid(element);
       const columns = children(grid, 'gridCol');
@@ -2513,7 +2895,7 @@ export class DocxDocument {
   mergeCells(table: number, range: { row: number; col: number; rowSpan: number; colSpan: number }): void {
     assertIndex(range.row); assertIndex(range.col); assertIndex(range.rowSpan); assertIndex(range.colSpan);
     if (range.rowSpan < 1 || range.colSpan < 1) throw new Error('merge range must be at least 1 × 1.');
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const model = tableModel(element);
       const master = model.matrix[range.row]?.[range.col];
@@ -2558,7 +2940,7 @@ export class DocxDocument {
 
   splitCell(table: number, row: number, col: number, rows: number, cols: number): void {
     assertIndex(row); assertIndex(col); assertIndex(rows); assertIndex(cols);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
       const model = tableModel(element);
       const master = model.matrix[row]?.[col];
@@ -2586,11 +2968,11 @@ export class DocxDocument {
   }
 
   formatTable(table: number, format: TableFormat): void {
-    this.updatePartXml(this.mainPath, document => setTableFormat(tableAt(document, table), format));
+    this.updatePartXmlInternal(this.mainPath, document => setTableFormat(tableAt(document, table), format));
   }
 
   formatTableRow(table: number, row: number, format: RowFormat): void {
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableRows(tableAt(document, table))[row];
       if (!element) throw new Error(`Row ${row} does not exist.`);
       setRowFormat(element, format);
@@ -2598,12 +2980,12 @@ export class DocxDocument {
   }
 
   formatCell(table: number, row: number, col: number, format: CellFormat): void {
-    this.updatePartXml(this.mainPath, document => setCellFormat(cellAt(tableAt(document, table), row, col).cell, format));
+    this.updatePartXmlInternal(this.mainPath, document => setCellFormat(cellAt(tableAt(document, table), row, col).cell, format));
   }
 
   setCellText(table: number, row: number, col: number, text: string): void {
     assertText(text);
-    this.updatePartXml(this.mainPath, document => {
+    this.updatePartXmlInternal(this.mainPath, document => {
       const cell = cellAt(tableAt(document, table), row, col).cell;
       ensureCellParagraph(cell);
       const paragraph = childrenThroughTransparent(cell, 'p')[0];
@@ -2627,11 +3009,18 @@ export class DocxDocument {
   }
 
   private withDraft<T>(action: (draft: DocxDocument) => T): T {
+    this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
     const result = action(draft);
     this.parts = draft.parts;
+    this.documents = draft.documents;
+    this.dirtyPartXml = draft.dirtyPartXml;
+    this.dirtyPartSizes = draft.dirtyPartSizes;
     this.mainPath = draft.mainPath;
     this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.imageDataUrls.clear();
     return result;
   }
 
@@ -2865,6 +3254,7 @@ export class DocxDocument {
       throw new Error(`Revision conflict: expected ${request.expectedRevision}, current ${this.revision}.`);
     }
     if (!request.operations.length) return this.getSnapshot();
+    this.materializeAllParts();
     const draft = new DocxDocument(new Map(this.parts));
     for (const operation of request.operations) {
       switch (operation.type) {
@@ -2876,6 +3266,11 @@ export class DocxDocument {
         case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
         case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
+        case 'setParagraphTabs': draft.setParagraphTabs(operation.index, operation.tabs); break;
+        case 'setParagraphBorders': draft.setParagraphBorders(operation.index, operation.borders); break;
+        case 'setParagraphShading': draft.setParagraphShading(operation.index, operation.shading); break;
+        case 'insertBreak': draft.insertBreak(operation.paragraph, operation.run, operation.breakType); break;
+        case 'insertSymbol': draft.insertSymbol(operation.paragraph, operation.run, operation.font, operation.charCode); break;
         case 'replaceText': draft.replaceText(operation.search, operation.replacement); break;
         case 'insertTable': draft.insertTable(operation.rows); break;
         case 'insertTableAt': draft.insertTableAt(operation.rows, operation.cols, operation.before, operation.format); break;
@@ -2913,12 +3308,19 @@ export class DocxDocument {
     }
     const snapshot = draft.getSnapshot();
     this.parts = draft.parts;
+    this.documents = draft.documents;
+    this.dirtyPartXml = draft.dirtyPartXml;
+    this.dirtyPartSizes = draft.dirtyPartSizes;
     this.mainPath = draft.mainPath;
     this.currentRevision++;
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.imageDataUrls.clear();
     return { ...snapshot, revision: this.revision };
   }
 
   async toUint8Array(): Promise<Uint8Array> {
+    this.materializeAllParts();
     const zip = new JSZip();
     for (const [path, bytes] of this.parts) zip.file(path, bytes, { createFolders: false });
     return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });

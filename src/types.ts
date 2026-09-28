@@ -16,6 +16,28 @@ export interface RunFormat {
   allCaps?: boolean | null;
   highlight?: string | null;
   characterSpacing?: number | null;
+  border?: BorderSide | null;
+  shading?: Shading | null;
+}
+
+export interface TabStop {
+  position: number;
+  alignment: 'left' | 'center' | 'right' | 'decimal' | 'bar' | 'clear' | 'num';
+  leader?: 'none' | 'dot' | 'hyphen' | 'underscore' | 'heavy' | 'middleDot';
+}
+
+export interface BorderSide {
+  style: string;
+  size: number;
+  space: number;
+  color: string;
+  shadow?: boolean;
+}
+
+export interface Shading {
+  pattern: string;
+  fill: string;
+  color?: string;
 }
 
 export interface ParagraphFormat {
@@ -33,7 +55,12 @@ export interface ParagraphFormat {
   keepLines?: boolean | null;
   pageBreakBefore?: boolean | null;
   widowControl?: boolean | null;
+  suppressLineNumbers?: boolean | null;
+  suppressAutoHyphens?: boolean | null;
   outlineLevel?: number | null;
+  tabs?: TabStop[] | null;
+  borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>> | null;
+  shading?: Shading | null;
 }
 
 export interface StyleInfo {
@@ -268,6 +295,15 @@ export type AgentOperation =
   | { type: 'clearParagraphNumbering'; index: number }
   | { type: 'setParagraphLevel'; index: number; delta: number }
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
+  | { type: 'setParagraphTabs'; index: number; tabs: TabStop[] }
+  | {
+    type: 'setParagraphBorders';
+    index: number;
+    borders: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>>;
+  }
+  | { type: 'setParagraphShading'; index: number; shading: Shading }
+  | { type: 'insertBreak'; paragraph: number; run: number; breakType: 'textWrapping' | 'page' | 'column' }
+  | { type: 'insertSymbol'; paragraph: number; run: number; font: string; charCode: number }
   | { type: 'replaceText'; search: string; replacement: string }
   | { type: 'insertTable'; rows: string[][] }
   | { type: 'insertTableAt'; rows: number; cols: number; before?: number; format?: TableFormat }

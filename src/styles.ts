@@ -1,5 +1,5 @@
 import type { Element } from '@xmldom/xmldom';
-import type { ParagraphFormat, RunFormat, StyleInfo } from './types.js';
+import type { BorderSide, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
@@ -90,6 +90,12 @@ function normalizeHex(value: string | undefined): string | undefined {
   return value && /^[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : undefined;
 }
 
+function normalizeHexOrAuto(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value.toLowerCase() === 'auto') return 'auto';
+  return normalizeHex(value);
+}
+
 function readOnOff(element: Element | undefined): boolean | undefined {
   if (!element) return undefined;
   const value = (wordValue(element) ?? '1').toLowerCase();
@@ -98,6 +104,43 @@ function readOnOff(element: Element | undefined): boolean | undefined {
 
 function readNumber(value: string | undefined): number | undefined {
   return value !== undefined && /^-?\d+$/.test(value) ? Number(value) : undefined;
+}
+
+function readShading(value: Element | undefined): Shading | undefined {
+  if (!value) return undefined;
+  const fill = normalizeHexOrAuto(wordAttr(value, 'fill')) ?? 'auto';
+  const color = normalizeHexOrAuto(wordAttr(value, 'color'));
+  return {
+    pattern: wordValue(value) ?? 'clear',
+    fill,
+    ...(color !== undefined ? { color } : {}),
+  };
+}
+
+function readBorderSide(value: Element | undefined): BorderSide | undefined {
+  if (!value) return undefined;
+  const size = readNumber(wordAttr(value, 'sz'));
+  const space = readNumber(wordAttr(value, 'space'));
+  const color = normalizeHexOrAuto(wordAttr(value, 'color')) ?? 'auto';
+  const shadow = wordAttr(value, 'shadow');
+  return {
+    style: wordValue(value) ?? 'none',
+    size: Number.isFinite(size) && (size as number) >= 0 ? size as number : 0,
+    space: Number.isFinite(space) && (space as number) >= 0 ? space as number : 0,
+    color,
+    ...(shadow !== undefined ? { shadow: !['0', 'false', 'off'].includes(shadow.toLowerCase()) } : {}),
+  };
+}
+
+function readTabs(props: Element | undefined): TabStop[] | undefined {
+  if (!props) return undefined;
+  const tabsRoot = children(props, 'tabs')[0];
+  const tabs = tabsRoot ? children(tabsRoot, 'tab').map((tab): TabStop => ({
+    position: readNumber(wordAttr(tab, 'pos')) ?? 0,
+    alignment: (wordValue(tab) ?? 'left') as TabStop['alignment'],
+    ...(wordAttr(tab, 'leader') ? { leader: wordAttr(tab, 'leader') as TabStop['leader'] } : {}),
+  })) : [];
+  return tabs.length ? tabs : undefined;
 }
 
 function cloneParagraphFormat(format: ParagraphFormat | undefined): ParagraphFormat | undefined {
@@ -234,6 +277,15 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
   const spacing = children(props, 'spacing')[0];
   const indent = children(props, 'ind')[0];
   const alignment = wordValue(children(props, 'jc')[0]);
+  const borders = children(props, 'pBdr')[0];
+  const parsedBorders = borders ? {
+    top: readBorderSide(children(borders, 'top')[0]),
+    left: readBorderSide(children(borders, 'left')[0]),
+    bottom: readBorderSide(children(borders, 'bottom')[0]),
+    right: readBorderSide(children(borders, 'right')[0]),
+    between: readBorderSide(children(borders, 'between')[0]),
+    bar: readBorderSide(children(borders, 'bar')[0]),
+  } : undefined;
   return {
     style: wordValue(children(props, 'pStyle')[0]),
     alignment: ['left', 'center', 'right', 'both', 'distribute'].includes(alignment ?? '')
@@ -250,7 +302,12 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
     keepLines: readOnOff(children(props, 'keepLines')[0]),
     pageBreakBefore: readOnOff(children(props, 'pageBreakBefore')[0]),
     widowControl: readOnOff(children(props, 'widowControl')[0]),
+    suppressLineNumbers: readOnOff(children(props, 'suppressLineNumbers')[0]),
+    suppressAutoHyphens: readOnOff(children(props, 'suppressAutoHyphens')[0]),
     outlineLevel: readNumber(wordValue(children(props, 'outlineLvl')[0])),
+    tabs: readTabs(props),
+    borders: parsedBorders && Object.values(parsedBorders).some((entry) => entry !== undefined) ? parsedBorders : undefined,
+    shading: readShading(children(props, 'shd')[0]),
   };
 }
 
@@ -277,6 +334,8 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
     allCaps: readOnOff(children(props, 'caps')[0]),
     highlight: wordValue(children(props, 'highlight')[0]) ?? undefined,
     characterSpacing: readNumber(wordValue(children(props, 'spacing')[0])),
+    border: readBorderSide(children(props, 'bdr')[0]),
+    shading: readShading(children(props, 'shd')[0]),
   };
 }
 
