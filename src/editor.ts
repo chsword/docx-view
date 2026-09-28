@@ -441,16 +441,40 @@ export class DocxEditor {
     return rejected;
   }
 
-  acceptAllRevisions(filter: { authors?: string[] } = {}): boolean {
+  acceptAllRevisions(filter: { authors?: ReviewerFilterAuthor[] } = {}): boolean {
     this.flush();
-    const accepted = this.applyRevisionAction(() => this.document.acceptAllRevisions(filter));
+    const accepted = this.applyRevisionAction(() => {
+      if (!filter.authors?.length) {
+        this.document.acceptAllRevisions();
+        return;
+      }
+      const authors = new Set(filter.authors.map((author) => reviewerBucketKey(author)));
+      const operations = this.document
+        .getRevisions()
+        .filter((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+        .map((revision) => ({ type: 'acceptRevision' as const, id: revision.id }));
+      if (!operations.length) return;
+      this.document.applyOperations({ operations });
+    });
     if (accepted) this.setActiveRevision(null);
     return accepted;
   }
 
-  rejectAllRevisions(filter: { authors?: string[] } = {}): boolean {
+  rejectAllRevisions(filter: { authors?: ReviewerFilterAuthor[] } = {}): boolean {
     this.flush();
-    const rejected = this.applyRevisionAction(() => this.document.rejectAllRevisions(filter));
+    const rejected = this.applyRevisionAction(() => {
+      if (!filter.authors?.length) {
+        this.document.rejectAllRevisions();
+        return;
+      }
+      const authors = new Set(filter.authors.map((author) => reviewerBucketKey(author)));
+      const operations = this.document
+        .getRevisions()
+        .filter((revision) => authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))
+        .map((revision) => ({ type: 'rejectRevision' as const, id: revision.id }));
+      if (!operations.length) return;
+      this.document.applyOperations({ operations });
+    });
     if (rejected) this.setActiveRevision(null);
     return rejected;
   }
@@ -464,7 +488,9 @@ export class DocxEditor {
     const current = this.activeRevisionId === null ? -1 : ids.indexOf(this.activeRevisionId);
     const nextId = ids[(current + 1) % ids.length]!;
     this.setActiveRevision(nextId);
-    (this.revisionRunIds.get(String(nextId))?.[0] ?? this.revisionParagraphIds.get(nextId)?.[0])?.focus({ preventScroll: true });
+    const target = this.revisionRunIds.get(String(nextId))?.[0] ?? this.revisionParagraphIds.get(nextId)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
     return nextId;
   }
 
@@ -477,7 +503,9 @@ export class DocxEditor {
     const current = this.activeRevisionId === null ? ids.length : ids.indexOf(this.activeRevisionId);
     const previousId = ids[(current - 1 + ids.length) % ids.length]!;
     this.setActiveRevision(previousId);
-    (this.revisionRunIds.get(String(previousId))?.[0] ?? this.revisionParagraphIds.get(previousId)?.[0])?.focus({ preventScroll: true });
+    const target = this.revisionRunIds.get(String(previousId))?.[0] ?? this.revisionParagraphIds.get(previousId)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
     return previousId;
   }
 
@@ -485,7 +513,9 @@ export class DocxEditor {
     if (!Number.isSafeInteger(id) || id < 0) throw new Error('revision id must be a non-negative integer.');
     if (!this.filteredRevisionIds().includes(id)) return false;
     this.setActiveRevision(id);
-    (this.revisionRunIds.get(String(id))?.[0] ?? this.revisionParagraphIds.get(id)?.[0])?.focus({ preventScroll: true });
+    const target = this.revisionRunIds.get(String(id))?.[0] ?? this.revisionParagraphIds.get(id)?.[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
     return true;
   }
 
@@ -870,8 +900,13 @@ export class DocxEditor {
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
     if (!this.isMarkupReviewView()) content.setAttribute('aria-readonly', 'true');
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
+    const runRevisionIds = new Set<number>();
     const hasRunRevision = this.reviewFilter.showRevisions && paragraph.runs.some((run) =>
-      run.revisions?.some((revision) => !reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))));
+      run.revisions?.some((revision) => {
+        const visible = !reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)));
+        if (visible) runRevisionIds.add(revision.id);
+        return visible;
+      }));
     const visibleParagraphRevision = this.reviewFilter.showRevisions && paragraph.paragraphRevision &&
       (!reviewContext.authors || reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(paragraph.paragraphRevision.author))))
       ? paragraph.paragraphRevision
@@ -888,10 +923,16 @@ export class DocxEditor {
       marker.style.color = this.reviewColor(visibleParagraphRevision?.author, reviewContext);
       marker.style.opacity = '0.9';
       marker.textContent = '│';
+      marker.title = '';
+      marker.setAttribute('role', 'presentation');
+      marker.setAttribute('aria-hidden', 'true');
       element.append(marker);
-      if (visibleParagraphRevision) {
-        const id = visibleParagraphRevision.id;
-        element.dataset.docxRevisionIds = String(id);
+      const markerRevisionIds = new Set<number>(runRevisionIds);
+      if (visibleParagraphRevision) markerRevisionIds.add(visibleParagraphRevision.id);
+      if (markerRevisionIds.size) {
+        element.dataset.docxRevisionIds = [...markerRevisionIds].join(',');
+      }
+      for (const id of markerRevisionIds) {
         const list = this.revisionParagraphIds.get(id) ?? [];
         list.push(element);
         this.revisionParagraphIds.set(id, list);
@@ -1049,10 +1090,19 @@ export class DocxEditor {
     return reviewContext.revisionColors.get(reviewerBucketKey(reviewerBucketOf(author))) ?? REVISION_COLOR_PALETTE[0]!;
   }
 
+  private revisionAriaDescription(revisions: RunInfo['revisions']): string {
+    if (!revisions?.length) return '';
+    const labels = [];
+    if (revisions.some((revision) => revision.kind === 'insertion')) labels.push('插入');
+    if (revisions.some((revision) => revision.kind === 'deletion')) labels.push('删除');
+    const author = revisions.find((revision) => revision.author !== undefined)?.author;
+    return author ? `修订：${labels.join(' / ') || '变更'}，作者 ${author}` : `修订：${labels.join(' / ') || '变更'}`;
+  }
+
   private registerRevisionNode(ids: number[], node: HTMLElement): void {
     if (!ids.length) return;
     node.dataset.docxRevisionIds = ids.join(',');
-    node.tabIndex = 0;
+    node.tabIndex = -1;
     for (const id of ids) {
       const key = String(id);
       const list = this.revisionRunIds.get(key) ?? [];
@@ -1079,6 +1129,7 @@ export class DocxEditor {
     marker.style.opacity = '0.85';
     const authorRevision = run.revisions.find((revision) => revision.kind === 'deletion');
     marker.style.color = this.reviewColor(authorRevision?.author, reviewContext);
+    marker.setAttribute('aria-label', `修订删除文本：${deletedText}`);
     this.registerRevisionNode(run.revisions.map((revision) => revision.id), marker);
     paragraphElement.append(marker);
   }
@@ -1211,9 +1262,12 @@ export class DocxEditor {
       const hasInsertion = run.revisions.some((revision) => revision.kind === 'insertion');
       const hasDeletion = run.revisions.some((revision) => revision.kind === 'deletion');
       const author = run.revisions.find((revision) => revision.author !== undefined)?.author;
-      runSpan.style.color = this.reviewColor(author, reviewContext);
+      const revisionColor = this.reviewColor(author, reviewContext);
       const textDecoration = [hasInsertion ? 'underline' : '', hasDeletion ? 'line-through' : ''].filter(Boolean).join(' ');
       if (textDecoration) runSpan.style.textDecoration = textDecoration;
+      if (textDecoration) runSpan.style.textDecorationColor = revisionColor;
+      const description = this.revisionAriaDescription(run.revisions);
+      if (description) runSpan.setAttribute('aria-description', description);
       this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
     }
     const segments = run.text.split(/(\t|\n)/);

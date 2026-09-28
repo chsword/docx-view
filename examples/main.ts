@@ -832,18 +832,12 @@ element('review-next-revision').addEventListener('click', () => run(() => {
   refreshRevisions();
 }));
 element('review-accept-all').addEventListener('click', () => run(() => {
-  const filterAuthors = selectedReviewerAuthors
-    ?.filter((entry) => entry.kind === 'named')
-    .map((entry) => entry.author);
-  editor.acceptAllRevisions(filterAuthors?.length ? { authors: filterAuthors } : {});
+  editor.acceptAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
   selectedRevisionId = null;
   refresh();
 }));
 element('review-reject-all').addEventListener('click', () => run(() => {
-  const filterAuthors = selectedReviewerAuthors
-    ?.filter((entry) => entry.kind === 'named')
-    .map((entry) => entry.author);
-  editor.rejectAllRevisions(filterAuthors?.length ? { authors: filterAuthors } : {});
+  editor.rejectAllRevisions(selectedReviewerAuthors?.length ? { authors: selectedReviewerAuthors } : {});
   selectedRevisionId = null;
   refresh();
 }));

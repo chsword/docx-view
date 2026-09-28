@@ -814,10 +814,10 @@ test('focusRevision activates and focuses mapped revision node', () => {
   const calls = [];
   editor.filteredRevisionIds = () => [3];
   editor.setActiveRevision = (id) => calls.push(`active:${id}`);
-  editor.revisionRunIds = new Map([['3', [{ focus: () => calls.push('focus') }]]]);
+  editor.revisionRunIds = new Map([['3', [{ focus: () => calls.push('focus'), scrollIntoView: () => calls.push('scroll') }]]]);
   editor.revisionParagraphIds = new Map();
   assert.equal(editor.focusRevision(3), true);
-  assert.deepEqual(calls, ['active:3', 'focus']);
+  assert.deepEqual(calls, ['active:3', 'focus', 'scroll']);
 });
 
 test('focusNextRevision cycles through filtered revision ids', () => {
@@ -826,8 +826,8 @@ test('focusNextRevision cycles through filtered revision ids', () => {
   editor.filteredRevisionIds = () => [10, 20];
   editor.setActiveRevision = (id) => { editor.activeRevisionId = id; };
   editor.revisionRunIds = new Map([
-    ['10', [{ focus: () => focused.push(10) }]],
-    ['20', [{ focus: () => focused.push(20) }]],
+    ['10', [{ focus: () => focused.push(10), scrollIntoView: () => {} }]],
+    ['20', [{ focus: () => focused.push(20), scrollIntoView: () => {} }]],
   ]);
   editor.revisionParagraphIds = new Map();
   editor.activeRevisionId = null;
@@ -842,8 +842,8 @@ test('focusPreviousRevision cycles backwards through filtered revision ids', () 
   editor.filteredRevisionIds = () => [10, 20];
   editor.setActiveRevision = (id) => { editor.activeRevisionId = id; };
   editor.revisionRunIds = new Map([
-    ['10', [{ focus: () => focused.push(10) }]],
-    ['20', [{ focus: () => focused.push(20) }]],
+    ['10', [{ focus: () => focused.push(10), scrollIntoView: () => {} }]],
+    ['20', [{ focus: () => focused.push(20), scrollIntoView: () => {} }]],
   ]);
   editor.revisionParagraphIds = new Map();
   editor.activeRevisionId = null;
@@ -918,6 +918,43 @@ test('acceptAllRevisions and rejectAllRevisions are no-ops when revision is unch
   assert.deepEqual(calls, ['flush', 'flush']);
 });
 
+test('acceptAllRevisions honors non-named reviewer filters via atomic applyOperations', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.flush = () => {};
+  const calls = [];
+  editor.document = {
+    revision: 1,
+    getRevisions: () => [{ id: 2 }, { id: 3, author: '' }],
+    applyOperations: ({ operations }) => {
+      calls.push(operations.map((operation) => `${operation.type}:${operation.id}`).join(','));
+      editor.document.revision = 2;
+    },
+    getSnapshot: () => ({ revision: 2 }),
+  };
+  editor.render = () => {};
+  editor.options = {};
+  editor.setActiveRevision = () => {};
+  assert.equal(editor.acceptAllRevisions({ authors: [{ kind: 'unattributed' }, { kind: 'empty', author: '' }] }), true);
+  assert.deepEqual(calls, ['acceptRevision:2,acceptRevision:3']);
+});
+
+test('rejectAllRevisions with reviewer filter skips mutation when nothing matches', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.flush = () => {};
+  const calls = [];
+  editor.document = {
+    revision: 9,
+    getRevisions: () => [{ id: 1, author: 'Alice' }],
+    applyOperations: () => calls.push('apply'),
+    getSnapshot: () => ({ revision: 9 }),
+  };
+  editor.render = () => calls.push('render');
+  editor.options = { onChange: () => calls.push('change') };
+  editor.setActiveRevision = () => calls.push('active');
+  assert.equal(editor.rejectAllRevisions({ authors: [{ kind: 'named', author: 'Bob' }] }), false);
+  assert.deepEqual(calls, []);
+});
+
 test('setActiveRevision toggles docx-revision-active class by id membership', () => {
   const editor = Object.create(DocxEditor.prototype);
   const states = [];
@@ -974,6 +1011,7 @@ test('appendDeletedRunVisualization emits a non-editable deleted marker only in 
         dataset: {},
         style: {},
         className: '',
+        setAttribute: () => {},
       }),
     },
   };
