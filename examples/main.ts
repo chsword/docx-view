@@ -157,6 +157,45 @@ function outlineSectionEnd(paragraph: number, flat = flattenOutline(doc.getOutli
   return next ? next.paragraph - 1 : doc.getParagraphs().at(-1)?.index ?? paragraph;
 }
 
+function moveOutlineWithKeyboard(paragraph: number, direction: -1 | 1): void {
+  ensureMarkupView();
+  const outline = flattenOutline(doc.getOutline());
+  const index = outline.findIndex((entry) => entry.paragraph === paragraph);
+  if (index === -1) return;
+  const current = outline[index]!;
+  const currentEnd = outlineSectionEnd(current.paragraph, outline);
+  if (direction < 0) {
+    const previous = outline[index - 1];
+    if (!previous) return;
+    doc.moveOutlineSection(current.paragraph, previous.paragraph);
+    editor.render();
+    refresh();
+    focusParagraph(previous.paragraph);
+    message('已上移当前标题。');
+    return;
+  }
+  const next = outline[index + 1];
+  if (!next) return;
+  const target = outlineSectionEnd(next.paragraph, outline) + 1;
+  doc.moveOutlineSection(current.paragraph, target);
+  const movedParagraph = target > currentEnd ? target - (currentEnd - current.paragraph + 1) : target;
+  editor.render();
+  refresh();
+  focusParagraph(movedParagraph);
+  message('已下移当前标题。');
+}
+
+function setOutlineLevelWithKeyboard(paragraph: number, delta: -1 | 1): void {
+  ensureMarkupView();
+  const node = flattenOutline(doc.getOutline()).find((entry) => entry.paragraph === paragraph);
+  if (!node) return;
+  doc.setOutlineLevel(paragraph, Math.max(0, Math.min(8, node.level + delta)));
+  editor.render();
+  refresh();
+  focusParagraph(paragraph);
+  message(delta < 0 ? '已提升标题层级。' : '已降低标题层级。');
+}
+
 function focusParagraph(paragraph: number): void {
   const target = host.querySelector<HTMLElement>(`.docx-paragraph[data-paragraph="${paragraph}"] .docx-paragraph-content`);
   if (!target) return;
@@ -289,6 +328,22 @@ function refreshOutline(): void {
       Object.assign(document.createElement('span'), { className: 'outline-text', textContent: node.text || '（空标题）' }),
     );
     button.addEventListener('click', () => focusParagraph(node.paragraph));
+    button.addEventListener('keydown', (event) => run(() => {
+      if (!editable || !event.altKey) return;
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveOutlineWithKeyboard(node.paragraph, -1);
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveOutlineWithKeyboard(node.paragraph, 1);
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setOutlineLevelWithKeyboard(node.paragraph, -1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setOutlineLevelWithKeyboard(node.paragraph, 1);
+      }
+    }));
     button.addEventListener('dragstart', (event) => {
       if (!editable) return;
       outlineDrag = { paragraph: node.paragraph, end: outlineSectionEnd(node.paragraph, outline) };

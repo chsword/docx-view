@@ -3661,9 +3661,9 @@ export class DocxDocument {
     const preview = this.getPartDocument(this.mainPath);
     const normalized = this.normalizeRangeOn(preview, range);
     if (normalized.start === normalized.end) return;
-    this.splitRunAtOffset(normalized.paragraph, normalized.end);
-    this.splitRunAtOffset(normalized.paragraph, normalized.start);
     const previewParagraph = normalized.paragraph;
+    this.splitRunAtOffset(previewParagraph, normalized.end);
+    this.splitRunAtOffset(previewParagraph, normalized.start);
     const previewRuns = this.runsInRange(previewParagraph, normalized.start, normalized.end);
     const directRuns = previewRuns.map((run) => readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
     for (const run of previewRuns) {
@@ -3798,9 +3798,17 @@ export class DocxDocument {
     if (comments.length) throw new Error('Cannot move a section that would split a comment range.');
     const entries = this.bodyBlockEntries(this.getPartDocument(this.mainPath));
     const startBlock = entries.findIndex((entry) => entry.paragraphs.includes(from));
-    const moved = entries.flatMap((entry, index) =>
-      entry.paragraphs.some((paragraph) => paragraph >= from && paragraph <= endParagraph) ? [index] : []);
-    if (startBlock === -1 || !moved.length) throw new Error('Outline section must start on a movable top-level body block.');
+    if (startBlock === -1) throw new Error('Outline section must start on a movable top-level body block.');
+    const moved: number[] = [];
+    for (let index = startBlock; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (!entry.paragraphs.some((paragraph) => paragraph >= from && paragraph <= endParagraph)) break;
+      if (entry.paragraphs[0]! < from || entry.paragraphs[entry.paragraphs.length - 1]! > endParagraph) {
+        throw new Error('Outline section must align to whole top-level body blocks.');
+      }
+      moved.push(index);
+    }
+    if (!moved.length) throw new Error('Outline section must start on a movable top-level body block.');
     const endBlock = moved[moved.length - 1]!;
     const targetBlock = to === paragraphs.length ? entries.length : entries.findIndex((entry) => entry.paragraphs.includes(to));
     if (targetBlock === -1) throw new Error(`Paragraph ${to} does not exist.`);
