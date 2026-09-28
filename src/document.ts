@@ -3817,7 +3817,7 @@ export class DocxDocument {
           };
           const vertical = findActiveVertical(activeVertical, col, colSpan);
           if (cell.isMergeContinuation) {
-            if (cell.rowSpan === 0 && vertical) {
+            if (vertical) {
               location = vertical.location;
               setActiveVertical(nextActive, col, col + colSpan, vertical.location);
             } else if (activeHorizontalLocation && activeHorizontalEnd === col) {
