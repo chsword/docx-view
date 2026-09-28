@@ -126,8 +126,35 @@ console.log(reopened.getSnapshot());
 | `getSettings()` / `setTrackChanges(enabled)` / `setRevisionAuthor(author)` | 读取常用文档设置（当前返回 `{ defaultTabStop, evenAndOddHeaders, trackChanges }`），显式开启/关闭 `w:trackChanges`（关闭时写 `w:val="0"`，不删除元素），并设置后续记录修订写入使用的作者名 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
-索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。`insertSectionBreak(paragraph)` 的 `paragraph` 表示“该段落结束处插入分节”；`deleteSectionBreak(section)` 删除第 `section` 节末尾的分节符并与下一节合并。高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*`、`getReviewers()` 与 `DocxDocument.compare()` 当前都只作用于主文档。`compare()` 返回的是新实例（`revision` 从 0 开始），不会修改输入文档；它对纯段落文字/格式做细粒度修订，对表格和含图片的段落仅做粗粒度删除 + 插入，不比较页眉/页脚/脚注/尾注。超过 1000 个主文档段落的输入会直接抛错，避免段落级对齐的 O(N²) 内存开销。当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。`getRevisions({ kinds })` 对 `kind` 严格匹配：移动修订只会命中 `kinds: ['move']`，不再包含在 `insertion` / `deletion` 过滤中。`RevisionInfo.move.pairedId` 与接受/拒绝逻辑使用同一配对规则（优先范围标记，其次文档顺序配对同名 `moveFrom`/`moveTo`）。`acceptRevision(id)` / `rejectRevision(id)` 传入移动修订任一半时会成对处理 `moveFrom` + `moveTo`；批量按作者筛选时，只要配对中的任一半命中过滤条件，整对都会一起处理。记录修订开启后，文本/段落/图片/表格行等编辑会写入 `w:ins` / `w:del` / `rPrChange` / `pPrChange`；此时 `deleteParagraph()` 会保留原段落节点并把内容标记为删除，因此按索引循环删除时应在每步后重新读取段落列表。接受“仅段落标记删除（`w:pPr/w:rPr/w:del`）”时会优先合并到同容器中的下一段；若当前段/下一段含 `sectPr`、当前段后继不是段落、或已到容器末尾，则降级为仅移除该删除标记。`getDocumentProperties().revisionNumber` / `setDocumentProperties({ revisionNumber })` 读写的是 DOCX `cp:revision` 文档属性，**与**实例级 `doc.revision`（内存中的变更计数，不持久化到 DOCX）互不联动。`documentProtection` 只是文档内声明：库会如实读写它，但**不会**因为 `readOnly` / `comments` / `trackedChanges` 而禁用编辑 API；若宿主需要据此调整按钮或 UI，请自行在外层实现。若未显式调用 `setRevisionAuthor(author)`，默认作者名为 `docx-view`。
-节范围是闭区间：`startParagraph <= i <= endParagraph`。当某节暂时没有段落时，返回 `endParagraph < startParagraph`（例如 `[1,0]`）表示空区间。
+**索引与作用域**
+
+- 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。
+- 高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*`、`getReviewers()` 与 `DocxDocument.compare()` 当前都只作用于主文档。
+- `insertSectionBreak(paragraph)` 的 `paragraph` 表示“该段落结束处插入分节”；`deleteSectionBreak(section)` 删除第 `section` 节末尾的分节符并与下一节合并。节范围是闭区间：`startParagraph <= i <= endParagraph`。当某节暂时没有段落时，返回 `endParagraph < startParagraph`（例如 `[1,0]`）表示空区间。
+
+**修订的读取**
+
+- 当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。
+- `getRevisions({ kinds })` 对 `kind` 严格匹配：移动修订只会命中 `kinds: ['move']`，不再包含在 `insertion` / `deletion` 过滤中。
+- `RevisionInfo.move.pairedId` 与接受/拒绝逻辑使用同一配对规则（优先范围标记，其次文档顺序配对同名 `moveFrom`/`moveTo`）。
+
+**修订的写入与接受 / 拒绝**
+
+- 记录修订开启后，文本/段落/图片/表格行等编辑会写入 `w:ins` / `w:del` / `rPrChange` / `pPrChange`；此时 `deleteParagraph()` 会保留原段落节点并把内容标记为删除，因此按索引循环删除时应在每步后重新读取段落列表。
+- 若未显式调用 `setRevisionAuthor(author)`，默认作者名为 `docx-view`。
+- `acceptRevision(id)` / `rejectRevision(id)` 传入移动修订任一半时会成对处理 `moveFrom` + `moveTo`；批量按作者筛选时，只要配对中的任一半命中过滤条件，整对都会一起处理。
+- 接受“仅段落标记删除（`w:pPr/w:rPr/w:del`）”时会优先合并到同容器中的下一段；若当前段/下一段含 `sectPr`、当前段后继不是段落、或已到容器末尾，则降级为仅移除该删除标记。
+
+**文档比较**
+
+- `compare()` 返回的是新实例（`revision` 从 0 开始），不会修改输入文档；它对纯段落文字/格式做细粒度修订，对表格和含图片的段落仅做粗粒度删除 + 插入，不比较页眉/页脚/脚注/尾注。
+- 超过 1000 个主文档段落的输入会直接抛错，避免段落级对齐的 O(N²) 内存开销。
+
+**文档属性与保护**
+
+- `getDocumentProperties().revisionNumber` / `setDocumentProperties({ revisionNumber })` 读写的是 DOCX `cp:revision` 文档属性，**与**实例级 `doc.revision`（内存中的变更计数，不持久化到 DOCX）互不联动。
+- `documentProtection` 只是文档内声明：库会如实读写它，但**不会**因为 `readOnly` / `comments` / `trackedChanges` 而禁用编辑 API；若宿主需要据此调整按钮或 UI，请自行在外层实现。
+
 | `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `getComments()` / `addComment()` / `replyComment()` / `setCommentResolved()` / `setCommentText()` / `deleteComment()` | 读取和编辑批注、回复链与解决状态 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
