@@ -100,7 +100,7 @@ console.log(reopened.getSnapshot());
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `getRevisions(filter?)` | 扁平读取主文档中的插入、删除、格式修订和表格/行/单元格属性修订；`moveFrom` / `moveTo` 当前按删除 / 插入降级返回 |
-| `getReviewers()` | 聚合修订与批注的审阅者统计（修订数、批注数、未解决批注数、时间范围） |
+| `getReviewers()` | 聚合主文档修订与主文档锚点批注的审阅者统计（修订数、批注数、未解决批注数、时间范围）；结果默认按 `revisionCount`、`commentCount`、`unresolvedCommentCount` 降序，再按 `author` 升序 |
 | `insertTable(rows)` / `insertTableAt(rows, cols, before?, format?)` | 在正文中插入表格；支持空白表格、基础表格格式和正文块级定位 |
 | `getTable(index)` | 读取正文中第 N 个表格的 grid、跨度和表格/行/单元格格式信息 |
 | `insertTableRow()` / `deleteTableRow()` / `insertTableColumn()` / `deleteTableColumn()` | 行列编辑；同步维护 `w:tblGrid`，拒绝删成 0 行或 0 列 |

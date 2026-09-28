@@ -118,17 +118,21 @@
                   <div><strong>审阅筛选</strong><p class="hint">作者筛选与视图切换仅影响渲染，不改文档内容。</p></div>
                 </div>
                 <div class="comment-filters">
-                  <select id="review-revision-view">
+                  <label class="sr-only" for="review-revision-view">修订视图</label>
+                  <select id="review-revision-view" aria-label="修订视图">
                     <option value="markup">标记视图</option>
                     <option value="final">最终视图</option>
                     <option value="original">原始视图</option>
                   </select>
-                  <label><input id="review-show-revisions" type="checkbox" checked /> 显示修订</label>
-                  <label><input id="review-show-comments" type="checkbox" checked /> 显示批注</label>
+                  <fieldset>
+                    <legend class="sr-only">审阅显示选项</legend>
+                    <label><input id="review-show-revisions" type="checkbox" checked /> 显示修订</label>
+                    <label><input id="review-show-comments" type="checkbox" checked /> 显示批注</label>
+                  </fieldset>
                 </div>
                 <div class="comment-panel-actions">
-                  <button id="review-select-all" class="button subtle">全选作者</button>
-                  <button id="review-clear-authors" class="button subtle">清空作者筛选</button>
+                  <button id="review-select-all" type="button" class="button subtle">全选作者</button>
+                  <button id="review-clear-authors" type="button" class="button subtle">清空作者筛选</button>
                 </div>
                 <ul id="reviewer-list" class="comment-list"></ul>
               </div>

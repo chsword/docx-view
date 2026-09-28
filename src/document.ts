@@ -3068,7 +3068,8 @@ export class DocxDocument {
   getReviewers(): ReviewerInfo[] {
     if (this.reviewerInfoCache?.revision === this.revision) return this.reviewerInfoCache.reviewers.map(cloneReviewerInfo);
     const revisions = this.getRevisions();
-    const comments = this.getComments();
+    const comments = this.getComments().filter((comment) =>
+      comment.anchor?.sourcePartPath === this.mainDocumentPath);
     if (!revisions.length && !comments.length) {
       this.reviewerInfoCache = { revision: this.revision, reviewers: [] };
       return [];

@@ -239,6 +239,7 @@ export class DocxEditor {
   private renderAfterComposition = false;
   private destroyed = false;
   private reviewFilter: NormalizedReviewFilter;
+  private activeReviewAuthors?: Set<string>;
   private readonly metrics: CanvasRenderingContext2D | null;
   private commentRunIds = new Map<string, number[]>();
   private commentParagraphIds = new Map<number, number[]>();
@@ -353,7 +354,13 @@ export class DocxEditor {
   setReviewFilter(filter: EditorReviewFilter = {}): void {
     if (this.destroyed) return;
     this.reviewFilter ??= normalizeReviewFilter(this.options?.reviewFilter);
-    const next = normalizeReviewFilter(filter);
+    const next = normalizeReviewFilter({
+      ...(this.reviewFilter.authors !== undefined ? { authors: this.reviewFilter.authors } : {}),
+      showRevisions: this.reviewFilter.showRevisions,
+      showComments: this.reviewFilter.showComments,
+      revisionView: this.reviewFilter.revisionView,
+      ...filter,
+    });
     if (reviewFilterEqual(this.reviewFilter, next)) return;
     this.reviewFilter = next;
     this.render({ skipFlush: true });
@@ -377,47 +384,51 @@ export class DocxEditor {
     this.commentParagraphIds ??= new Map();
     this.commentRunIds.clear();
     this.commentParagraphIds.clear();
-    const commentAuthors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors) : undefined;
-    for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
-      if (commentAuthors && !commentAuthors.has(reviewerBucketOf(comment.author))) continue;
-      if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
-      if ('runs' in comment.anchor) {
-        for (const run of comment.anchor.runs) {
-          const key = `${comment.anchor.paragraph}:${run}`;
-          const ids = this.commentRunIds.get(key) ?? [];
-          if (!ids.includes(comment.id)) ids.push(comment.id);
-          this.commentRunIds.set(key, ids);
-        }
-      } else {
-        for (let paragraph = comment.anchor.startParagraph; paragraph <= comment.anchor.endParagraph; paragraph++) {
-          const ids = this.commentParagraphIds.get(paragraph) ?? [];
-          if (!ids.includes(comment.id)) ids.push(comment.id);
-          this.commentParagraphIds.set(paragraph, ids);
+    this.activeReviewAuthors = this.reviewFilter.authors ? new Set(this.reviewFilter.authors) : undefined;
+    try {
+      for (const comment of this.reviewFilter.showComments ? this.document.getComments() : []) {
+        if (this.activeReviewAuthors && !this.activeReviewAuthors.has(reviewerBucketOf(comment.author))) continue;
+        if (!comment.anchor || comment.anchor.sourcePartPath !== this.document.mainDocumentPath) continue;
+        if ('runs' in comment.anchor) {
+          for (const run of comment.anchor.runs) {
+            const key = `${comment.anchor.paragraph}:${run}`;
+            const ids = this.commentRunIds.get(key) ?? [];
+            if (!ids.includes(comment.id)) ids.push(comment.id);
+            this.commentRunIds.set(key, ids);
+          }
+        } else {
+          for (let paragraph = comment.anchor.startParagraph; paragraph <= comment.anchor.endParagraph; paragraph++) {
+            const ids = this.commentParagraphIds.get(paragraph) ?? [];
+            if (!ids.includes(comment.id)) ids.push(comment.id);
+            this.commentParagraphIds.set(paragraph, ids);
+          }
         }
       }
+      const fragment = this.root.ownerDocument.createDocumentFragment();
+      const canRenderHeaderFooter = typeof this.root.ownerDocument.createElement === 'function';
+      if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
+      let defaultTabStopTwips = 720;
+      try {
+        defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+      } catch {
+        defaultTabStopTwips = 720;
+      }
+      this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
+      if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
+      this.root.replaceChildren(fragment);
+      if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
+      const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
+      this.selectImage(nextSelected);
+      if (activeImageId) {
+        Array.from(this.root.querySelectorAll<HTMLElement>('[data-image]'))
+          .find((node) => node.dataset.image === activeImageId)
+          ?.focus({ preventScroll: true });
+      }
+      if (range) this.restoreDocumentRange(range);
+      this.updateRangeSelection(this.captureDocumentRange());
+    } finally {
+      this.activeReviewAuthors = undefined;
     }
-    const fragment = this.root.ownerDocument.createDocumentFragment();
-    const canRenderHeaderFooter = typeof this.root.ownerDocument.createElement === 'function';
-    if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
-    let defaultTabStopTwips = 720;
-    try {
-      defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
-    } catch {
-      defaultTabStopTwips = 720;
-    }
-    this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
-    if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
-    this.root.replaceChildren(fragment);
-    if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
-    const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
-    this.selectImage(nextSelected);
-    if (activeImageId) {
-      Array.from(this.root.querySelectorAll<HTMLElement>('[data-image]'))
-        .find((node) => node.dataset.image === activeImageId)
-        ?.focus({ preventScroll: true });
-    }
-    if (range) this.restoreDocumentRange(range);
-    this.updateRangeSelection(this.captureDocumentRange());
   }
 
   destroy(): void {
@@ -721,7 +732,8 @@ export class DocxEditor {
     });
     let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
-      currentLineOffsetPx = this.appendRun(content, paragraph, run, defaultTabStopTwips, currentLineOffsetPx);
+      const visibleRun = this.reviewScopedRun(run);
+      currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, defaultTabStopTwips, currentLineOffsetPx);
       if (run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
         marker.className = 'docx-note-ref';
@@ -829,6 +841,17 @@ export class DocxEditor {
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
     return element;
+  }
+
+  private reviewScopedRun(run: RunInfo): RunInfo {
+    if (!run.revisions?.length) return run;
+    let revisions = run.revisions;
+    if (!this.reviewFilter.showRevisions) revisions = [];
+    if (this.activeReviewAuthors) {
+      revisions = revisions.filter((revision) => this.activeReviewAuthors!.has(reviewerBucketOf(revision.author)));
+    }
+    if (revisions.length === run.revisions.length && revisions.every((entry, index) => entry === run.revisions![index])) return run;
+    return { ...run, revisions: revisions.length ? revisions : undefined };
   }
 
   private makeMark(text: string, label: string): HTMLElement {
