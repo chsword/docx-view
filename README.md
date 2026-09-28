@@ -97,9 +97,12 @@ console.log(reopened.getSnapshot());
 节范围是闭区间：`startParagraph <= i <= endParagraph`。当某节暂时没有段落时，返回 `endParagraph < startParagraph`（例如 `[1,0]`）表示空区间。
 | `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
+| `canUndo()` / `canRedo()` / `undo()` / `redo()` / `getHistory()` / `clearHistory()` | 访问撤销/重做栈；撤销与重做都会生成新的 `revision` |
+| `beginHistoryGroup(label?)` / `endHistoryGroup()` | 将多次编辑显式合并为一个撤销步（例如格式刷批量操作） |
 
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
 注释（脚注/尾注）`blocks` 里的段落 `index` 固定为 `-1`，不属于正文索引命名空间；注释内容请使用 `setNoteText(kind, id, text)` 编辑。`insertFootnote` / `insertEndnote` 为匹配 Word 常见显示，会在标记后以保留空格写入正文文本 run（例如读回 `" 内容"`）。
+撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
 
 ### 可视化组件
 
@@ -187,7 +190,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`setPartXml`。
+支持的操作类型：`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`setPartXml`、`undo`、`redo`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

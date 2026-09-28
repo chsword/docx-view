@@ -319,6 +319,12 @@ export interface DocumentSnapshot {
   bookmarks: BookmarkInfo[];
 }
 
+export interface HistoryEntry {
+  revision: number;
+  label?: string;
+  at: number;
+}
+
 export interface NoteSettingsValue {
   pos?: 'pageBottom' | 'beneathText' | 'sectEnd' | 'docEnd';
   numFmt?: string;
@@ -387,7 +393,9 @@ export type AgentOperation =
   | { type: 'insertEndnote'; paragraph: number; run: number; text: string; customMark?: string }
   | { type: 'setNoteText'; kind: 'footnote' | 'endnote'; id: number; text: string }
   | { type: 'deleteNote'; kind: 'footnote' | 'endnote'; id: number }
-  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number };
+  | { type: 'convertNote'; kind: 'footnote' | 'endnote'; id: number }
+  | { type: 'undo' }
+  | { type: 'redo' };
 
 export interface AgentRequest {
   expectedRevision?: number;

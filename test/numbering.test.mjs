@@ -219,7 +219,7 @@ test('agent operations support numbering mutations atomically', () => {
     { type: 'clearParagraphNumbering', index: 0 },
   ] });
   assert.equal(snapshot.paragraphs[0].numbering, undefined);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 42);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 44);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'setParagraphNumbering', index: 0, numId: 0 }] }), /numId/);
 });
 

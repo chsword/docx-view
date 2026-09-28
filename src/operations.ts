@@ -464,6 +464,10 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         if (!['footnote', 'endnote'].includes(String(op.kind))) throw new Error('Invalid note kind.');
         assertIndex(op.id);
         break;
+      case 'undo':
+      case 'redo':
+        keys(op, ['type']);
+        break;
       default: throw new Error(`Unknown operation type: ${String(op.type)}`);
     }
   }
@@ -682,6 +686,8 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setNoteText', { kind: { enum: ['footnote', 'endnote'] }, id: index, text }),
           operation('deleteNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
           operation('convertNote', { kind: { enum: ['footnote', 'endnote'] }, id: index }),
+          operation('undo', {}),
+          operation('redo', {}),
         ],
       },
     },

@@ -432,7 +432,199 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 42);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 44);
+});
+
+test('undo and redo share one stack with monotonic revision', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'a');
+  doc.setParagraphText(0, 'ab');
+  doc.setParagraphText(0, 'abc');
+  assert.equal(doc.getHistory().undo.length, 1);
+  assert.equal(doc.revision, 3);
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, '');
+  assert.equal(doc.revision, 4);
+  doc.redo();
+  assert.equal(doc.getParagraphs()[0].text, 'abc');
+  assert.equal(doc.revision, 5);
+});
+
+test('setParagraphText merge is paragraph-local', () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('x');
+  doc.setParagraphText(0, 'A');
+  doc.setParagraphText(1, 'B');
+  assert.equal(doc.getHistory().undo.length, 3);
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, 'A');
+  assert.equal(doc.getParagraphs()[1].text, 'x');
+});
+
+test('applyOperations batch is one undo step and revision still advances on undo', () => {
+  const doc = DocxDocument.create();
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 0, text: 'A' },
+      { type: 'insertParagraph', text: 'B' },
+      { type: 'formatRun', paragraph: 0, run: 0, format: { bold: true } },
+      { type: 'formatParagraph', index: 0, format: { alignment: 'center' } },
+      { type: 'replaceText', search: 'B', replacement: 'C' },
+    ],
+  });
+  assert.equal(doc.getHistory().undo.length, 1);
+  const afterBatch = doc.revision;
+  doc.undo();
+  assert.equal(doc.getParagraphs().length, 1);
+  assert.equal(doc.getParagraphs()[0].text, '');
+  assert.equal(doc.revision, afterBatch + 1);
+});
+
+test('beginHistoryGroup/endHistoryGroup merges multiple edits into one step', () => {
+  const doc = DocxDocument.create();
+  doc.beginHistoryGroup('format painter');
+  doc.formatRun(0, 0, { bold: true });
+  doc.formatParagraph(0, { alignment: 'center' });
+  doc.endHistoryGroup();
+  const history = doc.getHistory();
+  assert.equal(history.undo.length, 1);
+  assert.equal(history.undo[0].label, 'format painter');
+  doc.undo();
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.alignment, undefined);
+  assert.equal(paragraph.runs[0].bold, undefined);
+});
+
+test('nested history groups still produce a single undo step', () => {
+  const doc = DocxDocument.create();
+  doc.beginHistoryGroup('nested');
+  doc.setParagraphText(0, 'A');
+  doc.beginHistoryGroup();
+  doc.formatRun(0, 0, { italic: true });
+  doc.endHistoryGroup();
+  doc.endHistoryGroup();
+  assert.equal(doc.getHistory().undo.length, 1);
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, '');
+});
+
+test('history snapshot materializes dirty XML before recording next step', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  doc.formatRun(0, 0, { bold: true });
+  doc.undo();
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'A');
+  assert.equal(paragraph.runs[0].bold, undefined);
+});
+
+test('undo/redo restores binary image bytes', () => {
+  const doc = DocxDocument.create();
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', alt: 'x' });
+  doc.replaceImageBytes(image, GIF_BYTES, 'image/gif');
+  doc.undo();
+  assert.deepEqual(doc.getImageBytes(doc.getImages()[0]), PNG_BYTES);
+  doc.redo();
+  assert.deepEqual(doc.getImageBytes(doc.getImages()[0]), GIF_BYTES);
+});
+
+test('history cap drops oldest steps', () => {
+  const doc = DocxDocument.create();
+  for (let i = 0; i < 55; i++) doc.formatRun(0, 0, { bold: i % 2 === 0 });
+  assert.equal(doc.getHistory().undo.length, 50);
+  let undos = 0;
+  while (doc.canUndo()) {
+    doc.undo();
+    undos++;
+  }
+  assert.equal(undos, 50);
+});
+
+test('clearHistory empties undo/redo stacks', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'a');
+  assert.equal(doc.canUndo(), true);
+  doc.clearHistory();
+  assert.equal(doc.canUndo(), false);
+  assert.equal(doc.canRedo(), false);
+  assert.deepEqual(doc.getHistory(), { undo: [], redo: [] });
+});
+
+test('undo keeps expectedRevision conflict detection correct', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  const staleRevision = doc.revision;
+  doc.undo();
+  assert.throws(() => doc.applyOperations({
+    expectedRevision: staleRevision,
+    operations: [{ type: 'setParagraphText', index: 0, text: 'B' }],
+  }), /Revision conflict/);
+  assert.doesNotThrow(() => doc.applyOperations({
+    expectedRevision: doc.revision,
+    operations: [{ type: 'setParagraphText', index: 0, text: 'B' }],
+  }));
+});
+
+test('applyOperations undo/redo uses the same document history stack', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  doc.applyOperations({ operations: [{ type: 'undo' }] });
+  assert.equal(doc.getParagraphs()[0].text, '');
+  doc.applyOperations({ operations: [{ type: 'redo' }] });
+  assert.equal(doc.getParagraphs()[0].text, 'A');
+});
+
+test('mixed applyOperations batch with undo and edits still records one transaction step', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  doc.applyOperations({
+    operations: [
+      { type: 'undo' },
+      { type: 'setParagraphText', index: 0, text: 'B' },
+    ],
+  });
+  assert.equal(doc.getParagraphs()[0].text, 'B');
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, 'A');
+});
+
+test('history entry revision stores the revision at completion time', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  const [entry] = doc.getHistory().undo;
+  assert.equal(entry.revision, 1);
+  assert.equal(typeof entry.at, 'number');
+});
+
+test('undo/redo without history is a no-op', () => {
+  const doc = DocxDocument.create();
+  const revision = doc.revision;
+  doc.undo();
+  doc.redo();
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.getParagraphs()[0].text, '');
+});
+
+test('endHistoryGroup throws when no history group is active', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.endHistoryGroup(), /not active/);
+});
+
+test('failed mutation aborts active history group commit', () => {
+  const doc = DocxDocument.create();
+  doc.beginHistoryGroup('batch');
+  doc.setParagraphText(0, 'A');
+  assert.throws(() => doc.formatRun(0, 99, { bold: true }), /Run 99 does not exist/);
+  doc.endHistoryGroup();
+  assert.equal(doc.getHistory().undo.length, 0);
+  assert.equal(doc.getParagraphs()[0].text, 'A');
+});
+
+test('applyOperations batches do not merge with neighboring direct edits', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  doc.applyOperations({ operations: [{ type: 'setParagraphText', index: 0, text: 'B' }] });
+  assert.equal(doc.getHistory().undo.length, 2);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -693,7 +885,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 42);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 44);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
