@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { DocxEditor } from '../dist/editor.js';
-import { sanitizeTextWithInfo } from '../dist/xml.js';
+import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
 
 function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);
@@ -621,6 +621,20 @@ test('setReviewFilter validates author kind and raw author consistency', () => {
   assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'named' }] }), /is required for named kind/);
   assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'empty', author: '  ' }] }), /must be an empty string for empty kind/);
   assert.throws(() => editor.setReviewFilter({ authors: [{ kind: 'blank', author: 'Alice' }] }), /must be whitespace-only for blank kind/);
+});
+
+test('setReviewFilter accepts getReviewers() author buckets without reshaping', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:ins w:id="1"><w:r><w:t>u</w:t></w:r></w:ins><w:ins w:id="2" w:author=""><w:r><w:t>e</w:t></w:r></w:ins><w:ins w:id="3" w:author="   "><w:r><w:t>b</w:t></w:r></w:ins><w:ins w:id="4" w:author="Alice"><w:r><w:t>n</w:t></w:r></w:ins></w:p><w:sectPr/></w:body></w:document>`);
+  const authors = doc.getReviewers().map((reviewer) =>
+    (reviewer.author === undefined ? { kind: reviewer.kind } : { kind: reviewer.kind, author: reviewer.author }));
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.flush = () => {};
+  editor.render = () => {};
+  assert.doesNotThrow(() => editor.setReviewFilter({ authors }));
+  assert.deepEqual(new Set(editor.reviewFilter.authors.map((item) => item.kind)), new Set(['unattributed', 'empty', 'blank', 'named']));
 });
 
 test('setReviewFilter validates show flags and revisionView enum', () => {

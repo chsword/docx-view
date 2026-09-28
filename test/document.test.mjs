@@ -2867,6 +2867,14 @@ test('getComments supports author and resolved filters', () => {
   assert.equal(doc.getComments({ resolved: true }).length, 1);
 });
 
+test('getComments author filter can match empty and blank raw authors', () => {
+  const body = '<w:p><w:r><w:commentReference w:id="1"/></w:r><w:r><w:commentReference w:id="2"/></w:r></w:p>';
+  const comments = `<w:comments xmlns:w="${WORD_NS}"><w:comment w:id="1" w:author=""><w:p><w:r><w:t>empty</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="   "><w:p><w:r><w:t>blank</w:t></w:r></w:p></w:comment></w:comments>`;
+  const doc = withCommentsDoc(body, comments);
+  assert.deepEqual(doc.getComments({ authors: [''] }).map((item) => item.id), [1]);
+  assert.deepEqual(doc.getComments({ authors: ['   '] }).map((item) => item.id), [2]);
+});
+
 test('applyOperations supports comment operations and schema count stays aligned', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
@@ -3400,7 +3408,7 @@ test('nested ins/del markup degrades without throwing and preserves visible text
 test('getRevisions ignores malformed metadata but does not throw', () => {
   const doc = withBody('<w:p><w:ins w:author="" w:date="not-a-date"><w:r><w:t>bad</w:t></w:r></w:ins><w:del w:id="9" w:author="" w:date="bad"><w:r><w:delText>old</w:delText></w:r></w:del></w:p>');
   assert.doesNotThrow(() => doc.getRevisions());
-  assert.deepEqual(doc.getRevisions(), [{ id: 9, kind: 'deletion', paragraph: 0, run: 1, deletedText: 'old' }]);
+  assert.deepEqual(doc.getRevisions(), [{ id: 9, kind: 'deletion', paragraph: 0, run: 1, author: '', deletedText: 'old' }]);
 });
 
 test('getRevisions filters by author and kind', () => {
@@ -3555,6 +3563,16 @@ test('getReviewers keeps missing, empty, and blank authors in explicit buckets',
   assert.equal(map.get('unattributed:')?.commentCount, 1);
   assert.equal(map.get('empty:')?.commentCount, 1);
   assert.equal(map.get('blank:   ')?.commentCount, 1);
+});
+
+test('getReviewers can construct all reviewer author kinds from revisions', () => {
+  const body = '<w:p><w:ins w:id="1"><w:r><w:t>u</w:t></w:r></w:ins><w:ins w:id="2" w:author=""><w:r><w:t>e</w:t></w:r></w:ins><w:ins w:id="3" w:author="   "><w:r><w:t>b</w:t></w:r></w:ins><w:ins w:id="4" w:author="Alice"><w:r><w:t>n</w:t></w:r></w:ins></w:p>';
+  const doc = withBody(body);
+  const map = new Map(doc.getReviewers().map((item) => [`${item.kind}:${item.author ?? ''}`, item]));
+  assert.equal(map.get('unattributed:')?.revisionCount, 1);
+  assert.equal(map.get('empty:')?.revisionCount, 1);
+  assert.equal(map.get('blank:   ')?.revisionCount, 1);
+  assert.equal(map.get('named:Alice')?.revisionCount, 1);
 });
 
 test('getReviewers keeps named "(unattributed)" separate from missing authors', () => {

@@ -90,6 +90,7 @@ import {
   hasRevisionMarkup,
   markFormatRevision,
   markRevision,
+  revisionAuthorOf,
   reviewerBucketKey,
   reviewerBucketOf,
   readParagraphRevisionMark,
@@ -698,16 +699,6 @@ function revisionIdOf(element: Element): number | undefined {
   if (!raw || !/^\d+$/.test(raw)) return undefined;
   const id = Number(raw);
   return Number.isSafeInteger(id) ? id : undefined;
-}
-
-function revisionAuthorOf(element: Element): string | undefined {
-  const value = element.getAttributeNS(WORD_NS, 'author') ?? element.getAttribute('w:author') ?? undefined;
-  const author = value?.trim();
-  return author ? author : undefined;
-}
-
-function revisionAuthorRawOf(element: Element): string | undefined {
-  return element.getAttributeNS(WORD_NS, 'author') ?? element.getAttribute('w:author') ?? undefined;
 }
 
 function revisionNameOf(element: Element): string | undefined {
@@ -3757,7 +3748,7 @@ export class DocxDocument {
     let comments = this.getAllComments();
     if (filter.authors?.length) {
       const authors = new Set(filter.authors);
-      comments = comments.filter((comment) => comment.author && authors.has(comment.author));
+      comments = comments.filter((comment) => comment.author !== undefined && authors.has(comment.author));
     }
     if (filter.resolved !== undefined) comments = comments.filter((comment) => comment.resolved === filter.resolved);
     return comments.map(cloneCommentInfo);
@@ -4598,10 +4589,9 @@ export class DocxDocument {
       }
       const selected = new Set<Element>();
       const matchesAuthor = (marker: Element): boolean => {
-        const raw = revisionAuthorRawOf(marker);
-        const normalized = revisionAuthorOf(marker);
-        const bucket = reviewerBucketKey(reviewerBucketOf(raw));
-        return (raw !== undefined && authors.has(raw)) || (normalized !== undefined && authors.has(normalized)) || authors.has(bucket);
+        const author = revisionAuthorOf(marker);
+        const bucket = reviewerBucketKey(reviewerBucketOf(author));
+        return (author !== undefined && authors.has(author)) || authors.has(bucket);
       };
       for (const marker of markers) {
         if (!isMoveRevisionMarker(marker)) {

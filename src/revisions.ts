@@ -60,9 +60,8 @@ function revisionIdOf(element: Element): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
-function revisionAuthorOf(element: Element): string | undefined {
-  const author = revisionAttribute(element, 'author')?.trim();
-  return author ? author : undefined;
+export function revisionAuthorOf(element: Element): string | undefined {
+  return revisionAttribute(element, 'author');
 }
 
 function revisionDateOf(element: Element): string | undefined {
