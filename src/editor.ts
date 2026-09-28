@@ -1249,6 +1249,8 @@ export class DocxEditor {
     const unsafe = run.hyperlink?.unsafe ?? false;
     const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
     const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
+    runSpan.dataset.docxRun = String(run.index);
+    if (run.revisions?.length) runSpan.dataset.docxRevisionIds = run.revisions.map((revision) => revision.id).join(',');
     const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
     if (commentIds.length) {
       runSpan.classList.add('docx-comment-anchor');
