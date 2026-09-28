@@ -280,10 +280,12 @@ function message(text: string, error = false): void {
   status.setAttribute('role', error ? 'alert' : 'status');
 }
 
+function reportError(error: unknown): void {
+  message(error instanceof Error ? error.message : String(error), true);
+}
+
 function run(action: () => void | Promise<void>): void {
-  void Promise.resolve().then(action).catch((error: unknown) => {
-    message(error instanceof Error ? error.message : String(error), true);
-  });
+  void Promise.resolve().then(action).catch(reportError);
 }
 
 function refresh(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
@@ -998,8 +1000,13 @@ function syncCommandState(): void {
   }
 }
 
-function runCommand(id: string, source: CommandContext['source'] = 'ribbon'): void {
-  run(() => commandRegistry.run(id, buildCommandContext(source)));
+function runCommand(id: string, source: CommandContext['source'] = 'ribbon', options?: { immediate?: boolean }): void {
+  const action = () => commandRegistry.run(id, buildCommandContext(source));
+  if (options?.immediate) {
+    void action().catch(reportError);
+    return;
+  }
+  run(action);
 }
 
 host.addEventListener('docx-selectionchange', updateSelection);
@@ -1106,10 +1113,6 @@ element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event)
   const style = (event.target as HTMLSelectElement).value;
   if (style) runCommand('paragraph.style');
 });
-element('list-bullet').addEventListener('click', () => runCommand('list.bullet'));
-element('list-decimal').addEventListener('click', () => runCommand('list.decimal'));
-element('list-indent').addEventListener('click', () => runCommand('list.indent'));
-element('list-outdent').addEventListener('click', () => runCommand('list.outdent'));
 element('add-paragraph').addEventListener('click', () => run(() => {
   editor.flush();
   doc.insertParagraph('在这里写下新的想法。');
@@ -1137,8 +1140,8 @@ element('delete-col').addEventListener('click', () => runCommand('table.deleteCo
 element('merge-cells').addEventListener('click', () => runCommand('table.mergeCells'));
 element('split-cell').addEventListener('click', () => runCommand('table.splitCell'));
 element('apply-cell-style').addEventListener('click', () => runCommand('table.applyCellStyle'));
-element('insert-image').addEventListener('click', () => { void commandRegistry.run('image.insert', buildCommandContext()); });
-element('replace-image').addEventListener('click', () => { void commandRegistry.run('image.replace', buildCommandContext()); });
+element('insert-image').addEventListener('click', () => runCommand('image.insert', 'ribbon', { immediate: true }));
+element('replace-image').addEventListener('click', () => runCommand('image.replace', 'ribbon', { immediate: true }));
 element('delete-image').addEventListener('click', () => runCommand('image.delete'));
 element<HTMLInputElement>('image-alt').addEventListener('change', () => runCommand('image.setAlt'));
 element('apply-page-setup').addEventListener('click', () => run(() => {
