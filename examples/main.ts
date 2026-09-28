@@ -645,6 +645,23 @@ function currentTableContext(): ReturnType<typeof selectedCell> | null {
   };
 }
 
+function currentSelectionElement(): HTMLElement | null {
+  const selection = document.getSelection();
+  const anchor = selection?.anchorNode;
+  if (anchor instanceof HTMLElement) return anchor;
+  if (anchor?.parentElement) return anchor.parentElement;
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function currentCommentIdsAtSelection(): number[] {
+  const node = currentSelectionElement()?.closest<HTMLElement>('[data-docx-comment-ids]');
+  if (!node) return [];
+  return (node.dataset.docxCommentIds ?? '')
+    .split(',')
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+}
+
 function toDocumentRange(range: DocumentRange): DocumentRange {
   const paragraphByIndex = new Map(doc.getParagraphs().map((paragraph) => [paragraph.index, paragraph.text]));
   const toOffset = (paragraph: number, points: number): number => {
@@ -1009,7 +1026,8 @@ function buildCommandContext(source: CommandContext['source'] = 'ribbon'): Comma
     image: editor.selectedImage ?? null,
     hyperlink: null,
     revisionsAtPoint: [],
-    commentsAtPoint: selectedCommentId === null ? [] : [selectedCommentId],
+    commentsAtPoint: currentCommentIdsAtSelection(),
+    activeCommentId: selectedCommentId,
     clipboard: 'unknown',
     source,
   };

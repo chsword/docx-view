@@ -130,7 +130,8 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['image.setAlt disables without a selected image', 'image.setAlt', makeContext(), false],
     ['image.setAlt enables with a selected image', 'image.setAlt', makeContext({ image: { relationshipId: 'rId6' } }), true],
     ['comment.reply disables without a selected comment', 'comment.reply', makeContext(), false],
-    ['comment.reply enables with a selected comment', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],
+    ['comment.reply enables with a selected comment target', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],
+    ['comment.reply enables with an active sidebar comment', 'comment.reply', makeContext({ activeCommentId: 43 }), true],
     ['review.acceptAll disables when no revisions are visible', 'review.acceptAll', makeContext(), false],
     ['review.acceptAll enables when revisions are visible', 'review.acceptAll', makeContext(), true, { revisionCount: 3 }],
   ];
@@ -174,6 +175,24 @@ test('command run delegates to the shared action registry', async (t) => {
     const { registry, calls } = makeRegistry();
     await registry.run('comment.reply', makeContext({ commentsAtPoint: [7] }));
     assert.deepEqual(calls, [['replyComment', 7]]);
+  });
+
+  await t.test('comment.toggleResolved uses the active sidebar comment id', async () => {
+    const { registry, calls } = makeRegistry();
+    await registry.run('comment.toggleResolved', makeContext({ activeCommentId: 8 }));
+    assert.deepEqual(calls, [['toggleCommentResolved', 8]]);
+  });
+
+  await t.test('comment.delete uses the active sidebar comment id', async () => {
+    const { registry, calls } = makeRegistry();
+    await registry.run('comment.delete', makeContext({ activeCommentId: 9 }));
+    assert.deepEqual(calls, [['deleteComment', 9]]);
+  });
+
+  await t.test('review.previousRevision delegates to the review action', async () => {
+    const { registry, calls } = makeRegistry();
+    await registry.run('review.previousRevision', makeContext());
+    assert.deepEqual(calls, [['focusPreviousRevision']]);
   });
 
   await t.test('review.nextRevision delegates to the review action', async () => {

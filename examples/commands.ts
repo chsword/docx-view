@@ -29,6 +29,7 @@ export interface CommandContext {
   hyperlink: { paragraph: number; runs: number[]; url?: string; anchor?: string; unsafe: boolean } | null;
   revisionsAtPoint: RevisionMark[];
   commentsAtPoint: number[];
+  activeCommentId?: number | null;
   clipboard: 'unknown' | 'empty' | 'has-content';
   source: 'ribbon' | 'context-menu' | 'keyboard';
 }
@@ -99,6 +100,7 @@ function hasSelectionTarget(ctx: CommandContext): boolean {
 }
 
 function firstCommentId(ctx: CommandContext): number {
+  if (ctx.activeCommentId !== undefined && ctx.activeCommentId !== null) return ctx.activeCommentId;
   const commentId = ctx.commentsAtPoint[0];
   if (commentId === undefined) throw new Error('请先选择一条批注。');
   return commentId;
@@ -335,21 +337,21 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.reply',
       title: '回复批注',
       group: 'comment',
-      enabled: (ctx) => ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
       run: (ctx) => deps.actions.replyComment(firstCommentId(ctx)),
     },
     {
       id: 'comment.toggleResolved',
       title: '解决或取消批注',
       group: 'comment',
-      enabled: (ctx) => ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
       run: (ctx) => deps.actions.toggleCommentResolved(firstCommentId(ctx)),
     },
     {
       id: 'comment.delete',
       title: '删除批注',
       group: 'comment',
-      enabled: (ctx) => ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
       run: (ctx) => deps.actions.deleteComment(firstCommentId(ctx)),
     },
   ];
