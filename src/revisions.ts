@@ -21,7 +21,23 @@ const CHANGE_KIND = {
   tcPrChange: 'cellFormatChange',
 } as const satisfies Partial<Record<string, RevisionMark['kind']>>;
 const PARENT_PROPERTY_ORDER = {
+  pPr: ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
+    'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
+    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
+    'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap',
+    'jc', 'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId',
+    'cnfStyle', 'rPr', 'sectPr', 'pPrChange'],
+  rPr: ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
+    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
+    'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
+    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
+    'specVanish', 'oMath', 'ins', 'del', 'rPrChange'],
+  tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+    'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
+    'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
   trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight', 'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
+  tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
+    'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
 } as const;
 
 function revisionAttribute(element: Element, name: string): string | undefined {
@@ -170,14 +186,44 @@ export function readParagraphRevisionMark(paragraph: Element, theme: Parameters<
   return change ? readRevisionMark(change, 'paragraphFormatChange', theme) : undefined;
 }
 
-export function markRevision(parent: Element, kind: 'ins' | 'del', author?: string, date?: string): Element {
+export function markRevision(parent: Element, kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge', author?: string, date?: string): Element {
+  const marker = orderedRevisionChild(parent, kind);
+  return applyRevisionMetadata(marker, author, date);
+}
+
+export function markFormatRevision(
+  parent: Element,
+  kind: 'rPrChange' | 'pPrChange' | 'tblPrChange' | 'trPrChange' | 'tcPrChange',
+  snapshotName: 'rPr' | 'pPr' | 'tblPr' | 'trPr' | 'tcPr',
+  author?: string,
+  date?: string,
+): Element {
+  const marker = orderedRevisionChild(parent, kind);
+  applyRevisionMetadata(marker, author, date);
+  for (const child of children(marker)) {
+    if (child.localName !== snapshotName) marker.removeChild(child);
+  }
+  let snapshot = children(marker, snapshotName)[0];
+  if (!snapshot) {
+    snapshot = wordElement(parent.ownerDocument!, snapshotName);
+    marker.appendChild(snapshot);
+  }
+  while (snapshot.firstChild) snapshot.removeChild(snapshot.firstChild);
+  while (snapshot.attributes.length) {
+    const attribute = snapshot.attributes.item(0);
+    if (!attribute) break;
+    snapshot.removeAttributeNS(attribute.namespaceURI, attribute.localName ?? attribute.name);
+  }
+  return snapshot;
+}
+
+function applyRevisionMetadata(marker: Element, author?: string, date?: string): Element {
   if (author !== undefined) assertText(author, 'author');
   if (date !== undefined) assertText(date, 'date');
-  const document = parent.ownerDocument!;
+  const document = marker.ownerDocument!;
   const used = Array.from(document.getElementsByTagNameNS(WORD_NS, '*'))
     .map((element) => revisionIdOf(element))
     .filter((value): value is number => value !== undefined);
-  const marker = orderedRevisionChild(parent, kind);
   const resolvedAuthor = author?.trim() || DEFAULT_REVISION_AUTHOR;
   marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
   marker.setAttributeNS(WORD_NS, 'w:author', resolvedAuthor);

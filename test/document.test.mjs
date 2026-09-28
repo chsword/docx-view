@@ -82,6 +82,12 @@ function withSettingsXml(settingsXml, target = 'settings.xml') {
   return doc;
 }
 
+function trackedDoc(bodyXml = '<w:p><w:r><w:t>A</w:t></w:r></w:p>') {
+  const doc = withBody(bodyXml);
+  doc.setTrackChanges(true);
+  return doc;
+}
+
 test('create, edit, export and reopen a DOCX in Node without browser globals', async () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, '你好 DOCX & <world> 😀');
@@ -642,7 +648,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 52);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1158,7 +1164,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 52);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -2508,7 +2514,7 @@ test('applyOperations supports comment operations and schema count stays aligned
     operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
   });
   assert.equal(snapshot.comments.length, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 52);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
@@ -2715,6 +2721,215 @@ test('getRevisions fast-paths empty documents to a cached empty list', () => {
   const second = doc.getRevisions();
   assert.deepEqual(first, []);
   assert.equal(first, second);
+});
+
+test('setRevisionAuthor is used by tracked text edits', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>');
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'Hello brave world');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:ins w:id="\d+" w:author="Alice"/);
+});
+
+test('tracked setParagraphText writes deleted text as w:delText and hides it from paragraph text', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>');
+  doc.setParagraphText(0, 'Hello');
+  assert.equal(doc.getParagraphs()[0].text, 'Hello');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:del w:id="\d+" w:author="docx-view"><w:r><w:delText[^>]*> world<\/w:delText><\/w:r><\/w:del>/);
+  assert.deepEqual(doc.getRevisions().map((revision) => revision.deletedText), [' world']);
+});
+
+test('tracked setParagraphText writes inserted text inside w:ins', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>Hello</w:t></w:r></w:p>');
+  doc.setParagraphText(0, 'Hello world');
+  assert.equal(doc.getParagraphs()[0].text, 'Hello world');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:t xml:space="preserve"> world<\/w:t><\/w:r><\/w:ins>/);
+});
+
+test('tracked setParagraphText replacement creates both deletion and insertion markers in one revision step', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.setParagraphText(0, 'Hello Earth');
+  assert.equal(doc.revision, before + 1);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:del /);
+  assert.match(xml, /<w:ins /);
+});
+
+test('tracked formatRun writes rPrChange with the previous direct format snapshot', () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>A</w:t></w:r></w:p>');
+  doc.formatRun(0, 0, { italic: true });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:rPr><w:b\/><w:i w:val="1"\/><w:color w:val="FF0000"\/><w:rPrChange w:id="\d+" w:author="docx-view"><w:rPr><w:b w:val="1"\/><w:color w:val="FF0000"\/><\/w:rPr><\/w:rPrChange><\/w:rPr>/);
+});
+
+test('tracked formatRun previousFormat can be written back through formatRun', () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>A</w:t></w:r></w:p>');
+  doc.formatRun(0, 0, { italic: true });
+  const previousFormat = doc.getRevisions()[0].previousFormat;
+  assert.doesNotThrow(() => doc.formatRun(0, 0, previousFormat));
+});
+
+test('tracked formatRange writes rPrChange on the affected run slice', () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>abcd</w:t></w:r></w:p>');
+  doc.formatRange({ paragraph: 0, start: 1, end: 3 }, { bold: true });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:rPr><w:b w:val="1"\/><w:color w:val="FF0000"\/><w:rPrChange w:id="\d+" w:author="docx-view"><w:rPr><w:color w:val="FF0000"\/><\/w:rPr><\/w:rPrChange><\/w:rPr><w:t xml:space="preserve">bc<\/w:t>/);
+});
+
+test('tracked formatParagraph writes pPrChange with previous paragraph properties', () => {
+  const doc = trackedDoc('<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.formatParagraph(0, { spacingAfter: 120 });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:pPr><w:spacing w:after="120"\/><w:jc w:val="center"\/><w:pPrChange w:id="\d+" w:author="docx-view"><w:pPr><w:jc w:val="center"\/><\/w:pPr><\/w:pPrChange><\/w:pPr>/);
+});
+
+test('tracked insertParagraph wraps text in w:ins and marks the paragraph mark insertion', () => {
+  const doc = trackedDoc();
+  doc.insertParagraph('tail');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:p><w:pPr><w:rPr><w:ins w:id="\d+" w:author="docx-view"\/><\/w:rPr><\/w:pPr><w:ins w:id="\d+" w:author="docx-view"><w:r><w:t xml:space="preserve">tail<\/w:t><\/w:r><\/w:ins><\/w:p>/);
+});
+
+test('tracked deleteParagraph keeps the paragraph node and marks deletion', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  doc.deleteParagraph(0);
+  assert.equal(doc.getParagraphs().length, 2);
+  assert.equal(doc.getParagraphs()[0].text, '');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:p><w:pPr><w:rPr><w:del w:id="\d+" w:author="docx-view"\/><\/w:rPr><\/w:pPr><w:del w:id="\d+" w:author="docx-view"><w:r><w:delText[^>]*>first<\/w:delText><\/w:r><\/w:del><\/w:p>/);
+});
+
+test('tracked deleteParagraph still rejects section-break paragraphs', () => {
+  const doc = trackedDoc('<w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.throws(() => doc.deleteParagraph(0), /section-break/);
+});
+
+test('tracked insertTableRow writes trPr ins metadata', () => {
+  const doc = trackedDoc();
+  doc.insertTable([['A']]);
+  doc.insertTableRow(0, 1);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:tr><w:trPr><w:ins w:id="\d+" w:author="docx-view"\/><\/w:trPr><w:tc>/);
+});
+
+test('tracked deleteTableRow writes trPr del metadata without removing the row', () => {
+  const doc = trackedDoc();
+  doc.insertTable([['A'], ['B']]);
+  doc.deleteTableRow(0, 0);
+  assert.equal(doc.getTable(0).rows.length, 2);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:trPr><w:del w:id="\d+" w:author="docx-view"\/><\/w:trPr>/);
+});
+
+test('tracked insertImage wraps the image run in w:ins', () => {
+  const doc = trackedDoc();
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', alt: 'tracked' });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:drawing>/);
+});
+
+test('tracked deleteImage wraps the image run in w:del and keeps the media part', () => {
+  const doc = trackedDoc();
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', alt: 'tracked' });
+  doc.deleteImage(image);
+  assert.equal(doc.listParts().includes('word/media/image1.png'), true);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:del w:id="\d+" w:author="docx-view"><w:r><w:drawing>/);
+});
+
+test('applyOperations accepts setTrackChanges and setRevisionAuthor', () => {
+  const doc = DocxDocument.create();
+  doc.applyOperations({
+    operations: [
+      { type: 'setTrackChanges', enabled: true },
+      { type: 'setRevisionAuthor', author: 'Agent' },
+      { type: 'setParagraphText', index: 0, text: 'body' },
+    ],
+  });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:author="Agent"/);
+  assert.equal(doc.getSettings().trackChanges, true);
+});
+
+test('tracked applyOperations keeps sequential run indices after earlier revision markup changes the DOM shape', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>ab</w:t></w:r></w:p>');
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 0, text: 'aXb' },
+      { type: 'formatRun', paragraph: 0, run: 1, format: { bold: true } },
+    ],
+  });
+  const run = doc.getParagraphs()[0].runs[1];
+  assert.equal(run.text, 'X');
+  assert.equal(run.bold, true);
+});
+
+test('tracked setParagraphText increments revision exactly once', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>abc</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.setParagraphText(0, 'abd');
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked formatRun increments revision exactly once', () => {
+  const doc = trackedDoc();
+  const before = doc.revision;
+  doc.formatRun(0, 0, { bold: true });
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked formatParagraph increments revision exactly once', () => {
+  const doc = trackedDoc();
+  const before = doc.revision;
+  doc.formatParagraph(0, { alignment: 'center' });
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked insertParagraph increments revision exactly once', () => {
+  const doc = trackedDoc();
+  const before = doc.revision;
+  doc.insertParagraph('tail');
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked deleteParagraph increments revision exactly once', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.deleteParagraph(0);
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked insertTableRow increments revision exactly once', () => {
+  const doc = trackedDoc();
+  doc.insertTable([['A']]);
+  const before = doc.revision;
+  doc.insertTableRow(0, 1);
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked deleteTableRow increments revision exactly once', () => {
+  const doc = trackedDoc();
+  doc.insertTable([['A'], ['B']]);
+  const before = doc.revision;
+  doc.deleteTableRow(0, 0);
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked insertImage increments revision exactly once', () => {
+  const doc = trackedDoc();
+  const before = doc.revision;
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
+  assert.equal(doc.revision, before + 1);
+});
+
+test('tracked deleteImage increments revision exactly once', () => {
+  const doc = trackedDoc();
+  const image = doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png' });
+  const before = doc.revision;
+  doc.deleteImage(image);
+  assert.equal(doc.revision, before + 1);
+});
+
+test('agent operation schema includes tracked-review settings operations', () => {
+  const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .map((entry) => entry.properties.type.const);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
+  assert.ok(types.includes('setTrackChanges'));
+  assert.ok(types.includes('setRevisionAuthor'));
 });
 
 test('applyOperations validates new formatting operations', () => {
