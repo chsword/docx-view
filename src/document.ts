@@ -3467,7 +3467,7 @@ export class DocxDocument {
     if (!anchor && previous?.parentNode?.nodeType === 1) {
       parent = previous.parentNode as Element;
     }
-    const reference = anchor ?? previous?.nextSibling ?? null;
+    const reference = anchor ?? (previous?.parentNode === parent ? previous.nextSibling : null);
     const run = wordElement(parent.ownerDocument!, 'r');
     appendText(run, text);
     const wrapper = markRevision(parent, 'ins', this.trackedRevisionAuthor());
@@ -4644,6 +4644,7 @@ export class DocxDocument {
         }
         const runs = ownRuns(paragraph);
         if (runs.length) wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+        else clearParagraphContent(paragraph);
         markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor());
         return;
       }
