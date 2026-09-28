@@ -632,6 +632,16 @@ test('history entry revision stores the revision at completion time', () => {
   assert.equal(typeof entry.at, 'number');
 });
 
+test('history snapshot buffers are immutable across later edits', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  const historyPart = doc.undoHistory[0].parts.get(doc.mainDocumentPath);
+  assert.ok(historyPart);
+  const before = Uint8Array.from(historyPart);
+  doc.setParagraphText(0, 'B');
+  assert.deepEqual(Uint8Array.from(historyPart), before);
+});
+
 test('undo/redo without history is a no-op', () => {
   const doc = DocxDocument.create();
   const revision = doc.revision;

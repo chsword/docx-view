@@ -1986,7 +1986,7 @@ export class DocxDocument {
   }
 
   private cloneParts(parts: Map<string, Uint8Array>): Map<string, Uint8Array> {
-    return new Map([...parts.entries()].map(([path, bytes]) => [path, Uint8Array.from(bytes)]));
+    return new Map(parts);
   }
 
   private historyStateBytes(parts: Map<string, Uint8Array>): number {
