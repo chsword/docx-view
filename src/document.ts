@@ -1593,6 +1593,7 @@ export class DocxDocument {
   private suppressHistory = false;
   private nextHistoryLabel?: string;
   private nextHistoryAction: HistoryAction = { kind: 'other' };
+  private pendingMergedHistory?: { label?: string; action: HistoryAction; at: number };
 
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
@@ -1697,6 +1698,7 @@ export class DocxDocument {
     this.historyGroupAborted = false;
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
+    this.pendingMergedHistory = undefined;
   }
 
   beginHistoryGroup(label?: string): void {
@@ -1818,6 +1820,7 @@ export class DocxDocument {
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
       this.abortHistoryGroupOnFailure();
@@ -1841,6 +1844,7 @@ export class DocxDocument {
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
       this.abortHistoryGroupOnFailure();
@@ -1858,6 +1862,7 @@ export class DocxDocument {
       this.replacePartBytes(path, bytes);
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
       this.abortHistoryGroupOnFailure();
@@ -1885,6 +1890,7 @@ export class DocxDocument {
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation('[Content_Types].xml');
       if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
       this.abortHistoryGroupOnFailure();
@@ -1909,6 +1915,7 @@ export class DocxDocument {
       this.stylesCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
     } catch (error) {
       this.restoreState(previous);
       this.abortHistoryGroupOnFailure();
@@ -2011,7 +2018,8 @@ export class DocxDocument {
       previous?.action.kind === 'setParagraphText' &&
       previous.action.paragraph === state.action.paragraph &&
       state.entry.at - previous.entry.at <= HISTORY_MERGE_WINDOW_MS &&
-      !this.historyGroupDepth;
+      !this.historyGroupDepth &&
+      this.redoHistory.length === 0;
     if (canMerge) {
       previous.entry.revision = state.entry.revision;
       previous.entry.at = state.entry.at;
@@ -2098,14 +2106,43 @@ export class DocxDocument {
     this.enforceHistoryLimits();
   }
 
+  private shouldMergeWithPreviousUndo(action: HistoryAction, at: number): boolean {
+    const previous = this.undoHistory[this.undoHistory.length - 1];
+    return action.kind === 'setParagraphText' &&
+      previous?.action.kind === 'setParagraphText' &&
+      previous.action.paragraph === action.paragraph &&
+      at - previous.entry.at <= HISTORY_MERGE_WINDOW_MS &&
+      this.historyGroupDepth === 0 &&
+      this.redoHistory.length === 0;
+  }
+
+  private applyPendingMergedHistory(): void {
+    const pending = this.pendingMergedHistory;
+    this.pendingMergedHistory = undefined;
+    if (!pending) return;
+    const previous = this.undoHistory[this.undoHistory.length - 1];
+    if (!previous || !this.shouldMergeWithPreviousUndo(pending.action, pending.at)) return;
+    previous.entry.revision = this.revision;
+    previous.entry.at = Date.now();
+    previous.entry.label = pending.label ?? previous.entry.label;
+    this.redoHistory = [];
+    this.redoHistoryBytes = 0;
+  }
+
   private beginMutationHistory(label?: string, action: HistoryAction = { kind: 'other' }): HistoryState | undefined {
     if (this.suppressHistory) return undefined;
+    const at = Date.now();
+    if (this.shouldMergeWithPreviousUndo(action, at)) {
+      this.pendingMergedHistory = { label, action, at };
+      return undefined;
+    }
     this.materializeAllParts();
     return this.snapshotHistoryState(this.revision, label, action);
   }
 
   private abortHistoryGroupOnFailure(): void {
     if (this.historyGroupDepth > 0) this.historyGroupAborted = true;
+    this.pendingMergedHistory = undefined;
   }
 
   private getCachedPartDocument(path: string): Document {

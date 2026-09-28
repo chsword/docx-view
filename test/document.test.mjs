@@ -642,6 +642,23 @@ test('history snapshot buffers are immutable across later edits', () => {
   assert.deepEqual(Uint8Array.from(historyPart), before);
 });
 
+test('merged setParagraphText edits skip repeated history snapshot materialization', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  const original = doc.materializeAllParts;
+  let calls = 0;
+  doc.materializeAllParts = function materializeProxy() {
+    calls++;
+    return original.call(this);
+  };
+  doc.setParagraphText(0, 'AB');
+  doc.setParagraphText(0, 'ABC');
+  assert.equal(calls, 0);
+  assert.equal(doc.getHistory().undo.length, 1);
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, '');
+});
+
 test('undo/redo without history is a no-op', () => {
   const doc = DocxDocument.create();
   const revision = doc.revision;
