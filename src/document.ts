@@ -1656,7 +1656,7 @@ export class DocxDocument {
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
   private noteStateCache?: { revision: number; state: NoteState };
-  private revisionInfoCache?: { revision: number; revisions: RevisionInfo[] };
+  private revisionInfoCache?: { revision: number; mainPath: string; revisions: RevisionInfo[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -1906,7 +1906,7 @@ export class DocxDocument {
     numberingContextCache: NumberingContext | undefined;
     stylesCache: { revision: number; context: StylesContext } | undefined;
     noteStateCache: { revision: number; state: NoteState } | undefined;
-    revisionInfoCache: { revision: number; revisions: RevisionInfo[] } | undefined;
+    revisionInfoCache: { revision: number; mainPath: string; revisions: RevisionInfo[] } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -2431,10 +2431,12 @@ export class DocxDocument {
   }
 
   private collectRevisions(): RevisionInfo[] {
-    if (this.revisionInfoCache?.revision === this.revision) return this.revisionInfoCache.revisions;
-    const document = this.getCachedPartDocument(this.mainPath);
+    if (this.revisionInfoCache?.revision === this.revision && this.revisionInfoCache.mainPath === this.mainDocumentPath) {
+      return this.revisionInfoCache.revisions;
+    }
+    const document = this.getCachedPartDocument(this.mainDocumentPath);
     if (!hasRevisionMarkup(document)) {
-      this.revisionInfoCache = { revision: this.revision, revisions: [] };
+      this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, revisions: [] };
       return this.revisionInfoCache.revisions;
     }
     const body = bodyOf(document);
@@ -2507,7 +2509,7 @@ export class DocxDocument {
       }
     };
     walk(body);
-    this.revisionInfoCache = { revision: this.revision, revisions: result };
+    this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, revisions: result };
     return result;
   }
 
