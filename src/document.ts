@@ -6914,6 +6914,7 @@ export class DocxDocument {
       if (style.paragraph) applyParagraphFormatTo(property(styleElement, 'pPr'), style.paragraph);
       if (style.run) applyRunFormatTo(property(styleElement, 'rPr'), style.run);
     });
+    if (equalPartMap(this.parts, draft.parts)) return;
     this.parts = draft.parts;
     this.mainPath = draft.mainPath;
     this.currentRevision++;

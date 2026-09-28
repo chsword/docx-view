@@ -3095,6 +3095,11 @@ test('repeating the same write call keeps revision/history stable when part byte
       create: () => withBody('<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>H</w:t></w:r></w:p><w:p><w:r><w:t>body</w:t></w:r></w:p>'),
       apply: (doc) => doc.moveOutlineSection(0, 0),
     },
+    {
+      name: 'defineStyle',
+      create: () => DocxDocument.create(),
+      apply: (doc) => doc.defineStyle({ id: 'S', name: 'S', type: 'paragraph' }),
+    },
   ];
 
   for (const scenario of scenarios) {
