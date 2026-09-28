@@ -119,3 +119,10 @@ export function sanitizeTextWithInfo(text: string): { text: string; truncated: b
 export function sanitizeText(text: string): string {
   return sanitizeTextWithInfo(text).text;
 }
+
+export function isValidXmlCharCode(value: number): boolean {
+  return Number.isSafeInteger(value) &&
+    (value === 0x9 || value === 0xa || value === 0xd ||
+      (value >= 0x20 && value <= 0xd7ff) ||
+      (value >= 0xe000 && value <= 0xfffd));
+}

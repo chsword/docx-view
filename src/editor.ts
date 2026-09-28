@@ -1,5 +1,18 @@
 import { DocxDocument } from './document.js';
-import type { BorderFormat, BordersFormat, CellFormat, DocumentBlock, DocumentSnapshot, ImageInfo, ParagraphInfo, RunInfo, TableFormat, TableRowInfo, WidthFormat } from './types.js';
+import type {
+  BorderFormat,
+  BordersFormat,
+  CellFormat,
+  DocumentBlock,
+  DocumentSnapshot,
+  ImageInfo,
+  ParagraphInfo,
+  RunInfo,
+  TabStop,
+  TableFormat,
+  TableRowInfo,
+  WidthFormat,
+} from './types.js';
 import { pxToEmu } from './drawing.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { sanitizeText, sanitizeTextWithInfo } from './xml.js';
@@ -43,6 +56,19 @@ function underlineStyleToCss(value: string): string {
   }[value] ?? 'solid';
 }
 
+function borderStyle(value: string): string {
+  return {
+    single: 'solid',
+    double: 'double',
+    thick: 'solid',
+    dashed: 'dashed',
+    dotted: 'dotted',
+    wave: 'wavy',
+    none: 'none',
+    nil: 'none',
+  }[value] ?? 'solid';
+}
+
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
@@ -59,6 +85,22 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): vo
     element.style.lineHeight = (effective.lineSpacingRule ?? 'auto') === 'auto'
       ? String(effective.lineSpacing / 240)
       : `${effective.lineSpacing / 20}pt`;
+  }
+  if (effective.shading?.fill && effective.shading.fill !== 'auto' && /^[0-9a-f]{6}$/i.test(effective.shading.fill)) {
+    element.style.backgroundColor = `#${effective.shading.fill}`;
+  }
+  for (const [side, css] of [
+    ['top', 'borderTop'],
+    ['left', 'borderLeft'],
+    ['right', 'borderRight'],
+    ['bottom', 'borderBottom'],
+    ['bar', 'borderLeft'],
+  ] as const) {
+    const border = effective.borders?.[side];
+    if (!border || ['none', 'nil'].includes(border.style)) continue;
+    const width = `${Math.max(1, border.size) / 8}pt`;
+    const color = border.color === 'auto' ? '#000' : /^[0-9a-f]{6}$/i.test(border.color) ? `#${border.color}` : '#000';
+    (element.style as CSSStyleDeclaration)[css] = `${width} ${borderStyle(border.style)} ${color}`;
   }
 }
 
@@ -86,11 +128,22 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
   if (effective.allCaps) span.style.textTransform = 'uppercase';
   if (effective.highlight && effective.highlight !== 'none') span.style.backgroundColor = highlightColor(effective.highlight);
   if (effective.characterSpacing !== undefined && effective.characterSpacing !== null) span.style.letterSpacing = `${effective.characterSpacing / 20}pt`;
+  if (effective.shading?.fill && effective.shading.fill !== 'auto' && /^[0-9a-f]{6}$/i.test(effective.shading.fill)) {
+    span.style.backgroundColor = `#${effective.shading.fill}`;
+  }
+  if (effective.border && !['none', 'nil'].includes(effective.border.style)) {
+    const color = effective.border.color === 'auto'
+      ? '#000'
+      : /^[0-9a-f]{6}$/i.test(effective.border.color) ? `#${effective.border.color}` : '#000';
+    span.style.border = `${Math.max(1, effective.border.size) / 8}pt ${borderStyle(effective.border.style)} ${color}`;
+    span.style.paddingInline = '0.05em';
+  }
 }
 
 export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
   onError?: (error: Error, context: { paragraph: number }) => void;
+  showFormattingMarks?: boolean;
 }
 
 /** A browser-only, editable view of the supported DOCX paragraph/run/table subset. */
@@ -109,6 +162,7 @@ export class DocxEditor {
   private composing = false;
   private renderAfterComposition = false;
   private destroyed = false;
+  private readonly metrics: CanvasRenderingContext2D | null;
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -138,6 +192,7 @@ export class DocxEditor {
     this.root.className = 'docx-editor';
     this.root.setAttribute('aria-label', '文档编辑区域');
     container.append(this.root);
+    this.metrics = this.root.ownerDocument.createElement('canvas').getContext('2d');
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.root.addEventListener('keydown', this.handleRootKeydown);
     this.render();
@@ -202,7 +257,13 @@ export class DocxEditor {
     this.flush();
     this.paragraphs.clear();
     const fragment = this.root.ownerDocument.createDocumentFragment();
-    this.appendBlocks(fragment, this.document.getBlocks());
+    let defaultTabStopTwips = 720;
+    try {
+      defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+    } catch {
+      defaultTabStopTwips = 720;
+    }
+    this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips);
     this.root.replaceChildren(fragment);
     if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
     const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
@@ -325,10 +386,10 @@ export class DocxEditor {
     if (cell?.textDirection?.toLowerCase().includes('tb') || cell?.textDirection?.toLowerCase().includes('bt')) td.style.writingMode = 'vertical-rl';
   }
 
-  private appendBlocks(parent: Node, blocks: DocumentBlock[]): void {
+  private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
-        parent.appendChild(this.makeParagraph(block.paragraph));
+        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips));
       } else {
         const table = this.root.ownerDocument.createElement('table');
         table.className = 'docx-table';
@@ -351,7 +412,7 @@ export class DocxEditor {
             td.colSpan = Math.max(1, cell.colSpan);
             if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
             this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
-            this.appendBlocks(td, cell.blocks);
+            this.appendBlocks(td, cell.blocks, defaultTabStopTwips);
           }
         }
         parent.appendChild(table);
@@ -367,7 +428,7 @@ export class DocxEditor {
     }
   }
 
-  private makeParagraph(paragraph: ParagraphInfo): HTMLParagraphElement {
+  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
@@ -410,46 +471,13 @@ export class DocxEditor {
       event.preventDefault();
       this.focusContent(content);
     });
+    let currentLineOffsetPx = 0;
     for (const run of paragraph.runs) {
-      if (run.text) {
-        const unsafe = run.hyperlink?.unsafe ?? false;
-        if (run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor)) {
-          const link = this.root.ownerDocument.createElement('a');
-          link.textContent = run.text;
-          link.dataset.docxLink = '1';
-          link.dataset.docxUnsafe = 'false';
-          if (run.hyperlink.url) {
-            link.href = run.hyperlink.url;
-            link.dataset.docxUrl = run.hyperlink.url;
-          } else if (run.hyperlink.anchor) {
-            link.href = `#${run.hyperlink.anchor}`;
-          }
-          if (run.hyperlink.anchor) link.dataset.docxAnchor = run.hyperlink.anchor;
-          if (run.hyperlink.tooltip) link.title = run.hyperlink.tooltip;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          link.style.color = '#0563C1';
-          link.style.textDecoration = 'underline';
-          applyRunStyle(link, run);
-          content.append(link);
-        } else {
-          const span = this.root.ownerDocument.createElement('span');
-          span.textContent = run.text;
-          applyRunStyle(span, run);
-          if (run.hyperlink) {
-            span.dataset.docxLink = '1';
-            span.dataset.docxUnsafe = String(unsafe);
-            if (run.hyperlink.url) span.dataset.docxUrl = run.hyperlink.url;
-            if (run.hyperlink.anchor) span.dataset.docxAnchor = run.hyperlink.anchor;
-            if (run.hyperlink.tooltip) span.title = run.hyperlink.tooltip;
-            if (unsafe) span.style.textDecoration = 'underline wavy red';
-          }
-          content.append(span);
-        }
-      }
+      currentLineOffsetPx = this.appendRun(content, paragraph, run, defaultTabStopTwips, currentLineOffsetPx);
       for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
     }
     if (!paragraph.runs.length) content.textContent = paragraph.text;
+    if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
     this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
@@ -529,6 +557,160 @@ export class DocxEditor {
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
     return element;
+  }
+
+  private makeMark(text: string, label: string): HTMLElement {
+    const mark = this.root.ownerDocument.createElement('span');
+    mark.className = 'docx-mark';
+    mark.textContent = text;
+    mark.contentEditable = 'false';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.setAttribute('data-docx-mark', '1');
+    mark.title = label;
+    mark.style.userSelect = 'none';
+    mark.style.pointerEvents = 'none';
+    mark.style.opacity = '0.6';
+    return mark;
+  }
+
+  private leader(value: TabStop['leader'] | undefined): string {
+    switch (value) {
+      case 'dot': return '.';
+      case 'hyphen': return '-';
+      case 'underscore': return '_';
+      case 'heavy': return '━';
+      case 'middleDot': return '·';
+      default: return '';
+    }
+  }
+
+  private measure(text: string, run: RunInfo): number {
+    if (!this.metrics || !text) return 0;
+    const effective = run.effective ?? run;
+    const style = effective.italic ? 'italic' : 'normal';
+    const weight = effective.bold ? '700' : '400';
+    const size = `${effective.fontSize ?? 11}pt`;
+    const family = [effective.fontFamily, effective.fontFamilyEastAsia, 'Arial', 'sans-serif'].filter(Boolean).join(', ');
+    this.metrics.font = `${style} ${weight} ${size} ${family}`;
+    return this.metrics.measureText(text).width;
+  }
+
+  private nextTabStop(tabs: TabStop[], currentPx: number): TabStop | undefined {
+    const currentTwips = currentPx * 1440 / 96;
+    return [...tabs]
+      .filter((tab) => Number.isFinite(tab.position))
+      .sort((a, b) => a.position - b.position)
+      .find((tab) => tab.position > currentTwips);
+  }
+
+  private makeTabSpan(
+    paragraph: ParagraphInfo,
+    run: RunInfo,
+    currentPx: number,
+    following: string,
+    defaultTabStopTwips: number,
+  ): HTMLSpanElement {
+    const tab = this.root.ownerDocument.createElement('span');
+    tab.className = 'docx-tab';
+    tab.textContent = '\t';
+    tab.style.display = 'inline-block';
+    const stop = this.nextTabStop(paragraph.effective?.tabs ?? paragraph.tabs ?? [], currentPx);
+    const defaultTab = defaultTabStopTwips * 96 / 1440;
+    const target = stop ? Math.max(0, stop.position) * 96 / 1440 : (Math.floor(currentPx / defaultTab) + 1) * defaultTab;
+    const nextWidth = this.measure(following, run);
+    const decimalMatch = /[.,，．]/.exec(following);
+    const decimalLeft = decimalMatch ? this.measure(following.slice(0, decimalMatch.index), run) : nextWidth;
+    const alignment = stop?.alignment ?? 'left';
+    const rawWidth = alignment === 'center' ? target - currentPx - nextWidth / 2
+      : alignment === 'right' ? target - currentPx - nextWidth
+        : alignment === 'decimal' ? target - currentPx - decimalLeft
+          : target - currentPx;
+    const width = Math.max(0, rawWidth);
+    tab.style.width = `${width}px`;
+    if (alignment === 'bar') tab.style.borderLeft = '1px solid currentColor';
+    const leader = this.leader(stop?.leader);
+    if (leader) {
+      const visual = this.makeMark(leader.repeat(Math.max(1, Math.floor(Math.max(width, 8) / Math.max(1, this.measure(leader, run))))), '制表位前导符');
+      visual.style.position = 'absolute';
+      visual.style.inset = '0';
+      visual.style.whiteSpace = 'nowrap';
+      visual.style.overflow = 'hidden';
+      tab.style.position = 'relative';
+      tab.style.width = `${Math.max(width, 8)}px`;
+      tab.append(visual);
+    }
+    return tab;
+  }
+
+  private appendRun(
+    paragraphElement: HTMLElement,
+    paragraph: ParagraphInfo,
+    run: RunInfo,
+    defaultTabStopTwips: number,
+    currentLineOffsetPx: number,
+  ): number {
+    const unsafe = run.hyperlink?.unsafe ?? false;
+    const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
+    const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
+    if (hasSafeLink && run.hyperlink) {
+      const link = runSpan as HTMLAnchorElement;
+      runSpan.dataset.docxLink = '1';
+      runSpan.dataset.docxUnsafe = 'false';
+      if (run.hyperlink.url) {
+        link.href = run.hyperlink.url;
+        runSpan.dataset.docxUrl = run.hyperlink.url;
+      } else if (run.hyperlink.anchor) {
+        link.href = `#${run.hyperlink.anchor}`;
+      }
+      if (run.hyperlink.anchor) runSpan.dataset.docxAnchor = run.hyperlink.anchor;
+      if (run.hyperlink.tooltip) runSpan.title = run.hyperlink.tooltip;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      runSpan.style.color = '#0563C1';
+      runSpan.style.textDecoration = 'underline';
+    } else if (run.hyperlink) {
+      runSpan.dataset.docxLink = '1';
+      runSpan.dataset.docxUnsafe = String(unsafe);
+      if (run.hyperlink.url) runSpan.dataset.docxUrl = run.hyperlink.url;
+      if (run.hyperlink.anchor) runSpan.dataset.docxAnchor = run.hyperlink.anchor;
+      if (run.hyperlink.tooltip) runSpan.title = run.hyperlink.tooltip;
+      if (unsafe) runSpan.style.textDecoration = 'underline wavy red';
+    }
+    applyRunStyle(runSpan, run);
+    const segments = run.text.split(/(\t|\n)/);
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i]!;
+      if (!segment) continue;
+      if (segment === '\n') {
+        runSpan.append(this.root.ownerDocument.createElement('br'));
+        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('↵', '换行符'));
+        currentLineOffsetPx = 0;
+        continue;
+      }
+      if (segment === '\t') {
+        const nextText = segments.slice(i + 1).find((part) => part !== '\t' && part !== '\n') ?? '';
+        const tab = this.makeTabSpan(paragraph, run, currentLineOffsetPx, nextText, defaultTabStopTwips);
+        runSpan.append(tab);
+        currentLineOffsetPx += Number.parseFloat(tab.style.width || '0');
+        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('→', '制表符'));
+        continue;
+      }
+      if (this.options.showFormattingMarks && segment.includes(' ')) {
+        const parts = segment.split(/( )/);
+        for (const part of parts) {
+          if (!part) continue;
+          if (part === ' ') {
+            runSpan.append(this.root.ownerDocument.createTextNode(' '));
+            runSpan.append(this.makeMark('·', '空格'));
+          } else runSpan.append(this.root.ownerDocument.createTextNode(part));
+        }
+      } else {
+        runSpan.append(this.root.ownerDocument.createTextNode(segment));
+      }
+      currentLineOffsetPx += this.measure(segment, run);
+    }
+    paragraphElement.append(runSpan);
+    return currentLineOffsetPx;
   }
 
   private makeImage(paragraph: number, image: ImageInfo): HTMLElement {

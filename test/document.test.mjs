@@ -1329,4 +1329,65 @@ test('snapshot includes hyperlinks and bookmarks', () => {
   const snapshot = doc.getSnapshot();
   assert.equal(snapshot.hyperlinks.length, 1);
   assert.equal(snapshot.bookmarks.length, 1);
+test('paragraph tabs/borders/shading read shape can be written back', () => {
+  const doc = withBody('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs><w:pBdr><w:top w:val="single" w:sz="8" w:space="0" w:color="FF0000"/></w:pBdr><w:shd w:val="clear" w:fill="AABBCC"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>');
+  const paragraph = doc.getParagraphs()[0];
+  doc.setParagraphTabs(0, paragraph.tabs);
+  doc.setParagraphBorders(0, paragraph.borders);
+  doc.setParagraphShading(0, paragraph.shading);
+  const next = doc.getParagraphs()[0];
+  assert.equal(next.tabs?.[0]?.leader, undefined);
+  assert.equal(next.borders?.top?.shadow, undefined);
+  assert.equal(next.shading?.color, undefined);
+});
+
+test('setParagraphTabs normalizes order, dedup, clear, and empty removal', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.setParagraphTabs(0, [
+    { position: 2880, alignment: 'left' },
+    { position: 720, alignment: 'left' },
+    { position: 2880, alignment: 'right' },
+    { position: 720, alignment: 'clear' },
+  ]);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /w:tab w:val="right" w:pos="2880"/);
+  assert.doesNotMatch(xml, /w:pos="720"/);
+  doc.setParagraphTabs(0, []);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:tabs>/);
+});
+
+test('insertSymbol rejects XML-illegal code points', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  assert.throws(() => doc.insertSymbol(0, 0, 'Wingdings', 0x0001), /XML-valid BMP code point/);
+  assert.throws(() => doc.insertSymbol(0, 0, 'Wingdings', 0xD800), /XML-valid BMP code point/);
+  doc.insertSymbol(0, 0, 'Wingdings', 0xF04A);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:sym w:font="Wingdings" w:char="F04A"\/>/);
+});
+
+test('insertBreak writes OOXML default form for textWrapping', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.insertBreak(0, 0, 'textWrapping');
+  doc.insertBreak(0, 0, 'page');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:br\/>/);
+  assert.match(xml, /<w:br w:type="page"\/>/);
+});
+
+test('getSettings resolves related settings.xml with defaults', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`), RELS_TYPE);
+  doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:defaultTabStop w:val="1440"/><w:evenAndOddHeaders/></w:settings>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml');
+  assert.deepEqual(doc.getSettings(), { defaultTabStop: 1440, evenAndOddHeaders: true });
+});
+
+test('applyOperations validates new formatting operations', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  const snapshot = doc.applyOperations({ operations: [
+    { type: 'setParagraphTabs', index: 0, tabs: [{ position: 720, alignment: 'left' }] },
+    { type: 'setParagraphBorders', index: 0, borders: { top: { style: 'single', size: 8, space: 0, color: 'auto' } } },
+    { type: 'setParagraphShading', index: 0, shading: { pattern: 'clear', fill: 'AABBCC' } },
+    { type: 'insertBreak', paragraph: 0, run: 0, breakType: 'page' },
+    { type: 'insertSymbol', paragraph: 0, run: 0, font: 'Wingdings', charCode: 0xF04A },
+  ] });
+  assert.equal(snapshot.revision, doc.revision);
 });
