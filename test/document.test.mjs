@@ -372,6 +372,30 @@ test('getTableCellAt reports vertical merged cells using the master coordinates'
   assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 1, nested: false });
 });
 
+test('getTableCellAt maps vertically merged continuation content back to a multi-column master cell', () => {
+  const doc = withBody(`
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr>
+          <w:p><w:r><w:t>master</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>side</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr>
+          <w:p><w:r><w:t>continuation</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>tail</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  `);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const index = table.rows[1].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 2, nested: false });
+});
+
 test('getTableCellAt keeps top-level table numbering aligned with structural table APIs', () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A']]);

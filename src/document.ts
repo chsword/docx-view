@@ -3764,6 +3764,14 @@ export class DocxDocument {
     if (this.tableCellLocationCache?.revision === this.revision) return this.tableCellLocationCache.locations;
     const locations = new Map<number, TableCellLocation>();
     let tableIndex = 0;
+    const setActiveVertical = (
+      target: Map<number, { start: number; end: number; location: TableCellLocation }>,
+      start: number,
+      end: number,
+      location: TableCellLocation,
+    ): void => {
+      for (let index = start; index < end; index++) target.set(index, { start, end, location });
+    };
     const walkNestedBlocks = (blocks: DocumentBlock[], location: TableCellLocation, nested: boolean): void => {
       for (const block of blocks) {
         if (block.type === 'paragraph') {
@@ -3778,9 +3786,9 @@ export class DocxDocument {
     };
     for (const block of this.getBlocks()) {
       if (block.type !== 'table') continue;
-      const activeVertical = new Map<number, { end: number; location: TableCellLocation }>();
+      const activeVertical = new Map<number, { start: number; end: number; location: TableCellLocation }>();
       for (const [rowIndex, row] of block.rows.entries()) {
-        const nextActive = new Map<number, { end: number; location: TableCellLocation }>();
+        const nextActive = new Map<number, { start: number; end: number; location: TableCellLocation }>();
         let colIndex = 0;
         let activeHorizontalEnd: number | null = null;
         let activeHorizontalLocation: TableCellLocation | null = null;
@@ -3798,9 +3806,9 @@ export class DocxDocument {
           };
           const vertical = activeVertical.get(col);
           if (cell.isMergeContinuation) {
-            if (cell.rowSpan === 0 && vertical?.end === col + colSpan) {
+            if (cell.rowSpan === 0 && vertical && vertical.start <= col && vertical.end >= col + colSpan) {
               location = vertical.location;
-              nextActive.set(col, vertical);
+              setActiveVertical(nextActive, col, col + colSpan, vertical.location);
             } else if (activeHorizontalLocation && activeHorizontalEnd === col) {
               location = activeHorizontalLocation;
               activeHorizontalEnd = col + colSpan;
@@ -3808,12 +3816,12 @@ export class DocxDocument {
             } else {
               activeHorizontalEnd = col + colSpan;
               activeHorizontalLocation = location;
-              if (cell.rowSpan > 1) nextActive.set(col, { end: col + colSpan, location });
+              if (cell.rowSpan > 1) setActiveVertical(nextActive, col, col + colSpan, location);
             }
           } else {
             activeHorizontalEnd = col + colSpan;
             activeHorizontalLocation = location;
-            if (cell.rowSpan > 1) nextActive.set(col, { end: col + colSpan, location });
+            if (cell.rowSpan > 1) setActiveVertical(nextActive, col, col + colSpan, location);
           }
           walkNestedBlocks(cell.blocks, location, false);
         }
