@@ -111,6 +111,23 @@
               <p class="panel-description"><code>getSnapshot()</code> 返回修订号、段落、文本片段、块结构和部件清单。</p>
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
             </section>
+            <section class="comment-panel" aria-label="批注面板">
+              <div class="comment-panel-header">
+                <div><strong>批注</strong><p class="hint">点击高亮区域或下面的列表查看；回复与解决状态会写回 DOCX。</p></div>
+                <label><input id="toggle-comments" type="checkbox" checked /> 显示高亮</label>
+              </div>
+              <div class="comment-filters">
+                <input id="comment-author-filter" placeholder="按作者筛选" />
+                <select id="comment-resolved-filter"><option value="all">全部状态</option><option value="open">未解决</option><option value="resolved">已解决</option></select>
+              </div>
+              <div class="comment-panel-actions">
+                <button id="new-comment" class="button subtle">新建批注</button>
+                <button id="reply-comment" class="button subtle">回复</button>
+                <button id="resolve-comment" class="button subtle">解决 / 取消</button>
+                <button id="delete-comment" class="button subtle">删除</button>
+              </div>
+              <ul id="comment-list" class="comment-list"></ul>
+            </section>
             <div class="scope-note"><strong>段落有效格式</strong><pre id="effective-format" class="code-editor snapshot" tabindex="0" aria-label="当前段落有效格式"></pre></div>
             <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式、基础表格、分节页面设置近似，以及图片显示 / 插入 / 替换 / 删除 / 调整尺寸。不是 Word 排版引擎，不模拟精确分页；页码域值与完整分页计算仍为占位，外部链接图片会显示占位框且不会主动联网加载。</p></div>
           </aside>

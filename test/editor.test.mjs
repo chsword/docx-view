@@ -209,3 +209,20 @@ test('insertText sanitizes invalid paste-like input before insertion', () => {
   assert.doesNotThrow(() => editor.insertText(element, 'a\u0001b\ud800c\r\nd'));
   assert.equal(inserted, 'abc\nd');
 });
+
+test('readText keeps non-decoration contentEditable=false nodes but skips docx marks', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value });
+  const element = (tagName, { dataset = {}, contentEditable = 'inherit' } = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    dataset,
+    contentEditable,
+    childNodes,
+  });
+  const root = element('SPAN', {}, [
+    element('SPAN', { contentEditable: 'false' }, [text('keep')]),
+    element('SPAN', { contentEditable: 'false', dataset: { docxMark: '1' } }, [text('drop')]),
+  ]);
+  assert.equal(editor.readText(root), 'keep');
+});

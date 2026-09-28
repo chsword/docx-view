@@ -17,6 +17,10 @@ const encoder = new TextEncoder();
 
 const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
 const THEME_TYPE = 'application/vnd.openxmlformats-officedocument.theme+xml';
+const COMMENTS_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml';
+const COMMENTS_EXTENDED_TYPE = 'application/vnd.ms-word.commentsExtended+xml';
+const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
+const W15_NS = 'http://schemas.microsoft.com/office/word/2012/wordml';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -48,6 +52,25 @@ function withImageDoc(body, relationships, media = [{ path: 'word/media/image1.p
   doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:pic="${PIC_NS}" xmlns:v="${V_NS}"><w:body>${body}<w:sectPr/></w:body></w:document>`);
   doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">${relationships}</Relationships>`), RELS_TYPE);
   for (const part of media) doc.addPart(part.path, part.bytes, part.type);
+  return doc;
+}
+
+function withCommentsDoc(bodyXml, commentsXml, commentsExtendedXml = '', target = 'comments.xml', extendedTarget = 'commentsExtended.xml') {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:w14="${W14_NS}" xmlns:w15="${W15_NS}"><w:body>${bodyXml}<w:sectPr/></w:body></w:document>`);
+  const rels = [`<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="${target}"/>`];
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">${rels.join('')}</Relationships>`), RELS_TYPE);
+  doc.addPart(`word/${target}`, encoder.encode(commentsXml), COMMENTS_TYPE);
+  if (commentsExtendedXml) {
+    doc.updatePartXml('word/_rels/document.xml.rels', (document) => {
+      const relation = document.createElementNS(REL_NS, 'Relationship');
+      relation.setAttribute('Id', 'rId8');
+      relation.setAttribute('Type', 'http://schemas.microsoft.com/office/2011/relationships/commentsExtended');
+      relation.setAttribute('Target', extendedTarget);
+      document.documentElement.appendChild(relation);
+    });
+    doc.addPart(`word/${extendedTarget}`, encoder.encode(commentsExtendedXml), COMMENTS_EXTENDED_TYPE);
+  }
   return doc;
 }
 
@@ -611,7 +634,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 45);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 50);
 });
 
 test('agent JSON validates unknown methods, shapes and fields without executing code', () => {
@@ -872,7 +895,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 45);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 50);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -1959,6 +1982,226 @@ test('setNoteSettings rejects unknown fields and does not bump revision on no-op
   assert.equal(doc.revision, baseRevision);
   doc.setNoteSettings({});
   assert.equal(doc.revision, baseRevision);
+});
+
+test('addComment creates comment parts and preserves visible paragraph text', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'body text');
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 4 }, { author: 'Alice', initials: 'AL', text: 'todo' });
+  const comment = doc.getComments()[0];
+  assert.equal(id, comment.id);
+  assert.equal(doc.getParagraphs()[0].text, 'body text');
+  assert.equal(comment.author, 'Alice');
+  assert.equal(comment.anchor.paragraph, 0);
+  assert.deepEqual(comment.anchor.runs, [0]);
+  assert.match(doc.getPartXml('word/comments.xml'), /todo/);
+  assert.match(doc.getPartXml('word/commentsExtended.xml'), /w15:commentEx/);
+});
+
+test('getComments reads replies and resolved state from commentsExtended.xml', () => {
+  const doc = withCommentsDoc(
+    '<w:p><w:commentRangeStart w:id="1"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r></w:p>',
+    `<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}">
+      <w:comment w:id="1" w:author="Alice"><w:p w14:paraId="0000000A"><w:r><w:annotationRef/></w:r><w:r><w:t>root</w:t></w:r></w:p></w:comment>
+      <w:comment w:id="2" w:author="Bob"><w:p w14:paraId="0000000B"><w:r><w:annotationRef/></w:r><w:r><w:t>reply</w:t></w:r></w:p></w:comment>
+    </w:comments>`,
+    `<w15:commentsEx xmlns:w15="${W15_NS}">
+      <w15:commentEx w15:paraId="0000000A" w15:done="1"/>
+      <w15:commentEx w15:paraId="0000000B" w15:paraIdParent="0000000A" w15:done="0"/>
+    </w15:commentsEx>`,
+  );
+  const comments = doc.getComments();
+  assert.equal(comments.length, 2);
+  assert.equal(comments[0].resolved, true);
+  assert.equal(comments[1].parentId, 1);
+  assert.equal(comments[1].isOrphan, false);
+});
+
+test('getComments reads header comment anchors with source part paths', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId10"/></w:sectPr></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="headerX.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/headerX.xml', encoder.encode(`<w:hdr xmlns:w="${WORD_NS}"><w:p><w:commentRangeStart w:id="3"/><w:r><w:t>head</w:t></w:r><w:commentRangeEnd w:id="3"/><w:r><w:commentReference w:id="3"/></w:r></w:p></w:hdr>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml');
+  doc.addPart('word/_rels/headerX.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="hdr-comments.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/hdr-comments.xml', encoder.encode(`<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="3"><w:p w14:paraId="00000033"><w:r><w:annotationRef/></w:r><w:r><w:t>H</w:t></w:r></w:p></w:comment></w:comments>`), COMMENTS_TYPE);
+  const comment = doc.getComments().find((item) => item.id === 3);
+  assert.equal(comment?.anchor.sourcePartPath, 'word/headerX.xml');
+  assert.equal(comment?.anchor.paragraph, 0);
+});
+
+test('getComments reads footnote comment anchors with source part paths', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="fn.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/fn.xml', encoder.encode(`<w:footnotes xmlns:w="${WORD_NS}">
+    <w:footnote w:id="1"><w:p><w:commentRangeStart w:id="4"/><w:r><w:t>fn</w:t></w:r><w:commentRangeEnd w:id="4"/><w:r><w:commentReference w:id="4"/></w:r></w:p></w:footnote>
+  </w:footnotes>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml');
+  doc.addPart('word/_rels/fn.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="fn-comments.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/fn-comments.xml', encoder.encode(`<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="4"><w:p w14:paraId="00000044"><w:r><w:annotationRef/></w:r><w:r><w:t>FN</w:t></w:r></w:p></w:comment></w:comments>`), COMMENTS_TYPE);
+  const comment = doc.getComments().find((item) => item.id === 4);
+  assert.equal(comment?.anchor.sourcePartPath, 'word/fn.xml');
+  assert.equal(comment?.anchor.paragraph, 0);
+});
+
+test('addComment across hyperlink keeps hyperlink intact', () => {
+  const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="x"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:r><w:t>tail</w:t></w:r></w:p>`);
+  doc.addComment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 6 } }, { text: 'cross' });
+  assert.equal(doc.getHyperlinks().some((item) => item.anchor === 'x' && item.text.includes('link')), true);
+});
+
+test('comment mutations advance revision once per public call', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const start = doc.revision;
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'one' });
+  assert.equal(doc.revision, start + 1);
+  doc.deleteComment(id);
+  assert.equal(doc.revision, start + 2);
+});
+
+test('failed addComment is atomic', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const revision = doc.revision;
+  const parts = doc.listParts();
+  assert.throws(() => doc.addComment({ paragraph: 0, start: 0, end: 99 }, { text: 'bad' }), /out of bounds/);
+  assert.equal(doc.revision, revision);
+  assert.deepEqual(doc.listParts(), parts);
+});
+
+test('comment reads fast-path to empty without scanning anchors when markup is absent', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const original = doc.collectCommentLocations;
+  let calls = 0;
+  doc.collectCommentLocations = function (...args) {
+    calls++;
+    return original.apply(this, args);
+  };
+  assert.equal(doc.getComments().length, 0);
+  assert.equal(doc.getSnapshot().comments.length, 0);
+  assert.equal(calls, 0);
+});
+
+test('comment cache is reused until revision changes', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'one' });
+  const original = doc.collectCommentLocations;
+  let calls = 0;
+  doc.collectCommentLocations = function (...args) {
+    calls++;
+    return original.apply(this, args);
+  };
+  assert.equal(doc.getComments().length, 1);
+  assert.equal(doc.getSnapshot().comments.length, 1);
+  assert.equal(doc.getComments()[0].id, id);
+  assert.equal(calls, 1);
+  doc.setCommentText(id, 'two');
+  assert.equal(doc.getComments()[0].text, 'two');
+  assert.equal(calls, 2);
+});
+
+test('missing comment body for a reference is reported as orphan', () => {
+  const doc = withBody('<w:p><w:commentRangeStart w:id="9"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="9"/><w:r><w:commentReference w:id="9"/></w:r></w:p>');
+  const comment = doc.getComments()[0];
+  assert.equal(comment.id, 9);
+  assert.equal(comment.isOrphan, true);
+  assert.equal(comment.text, '');
+});
+
+test('comment body without any anchor is reported as orphan', () => {
+  const doc = withCommentsDoc(
+    '<w:p><w:r><w:t>x</w:t></w:r></w:p>',
+    `<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="8"><w:p w14:paraId="00000088"><w:r><w:annotationRef/></w:r><w:r><w:t>body</w:t></w:r></w:p></w:comment></w:comments>`,
+  );
+  assert.equal(doc.getComments()[0].isOrphan, true);
+});
+
+test('invalid comment dates degrade to undefined', () => {
+  const doc = withCommentsDoc(
+    '<w:p><w:commentRangeStart w:id="1"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r></w:p>',
+    `<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="1" w:date="not-a-date"><w:p w14:paraId="00000011"><w:r><w:annotationRef/></w:r></w:p></w:comment></w:comments>`,
+  );
+  assert.equal(doc.getComments()[0].date, undefined);
+});
+
+test('setCommentResolved creates commentsExtended when missing', () => {
+  const doc = withCommentsDoc(
+    '<w:p><w:commentRangeStart w:id="1"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r></w:p>',
+    `<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="1"><w:p w14:paraId="00000021"><w:r><w:annotationRef/></w:r></w:p></w:comment></w:comments>`,
+  );
+  doc.setCommentResolved(1, true);
+  assert.equal(doc.getComments()[0].resolved, true);
+  assert.match(doc.getPartXml('word/commentsExtended.xml'), /w15:done="1"/);
+});
+
+test('setCommentText replaces comment text instead of appending', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'old' });
+  doc.setCommentText(id, 'new');
+  const xml = doc.getPartXml('word/comments.xml');
+  assert.match(xml, /new/);
+  assert.doesNotMatch(xml, /old.*new/);
+});
+
+test('deleteComment removes anchors and orphan relationships when last comment is removed', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'gone' });
+  doc.deleteComment(id);
+  assert.equal(doc.getComments().length, 0);
+  assert.equal(doc.listParts().includes('word/comments.xml'), false);
+  assert.equal(doc.listParts().includes('word/commentsExtended.xml'), false);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /commentRange(Start|End)|commentReference/);
+});
+
+test('deleteComment cascades to replies by default', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const id = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'root' });
+  doc.replyComment(id, { text: 'child' });
+  doc.deleteComment(id);
+  assert.equal(doc.getComments().length, 0);
+});
+
+test('replyComment writes paraIdParent relation to commentsExtended', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const parentId = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { text: 'root' });
+  const childId = doc.replyComment(parentId, { text: 'child' });
+  const child = doc.getComments().find((item) => item.id === childId);
+  assert.equal(child?.parentId, parentId);
+  assert.match(doc.getPartXml('word/commentsExtended.xml'), /paraIdParent/);
+});
+
+test('getComments supports author and resolved filters', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const first = doc.addComment({ paragraph: 0, start: 0, end: 1 }, { author: 'Alice', text: 'a' });
+  doc.replyComment(first, { author: 'Bob', text: 'b' });
+  doc.setCommentResolved(first, true);
+  assert.equal(doc.getComments({ authors: ['Alice'] }).length, 1);
+  assert.equal(doc.getComments({ resolved: true }).length, 1);
+});
+
+test('applyOperations supports comment operations and schema count stays aligned', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'abc');
+  const snapshot = doc.applyOperations({
+    operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
+  });
+  assert.equal(snapshot.comments.length, 1);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 50);
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
 test('paragraph tabs/borders/shading read shape can be written back', () => {

@@ -91,6 +91,8 @@ input { border: 1px solid var(--border); border-radius: 5px; color: #536077; bac
 .docx-paragraph[data-style="Heading2"] { font-size: 16pt; font-weight: 700; }
 .docx-note-ref { font-size: 0.75em; vertical-align: super; user-select: none; pointer-events: none; color: #4b5f82; }
 .docx-note-ref::before { content: attr(data-note-marker); }
+.docx-comment-anchor { background: #fff2b8; border-radius: 2px; cursor: pointer; }
+.comments-hidden .docx-comment-anchor { background: none !important; }
 .docx-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 21px 0 26px; font-size: 10pt; }
 .docx-table caption { caption-side: top; text-align: left; color: #7b879a; font-size: 10px; padding-bottom: 6px; }
 .docx-table td { border: 1px solid #dbe3ed; padding: 10px 11px; vertical-align: top; }
@@ -127,6 +129,14 @@ code { font-size: .95em; color: #6680a8; }
 .scope-note { padding: 21px 23px; background: #fafbfd; border-top: 1px solid #edf0f6; }
 .scope-note strong { font-size: 10px; font-weight: 600; color: #77869b; }
 .scope-note p { font-size: 10px; line-height: 1.95; color: #97a2b1; margin: 8px 0 0; }
+.comment-panel { padding: 21px 23px; border-top: 1px solid #edf0f6; background: #fff; }
+.comment-panel-header, .comment-panel-actions, .comment-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.comment-panel-header { justify-content: space-between; margin-bottom: 10px; }
+.comment-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+.comment-list button { width: 100%; text-align: left; padding: 9px 10px; border: 1px solid #e3e9f3; border-radius: 7px; background: #f7f9fd; }
+.comment-list button.active { border-color: #b9cbf4; background: #eef4ff; }
+.comment-meta { font-size: 10px; color: #7b879a; margin-bottom: 4px; }
+.comment-body { font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
 .full-width { width: 100%; }
 .xml-editor { min-height: 375px; }
 .snapshot { max-height: 570px; overflow: auto; margin: 0; white-space: pre; }

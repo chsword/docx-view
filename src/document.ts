@@ -213,7 +213,7 @@ function blockContainerOf(document: Document): Element {
   const root = document.documentElement;
   if (!root || root.namespaceURI !== WORD_NS) throw new Error('Unsupported WordprocessingML part.');
   if (root.localName === 'document') return bodyOf(document);
-  if (['hdr', 'ftr'].includes(root.localName ?? '')) return root;
+  if (['hdr', 'ftr', 'footnotes', 'endnotes'].includes(root.localName ?? '')) return root;
   throw new Error('Part does not contain block-level WordprocessingML content.');
 }
 
