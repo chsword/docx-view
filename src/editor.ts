@@ -102,6 +102,15 @@ interface ReviewRenderContext {
 
 const REVISION_COLOR_PALETTE = ['#2E75B6', '#C0504D', '#9BBB59', '#8064A2', '#4BACC6', '#F79646', '#1F497D', '#843C0C'];
 
+function revisionColorIndexForKey(key: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % REVISION_COLOR_PALETTE.length;
+}
+
 function normalizeReviewFilterAuthor(author: ReviewerFilterAuthor, path = 'reviewFilter.authors[]'): ReviewerFilterAuthor {
   if (!author || typeof author !== 'object' || Array.isArray(author)) throw new Error(`${path} must be an object.`);
   if (!['named', 'unattributed', 'empty', 'blank'].includes(author.kind)) {
@@ -547,16 +556,6 @@ export class DocxEditor {
       revisionColors: new Map(),
     };
     try {
-      for (const [index, reviewer] of this.document.getReviewers().entries()) {
-        const key = reviewer.kind === 'named'
-          ? reviewerBucketKey({ kind: 'named', author: reviewer.author ?? '' })
-          : reviewer.kind === 'empty'
-            ? reviewerBucketKey({ kind: 'empty', author: '' })
-            : reviewer.kind === 'blank'
-              ? reviewerBucketKey({ kind: 'blank', author: reviewer.author ?? ' ' })
-              : reviewerBucketKey({ kind: 'unattributed' });
-        reviewContext.revisionColors.set(key, REVISION_COLOR_PALETTE[index % REVISION_COLOR_PALETTE.length]!);
-      }
       for (const revision of this.document.getRevisions({ kinds: ['deletion'] })) {
         if (revision.paragraph < 0 || revision.run === undefined || !revision.deletedText) continue;
         if (reviewContext.authors && !reviewContext.authors.has(reviewerBucketKey(reviewerBucketOf(revision.author)))) continue;
@@ -1087,7 +1086,13 @@ export class DocxEditor {
   }
 
   private reviewColor(author: string | undefined, reviewContext: ReviewRenderContext): string {
-    return reviewContext.revisionColors.get(reviewerBucketKey(reviewerBucketOf(author))) ?? REVISION_COLOR_PALETTE[0]!;
+    const key = reviewerBucketKey(reviewerBucketOf(author));
+    let color = reviewContext.revisionColors.get(key);
+    if (!color) {
+      color = REVISION_COLOR_PALETTE[revisionColorIndexForKey(key)]!;
+      reviewContext.revisionColors.set(key, color);
+    }
+    return color;
   }
 
   private revisionAriaDescription(revisions: RunInfo['revisions']): string {
