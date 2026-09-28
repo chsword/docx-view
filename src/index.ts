@@ -14,7 +14,7 @@ export type {
   DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
   RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, ReviewerInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
+  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
   PageSetup, SectionInfo, SectionType,

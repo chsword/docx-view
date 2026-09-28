@@ -339,6 +339,136 @@ test('deleteParagraph keeps wrapped table cells structurally valid', () => {
   assert.equal(viaOps.getParagraphs().length, 1);
 });
 
+test('getTableCellAt returns null for paragraphs outside tables and out-of-range indexes', () => {
+  const doc = DocxDocument.create();
+  assert.equal(doc.getTableCellAt(0), null);
+  assert.equal(doc.getTableCellAt(-1), null);
+  assert.equal(doc.getTableCellAt(99), null);
+});
+
+test('getTableCellAt returns coordinates for regular table cells', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const index = table.rows[1].cells[1].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 1, col: 1, rowSpan: 1, colSpan: 1, nested: false });
+});
+
+test('getTableCellAt reports horizontal merged cells using the master coordinates', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  doc.mergeCells(0, { row: 0, col: 0, rowSpan: 1, colSpan: 2 });
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const index = table.rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 2, nested: false });
+});
+
+test('getTableCellAt reports vertical merged cells using the master coordinates', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  doc.mergeCells(0, { row: 0, col: 0, rowSpan: 2, colSpan: 1 });
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const index = table.rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 1, nested: false });
+});
+
+test('getTableCellAt maps vertically merged continuation content back to a multi-column master cell', () => {
+  const doc = withBody(`
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr>
+          <w:p><w:r><w:t>master</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>side</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr>
+          <w:p><w:r><w:t>continuation</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>tail</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  `);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const index = table.rows[1].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 2, colSpan: 2, nested: false });
+});
+
+test('getTableCellAt keeps top-level table numbering aligned with structural table APIs', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.insertParagraph('middle');
+  doc.insertTable([['B']]);
+  const secondTable = doc.getBlocks().filter((block) => block.type === 'table')[1];
+  const index = secondTable.rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 1, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false });
+});
+
+test('getTableCellAt returns outer-cell coordinates for nested tables', () => {
+  const doc = withBody(`
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>outer before</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc></w:tr>
+          </w:tbl>
+          <w:p><w:r><w:t>outer after</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>side</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  `);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const innerIndex = table.rows[0].cells[0].blocks[1].rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(innerIndex), { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: true });
+});
+
+test('getTableCellAt keeps direct paragraphs in a cell non-nested even when the cell contains a nested table', () => {
+  const doc = withBody(`
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>outer before</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc></w:tr>
+          </w:tbl>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  `);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const outerIndex = table.rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(outerIndex), { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false });
+});
+
+test('getTableCellAt pierces transparent wrappers around rows and cells', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A', 'B'], ['C', 'D']]);
+  let xml = doc.getPartXml(doc.mainDocumentPath);
+  const rows = xml.match(/<w:tr>[\s\S]*?<\/w:tr>/g);
+  const cells = xml.match(/<w:tc>[\s\S]*?<\/w:tc>/g);
+  xml = xml
+    .replace(rows[1], `<w:sdt><w:sdtPr/><w:sdtContent>${rows[1]}</w:sdtContent></w:sdt>`)
+    .replace(cells[0], `<w:customXml>${cells[0]}</w:customXml>`);
+  doc.setPartXml(doc.mainDocumentPath, xml);
+  const table = doc.getBlocks().find((block) => block.type === 'table');
+  const wrappedIndex = table.rows[1].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(wrappedIndex), { table: 0, row: 1, col: 0, rowSpan: 1, colSpan: 1, nested: false });
+});
+
+test('getTableCellAt cache invalidates after document revisions', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  const index = doc.getBlocks().find((block) => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.index;
+  assert.deepEqual(doc.getTableCellAt(index), { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false });
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>plain</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  assert.equal(doc.getTableCellAt(0), null);
+  assert.equal(doc.getTableCellAt(index), null);
+});
+
 test('deleteParagraph does not add blank paragraphs when wrapped cell content remains', () => {
   const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p><w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>B</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>');
   doc.deleteParagraph(0);
