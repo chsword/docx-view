@@ -15,16 +15,16 @@ const XSI_NS = 'http://www.w3.org/2001/XMLSchema-instance';
 const APP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties';
 const VT_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes';
 
-const CORE_KEYS = ['title', 'subject', 'creator', 'lastModifiedBy', 'keywords', 'description', 'category', 'created', 'modified', 'revisionNumber'] as const;
-const APP_KEYS = ['company', 'manager'] as const;
+export const CORE_PROPERTY_KEYS = ['title', 'subject', 'creator', 'lastModifiedBy', 'keywords', 'description', 'category', 'created', 'modified', 'revisionNumber'] as const;
+export const APP_PROPERTY_KEYS = ['company', 'manager'] as const;
 const DATE_KEYS = new Set<DocumentPropertyKey>(['created', 'modified']);
 const TEXT_KEYS = new Set<DocumentPropertyKey>(['title', 'subject', 'creator', 'lastModifiedBy', 'keywords', 'description', 'category', 'company', 'manager']);
-const VALID_KEYS = new Set<DocumentPropertyKey>([...CORE_KEYS, ...APP_KEYS]);
+const VALID_KEYS = new Set<DocumentPropertyKey>([...CORE_PROPERTY_KEYS, ...APP_PROPERTY_KEYS]);
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
 type DocumentPropertyKey = keyof DocumentProperties;
 
-const CORE_FIELD_INFO: Record<typeof CORE_KEYS[number], { namespace: string; qualifiedName: string; localName: string; date?: boolean; numeric?: boolean }> = {
+const CORE_FIELD_INFO: Record<typeof CORE_PROPERTY_KEYS[number], { namespace: string; qualifiedName: string; localName: string; date?: boolean; numeric?: boolean }> = {
   title: { namespace: DC_NS, qualifiedName: 'dc:title', localName: 'title' },
   subject: { namespace: DC_NS, qualifiedName: 'dc:subject', localName: 'subject' },
   creator: { namespace: DC_NS, qualifiedName: 'dc:creator', localName: 'creator' },
@@ -37,7 +37,7 @@ const CORE_FIELD_INFO: Record<typeof CORE_KEYS[number], { namespace: string; qua
   revisionNumber: { namespace: CP_NS, qualifiedName: 'cp:revision', localName: 'revision', numeric: true },
 };
 
-const APP_FIELD_INFO: Record<typeof APP_KEYS[number], { qualifiedName: string; localName: string }> = {
+const APP_FIELD_INFO: Record<typeof APP_PROPERTY_KEYS[number], { qualifiedName: string; localName: string }> = {
   company: { qualifiedName: 'Company', localName: 'Company' },
   manager: { qualifiedName: 'Manager', localName: 'Manager' },
 };
@@ -125,7 +125,7 @@ export function parseDocumentProperties(coreDocument: Document | null, appDocume
   const result: DocumentProperties = {};
   const coreRoot = rootOrNull(coreDocument, CP_NS, 'coreProperties');
   if (coreRoot) {
-    for (const key of CORE_KEYS) {
+    for (const key of CORE_PROPERTY_KEYS) {
       const info = CORE_FIELD_INFO[key];
       const value = textContentOf(childInNamespace(coreRoot, info.namespace, info.localName));
       if (value === undefined) continue;
@@ -138,7 +138,7 @@ export function parseDocumentProperties(coreDocument: Document | null, appDocume
   }
   const appRoot = rootOrNull(appDocument, APP_NS, 'Properties');
   if (appRoot) {
-    for (const key of APP_KEYS) {
+    for (const key of APP_PROPERTY_KEYS) {
       const info = APP_FIELD_INFO[key];
       const value = textContentOf(childInNamespace(appRoot, APP_NS, info.localName));
       if (value !== undefined) result[key] = value;
@@ -150,7 +150,7 @@ export function parseDocumentProperties(coreDocument: Document | null, appDocume
 export function setCoreDocumentPropertiesOn(document: Document, patch: Partial<DocumentProperties>): void {
   const root = rootOrNull(document, CP_NS, 'coreProperties');
   if (!root) throw new Error('Invalid core properties root.');
-  for (const key of CORE_KEYS) {
+  for (const key of CORE_PROPERTY_KEYS) {
     if (!(key in patch)) continue;
     const info = CORE_FIELD_INFO[key];
     const value = patch[key];
@@ -171,7 +171,7 @@ export function setCoreDocumentPropertiesOn(document: Document, patch: Partial<D
 export function setAppDocumentPropertiesOn(document: Document, patch: Partial<DocumentProperties>): void {
   const root = rootOrNull(document, APP_NS, 'Properties');
   if (!root) throw new Error('Invalid app properties root.');
-  for (const key of APP_KEYS) {
+  for (const key of APP_PROPERTY_KEYS) {
     if (!(key in patch)) continue;
     const info = APP_FIELD_INFO[key];
     const value = patch[key];

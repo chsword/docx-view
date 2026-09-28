@@ -8,8 +8,10 @@ import type {
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
 } from './types.js';
 import {
+  APP_PROPERTY_KEYS,
   APP_PROPS_REL,
   APP_PROPS_TYPE,
+  CORE_PROPERTY_KEYS,
   CORE_PROPS_REL,
   CORE_PROPS_TYPE,
   assertDocumentPropertiesPatch,
@@ -7372,8 +7374,8 @@ export class DocxDocument {
   }
 
   private setDocumentPropertiesDirect(patch: Partial<DocumentProperties>): void {
-    const coreKeys = ['title', 'subject', 'creator', 'lastModifiedBy', 'keywords', 'description', 'category', 'created', 'modified', 'revisionNumber'] as const;
-    const appKeys = ['company', 'manager'] as const;
+    const coreKeys = CORE_PROPERTY_KEYS;
+    const appKeys = APP_PROPERTY_KEYS;
     const corePatch = Object.fromEntries(coreKeys.filter((key) => key in patch).map((key) => [key, patch[key]])) as Partial<DocumentProperties>;
     const appPatch = Object.fromEntries(appKeys.filter((key) => key in patch).map((key) => [key, patch[key]])) as Partial<DocumentProperties>;
     if (Object.keys(corePatch).length) {
@@ -7406,7 +7408,7 @@ export class DocxDocument {
   setDocumentProtection(value: DocumentProtection): void {
     assertDocumentProtection(value);
     const current = this.getDocumentProtection();
-    if (!value.enabled && value.edit === undefined && value.enforced === undefined && !current.enabled) return;
+    if (!value.enabled && value.edit === undefined && value.enforced === undefined && !current.enabled && !this.hasDocumentProtectionElement()) return;
     if (current.enabled === value.enabled && current.edit === value.edit && current.enforced === value.enforced) return;
     this.withDraft((draft) => draft.setDocumentProtectionDirect(value));
   }
@@ -7417,6 +7419,17 @@ export class DocxDocument {
     if (!this.parts.has(path)) this.addPart(path, encodeXml(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
     this.ensureMainRelationship(SETTINGS_REL, relativeTarget(this.mainPath, path));
     this.updatePartXml(path, (document) => setDocumentProtectionOn(document, value));
+  }
+
+  private hasDocumentProtectionElement(): boolean {
+    const path = this.getSettingsPath();
+    if (!path || !this.parts.has(path)) return false;
+    try {
+      const root = this.getPartDocument(path).documentElement;
+      return Boolean(root && root.namespaceURI === WORD_NS && root.localName === 'settings' && children(root, 'documentProtection')[0]);
+    } catch {
+      return false;
+    }
   }
 
   insertFootnote(paragraph: number, run: number, text: string, options: { customMark?: string } = {}): NoteInfo {
