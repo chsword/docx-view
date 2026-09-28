@@ -88,6 +88,10 @@ function trackedDoc(bodyXml = '<w:p><w:r><w:t>A</w:t></w:r></w:p>') {
   return doc;
 }
 
+function packagePartsSignature(doc) {
+  return doc.listParts().map((path) => `${path}:${Buffer.from(doc.getPartBytes(path)).toString('base64')}`);
+}
+
 function paragraphTexts(doc) {
   return doc.getParagraphs().map((paragraph) => paragraph.text);
 }
@@ -708,6 +712,28 @@ test('applyOperations batch is one undo step and revision still advances on undo
   assert.equal(doc.getParagraphs().length, 1);
   assert.equal(doc.getParagraphs()[0].text, '');
   assert.equal(doc.revision, afterBatch + 1);
+});
+
+test('applyOperations with non-empty all-no-op operations keeps revision and history unchanged', () => {
+  const doc = withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins></w:p>');
+  doc.setTrackChanges(false);
+  const beforeRevision = doc.revision;
+  const beforeUndo = doc.getHistory().undo.length;
+  const beforeRedo = doc.getHistory().redo.length;
+  const beforeParts = packagePartsSignature(doc);
+  const snapshot = doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 0, text: 'A' },
+      { type: 'setTrackChanges', enabled: false },
+      { type: 'acceptAllRevisions', filter: { authors: ['Nobody'] } },
+    ],
+  });
+  assert.equal(snapshot.revision, beforeRevision);
+  assert.equal(doc.revision, beforeRevision);
+  assert.deepEqual(packagePartsSignature(doc), beforeParts);
+  const history = doc.getHistory();
+  assert.equal(history.undo.length, beforeUndo);
+  assert.equal(history.redo.length, beforeRedo);
 });
 
 test('beginHistoryGroup/endHistoryGroup merges multiple edits into one step', () => {
@@ -2918,6 +2944,172 @@ test('setTrackChanges is a no-op when the explicit XML state is unchanged', () =
   const enabledRevision = enabled.revision;
   enabled.setTrackChanges(true);
   assert.equal(enabled.revision, enabledRevision);
+});
+
+test('repeating the same write call keeps revision/history stable when part bytes are unchanged', () => {
+  const noteIds = new WeakMap();
+  const scenarios = [
+    {
+      name: 'formatParagraph',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.formatParagraph(0, { alignment: 'center' }),
+    },
+    {
+      name: 'formatRun',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.formatRun(0, 0, { bold: true }),
+    },
+    {
+      name: 'formatRange',
+      create: () => withBody('<w:p><w:r><w:t>ABC</w:t></w:r></w:p>'),
+      apply: (doc) => doc.formatRange({ paragraph: 0, start: 0, end: 3 }, { italic: true }),
+    },
+    {
+      name: 'clearRangeFormat',
+      create: () => withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>ABC</w:t></w:r></w:p>'),
+      apply: (doc) => doc.clearRangeFormat({ paragraph: 0, start: 0, end: 3 }, ['bold']),
+    },
+    {
+      name: 'formatDocumentRange',
+      create: () => withBody('<w:p><w:r><w:t>ABC</w:t></w:r></w:p>'),
+      apply: (doc) => doc.formatDocumentRange({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 } }, { underline: true }),
+    },
+    {
+      name: 'setParagraphText',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.setParagraphText(0, 'ABC'),
+    },
+    {
+      name: 'formatTable',
+      create: () => withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'),
+      apply: (doc) => doc.formatTable(0, { layout: 'fixed' }),
+    },
+    {
+      name: 'formatCell',
+      create: () => withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'),
+      apply: (doc) => doc.formatCell(0, 0, 0, { verticalAlign: 'bottom' }),
+    },
+    {
+      name: 'formatTableRow',
+      create: () => withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'),
+      apply: (doc) => doc.formatTableRow(0, 0, { header: true }),
+    },
+    {
+      name: 'setCellText',
+      create: () => withBody('<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'),
+      apply: (doc) => doc.setCellText(0, 0, 0, 'ABC'),
+    },
+    {
+      name: 'setPageSetup',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.setPageSetup(0, { pageWidth: 15000 }),
+    },
+    {
+      name: 'setImageAlt',
+      create: () => {
+        const doc = DocxDocument.create();
+        doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+        return doc;
+      },
+      apply: (doc) => doc.setImageAlt(doc.getImages()[0], 'alt', 'title'),
+    },
+    {
+      name: 'setParagraphNumbering',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.setParagraphNumbering(0, 1, 0),
+    },
+    {
+      name: 'setNoteText',
+      create: () => {
+        const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+        const note = doc.insertFootnote(0, 1, 'note');
+        doc.setNoteText(note.kind, note.id, 'first');
+        noteIds.set(doc, note.id);
+        return doc;
+      },
+      apply: (doc) => doc.setNoteText('footnote', noteIds.get(doc), 'first'),
+    },
+    {
+      name: 'setHeaderText',
+      create: () => DocxDocument.create(),
+      apply: (doc) => doc.setHeaderText(0, 'Header'),
+    },
+    {
+      name: 'setFooterText',
+      create: () => DocxDocument.create(),
+      apply: (doc) => doc.setFooterText(0, 'Footer'),
+    },
+    {
+      name: 'acceptAllRevisions',
+      create: () => withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins></w:p>'),
+      apply: (doc) => doc.acceptAllRevisions({ authors: ['Nobody'] }),
+    },
+    {
+      name: 'rejectAllRevisions',
+      create: () => withBody('<w:p><w:ins w:id="1" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins></w:p>'),
+      apply: (doc) => doc.rejectAllRevisions({ authors: ['Nobody'] }),
+    },
+    {
+      name: 'pasteClipboardFragment',
+      create: () => withBody('<w:p><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p>'),
+      apply: (doc) => doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 1, offset: 1 } }, { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] }),
+    },
+    {
+      name: 'applyFormat',
+      create: () => withBody('<w:p><w:r><w:t>ABC</w:t></w:r></w:p>'),
+      apply: (doc) => doc.applyFormat({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 } }, { color: 'FF0000' }),
+    },
+    {
+      name: 'setTrackChanges',
+      create: () => DocxDocument.create(),
+      apply: (doc) => doc.setTrackChanges(false),
+    },
+    {
+      name: 'setRevisionAuthor',
+      create: () => DocxDocument.create(),
+      apply: (doc) => doc.setRevisionAuthor('Alice'),
+    },
+    {
+      name: 'applyParagraphStyle',
+      create: () => withStyles(
+        '<w:p><w:pPr><w:pStyle w:val="Body"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>',
+        `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="Body"><w:name w:val="Body"/></w:style></w:styles>`,
+      ),
+      apply: (doc) => doc.applyParagraphStyle(0, 'Body'),
+    },
+    {
+      name: 'applyCharacterStyle',
+      create: () => withStyles(
+        '<w:p><w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>A</w:t></w:r></w:p>',
+        `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="character" w:styleId="Strong"><w:name w:val="Strong"/></w:style></w:styles>`,
+      ),
+      apply: (doc) => doc.applyCharacterStyle({ paragraph: 0, start: 0, end: 1 }, 'Strong'),
+    },
+    {
+      name: 'setOutlineLevel',
+      create: () => withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>'),
+      apply: (doc) => doc.setOutlineLevel(0, 2),
+    },
+    {
+      name: 'moveOutlineSection',
+      create: () => withBody('<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>H</w:t></w:r></w:p><w:p><w:r><w:t>body</w:t></w:r></w:p>'),
+      apply: (doc) => doc.moveOutlineSection(0, 0),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const doc = scenario.create();
+    scenario.apply(doc);
+    const beforeRevision = doc.revision;
+    const beforeParts = packagePartsSignature(doc);
+    const beforeHistory = doc.getHistory();
+    scenario.apply(doc);
+    assert.equal(doc.revision, beforeRevision, `${scenario.name}: no-op should not bump revision`);
+    assert.deepEqual(packagePartsSignature(doc), beforeParts, `${scenario.name}: no-op should keep bytes unchanged`);
+    const history = doc.getHistory();
+    assert.equal(history.undo.length, beforeHistory.undo.length, `${scenario.name}: no-op should not add undo entries`);
+    assert.equal(history.redo.length, beforeHistory.redo.length, `${scenario.name}: no-op should not add redo entries`);
+  }
 });
 
 test('getParagraphs keeps inserted text in body text and marks the run revision', () => {

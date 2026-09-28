@@ -180,6 +180,25 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a === b) return true;
+  if (a.byteLength !== b.byteLength) return false;
+  for (let index = 0; index < a.byteLength; index++) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+function equalPartMap(a: Map<string, Uint8Array>, b: Map<string, Uint8Array>): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [path, bytes] of a) {
+    const next = b.get(path);
+    if (!next || !equalBytes(bytes, next)) return false;
+  }
+  return true;
+}
+
 function dirname(path: string): string {
   const slash = path.lastIndexOf('/');
   return slash === -1 ? '' : path.slice(0, slash);
@@ -2543,7 +2562,7 @@ export class DocxDocument {
     this.setPartXml(path, serializeXml(document));
   }
 
-  private updatePartXmlInternal(path: string, update: (document: Document) => void): void {
+  private updatePartXmlInternal(path: string, update: (document: Document) => boolean | void): void {
     validatePath(path);
     const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
     this.nextHistoryLabel = undefined;
@@ -2551,9 +2570,26 @@ export class DocxDocument {
     const previous = this.captureState();
     try {
       const document = this.getCachedPartDocument(path);
-      update(document);
-      this.dirtyPartXml.add(path);
-      this.dirtyPartSizes.delete(path);
+      const before = this.parts.get(path);
+      if (!before) throw new Error(`Package part not found: ${path}`);
+      const changed = update(document);
+      if (changed === false) {
+        this.pendingMergedHistory = undefined;
+        return;
+      }
+      if (changed !== true) {
+        const next = encodeXml(serializeXml(document));
+        if (equalBytes(before, next)) {
+          this.pendingMergedHistory = undefined;
+          return;
+        }
+        this.parts.set(path, next);
+        this.dirtyPartXml.delete(path);
+        this.dirtyPartSizes.delete(path);
+      } else {
+        this.dirtyPartXml.add(path);
+        this.dirtyPartSizes.delete(path);
+      }
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
       else this.applyPendingMergedHistory();
@@ -2574,8 +2610,16 @@ export class DocxDocument {
       validatePath(path);
       if (!this.parts.has(path)) throw new Error('Use addPart with a content type to create a new part.');
       const document = parseXml(xml);
+      const bytes = encodeXml(xml);
+      const current = this.parts.get(path);
+      if (!current) throw new Error(`Package part not found: ${path}`);
+      if (equalBytes(current, bytes)) {
+        this.documents.set(path, document);
+        this.pendingMergedHistory = undefined;
+        return;
+      }
       this.documents.set(path, document);
-      this.parts.set(path, encodeXml(xml));
+      this.parts.set(path, bytes);
       this.dirtyPartXml.delete(path);
       this.dirtyPartSizes.delete(path);
       this.finalizeMutation(path);
@@ -2595,6 +2639,11 @@ export class DocxDocument {
     this.nextHistoryAction = { kind: 'other' };
     const previous = this.captureState();
     try {
+      const current = this.parts.get(path);
+      if (current && equalBytes(current, bytes)) {
+        this.pendingMergedHistory = undefined;
+        return;
+      }
       this.replacePartBytes(path, bytes);
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
@@ -2635,6 +2684,7 @@ export class DocxDocument {
   }
 
   private commitParts(parts: Map<string, Uint8Array>): void {
+    if (equalPartMap(this.parts, parts)) return;
     const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
@@ -6500,7 +6550,9 @@ export class DocxDocument {
         const replacement = normalized.slice(start, replacementEnd);
         if (this.trackChangesEnabled()) this.replaceSpanTracked(paragraph, start, end, replacement);
         else replaceSpan(paragraph, start, end, replacement);
+        return true;
       }
+      return false;
     });
   }
 
@@ -6520,6 +6572,7 @@ export class DocxDocument {
         const body = bodyOf(document);
         body.insertBefore(paragraph, children(body, 'sectPr')[0] ?? null);
       }
+      return true;
     });
   }
 
@@ -7123,8 +7176,12 @@ export class DocxDocument {
       if (start > 0 && /[\ud800-\udbff]/.test(text[start - 1]!)) start--;
       if (end < old.length && /[\udc00-\udfff]/.test(old[end]!)) { end++; replacementEnd++; }
       if (replacementEnd < text.length && /[\udc00-\udfff]/.test(text[replacementEnd]!)) replacementEnd++;
-      if (old !== text) replaceSpan(paragraph, start, end, text.slice(start, replacementEnd));
+      if (old !== text) {
+        replaceSpan(paragraph, start, end, text.slice(start, replacementEnd));
+        return true;
+      }
       readParagraph(paragraph, index, this.getStylesContext());
+      return false;
     });
   }
 
@@ -7153,6 +7210,11 @@ export class DocxDocument {
     this.nextHistoryAction = { kind: 'other' };
     try {
       const result = action(draft);
+      draft.materializeAllParts();
+      if (equalPartMap(this.parts, draft.parts)) {
+        this.pendingMergedHistory = undefined;
+        return result;
+      }
       this.parts = draft.parts;
       this.documents = draft.documents;
       this.dirtyPartXml = draft.dirtyPartXml;
@@ -7965,6 +8027,11 @@ export class DocxDocument {
         case 'undo': draft.undo(); break;
         case 'redo': draft.redo(); break;
         }
+      }
+      draft.materializeAllParts();
+      if (equalPartMap(this.parts, draft.parts)) {
+        this.pendingMergedHistory = undefined;
+        return this.getSnapshot();
       }
       const snapshot = draft.getSnapshot();
       this.parts = draft.parts;
