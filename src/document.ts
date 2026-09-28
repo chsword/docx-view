@@ -1645,6 +1645,8 @@ export class DocxDocument {
   private stylesCache?: { revision: number; context: StylesContext };
   private noteStateCache?: { revision: number; state: NoteState };
   private commentStateCache?: { revision: number; comments: CommentInfo[] };
+  private contentPartPathsCache?: { revision: number; paths: string[] };
+  private commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -2129,7 +2131,8 @@ export class DocxDocument {
   }
 
   private contentPartPaths(): string[] {
-    return this.listParts().filter((path) => {
+    if (this.contentPartPathsCache?.revision === this.revision) return [...this.contentPartPathsCache.paths];
+    const paths = this.listParts().filter((path) => {
       try {
         const root = this.getCachedPartDocument(path).documentElement;
         return root?.namespaceURI === WORD_NS && ['document', 'hdr', 'ftr', 'footnotes', 'endnotes'].includes(root.localName ?? '');
@@ -2137,6 +2140,8 @@ export class DocxDocument {
         return false;
       }
     });
+    this.contentPartPathsCache = { revision: this.revision, paths };
+    return [...paths];
   }
 
   private relatedPartPathFor(sourcePartPath: string, relationType: string): string | undefined {
@@ -2173,13 +2178,16 @@ export class DocxDocument {
   }
 
   private commentBindings(): CommentPartBinding[] {
-    return this.contentPartPaths()
+    if (this.commentBindingsCache?.revision === this.revision) return this.commentBindingsCache.bindings.map((binding) => ({ ...binding }));
+    const bindings = this.contentPartPaths()
       .map((sourcePartPath) => ({
         sourcePartPath,
         commentsPath: this.relatedPartPathFor(sourcePartPath, COMMENTS_REL),
         commentsExtendedPath: this.relatedPartPathFor(sourcePartPath, COMMENTS_EXTENDED_REL),
       }))
       .filter((binding) => binding.commentsPath || binding.commentsExtendedPath || this.mayContainComments(binding.sourcePartPath));
+    this.commentBindingsCache = { revision: this.revision, bindings };
+    return bindings.map((binding) => ({ ...binding }));
   }
 
   private collectCommentLocations(sourcePartPath: string): Map<number, CommentLocation> {
@@ -5088,6 +5096,7 @@ export class DocxDocument {
     this.updatePartXml(this.mainPath, (document) => {
       const startParagraph = paragraphAt(document, normalized.startParagraph);
       const endParagraph = paragraphAt(document, normalized.endParagraph);
+      const collapsed = normalized.startParagraph === normalized.endParagraph && normalized.startOffset === normalized.endOffset;
       if (startParagraph === endParagraph) {
         this.splitRunAtOffset(startParagraph, normalized.endOffset);
         this.splitRunAtOffset(startParagraph, normalized.startOffset);
@@ -5103,18 +5112,26 @@ export class DocxDocument {
 
       const endMarker = wordElement(document, 'commentRangeEnd');
       endMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
-      const endBoundary = this.boundaryRun(endParagraph, normalized.endOffset);
-      if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(endMarker, endBoundary);
-      else endParagraph.appendChild(endMarker);
-
       const referenceRun = wordElement(document, 'r');
       const props = properties(referenceRun, 'rPr');
       setWordValue(property(props, 'rStyle'), commentReferenceStyle());
       const reference = wordElement(document, 'commentReference');
       reference.setAttributeNS(WORD_NS, 'w:id', String(id));
       referenceRun.appendChild(reference);
-      if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(referenceRun, endBoundary);
-      else endParagraph.appendChild(referenceRun);
+      if (collapsed) {
+        const parent = startMarker.parentNode;
+        if (!parent) throw new Error('Comment anchor parent is missing.');
+        if (startMarker.nextSibling) parent.insertBefore(endMarker, startMarker.nextSibling);
+        else parent.appendChild(endMarker);
+        if (endMarker.nextSibling) parent.insertBefore(referenceRun, endMarker.nextSibling);
+        else parent.appendChild(referenceRun);
+      } else {
+        const endBoundary = this.boundaryRun(endParagraph, normalized.endOffset);
+        if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(endMarker, endBoundary);
+        else endParagraph.appendChild(endMarker);
+        if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(referenceRun, endBoundary);
+        else endParagraph.appendChild(referenceRun);
+      }
     });
     const { commentsPath, commentsExtendedPath } = this.ensureCommentsParts(this.mainPath, true);
     this.updatePartXml(commentsPath, (document) => {
@@ -5239,7 +5256,8 @@ export class DocxDocument {
         }
       });
     }
-    for (const sourcePartPath of this.contentPartPaths()) {
+    const affectedSourceParts = new Set([...paraIds.values()].map((info) => info.sourcePartPath));
+    for (const sourcePartPath of affectedSourceParts) {
       this.updatePartXml(sourcePartPath, (document) => {
         const container = blockContainerOf(document);
         for (const nodeName of ['commentRangeStart', 'commentRangeEnd'] as const) {

@@ -2058,6 +2058,16 @@ test('addComment across hyperlink keeps hyperlink intact', () => {
   assert.equal(doc.getHyperlinks().some((item) => item.anchor === 'x' && item.text.includes('link')), true);
 });
 
+test('addComment on a collapsed range keeps end marker and reference after the start marker', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'body');
+  doc.addComment({ paragraph: 0, start: 2, end: 2 }, { text: 'caret' });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:commentRangeStart w:id="1"\/><w:commentRangeEnd w:id="1"\/><w:r><w:rPr><w:rStyle w:val="CommentReference"\/><\/w:rPr><w:commentReference w:id="1"\/><\/w:r>/);
+  assert.ok(xml.indexOf('<w:commentRangeStart w:id="1"/>') < xml.indexOf('<w:commentRangeEnd w:id="1"/>'));
+  assert.ok(xml.indexOf('<w:commentRangeEnd w:id="1"/>') < xml.indexOf('<w:commentReference w:id="1"/>'));
+});
+
 test('comment mutations advance revision once per public call', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
