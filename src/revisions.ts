@@ -21,7 +21,27 @@ const CHANGE_KIND = {
   tcPrChange: 'cellFormatChange',
 } as const satisfies Partial<Record<string, RevisionMark['kind']>>;
 const PARENT_PROPERTY_ORDER = {
+  pPr: ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
+    'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
+    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
+    'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap',
+    'jc', 'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId',
+    'cnfStyle', 'rPr', 'sectPr', 'pPrChange'],
+  rPr: ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
+    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
+    'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
+    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
+  paraRPr: ['ins', 'del', 'moveFrom', 'moveTo', 'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs',
+    'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint',
+    'noProof', 'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing', 'w', 'kern', 'position',
+    'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs',
+    'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
+  tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+    'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
+    'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
   trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight', 'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
+  tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
+    'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
 } as const;
 
 function revisionAttribute(element: Element, name: string): string | undefined {
@@ -105,11 +125,11 @@ function previousFormatOf(element: Element, theme: Parameters<typeof readRunProp
   }
 }
 
-function orderedRevisionChild(parent: Element, name: string): Element {
+function orderedRevisionChild(parent: Element, name: string, orderName = parent.localName as keyof typeof PARENT_PROPERTY_ORDER): Element {
   let result = children(parent, name)[0];
   if (result) return result;
   result = wordElement(parent.ownerDocument!, name);
-  const order: string[] = [...(PARENT_PROPERTY_ORDER[parent.localName as keyof typeof PARENT_PROPERTY_ORDER] ?? [])];
+  const order: string[] = [...(PARENT_PROPERTY_ORDER[orderName] ?? [])];
   const position = order.indexOf(name);
   const following = position === -1 ? undefined : children(parent).find((child) => order.indexOf(child.localName ?? '') > position);
   parent.insertBefore(result, following ?? null);
@@ -170,14 +190,49 @@ export function readParagraphRevisionMark(paragraph: Element, theme: Parameters<
   return change ? readRevisionMark(change, 'paragraphFormatChange', theme) : undefined;
 }
 
-export function markRevision(parent: Element, kind: 'ins' | 'del', author?: string, date?: string): Element {
+export function createRevisionWrapper(document: Document, kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge', author?: string, date?: string): Element {
+  return applyRevisionMetadata(wordElement(document, kind), author, date);
+}
+
+export function markRevision(
+  parent: Element,
+  kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge',
+  author?: string,
+  date?: string,
+  orderName?: keyof typeof PARENT_PROPERTY_ORDER,
+): Element {
+  const marker = orderedRevisionChild(parent, kind, orderName);
+  return applyRevisionMetadata(marker, author, date);
+}
+
+export function markFormatRevision(
+  parent: Element,
+  kind: 'rPrChange' | 'pPrChange' | 'tblPrChange' | 'trPrChange' | 'tcPrChange',
+  snapshotName: 'rPr' | 'pPr' | 'tblPr' | 'trPr' | 'tcPr',
+  author?: string,
+  date?: string,
+): Element {
+  const marker = orderedRevisionChild(parent, kind);
+  applyRevisionMetadata(marker, author, date);
+  for (const child of children(marker)) {
+    if (child.localName !== snapshotName) marker.removeChild(child);
+  }
+  let snapshot = children(marker, snapshotName)[0];
+  if (!snapshot) {
+    snapshot = wordElement(parent.ownerDocument!, snapshotName);
+    marker.appendChild(snapshot);
+    return snapshot;
+  }
+  return snapshot;
+}
+
+function applyRevisionMetadata(marker: Element, author?: string, date?: string): Element {
   if (author !== undefined) assertText(author, 'author');
   if (date !== undefined) assertText(date, 'date');
-  const document = parent.ownerDocument!;
+  const document = marker.ownerDocument!;
   const used = Array.from(document.getElementsByTagNameNS(WORD_NS, '*'))
     .map((element) => revisionIdOf(element))
     .filter((value): value is number => value !== undefined);
-  const marker = orderedRevisionChild(parent, kind);
   const resolvedAuthor = author?.trim() || DEFAULT_REVISION_AUTHOR;
   marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
   marker.setAttributeNS(WORD_NS, 'w:author', resolvedAuthor);
