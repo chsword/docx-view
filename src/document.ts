@@ -1656,7 +1656,7 @@ export class DocxDocument {
   private numberingContextCache?: NumberingContext;
   private stylesCache?: { revision: number; context: StylesContext };
   private noteStateCache?: { revision: number; state: NoteState };
-  private revisionInfoCache?: { revision: number; mainPath: string; revisions: RevisionInfo[] };
+  private revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
 
   private constructor(parts: Map<string, Uint8Array>) {
@@ -1906,7 +1906,7 @@ export class DocxDocument {
     numberingContextCache: NumberingContext | undefined;
     stylesCache: { revision: number; context: StylesContext } | undefined;
     noteStateCache: { revision: number; state: NoteState } | undefined;
-    revisionInfoCache: { revision: number; mainPath: string; revisions: RevisionInfo[] } | undefined;
+    revisionInfoCache: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] } | undefined;
     imageDataUrls: Map<string, { revision: number; contentType: string; url: string }>;
   } {
     return {
@@ -2431,16 +2431,20 @@ export class DocxDocument {
   }
 
   private collectRevisions(): RevisionInfo[] {
-    if (this.revisionInfoCache?.revision === this.revision && this.revisionInfoCache.mainPath === this.mainDocumentPath) {
+    const styles = this.getStylesContext();
+    const stylesRevision = this.stylesCache?.revision ?? this.revision;
+    if (this.revisionInfoCache?.revision === this.revision &&
+        this.revisionInfoCache.mainPath === this.mainDocumentPath &&
+        this.revisionInfoCache.stylesRevision === stylesRevision) {
       return this.revisionInfoCache.revisions;
     }
     const document = this.getCachedPartDocument(this.mainDocumentPath);
     if (!hasRevisionMarkup(document)) {
-      this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, revisions: [] };
+      this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: [] };
       return this.revisionInfoCache.revisions;
     }
     const body = bodyOf(document);
-    const theme = this.getStylesContext().theme;
+    const theme = styles.theme;
     const paragraphs = descendants(body, 'p');
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const runIndexByParagraph = new Map<Element, Map<Element, number>>();
@@ -2509,7 +2513,7 @@ export class DocxDocument {
       }
     };
     walk(body);
-    this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, revisions: result };
+    this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
     return result;
   }
 
