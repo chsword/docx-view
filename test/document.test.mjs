@@ -3132,7 +3132,7 @@ test('getDocumentProtection reads current declaration', () => {
 test('setDocumentProtection inserts documentProtection in CT_Settings order', () => {
   const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"><w:revisionView/><w:doNotTrackMoves/></w:settings>`);
   doc.setDocumentProtection({ enabled: true, edit: 'trackedChanges' });
-  assert.match(doc.getPartXml('word/settings.xml'), /<w:revisionView\/><w:documentProtection w:edit="trackedChanges" w:enforcement="1"\/><w:doNotTrackMoves\/>/);
+  assert.match(doc.getPartXml('word/settings.xml'), /<w:revisionView\/><w:doNotTrackMoves\/><w:documentProtection w:edit="trackedChanges" w:enforcement="1"\/>/);
 });
 
 test('setDocumentProtection uses an existing custom settings relationship target and avoids duplicates', () => {
