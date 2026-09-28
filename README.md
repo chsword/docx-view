@@ -105,6 +105,7 @@ console.log(reopened.getSnapshot());
 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
 注释（脚注/尾注）`blocks` 里的段落 `index` 固定为 `-1`，不属于正文索引命名空间；注释内容请使用 `setNoteText(kind, id, text)` 编辑。`insertFootnote` / `insertEndnote` 为匹配 Word 常见显示，会在标记后以保留空格写入正文文本 run（例如读回 `" 内容"`）。
 批注锚点通过 `CommentInfo.anchor.sourcePartPath` 指明所属部件；`paragraph` / `startParagraph` / `endParagraph` 都是该部件内部的局部顺序，不可直接拿去调用正文 `setParagraphText()` 之类的 API。回复批注会复用父批注锚点；没有正文锚点或没有 `comments.xml` 条目的记录会被标记为 `isOrphan: true`。
+当前写入型批注 API（`addComment` / `replyComment` / `setCommentResolved` / `setCommentText` / `deleteComment`）以主文档为编辑入口；`getComments()` 会同时读出正文、页眉、页脚、脚注和尾注中的批注锚点。
 
 ### 可视化组件
 

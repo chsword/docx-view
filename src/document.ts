@@ -2358,12 +2358,12 @@ export class DocxDocument {
   }
 
   private getCommentsPartPath(sourcePartPath = this.mainPath): string | undefined {
-    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}comments.xml`;
+    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`;
     return this.relatedPartPathFor(sourcePartPath, COMMENTS_REL) ?? (this.parts.has(conventional) ? conventional : undefined);
   }
 
   private getCommentsExtendedPartPath(sourcePartPath = this.mainPath): string | undefined {
-    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}commentsExtended.xml`;
+    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`;
     return this.relatedPartPathFor(sourcePartPath, COMMENTS_EXTENDED_REL) ?? (this.parts.has(conventional) ? conventional : undefined);
   }
 
@@ -4849,8 +4849,8 @@ export class DocxDocument {
     let commentsPath = this.getCommentsPartPath(sourcePartPath);
     if (!commentsPath) {
       commentsPath = sourcePartPath === this.mainPath
-        ? `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}comments.xml`
-        : `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}${sourceBase}-comments.xml`;
+        ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`
+        : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-comments.xml`;
     }
     if (!this.parts.has(commentsPath)) this.addPart(commentsPath, encodeXml(defaultCommentsXml()), COMMENTS_TYPE);
     this.ensurePartRelationship(sourcePartPath, COMMENTS_REL, commentsPath);
@@ -4859,8 +4859,8 @@ export class DocxDocument {
       commentsExtendedPath = this.getCommentsExtendedPartPath(sourcePartPath);
       if (!commentsExtendedPath) {
         commentsExtendedPath = sourcePartPath === this.mainPath
-          ? `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}commentsExtended.xml`
-          : `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}${sourceBase}-commentsExtended.xml`;
+          ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`
+          : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-commentsExtended.xml`;
       }
       if (!this.parts.has(commentsExtendedPath)) {
         this.addPart(commentsExtendedPath, encodeXml(defaultCommentsExtendedXml()), COMMENTS_EXTENDED_TYPE);
