@@ -432,6 +432,7 @@ function wrapRunsWithRevision(
   kind: 'ins' | 'del',
   author?: string,
   date?: string,
+  options: { convertText?: boolean } = {},
 ): void {
   const selected = new Set(runs);
   for (let index = 0; index < runs.length; index++) {
@@ -452,7 +453,7 @@ function wrapRunsWithRevision(
       selected.delete(entry);
     }
   }
-  if (kind === 'del') {
+  if (kind === 'del' && options.convertText !== false) {
     for (const run of runs) revisionTextElement(run, 'delText');
   }
 }
@@ -3445,23 +3446,34 @@ export class DocxDocument {
     this.splitRunAtOffset(paragraph, start);
     const run = wordElement(paragraph.ownerDocument!, 'r');
     appendText(run, text);
-    const wrapper = markRevision(paragraph, 'ins', this.trackedRevisionAuthor());
-    wrapper.appendChild(run);
     const runs = ownRuns(paragraph);
     let cursor = 0;
+    let parent = paragraph;
     let anchor: Element | undefined;
+    let previous: Element | undefined;
     for (const candidate of runs) {
       if (candidate === run) continue;
       const length = textOf(candidate).length;
       const next = cursor + length;
-      if (length === 0) continue;
+      if (length === 0) {
+        previous = candidate;
+        continue;
+      }
       if (start <= cursor || start < next) {
+        parent = candidate.parentNode?.nodeType === 1 ? candidate.parentNode as Element : paragraph;
         anchor = candidate;
         break;
       }
       cursor = next;
+      previous = candidate;
     }
-    paragraph.insertBefore(wrapper, anchor ?? null);
+    if (!anchor && previous?.parentNode?.nodeType === 1) {
+      parent = previous.parentNode as Element;
+    }
+    const reference = anchor ?? previous?.nextSibling ?? null;
+    const wrapper = markRevision(parent, 'ins', this.trackedRevisionAuthor());
+    wrapper.appendChild(run);
+    parent.insertBefore(wrapper, reference);
   }
 
   private replaceSpanTracked(paragraph: Element, start: number, end: number, replacement: string): void {
@@ -4210,7 +4222,7 @@ export class DocxDocument {
         if (!trackedRun) throw new Error(`Run ${info.run} does not exist.`);
         const trackedImage = imageElementForRun(trackedRun, info.relationshipId, info.ordinal ?? 0);
         if (!trackedImage) throw new Error(`Image ${info.relationshipId} does not exist.`);
-        wrapRunsWithRevision(paragraphAt(document, info.paragraph), [trackedRun], 'del', this.trackedRevisionAuthor());
+        wrapRunsWithRevision(paragraphAt(document, info.paragraph), [trackedRun], 'del', this.trackedRevisionAuthor(), undefined, { convertText: false });
       });
       return;
     }

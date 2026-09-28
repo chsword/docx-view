@@ -2745,6 +2745,14 @@ test('tracked setParagraphText writes inserted text inside w:ins', () => {
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="\d+" w:author="docx-view"><w:r><w:t xml:space="preserve"> world<\/w:t><\/w:r><\/w:ins>/);
 });
 
+test('tracked setParagraphText keeps replacement markup inside a hyperlink container', () => {
+  const doc = trackedDoc(`<w:p xmlns:r="${OFFICE_REL_NS}"><w:hyperlink w:anchor="a"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:r><w:t> tail</w:t></w:r></w:p>`);
+  doc.setParagraphText(0, 'LINK tail');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:hyperlink w:anchor="a"><w:(?:del|ins)[\s\S]*<\/w:hyperlink>/);
+  assert.doesNotMatch(xml, /<w:p><w:(?:del|ins)[^>]*><w:r><w:t[^>]*>LINK/);
+});
+
 test('tracked setParagraphText replacement creates both deletion and insertion markers in one revision step', () => {
   const doc = trackedDoc('<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>');
   const before = doc.revision;
@@ -2830,6 +2838,7 @@ test('tracked deleteImage wraps the image run in w:del and keeps the media part'
   doc.deleteImage(image);
   assert.equal(doc.listParts().includes('word/media/image1.png'), true);
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:del w:id="\d+" w:author="docx-view"><w:r><w:drawing>/);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /delText/);
 });
 
 test('applyOperations accepts setTrackChanges and setRevisionAuthor', () => {
@@ -2922,6 +2931,16 @@ test('tracked deleteImage increments revision exactly once', () => {
   const before = doc.revision;
   doc.deleteImage(image);
   assert.equal(doc.revision, before + 1);
+});
+
+test('revision author survives undo and redo for later tracked edits', () => {
+  const doc = trackedDoc('<w:p><w:r><w:t>ab</w:t></w:r></w:p>');
+  doc.setRevisionAuthor('Alice');
+  doc.setParagraphText(0, 'axb');
+  doc.undo();
+  doc.redo();
+  doc.setParagraphText(0, 'axby');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:author="Alice"/);
 });
 
 test('agent operation schema includes tracked-review settings operations', () => {
