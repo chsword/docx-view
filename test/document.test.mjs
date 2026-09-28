@@ -648,7 +648,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1164,7 +1164,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -2472,7 +2472,7 @@ test('applyOperations supports comment operations and schema count stays aligned
     operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
   });
   assert.equal(snapshot.comments.length, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
@@ -2993,7 +2993,7 @@ test('revision author survives undo and redo for later tracked edits', () => {
 test('agent operation schema includes tracked-review settings operations', () => {
   const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
     .map((entry) => entry.properties.type.const);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 54);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
   assert.ok(types.includes('setTrackChanges'));
   assert.ok(types.includes('setRevisionAuthor'));
 });
@@ -3204,4 +3204,206 @@ test('clipboard copy/paste round-trip keeps richer direct run format fields', ()
   assert.equal(run?.underlineStyle, 'dotted');
   assert.equal(run?.fontFamily, 'Arial');
   assert.equal(run?.highlight, 'yellow');
+});
+
+test('acceptRevision unwraps insertion wrappers', () => {
+  const doc = withBody('<w:p><w:ins w:id="1"><w:r><w:t>A</w:t></w:r></w:ins><w:r><w:t>B</w:t></w:r></w:p>');
+  doc.acceptRevision(1);
+  assert.equal(doc.getParagraphs()[0].text, 'AB');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:ins\b/);
+});
+
+test('rejectRevision deletes insertion wrappers with their content', () => {
+  const doc = withBody('<w:p><w:ins w:id="2"><w:r><w:t>A</w:t></w:r></w:ins><w:r><w:t>B</w:t></w:r></w:p>');
+  doc.rejectRevision(2);
+  assert.equal(doc.getParagraphs()[0].text, 'B');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:ins\b/);
+});
+
+test('acceptRevision deletes deletion wrappers with their content', () => {
+  const doc = withBody('<w:p><w:del w:id="3"><w:r><w:delText>A</w:delText></w:r></w:del><w:r><w:t>B</w:t></w:r></w:p>');
+  doc.acceptRevision(3);
+  assert.equal(doc.getParagraphs()[0].text, 'B');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:del\b/);
+});
+
+test('rejectRevision unwraps deletion wrappers and converts delText back to text', () => {
+  const doc = withBody('<w:p><w:del w:id="4"><w:r><w:delText>A</w:delText></w:r></w:del><w:r><w:t>B</w:t></w:r></w:p>');
+  doc.rejectRevision(4);
+  assert.equal(doc.getParagraphs()[0].text, 'AB');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t(?: xml:space="preserve")?>A<\/w:t>/);
+});
+
+test('acceptRevision drops rPrChange while keeping current format', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="5"><w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr><w:t>X</w:t></w:r></w:p>');
+  doc.acceptRevision(5);
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.bold, true);
+  assert.equal(run.italic, undefined);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /rPrChange/);
+});
+
+test('rejectRevision restores previous format from rPrChange snapshot', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="6"><w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr><w:t>X</w:t></w:r></w:p>');
+  doc.rejectRevision(6);
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.bold, undefined);
+  assert.equal(run.italic, true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /rPrChange/);
+});
+
+test('acceptRevision drops pPrChange while keeping current paragraph format', () => {
+  const doc = withBody('<w:p><w:pPr><w:jc w:val="center"/><w:pPrChange w:id="7"><w:pPr><w:jc w:val="left"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>X</w:t></w:r></w:p>');
+  doc.acceptRevision(7);
+  assert.equal(doc.getParagraphs()[0].alignment, 'center');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /pPrChange/);
+});
+
+test('rejectRevision restores previous paragraph format from pPrChange snapshot', () => {
+  const doc = withBody('<w:p><w:pPr><w:jc w:val="center"/><w:pPrChange w:id="8"><w:pPr><w:jc w:val="left"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>X</w:t></w:r></w:p>');
+  doc.rejectRevision(8);
+  assert.equal(doc.getParagraphs()[0].alignment, 'left');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /pPrChange/);
+});
+
+test('rejectRevision on paragraph insertion marker removes the paragraph and preserves body paragraph invariant', () => {
+  const doc = withBody('<w:p><w:pPr><w:rPr><w:ins w:id="9"/></w:rPr></w:pPr><w:r><w:t>X</w:t></w:r></w:p>');
+  doc.rejectRevision(9);
+  assert.equal(doc.getParagraphs().length, 1);
+  assert.equal(doc.getParagraphs()[0].text, '');
+});
+
+test('rejectRevision on inserted table-cell paragraph marker preserves required empty paragraph', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:p><w:pPr><w:rPr><w:ins w:id="10"/></w:rPr></w:pPr><w:r><w:t>X</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.rejectRevision(10);
+  const table = doc.getTable(0);
+  assert.equal(table.rows[0].cells[0].blocks.length, 1);
+  assert.equal(table.rows[0].cells[0].blocks[0].type, 'paragraph');
+  assert.equal(table.rows[0].cells[0].blocks[0].paragraph.text, '');
+});
+
+test('acceptRevision on row insertion marker keeps the row and removes marker', () => {
+  const doc = withBody('<w:tbl><w:tr><w:trPr><w:ins w:id="11"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.acceptRevision(11);
+  assert.equal(doc.getTable(0).rows.length, 2);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="11"/);
+});
+
+test('rejectRevision on row insertion marker deletes the row', () => {
+  const doc = withBody('<w:tbl><w:tr><w:trPr><w:ins w:id="12"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.rejectRevision(12);
+  assert.deepEqual(doc.getTable(0).rows.flatMap(row => row.cells[0].blocks[0].paragraph.text), ['B']);
+});
+
+test('acceptRevision on row deletion marker deletes the row', () => {
+  const doc = withBody('<w:tbl><w:tr><w:trPr><w:del w:id="13"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.acceptRevision(13);
+  assert.deepEqual(doc.getTable(0).rows.flatMap(row => row.cells[0].blocks[0].paragraph.text), ['B']);
+});
+
+test('rejectRevision on row deletion marker keeps the row and removes marker', () => {
+  const doc = withBody('<w:tbl><w:tr><w:trPr><w:del w:id="14"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.rejectRevision(14);
+  assert.equal(doc.getTable(0).rows.length, 2);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:del w:id="14"/);
+});
+
+test('rejectRevision on cellIns removes only the revised cell', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:tcPr><w:cellIns w:id="140"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.rejectRevision(140);
+  const table = doc.getTable(0);
+  assert.deepEqual(table.rows[0].cells.map((cell) => cell.blocks[0].paragraph.text), ['B']);
+  assert.deepEqual(table.rows[1].cells.map((cell) => cell.blocks[0].paragraph.text), ['C', 'D']);
+});
+
+test('acceptRevision on cellDel removes only the revised cell', () => {
+  const doc = withBody('<w:tbl><w:tr><w:tc><w:tcPr><w:cellDel w:id="141"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  doc.acceptRevision(141);
+  const table = doc.getTable(0);
+  assert.deepEqual(table.rows[0].cells.map((cell) => cell.blocks[0].paragraph.text), ['B']);
+  assert.deepEqual(table.rows[1].cells.map((cell) => cell.blocks[0].paragraph.text), ['C', 'D']);
+});
+
+test('acceptAllRevisions can filter by author', () => {
+  const doc = withBody('<w:p><w:ins w:id="15" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins><w:ins w:id="16" w:author="Bob"><w:r><w:t>B</w:t></w:r></w:ins><w:r><w:t>C</w:t></w:r></w:p>');
+  doc.acceptAllRevisions({ authors: ['Alice'] });
+  assert.equal(doc.getParagraphs()[0].text, 'ABC');
+  assert.equal(doc.getRevisions().map((revision) => revision.id).includes(16), true);
+  assert.equal(doc.getRevisions().map((revision) => revision.id).includes(15), false);
+});
+
+test('acceptAllRevisions processes 20+ revisions and increments revision once', () => {
+  const wraps = Array.from({ length: 25 }, (_, index) => `<w:ins w:id="${200 + index}" w:author="A"><w:r><w:t>${index}</w:t></w:r></w:ins>`).join('');
+  const doc = withBody(`<w:p>${wraps}</w:p>`);
+  const before = doc.revision;
+  doc.acceptAllRevisions();
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getRevisions().length, 0);
+});
+
+test('acceptAllRevisions failure rolls back parts and revision', () => {
+  const doc = withBody('<w:tbl><w:tr><w:trPr><w:del w:id="300"/></w:trPr><w:tc><w:p><w:r><w:t>only</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+  const beforeRevision = doc.revision;
+  const beforeXml = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.acceptAllRevisions(), /only table row/);
+  assert.equal(doc.revision, beforeRevision);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), beforeXml);
+});
+
+test('acceptAllRevisions is a no-op when author filter matches nothing', () => {
+  const doc = withBody('<w:p><w:ins w:id="17" w:author="Alice"><w:r><w:t>A</w:t></w:r></w:ins></w:p>');
+  const before = doc.revision;
+  doc.acceptAllRevisions({ authors: ['Bob'] });
+  assert.equal(doc.revision, before);
+  assert.equal(doc.getRevisions().length, 1);
+});
+
+test('acceptRevision throws when revision id does not exist', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r></w:p>');
+  assert.throws(() => doc.acceptRevision(999), /does not exist/);
+});
+
+test('applyOperations keeps operation indices sequential after rejectRevision removes earlier runs', () => {
+  const doc = withBody('<w:p><w:ins w:id="18"><w:r><w:t>X</w:t></w:r></w:ins><w:r><w:t>Y</w:t></w:r></w:p>');
+  const snapshot = doc.applyOperations({
+    operations: [
+      { type: 'rejectRevision', id: 18 },
+      { type: 'formatRun', paragraph: 0, run: 0, format: { bold: true } },
+    ],
+  });
+  assert.equal(snapshot.paragraphs[0].text, 'Y');
+  assert.equal(snapshot.paragraphs[0].runs[0].bold, true);
+});
+
+test('accept/reject revisions keep numbering sequence consistent', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr><w:rPr><w:ins w:id="19"/></w:rPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>C</w:t></w:r></w:p>');
+  doc.addPart('word/numbering.xml', encoder.encode(`<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml');
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`), RELS_TYPE);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '2.', '3.']);
+  doc.rejectRevision(19);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '2.']);
+});
+
+test('acceptRevision keeps hyperlinks and images discoverable after unwrapping', () => {
+  const doc = withImageDoc(
+    '<w:p><w:ins w:id="20"><w:hyperlink w:anchor="a"><w:r><w:t>L</w:t></w:r></w:hyperlink><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><wp:docPr id="1" name="img"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill><pic:spPr/></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:ins></w:p>',
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>',
+  );
+  doc.acceptRevision(20);
+  assert.equal(doc.getHyperlinks().length, 1);
+  assert.equal(doc.getImages().length, 1);
+});
+
+test('agent schema and runtime validation support revision accept/reject operations', () => {
+  const opNames = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .map((schema) => schema.properties?.type?.const)
+    .filter(Boolean);
+  assert.equal(opNames.includes('acceptRevision'), true);
+  assert.equal(opNames.includes('rejectRevision'), true);
+  assert.equal(opNames.includes('acceptAllRevisions'), true);
+  assert.equal(opNames.includes('rejectAllRevisions'), true);
+  const doc = withBody('<w:p><w:ins w:id="21"><w:r><w:t>A</w:t></w:r></w:ins></w:p>');
+  const snapshot = doc.applyOperations({ operations: [{ type: 'acceptRevision', id: 21 }] });
+  assert.equal(snapshot.paragraphs[0].text, 'A');
+  assert.throws(() => doc.applyOperations({ operations: [{ type: 'acceptAllRevisions', filter: { authors: new Array(1001).fill('A') } }] }), /at most 1000 authors/);
 });

@@ -3,7 +3,7 @@ import type { ParagraphFormat, RevisionInfo, RevisionMark, RunFormat } from './t
 import { readParagraphProperties, readRunProperties } from './styles.js';
 import { WORD_NS, assertText, children, descendants, wordElement } from './xml.js';
 
-const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange'] as const;
+const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel'] as const;
 const VISIBLE_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
 const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
 const DEFAULT_REVISION_AUTHOR = 'docx-view';

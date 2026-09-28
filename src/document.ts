@@ -111,6 +111,10 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
+const REVISION_FILTER_MAX_AUTHORS = 1_000;
+const REVISION_ELEMENT_NAMES = new Set([
+  'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
+]);
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
@@ -294,6 +298,36 @@ function clearParagraphContent(paragraph: Element): void {
   for (const child of [...children(paragraph)]) {
     if (child.localName !== 'pPr') paragraph.removeChild(child);
   }
+}
+
+function deleteParagraphElement(paragraph: Element): void {
+  const parent = paragraph.parentNode as Element;
+  let container: Element | undefined;
+  try { container = paragraphContainer(paragraph); } catch {}
+  // A cell must end with a paragraph, and section properties must not be silently lost.
+  if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
+    throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
+  }
+  if (container) {
+    const blocks = blockElements(container);
+    const remaining = blocks.filter(block => block !== paragraph);
+    const indexInContainer = blocks.indexOf(paragraph);
+    const mustKeepParagraph =
+      (container.localName === 'body' && (
+        !remaining.length ||
+        remaining.at(-1)?.localName === 'tbl' ||
+        (indexInContainer > 0 &&
+          indexInContainer < blocks.length - 1 &&
+          blocks[indexInContainer - 1]?.localName === 'tbl' &&
+          blocks[indexInContainer + 1]?.localName === 'tbl')
+      )) ||
+      (container.localName === 'tc' && remaining.at(-1)?.localName !== 'p');
+    if (mustKeepParagraph) {
+      clearParagraphContent(paragraph);
+      return;
+    }
+  }
+  parent.removeChild(paragraph);
 }
 
 function isParagraphAnchorMarker(element: Element): boolean {
@@ -554,6 +588,20 @@ function property(parent: Element, name: string): Element {
   return result;
 }
 
+function insertPropertyChild(parent: Element, child: Element): void {
+  const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER] ?? [];
+  const position = order.indexOf(child.localName ?? '');
+  if (position === -1) {
+    parent.appendChild(child);
+    return;
+  }
+  const following = children(parent).find((entry) => {
+    const entryPosition = order.indexOf(entry.localName ?? '');
+    return entryPosition > position;
+  });
+  parent.insertBefore(child, following ?? null);
+}
+
 function nearestNonTransparentAncestor(element: Element): Element {
   let result = element;
   while (isTransparentWordWrapper(result) && result.parentNode?.nodeType === 1) {
@@ -605,6 +653,40 @@ function nearestWordAncestor(node: Node | null, localName: string): Element | un
     if (element.namespaceURI === WORD_NS && element.localName === localName) return element;
   }
   return undefined;
+}
+
+function revisionIdOf(element: Element): number | undefined {
+  const raw = element.getAttributeNS(WORD_NS, 'id') ?? element.getAttribute('w:id');
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
+function revisionAuthorOf(element: Element): string | undefined {
+  const value = element.getAttributeNS(WORD_NS, 'author') ?? element.getAttribute('w:author') ?? undefined;
+  const author = value?.trim();
+  return author ? author : undefined;
+}
+
+function unwrapNode(element: Element): void {
+  const parent = element.parentNode;
+  if (!parent) return;
+  while (element.firstChild) parent.insertBefore(element.firstChild, element);
+  parent.removeChild(element);
+}
+
+function replaceRevisionTextNodes(root: Element): void {
+  const document = root.ownerDocument!;
+  for (const from of descendants(root, 'delText')) {
+    const to = wordElement(document, 't');
+    for (let index = 0; index < from.attributes.length; index++) {
+      const attribute = from.attributes.item(index);
+      if (!attribute) continue;
+      to.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+    }
+    while (from.firstChild) to.appendChild(from.firstChild);
+    from.parentNode?.replaceChild(to, from);
+  }
 }
 
 function revisionParagraphAnchor(element: Element): Element | undefined {
@@ -1497,6 +1579,64 @@ function repairVerticalMerges(table: Element): void {
   }
 
 
+}
+
+function deleteTableRowElement(table: Element, at: number): void {
+  const rows = tableRows(table);
+  const row = rows[at];
+  if (!row) throw new Error(`Row ${at} does not exist.`);
+  if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
+  const next = rows[at + 1];
+  if (next) {
+    const nextPositions = new Map(rowCells(next).map(position => [position.start, position]));
+    for (const position of rowCells(row)) {
+      if (position.vMerge === 'restart') {
+        const continuation = nextPositions.get(position.start);
+        if (continuation?.vMerge === 'continue') {
+          const props = tableProperty(continuation.cell, 'tcPr');
+          mergeElement(props, 'vMerge', 'restart');
+        }
+      }
+    }
+  }
+  row.parentNode!.removeChild(row);
+  repairVerticalMerges(table);
+}
+
+function deleteTableColumnElement(table: Element, at: number): void {
+  const grid = ensureTableGrid(table);
+  const columns = children(grid, 'gridCol');
+  if (!columns[at]) throw new Error(`Column ${at} does not exist.`);
+  if (columns.length <= 1) throw new Error('Cannot delete the only table column.');
+  const model = tableModel(table);
+  grid.removeChild(columns[at]!);
+  const handled = new Set<Element>();
+  for (const [rowIndex, row] of tableRows(table).entries()) {
+    const covering = model.matrix[rowIndex]?.[at];
+    if (covering && covering.rowSpan > 1) {
+      if (handled.has(covering.cell)) continue;
+      handled.add(covering.cell);
+      for (let index = covering.row; index < covering.row + covering.rowSpan; index++) {
+        const chain = rowCells(model.rows[index]!).find(position => position.start === covering.start);
+        if (!chain) continue;
+        if (chain.span > 1) {
+          const props = tableProperty(chain.cell, 'tcPr');
+          mergeElement(props, 'gridSpan', chain.span - 1 > 1 ? chain.span - 1 : undefined);
+        } else {
+          model.rows[index]!.removeChild(chain.cell);
+        }
+      }
+      continue;
+    }
+    const position = rowCells(row).find(cell => at >= cell.start && at < cell.start + cell.span);
+    if (!position) throw new Error(`Column ${at} does not exist.`);
+    if (position.span > 1) {
+      const props = tableProperty(position.cell, 'tcPr');
+      mergeElement(props, 'gridSpan', position.span - 1 > 1 ? position.span - 1 : undefined);
+    } else {
+      row.removeChild(position.cell);
+    }
+  }
 }
 
 function setOptionalAttribute(element: Element, name: string, value: string | undefined): void {
@@ -3246,10 +3386,12 @@ export class DocxDocument {
         switch (element.localName) {
           case 'ins':
           case 'moveTo':
+          case 'cellIns':
             push(element, 'insertion');
             break;
           case 'del':
           case 'moveFrom':
+          case 'cellDel':
             push(element, 'deletion');
             break;
           case 'rPrChange':
@@ -3274,6 +3416,231 @@ export class DocxDocument {
     walk(body);
     this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
     return result;
+  }
+
+  acceptRevision(id: number): void {
+    assertIndex(id);
+    if (!this.getRevisions().some((revision) => revision.id === id)) throw new Error(`Revision ${id} does not exist.`);
+    this.withDraft((draft) => draft.applyRevisionById(id, 'accept'));
+  }
+
+  rejectRevision(id: number): void {
+    assertIndex(id);
+    if (!this.getRevisions().some((revision) => revision.id === id)) throw new Error(`Revision ${id} does not exist.`);
+    this.withDraft((draft) => draft.applyRevisionById(id, 'reject'));
+  }
+
+  acceptAllRevisions(filter: { authors?: string[] } = {}): void {
+    const authors = this.normalizeRevisionAuthorFilter(filter);
+    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    if (!revisions.length) return;
+    this.withDraft((draft) => draft.applyRevisionBatch(authors, 'accept'));
+  }
+
+  rejectAllRevisions(filter: { authors?: string[] } = {}): void {
+    const authors = this.normalizeRevisionAuthorFilter(filter);
+    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    if (!revisions.length) return;
+    this.withDraft((draft) => draft.applyRevisionBatch(authors, 'reject'));
+  }
+
+  private normalizeRevisionAuthorFilter(filter: { authors?: string[] }): Set<string> | undefined {
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) throw new Error('filter must be an object.');
+    if (Object.keys(filter).some((key) => key !== 'authors')) throw new Error('Unknown revision filter property.');
+    if (!('authors' in filter) || filter.authors === undefined) return undefined;
+    if (!Array.isArray(filter.authors) || filter.authors.length > REVISION_FILTER_MAX_AUTHORS) {
+      throw new Error(`filter.authors must be an array of at most ${REVISION_FILTER_MAX_AUTHORS} authors.`);
+    }
+    const authors = new Set<string>();
+    for (let index = 0; index < filter.authors.length; index++) {
+      const author = filter.authors[index];
+      assertText(author, `filter.authors[${index}]`);
+      authors.add(author);
+    }
+    return authors;
+  }
+
+  private applyRevisionById(id: number, action: 'accept' | 'reject'): void {
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      let changed = false;
+      while (this.processNextRevision(document, (marker, markerId) => markerId === id, action)) changed = true;
+      if (!changed) throw new Error(`Revision ${id} does not exist.`);
+    });
+  }
+
+  private applyRevisionBatch(authors: Set<string> | undefined, action: 'accept' | 'reject'): void {
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const markers = this.collectRevisionMarkers(document, (marker) => {
+        if (!authors) return true;
+        const author = revisionAuthorOf(marker);
+        return author !== undefined && authors.has(author);
+      });
+      for (const marker of markers.reverse()) {
+        if (!marker.parentNode) continue;
+        this.applyRevisionDecision(marker, action);
+      }
+    });
+  }
+
+  private processNextRevision(
+    document: Document,
+    match: (marker: Element, id: number) => boolean,
+    action: 'accept' | 'reject',
+  ): boolean {
+    const marker = this.findFirstRevisionMarker(document, match);
+    if (!marker) return false;
+    this.applyRevisionDecision(marker, action);
+    return true;
+  }
+
+  private findFirstRevisionMarker(document: Document, match: (marker: Element, id: number) => boolean): Element | undefined {
+    const body = bodyOf(document);
+    const stack: Element[] = [body];
+    while (stack.length) {
+      const node = stack.pop()!;
+      const descendantsInOrder = [...children(node)];
+      for (let index = descendantsInOrder.length - 1; index >= 0; index--) stack.push(descendantsInOrder[index]!);
+      if (node.namespaceURI !== WORD_NS) continue;
+      const name = node.localName ?? '';
+      if (!REVISION_ELEMENT_NAMES.has(name)) continue;
+      const id = revisionIdOf(node);
+      if (id === undefined) continue;
+      if (match(node, id)) return node;
+    }
+    return undefined;
+  }
+
+  private collectRevisionMarkers(document: Document, match: (marker: Element, id: number) => boolean): Element[] {
+    const body = bodyOf(document);
+    const result: Element[] = [];
+    const walk = (node: Element): void => {
+      for (const child of children(node)) {
+        if (child.namespaceURI !== WORD_NS) {
+          walk(child);
+          continue;
+        }
+        const name = child.localName ?? '';
+        if (REVISION_ELEMENT_NAMES.has(name)) {
+          const id = revisionIdOf(child);
+          if (id !== undefined && match(child, id)) result.push(child);
+        }
+        walk(child);
+      }
+    };
+    walk(body);
+    return result;
+  }
+
+  private applyRevisionDecision(marker: Element, action: 'accept' | 'reject'): void {
+    const name = marker.localName ?? '';
+    if (['rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange'].includes(name)) {
+      this.applyFormatChangeRevision(marker, action);
+      return;
+    }
+    if (['ins', 'moveTo', 'del', 'moveFrom'].includes(name)) {
+      this.applyInsertionDeletionRevision(marker, action);
+      return;
+    }
+    if (['cellIns', 'cellDel'].includes(name)) {
+      const deletesCell = (action === 'accept' && name === 'cellDel') || (action === 'reject' && name === 'cellIns');
+      if (deletesCell) {
+        this.deleteCellForRevision(marker);
+      } else {
+        this.removeRevisionMarker(marker);
+      }
+    }
+  }
+
+  private applyFormatChangeRevision(marker: Element, action: 'accept' | 'reject'): void {
+    const props = marker.parentNode?.nodeType === 1 ? marker.parentNode as Element : undefined;
+    if (!props || props.namespaceURI !== WORD_NS) return;
+    if (action === 'reject') {
+      const snapshotNameByMarker: Record<string, 'rPr' | 'pPr' | 'tblPr' | 'trPr' | 'tcPr'> = {
+        rPrChange: 'rPr',
+        pPrChange: 'pPr',
+        tblPrChange: 'tblPr',
+        trPrChange: 'trPr',
+        tcPrChange: 'tcPr',
+      };
+      const snapshotName = snapshotNameByMarker[marker.localName as keyof typeof snapshotNameByMarker];
+      const snapshot = snapshotName ? children(marker, snapshotName)[0] : undefined;
+      if (snapshot) {
+        for (const child of [...children(props)]) props.removeChild(child);
+        for (const child of children(snapshot)) insertPropertyChild(props, child.cloneNode(true) as Element);
+      }
+    }
+    this.removeRevisionMarker(marker);
+  }
+
+  private applyInsertionDeletionRevision(marker: Element, action: 'accept' | 'reject'): void {
+    const name = marker.localName ?? '';
+    const isInsertion = name === 'ins' || name === 'moveTo';
+    const parent = marker.parentNode?.nodeType === 1 ? marker.parentNode as Element : undefined;
+    const grandparent = parent?.parentNode?.nodeType === 1 ? parent.parentNode as Element : undefined;
+    const isParagraphMark =
+      parent?.namespaceURI === WORD_NS && parent.localName === 'rPr' &&
+      grandparent?.namespaceURI === WORD_NS && grandparent.localName === 'pPr' &&
+      nearestWordAncestor(grandparent, 'p');
+    const isRowMark = parent?.namespaceURI === WORD_NS && parent.localName === 'trPr' && nearestWordAncestor(parent, 'tr');
+    if (isParagraphMark) {
+      if ((action === 'accept' && isInsertion) || (action === 'reject' && !isInsertion)) {
+        this.removeRevisionMarker(marker);
+      } else {
+        this.deleteParagraphForRevision(marker);
+      }
+      return;
+    }
+    if (isRowMark) {
+      if ((action === 'accept' && isInsertion) || (action === 'reject' && !isInsertion)) {
+        this.removeRevisionMarker(marker);
+      } else {
+        this.deleteTableRowForRevision(marker);
+      }
+      return;
+    }
+    if ((action === 'accept' && isInsertion) || (action === 'reject' && !isInsertion)) {
+      if (!isInsertion) replaceRevisionTextNodes(marker);
+      unwrapNode(marker);
+      return;
+    }
+    marker.parentNode?.removeChild(marker);
+  }
+
+  private deleteParagraphForRevision(marker: Element): void {
+    const paragraph = nearestWordAncestor(marker, 'p');
+    if (!paragraph) return;
+    this.removeRevisionMarker(marker);
+    deleteParagraphElement(paragraph);
+  }
+
+  private deleteTableRowForRevision(marker: Element): void {
+    const row = nearestWordAncestor(marker, 'tr');
+    const table = nearestWordAncestor(marker, 'tbl');
+    if (!row || !table) return;
+    const index = tableRows(table).findIndex((item) => item === row);
+    if (index < 0) return;
+    deleteTableRowElement(table, index);
+  }
+
+  private deleteCellForRevision(marker: Element): void {
+    const cell = nearestWordAncestor(marker, 'tc');
+    const row = nearestWordAncestor(marker, 'tr');
+    if (!cell || !row) return;
+    const positions = rowCells(row);
+    if (positions.length <= 1) {
+      this.removeRevisionMarker(marker);
+      clearCellContent(cell);
+      return;
+    }
+    row.removeChild(cell);
+  }
+
+  private removeRevisionMarker(marker: Element): void {
+    const parent = marker.parentNode?.nodeType === 1 ? marker.parentNode as Element : undefined;
+    marker.parentNode?.removeChild(marker);
+    removeIfEmpty(parent);
+    const grandparent = parent?.parentNode?.nodeType === 1 ? parent.parentNode as Element : undefined;
+    if (grandparent && ['pPr', 'rPr', 'trPr', 'tcPr', 'tblPr'].includes(grandparent.localName ?? '')) removeIfEmpty(grandparent);
   }
 
   getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
@@ -5122,33 +5489,7 @@ export class DocxDocument {
         markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor(), undefined, 'paraRPr');
         return;
       }
-      const parent = paragraph.parentNode as Element;
-      let container: Element | undefined;
-      try { container = paragraphContainer(paragraph); } catch {}
-      // A cell must end with a paragraph, and section properties must not be silently lost.
-      if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
-        throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
-      }
-      if (container) {
-        const blocks = blockElements(container);
-        const remaining = blocks.filter(block => block !== paragraph);
-        const indexInContainer = blocks.indexOf(paragraph);
-        const mustKeepParagraph =
-          (container.localName === 'body' && (
-            !remaining.length ||
-            remaining.at(-1)?.localName === 'tbl' ||
-            (indexInContainer > 0 &&
-             indexInContainer < blocks.length - 1 &&
-             blocks[indexInContainer - 1]?.localName === 'tbl' &&
-             blocks[indexInContainer + 1]?.localName === 'tbl')
-          )) ||
-          (container.localName === 'tc' && remaining.at(-1)?.localName !== 'p');
-        if (mustKeepParagraph) {
-          clearParagraphContent(paragraph);
-          return;
-        }
-      }
-      parent.removeChild(paragraph);
+      deleteParagraphElement(paragraph);
     });
   }
 
@@ -5552,29 +5893,15 @@ export class DocxDocument {
   deleteTableRow(table: number, at: number): void {
     this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
-      const rows = tableRows(element);
-      const row = rows[at];
-      if (!row) throw new Error(`Row ${at} does not exist.`);
-      if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
       if (this.trackChangesEnabled()) {
+        const rows = tableRows(element);
+        const row = rows[at];
+        if (!row) throw new Error(`Row ${at} does not exist.`);
+        if (rows.length <= 1) throw new Error('Cannot delete the only table row.');
         markRevision(tableProperty(row, 'trPr'), 'del', this.trackedRevisionAuthor());
         return;
       }
-      const next = rows[at + 1];
-      if (next) {
-        const nextPositions = new Map(rowCells(next).map(position => [position.start, position]));
-        for (const position of rowCells(row)) {
-          if (position.vMerge === 'restart') {
-            const continuation = nextPositions.get(position.start);
-            if (continuation?.vMerge === 'continue') {
-              const props = tableProperty(continuation.cell, 'tcPr');
-              mergeElement(props, 'vMerge', 'restart');
-            }
-          }
-        }
-      }
-      row.parentNode!.removeChild(row);
-      repairVerticalMerges(element);
+      deleteTableRowElement(element, at);
     });
   }
 
@@ -5625,39 +5952,7 @@ export class DocxDocument {
   deleteTableColumn(table: number, at: number): void {
     this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableAt(document, table);
-      const grid = ensureTableGrid(element);
-      const columns = children(grid, 'gridCol');
-      if (!columns[at]) throw new Error(`Column ${at} does not exist.`);
-      if (columns.length <= 1) throw new Error('Cannot delete the only table column.');
-      const model = tableModel(element);
-      grid.removeChild(columns[at]!);
-      const handled = new Set<Element>();
-      for (const [rowIndex, row] of tableRows(element).entries()) {
-        const covering = model.matrix[rowIndex]?.[at];
-        if (covering && covering.rowSpan > 1) {
-          if (handled.has(covering.cell)) continue;
-          handled.add(covering.cell);
-          for (let index = covering.row; index < covering.row + covering.rowSpan; index++) {
-            const chain = rowCells(model.rows[index]!).find(position => position.start === covering.start);
-            if (!chain) continue;
-            if (chain.span > 1) {
-              const props = tableProperty(chain.cell, 'tcPr');
-              mergeElement(props, 'gridSpan', chain.span - 1 > 1 ? chain.span - 1 : undefined);
-            } else {
-              model.rows[index]!.removeChild(chain.cell);
-            }
-          }
-          continue;
-        }
-        const position = rowCells(row).find(cell => at >= cell.start && at < cell.start + cell.span);
-        if (!position) throw new Error(`Column ${at} does not exist.`);
-        if (position.span > 1) {
-          const props = tableProperty(position.cell, 'tcPr');
-          mergeElement(props, 'gridSpan', position.span - 1 > 1 ? position.span - 1 : undefined);
-        } else {
-          row.removeChild(position.cell);
-        }
-      }
+      deleteTableColumnElement(element, at);
     });
   }
 
@@ -6542,6 +6837,10 @@ export class DocxDocument {
         switch (operation.type) {
         case 'setTrackChanges': draft.setTrackChanges(operation.enabled); break;
         case 'setRevisionAuthor': draft.setRevisionAuthor(operation.author); break;
+        case 'acceptRevision': draft.acceptRevision(operation.id); break;
+        case 'rejectRevision': draft.rejectRevision(operation.id); break;
+        case 'acceptAllRevisions': draft.acceptAllRevisions(operation.filter); break;
+        case 'rejectAllRevisions': draft.rejectAllRevisions(operation.filter); break;
         case 'setParagraphText': draft.setParagraphText(operation.index, operation.text); break;
         case 'insertParagraph': draft.insertParagraph(operation.text, operation.before); break;
         case 'deleteParagraph': draft.deleteParagraph(operation.index); break;
