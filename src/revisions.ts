@@ -30,8 +30,12 @@ const PARENT_PROPERTY_ORDER = {
   rPr: ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
     'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
     'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
-    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
-    'specVanish', 'oMath', 'ins', 'del', 'rPrChange'],
+    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
+  paraRPr: ['ins', 'del', 'moveFrom', 'moveTo', 'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs',
+    'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint',
+    'noProof', 'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing', 'w', 'kern', 'position',
+    'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs',
+    'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
   tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
     'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
     'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
@@ -121,11 +125,11 @@ function previousFormatOf(element: Element, theme: Parameters<typeof readRunProp
   }
 }
 
-function orderedRevisionChild(parent: Element, name: string): Element {
+function orderedRevisionChild(parent: Element, name: string, orderName = parent.localName as keyof typeof PARENT_PROPERTY_ORDER): Element {
   let result = children(parent, name)[0];
   if (result) return result;
   result = wordElement(parent.ownerDocument!, name);
-  const order: string[] = [...(PARENT_PROPERTY_ORDER[parent.localName as keyof typeof PARENT_PROPERTY_ORDER] ?? [])];
+  const order: string[] = [...(PARENT_PROPERTY_ORDER[orderName] ?? [])];
   const position = order.indexOf(name);
   const following = position === -1 ? undefined : children(parent).find((child) => order.indexOf(child.localName ?? '') > position);
   parent.insertBefore(result, following ?? null);
@@ -186,8 +190,18 @@ export function readParagraphRevisionMark(paragraph: Element, theme: Parameters<
   return change ? readRevisionMark(change, 'paragraphFormatChange', theme) : undefined;
 }
 
-export function markRevision(parent: Element, kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge', author?: string, date?: string): Element {
-  const marker = orderedRevisionChild(parent, kind);
+export function createRevisionWrapper(document: Document, kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge', author?: string, date?: string): Element {
+  return applyRevisionMetadata(wordElement(document, kind), author, date);
+}
+
+export function markRevision(
+  parent: Element,
+  kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge',
+  author?: string,
+  date?: string,
+  orderName?: keyof typeof PARENT_PROPERTY_ORDER,
+): Element {
+  const marker = orderedRevisionChild(parent, kind, orderName);
   return applyRevisionMetadata(marker, author, date);
 }
 
@@ -207,12 +221,7 @@ export function markFormatRevision(
   if (!snapshot) {
     snapshot = wordElement(parent.ownerDocument!, snapshotName);
     marker.appendChild(snapshot);
-  }
-  while (snapshot.firstChild) snapshot.removeChild(snapshot.firstChild);
-  while (snapshot.attributes.length) {
-    const attribute = snapshot.attributes.item(0);
-    if (!attribute) break;
-    snapshot.removeAttributeNS(attribute.namespaceURI, attribute.localName ?? attribute.name);
+    return snapshot;
   }
   return snapshot;
 }

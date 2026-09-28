@@ -333,16 +333,16 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
   for (const op of value.operations) {
     object(op);
     switch (op.type) {
-    case 'setTrackChanges':
-      keys(op, ['type', 'enabled']);
-      if (typeof op.enabled !== 'boolean') throw new Error('enabled must be boolean.');
-      break;
-    case 'setRevisionAuthor':
-      keys(op, ['type', 'author']);
-      assertText(op.author, 'author');
-      break;
-    case 'setParagraphText':
-      keys(op, ['type', 'index', 'text']); assertIndex(op.index); assertText(op.text); break;
+      case 'setTrackChanges':
+        keys(op, ['type', 'enabled']);
+        if (typeof op.enabled !== 'boolean') throw new Error('enabled must be boolean.');
+        break;
+      case 'setRevisionAuthor':
+        keys(op, ['type', 'author']);
+        assertText(op.author, 'author');
+        break;
+      case 'setParagraphText':
+        keys(op, ['type', 'index', 'text']); assertIndex(op.index); assertText(op.text); break;
       case 'insertParagraph':
         keys(op, ['type', 'text', 'before']); assertText(op.text);
         if ('before' in op) assertIndex(op.before);

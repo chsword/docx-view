@@ -69,6 +69,7 @@ import {
   parseCommentExEntries,
 } from './comments.js';
 import {
+  createRevisionWrapper,
   deletedTextOf,
   hasRevisionMarkup,
   markFormatRevision,
@@ -277,6 +278,30 @@ function clearParagraphContent(paragraph: Element): void {
   }
 }
 
+function isParagraphAnchorMarker(element: Element): boolean {
+  return [
+    'bookmarkStart',
+    'bookmarkEnd',
+    'commentRangeStart',
+    'commentRangeEnd',
+    'proofErr',
+    'permStart',
+    'permEnd',
+    'moveFromRangeStart',
+    'moveFromRangeEnd',
+    'moveToRangeStart',
+    'moveToRangeEnd',
+    'customXmlInsRangeStart',
+    'customXmlInsRangeEnd',
+    'customXmlDelRangeStart',
+    'customXmlDelRangeEnd',
+    'customXmlMoveFromRangeStart',
+    'customXmlMoveFromRangeEnd',
+    'customXmlMoveToRangeStart',
+    'customXmlMoveToRangeEnd',
+  ].includes(element.localName ?? '');
+}
+
 function textElements(element: Element): Element[] {
   const result: Element[] = [];
   function walk(node: Node, deletedDepth = 0): void {
@@ -446,7 +471,7 @@ function wrapRunsWithRevision(
       group.push(cursor as Element);
       cursor = cursor.nextSibling;
     }
-    const wrapper = markRevision(parent, kind, author, date);
+    const wrapper = createRevisionWrapper(parent.ownerDocument!, kind, author, date);
     parent.insertBefore(wrapper, group[0]!);
     for (const entry of group) {
       wrapper.appendChild(entry);
@@ -1487,6 +1512,35 @@ function paragraphDirectChild(paragraph: Element, node: Node): Node {
   while (current?.parentNode && current.parentNode !== paragraph) current = current.parentNode;
   if (!current || current.parentNode !== paragraph) throw new Error('Target run is not inside the requested paragraph.');
   return current;
+}
+
+function cloneRunShell(run: Element): Element {
+  const clone = wordElement(run.ownerDocument!, 'r');
+  const props = children(run, 'rPr')[0];
+  if (props) clone.appendChild(props.cloneNode(true));
+  return clone;
+}
+
+function isolateRunChild(run: Element, child: Element): Element {
+  const content = [...run.childNodes].filter((node) => !(node.nodeType === 1 && (node as Element).localName === 'rPr'));
+  const targetIndex = content.indexOf(child);
+  if (targetIndex === -1) throw new Error('Target child is not inside the requested run.');
+  if (content.length === 1) return run;
+  const parent = run.parentNode;
+  if (!parent) throw new Error('Run is detached.');
+  const isolated = cloneRunShell(run);
+  if (targetIndex > 0) {
+    parent.insertBefore(isolated, run.nextSibling);
+    if (targetIndex < content.length - 1) {
+      const after = cloneRunShell(run);
+      for (const node of content.slice(targetIndex + 1)) after.appendChild(node);
+      parent.insertBefore(after, isolated.nextSibling);
+    }
+  } else {
+    parent.insertBefore(isolated, run);
+  }
+  isolated.appendChild(child);
+  return isolated;
 }
 
 function nearestParagraph(node: Node | null): Element | null {
@@ -3427,7 +3481,7 @@ export class DocxDocument {
       'rPr',
       this.trackedRevisionAuthor(),
     );
-    applyRunFormatTo(snapshot, previous);
+    if (!snapshot.firstChild && !snapshot.attributes.length) applyRunFormatTo(snapshot, previous);
   }
 
   private trackParagraphFormatChange(paragraph: Element): void {
@@ -3438,7 +3492,7 @@ export class DocxDocument {
       'pPr',
       this.trackedRevisionAuthor(),
     );
-    applyParagraphFormatTo(snapshot, previous);
+    if (!snapshot.firstChild && !snapshot.attributes.length) applyParagraphFormatTo(snapshot, previous);
   }
 
   private insertTrackedText(paragraph: Element, start: number, text: string): void {
@@ -3478,7 +3532,7 @@ export class DocxDocument {
     }
     const run = wordElement(parent.ownerDocument!, 'r');
     appendText(run, text);
-    const wrapper = markRevision(parent, 'ins', this.trackedRevisionAuthor());
+    const wrapper = createRevisionWrapper(parent.ownerDocument!, 'ins', this.trackedRevisionAuthor());
     wrapper.appendChild(run);
     parent.insertBefore(wrapper, reference);
   }
@@ -4082,7 +4136,7 @@ export class DocxDocument {
       docPrId: this.nextDocPrId(main),
     }));
     if (this.trackChangesEnabled()) {
-      const wrapper = markRevision(paragraph, 'ins', this.trackedRevisionAuthor());
+      const wrapper = createRevisionWrapper(paragraph.ownerDocument!, 'ins', this.trackedRevisionAuthor());
       wrapper.appendChild(run);
       paragraph.insertBefore(wrapper, insertBefore);
     } else if (insertBefore) paragraph.insertBefore(run, insertBefore);
@@ -4225,11 +4279,13 @@ export class DocxDocument {
     if (!imageElement) throw new Error(`Image ${info.relationshipId} does not exist.`);
     if (this.trackChangesEnabled()) {
       this.updatePartXmlInternal(sourcePart, (document) => {
-        const trackedRun = ownRuns(paragraphAt(document, info.paragraph))[info.run];
+        const paragraph = paragraphAt(document, info.paragraph);
+        const trackedRun = ownRuns(paragraph)[info.run];
         if (!trackedRun) throw new Error(`Run ${info.run} does not exist.`);
         const trackedImage = imageElementForRun(trackedRun, info.relationshipId, info.ordinal ?? 0);
         if (!trackedImage) throw new Error(`Image ${info.relationshipId} does not exist.`);
-        wrapRunsWithRevision(paragraphAt(document, info.paragraph), [trackedRun], 'del', this.trackedRevisionAuthor(), undefined, { convertText: false });
+        const isolatedRun = isolateRunChild(trackedRun, trackedImage);
+        wrapRunsWithRevision(paragraph, [isolatedRun], 'del', this.trackedRevisionAuthor(), undefined, { convertText: false });
       });
       return;
     }
@@ -4631,7 +4687,7 @@ export class DocxDocument {
       if (this.trackChangesEnabled()) {
         const runs = children(paragraph, 'r');
         wrapRunsWithRevision(paragraph, runs, 'ins', this.trackedRevisionAuthor());
-        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'ins', this.trackedRevisionAuthor());
+        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'ins', this.trackedRevisionAuthor(), undefined, 'paraRPr');
       }
       if (before !== undefined) {
         const target = paragraphAt(document, before);
@@ -4648,18 +4704,17 @@ export class DocxDocument {
       const paragraph = paragraphAt(document, index);
       if (this.trackChangesEnabled()) {
         if (children(paragraph, 'pPr').some(props => children(props, 'sectPr').length)) {
-          throw new Error('Cannot delete a section-break paragraph; edit its XML explicitly.');
+          throw new Error('Cannot delete a section-break paragraph while track changes is enabled; edit its XML explicitly.');
         }
         const runs = ownRuns(paragraph);
-        if (runs.length) {
-          wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+        if (runs.length) wrapRunsWithRevision(paragraph, runs, 'del', this.trackedRevisionAuthor());
+        else {
           for (const child of [...children(paragraph)]) {
-            if (child.localName === 'pPr') continue;
-            if (child.localName === 'del' || descendants(child, 'del').length) continue;
+            if (child.localName === 'pPr' || isParagraphAnchorMarker(child)) continue;
             paragraph.removeChild(child);
           }
-        } else clearParagraphContent(paragraph);
-        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor());
+        }
+        markRevision(property(properties(paragraph, 'pPr'), 'rPr'), 'del', this.trackedRevisionAuthor(), undefined, 'paraRPr');
         return;
       }
       const parent = paragraph.parentNode as Element;
