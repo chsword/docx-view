@@ -1042,14 +1042,40 @@ export class DocxEditor {
   }
 
   private textLength(node: Node): number {
-    if (node.nodeType === 3) return node.textContent?.length ?? 0;
+    if (node.nodeType === 3) return Array.from(node.textContent ?? '').length;
     if (node.nodeType !== 1) return 0;
     const current = node as HTMLElement;
     if (current.dataset.image || current.contentEditable === 'false') return 0;
     if (current.tagName === 'BR') return 1;
-    const text = Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
-    if (['DIV', 'P'].includes(current.tagName)) return text ? text + 1 : 0;
-    return text;
+    return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
+  }
+
+  private paragraphText(index: number): string {
+    return this.document.getParagraphs().find((item) => item.index === index)?.text ?? '';
+  }
+
+  private codeUnitsFromCodePoints(text: string, points: number): number {
+    let units = 0;
+    let count = 0;
+    for (const char of text) {
+      if (count >= points) break;
+      units += char.length;
+      count++;
+    }
+    return units;
+  }
+
+  private documentRange(range: DocumentRange): DocumentRange {
+    return {
+      start: {
+        paragraph: range.start.paragraph,
+        offset: this.codeUnitsFromCodePoints(this.paragraphText(range.start.paragraph), range.start.offset),
+      },
+      end: {
+        paragraph: range.end.paragraph,
+        offset: this.codeUnitsFromCodePoints(this.paragraphText(range.end.paragraph), range.end.offset),
+      },
+    };
   }
 
   private offsetWithin(root: HTMLElement, target: Node, targetOffset: number): number {
@@ -1057,7 +1083,7 @@ export class DocxEditor {
     const walk = (node: Node): boolean => {
       if (node === target) {
         if (node.nodeType === 3) {
-          offset += Math.max(0, Math.min(targetOffset, node.textContent?.length ?? 0));
+          offset += Array.from((node.textContent ?? '').slice(0, Math.max(0, targetOffset))).length;
           return true;
         }
         if (node.nodeType !== 1) return true;
@@ -1074,7 +1100,7 @@ export class DocxEditor {
         return true;
       }
       if (node.nodeType === 3) {
-        offset += node.textContent?.length ?? 0;
+        offset += Array.from(node.textContent ?? '').length;
         return false;
       }
       if (node.nodeType !== 1) return false;
@@ -1087,10 +1113,6 @@ export class DocxEditor {
       for (const child of Array.from(node.childNodes)) {
         if (walk(child)) return true;
       }
-      if (node !== root && ['DIV', 'P'].includes(current.tagName)) {
-        const text = Array.from(node.childNodes).reduce((total, child) => total + this.textLength(child), 0);
-        if (text) offset += 1;
-      }
       return false;
     };
     walk(root);
@@ -1102,8 +1124,9 @@ export class DocxEditor {
     let remaining = Math.max(0, Math.min(offset, total));
     const locate = (node: Node): [Node, number] | null => {
       if (node.nodeType === 3) {
-        const textLength = node.textContent?.length ?? 0;
-        if (remaining <= textLength) return [node, remaining];
+        const text = node.textContent ?? '';
+        const textLength = Array.from(text).length;
+        if (remaining <= textLength) return [node, this.codeUnitsFromCodePoints(text, remaining)];
         remaining -= textLength;
         return null;
       }
@@ -1122,17 +1145,6 @@ export class DocxEditor {
       for (const child of Array.from(node.childNodes)) {
         const found = locate(child);
         if (found) return found;
-      }
-      if (node !== root && ['DIV', 'P'].includes(current.tagName)) {
-        const text = Array.from(node.childNodes).reduce((count, child) => count + this.textLength(child), 0);
-        if (text) {
-          if (remaining <= 1) {
-            const parent = node.parentNode as Node;
-            const index = Array.prototype.indexOf.call(parent.childNodes, node);
-            return [parent, remaining === 0 ? index : index + 1];
-          }
-          remaining -= 1;
-        }
       }
       return null;
     };
@@ -1160,10 +1172,10 @@ export class DocxEditor {
       offset: this.offsetWithin(endContent, raw.endContainer, raw.endOffset),
     };
     if (!Number.isSafeInteger(start.paragraph) || !Number.isSafeInteger(end.paragraph)) return null;
-    if (start.paragraph > end.paragraph || (start.paragraph === end.paragraph && start.offset > end.offset)) {
-      return { start: end, end: start };
-    }
-    return { start, end };
+    const ordered = start.paragraph > end.paragraph || (start.paragraph === end.paragraph && start.offset > end.offset)
+      ? { start: end, end: start }
+      : { start, end };
+    return ordered;
   }
 
   private restoreDocumentRange(range: DocumentRange): void {
@@ -1198,8 +1210,9 @@ export class DocxEditor {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
     let format: RunFormat = {};
     try {
-      format = this.document.getDocumentRangeFormat(range);
-    } catch {
+      format = this.document.getDocumentRangeFormat(this.documentRange(range));
+    } catch (error) {
+      if (!(error instanceof Error) || !/Cross-container document ranges are not supported/.test(error.message)) throw error;
       format = {};
     }
     this.selectedRangeInfo = {

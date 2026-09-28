@@ -2488,6 +2488,11 @@ export class DocxDocument {
         end: { paragraph: range.end.paragraph, offset: normalized.end },
       };
     }
+    const startContainer = paragraphContainer(startParagraph);
+    const endContainer = paragraphContainer(endParagraph);
+    if (startContainer !== endContainer) {
+      throw new Error('Cross-container document ranges are not supported.');
+    }
     const startNormalized = this.normalizeTextRange(startParagraph, {
       paragraph: range.start.paragraph,
       start: range.start.offset,
@@ -2539,10 +2544,19 @@ export class DocxDocument {
     return { paragraph, start: normalized.start, end: normalized.end };
   }
 
-  private rangeRunFormats(document: Document, range: TextRange): RunFormat[] {
+  private applyRunFormatRangeOnParagraph(paragraph: Element, start: number, end: number, format: RunFormat): void {
+    if (start === end) return;
+    this.splitRunAtOffset(paragraph, end);
+    this.splitRunAtOffset(paragraph, start);
+    for (const run of this.runsInRange(paragraph, start, end)) {
+      applyRunFormatTo(properties(run, 'rPr'), format);
+    }
+  }
+
+  private rangeRunFormats(document: Document, range: TextRange, theme: StylesContext['theme']): RunFormat[] {
     const normalized = this.normalizeRangeOn(document, range);
     const runs = this.runsInRange(normalized.paragraph, normalized.start, normalized.end, normalized.start === normalized.end);
-    return runs.map((run) => readRunProperties(children(run, 'rPr')[0], this.getStylesContext().theme));
+    return runs.map((run) => readRunProperties(children(run, 'rPr')[0], theme));
   }
 
   private mergeRangeFormats(formats: RunFormat[]): RunFormat {
@@ -3713,20 +3727,20 @@ export class DocxDocument {
 
   formatRange(range: TextRange, format: RunFormat): void {
     validateRunFormat(format);
+    const preflightDocument = this.getCachedPartDocument(this.mainPath);
+    const preflight = this.normalizeRangeOn(preflightDocument, range);
+    if (preflight.start === preflight.end) return;
+    if (!this.runsInRange(preflight.paragraph, preflight.start, preflight.end).length) return;
     this.updatePartXmlInternal(this.mainPath, document => {
       const normalized = this.normalizeRangeOn(document, range);
-      if (normalized.start === normalized.end) return;
-      this.splitRunAtOffset(normalized.paragraph, normalized.end);
-      this.splitRunAtOffset(normalized.paragraph, normalized.start);
-      for (const run of this.runsInRange(normalized.paragraph, normalized.start, normalized.end)) {
-        applyRunFormatTo(properties(run, 'rPr'), format);
-      }
+      this.applyRunFormatRangeOnParagraph(normalized.paragraph, normalized.start, normalized.end, format);
     });
   }
 
   getRangeFormat(range: TextRange): RunFormat {
     const document = this.getCachedPartDocument(this.mainPath);
-    return this.mergeRangeFormats(this.rangeRunFormats(document, range));
+    const theme = this.getStylesContext().theme;
+    return this.mergeRangeFormats(this.rangeRunFormats(document, range, theme));
   }
 
   clearRangeFormat(range: TextRange, fields?: (keyof RunFormat)[]): void {
@@ -3739,22 +3753,37 @@ export class DocxDocument {
 
   formatDocumentRange(range: DocumentRange, format: RunFormat): void {
     validateRunFormat(format);
-    this.withDraft((draft) => {
-      const document = draft.getCachedPartDocument(draft.mainPath);
-      const normalized = draft.normalizeDocumentRange(document, range);
+    const preflightDocument = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preflightDocument, range);
+    const hasTarget = (() => {
       for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
-        const paragraph = paragraphAt(document, index);
+        const paragraph = paragraphAt(preflightDocument, index);
         const length = textOf(paragraph).length;
         const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
         const end = index === normalized.end.paragraph ? normalized.end.offset : length;
         if (start === end) continue;
-        draft.formatRange({ paragraph: index, start, end }, format);
+        if (this.runsInRange(paragraph, start, end).length) return true;
       }
+      return false;
+    })();
+    if (!hasTarget) return;
+    this.withDraft((draft) => {
+      draft.updatePartXmlInternal(draft.mainPath, (document) => {
+        const normalized = draft.normalizeDocumentRange(document, range);
+        for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
+          const paragraph = paragraphAt(document, index);
+          const length = textOf(paragraph).length;
+          const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
+          const end = index === normalized.end.paragraph ? normalized.end.offset : length;
+          draft.applyRunFormatRangeOnParagraph(paragraph, start, end, format);
+        }
+      });
     });
   }
 
   getDocumentRangeFormat(range: DocumentRange): RunFormat {
     const document = this.getCachedPartDocument(this.mainPath);
+    const theme = this.getStylesContext().theme;
     const normalized = this.normalizeDocumentRange(document, range);
     const formats: RunFormat[] = [];
     for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
@@ -3762,7 +3791,7 @@ export class DocxDocument {
       const length = textOf(paragraph).length;
       const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
       const end = index === normalized.end.paragraph ? normalized.end.offset : length;
-      const rangeFormats = this.rangeRunFormats(document, { paragraph: index, start, end });
+      const rangeFormats = this.rangeRunFormats(document, { paragraph: index, start, end }, theme);
       formats.push(...rangeFormats);
     }
     return this.mergeRangeFormats(formats);

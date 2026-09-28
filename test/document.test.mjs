@@ -510,7 +510,7 @@ test('formatRange skips image-only offsets safely', () => {
   const doc = withBody(`<w:p xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:pic="${PIC_NS}"><w:r><w:drawing><wp:inline><wp:extent cx="190500" cy="95250"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="logo"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="190500" cy="95250"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`);
   const revision = doc.revision;
   doc.formatRange({ paragraph: 0, start: 0, end: 0 }, { italic: true });
-  assert.equal(doc.revision, revision + 1);
+  assert.equal(doc.revision, revision);
 });
 
 test('agent validates and applies formatRange operation', () => {
@@ -555,16 +555,18 @@ test('clearRangeFormat rejects unsupported fields at runtime API', () => {
   assert.throws(() => doc.clearRangeFormat({ paragraph: 0, start: 0, end: 0 }, ['notAField']), /Unsupported/);
 });
 
-test('formatDocumentRange spanning table-cell paragraphs keeps document readable', () => {
+test('formatDocumentRange rejects cross-container ranges without corrupting text', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'head');
   doc.insertTable([['cell']]);
   const cellParagraph = doc.getBlocks().find((block) => block.type === 'table').rows[0].cells[0].blocks[0].paragraph.index;
   doc.insertParagraph('tail');
-  doc.formatDocumentRange({
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  assert.throws(() => doc.formatDocumentRange({
     start: { paragraph: 0, offset: 1 },
     end: { paragraph: cellParagraph, offset: doc.getParagraphs()[cellParagraph].text.length },
-  }, { underline: true });
+  }, { underline: true }), /Cross-container/);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
   assert.equal(doc.getParagraphs()[0].text, 'head');
   assert.equal(doc.getParagraphs()[cellParagraph].text, 'cell');
 });

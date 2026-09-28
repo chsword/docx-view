@@ -225,9 +225,28 @@ function selectedCell(): { table: number; row: number; col: number; rowSpan: num
   };
 }
 
+function toDocumentRange(range: DocumentRange): DocumentRange {
+  const paragraphByIndex = new Map(doc.getParagraphs().map((paragraph) => [paragraph.index, paragraph.text]));
+  const toOffset = (paragraph: number, points: number): number => {
+    const text = paragraphByIndex.get(paragraph) ?? '';
+    let offset = 0;
+    let count = 0;
+    for (const char of text) {
+      if (count >= points) break;
+      offset += char.length;
+      count++;
+    }
+    return offset;
+  };
+  return {
+    start: { paragraph: range.start.paragraph, offset: toOffset(range.start.paragraph, range.start.offset) },
+    end: { paragraph: range.end.paragraph, offset: toOffset(range.end.paragraph, range.end.offset) },
+  };
+}
+
 function formatRuns(format: RunFormat): void {
   const range = selectedRange;
-  if (range) doc.formatDocumentRange(range, format);
+  if (range) doc.formatDocumentRange(toDocumentRange(range), format);
   else {
     const index = selectedIndex();
     const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
