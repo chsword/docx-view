@@ -2804,6 +2804,19 @@ test('copy/paste rich image works when source relationship target uses a nonstan
   assert.equal(target.listParts().some((path) => /^word\/media\/image\d+\.png$/.test(path)), true);
 });
 
+test('copy/paste rich image degrades safely when source image target is malformed/encoded', () => {
+  const source = withImageDoc(
+    '<w:p><w:r><w:t>x</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx="19050" cy="19050"/><wp:docPr id="1" name="x"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="x"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId9"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="19050" cy="19050"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+    '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="bad%ZZ.png"/>',
+  );
+  const target = DocxDocument.create();
+  target.setParagraphText(0, 'A');
+  assert.doesNotThrow(() => {
+    const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } });
+    target.pasteClipboardFragment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 } }, fragment);
+  });
+});
+
 test('pasteClipboardFragment returns false for cross-paragraph targets', () => {
   const doc = withBody('<w:p><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p>');
   const fragment = { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] };

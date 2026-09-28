@@ -1116,11 +1116,22 @@ export class DocxEditor {
         .filter((run) => run.text || run.images?.length);
       if (normalized.length) paragraphs.push({ runs: normalized });
     };
+    const sameFormat = (left: RunFormat | undefined, right: RunFormat | undefined): boolean => {
+      const keys = new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})]);
+      for (const key of keys) {
+        if ((left as Record<string, unknown> | undefined)?.[key] !== (right as Record<string, unknown> | undefined)?.[key]) return false;
+      }
+      return true;
+    };
+    const sameHyperlink = (left: ClipboardRun['hyperlink'], right: ClipboardRun['hyperlink']): boolean =>
+      (left?.url ?? '') === (right?.url ?? '') &&
+      (left?.anchor ?? '') === (right?.anchor ?? '') &&
+      (left?.tooltip ?? '') === (right?.tooltip ?? '');
     const pushRun = (runs: ClipboardRun[], run: ClipboardRun): void => {
       const last = runs.at(-1);
       if (last && !last.images?.length && !run.images?.length &&
-          JSON.stringify(last.format ?? {}) === JSON.stringify(run.format ?? {}) &&
-          JSON.stringify(last.hyperlink ?? {}) === JSON.stringify(run.hyperlink ?? {})) {
+          sameFormat(last.format, run.format) &&
+          sameHyperlink(last.hyperlink, run.hyperlink)) {
         last.text = `${last.text ?? ''}${run.text ?? ''}`;
       } else runs.push(run);
     };

@@ -3519,6 +3519,7 @@ export class DocxDocument {
       }
       const relPath = resolveRelationshipsPath(sourcePartPath);
       let rels: Document | undefined;
+      const hyperlinkRelationByUrl = new Map<string, string>();
       const ensureRels = (): Document => {
         if (rels) return rels;
         const bytes = next.get(relPath);
@@ -3559,14 +3560,19 @@ export class DocxDocument {
           if (link && typeof link === 'object' && (link.url || link.anchor)) {
             const hyperlink = wordElement(main, 'hyperlink');
             if (link.url) {
-              const relsDocument = ensureRels();
-              const relationshipId = draft.nextRelationshipId(relsDocument);
-              const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
-              relationship.setAttribute('Id', relationshipId);
-              relationship.setAttribute('Type', HYPERLINK_REL);
-              relationship.setAttribute('Target', link.url);
-              relationship.setAttribute('TargetMode', 'External');
-              relsDocument.documentElement!.appendChild(relationship);
+              const key = link.url;
+              let relationshipId = hyperlinkRelationByUrl.get(key);
+              if (!relationshipId) {
+                const relsDocument = ensureRels();
+                relationshipId = draft.nextRelationshipId(relsDocument);
+                const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
+                relationship.setAttribute('Id', relationshipId);
+                relationship.setAttribute('Type', HYPERLINK_REL);
+                relationship.setAttribute('Target', link.url);
+                relationship.setAttribute('TargetMode', 'External');
+                relsDocument.documentElement!.appendChild(relationship);
+                hyperlinkRelationByUrl.set(key, relationshipId);
+              }
               hyperlink.setAttributeNS(OFFICE_REL_NS, 'r:id', relationshipId);
             }
             if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
