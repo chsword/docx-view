@@ -4410,9 +4410,27 @@ export class DocxDocument {
     this.updatePartXmlInternal(this.mainPath, (document) => {
       const markers = this.collectRevisionMarkers(document, () => true);
       const movePairs = pairMoveRevisionMarkers(markers);
+      if (!authors) {
+        const processed = new Set<Element>();
+        for (const marker of markers.reverse()) {
+          if (processed.has(marker) || !marker.parentNode) continue;
+          if (isMoveRevisionMarker(marker)) {
+            const paired = movePairs.get(marker);
+            if (paired && paired.parentNode && !processed.has(paired)) {
+              this.applyMovePairDecision(marker, paired, action);
+              processed.add(marker);
+              processed.add(paired);
+              continue;
+            }
+          }
+          if (!marker.parentNode) continue;
+          this.applyRevisionDecision(marker, action);
+          processed.add(marker);
+        }
+        return;
+      }
       const selected = new Set<Element>();
       const matchesAuthor = (marker: Element): boolean => {
-        if (!authors) return true;
         const author = revisionAuthorOf(marker);
         return author !== undefined && authors.has(author);
       };
