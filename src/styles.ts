@@ -409,6 +409,7 @@ export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element
       aliases: (wordValue(children(styleElement, 'aliases')[0]) ?? '')
         .split(',').map((value) => value.trim()).filter(Boolean),
       isDefault: ['1', 'true', 'on'].includes((wordAttr(styleElement, 'default') ?? '').toLowerCase()) || undefined,
+      uiPriority: readNumber(wordValue(children(styleElement, 'uiPriority')[0])),
       quickFormat: !!children(styleElement, 'qFormat')[0] || undefined,
       paragraph: cloneParagraphFormat(readParagraphProperties(children(styleElement, 'pPr')[0])),
       run: cloneRunFormat(readRunProperties(children(styleElement, 'rPr')[0], theme)),
@@ -434,7 +435,7 @@ export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element
   };
 }
 
-function resolveStyleChain(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
+export function resolveStyleChain(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
   const chain: ParsedStyle[] = [];
   const seen = new Set<string>();
   let currentId = id;
@@ -448,7 +449,7 @@ function resolveStyleChain(context: StylesContext, id: string | undefined, type:
   return chain;
 }
 
-function resolveStyleChainOrDefault(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
+export function resolveStyleChainOrDefault(context: StylesContext, id: string | undefined, type: StyleType): ParsedStyle[] {
   const explicit = resolveStyleChain(context, id, type);
   if (explicit.length) return explicit;
   if (context.defaults[type] && context.defaults[type] !== id) return resolveStyleChain(context, context.defaults[type], type);

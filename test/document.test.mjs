@@ -648,7 +648,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1164,7 +1164,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -1741,6 +1741,249 @@ test('defineStyle picks the first unused relationship id for styles.xml', () => 
   const rels = doc.getPartXml('word/_rels/document.xml.rels');
   assert.match(rels, /Id="rId2"[^>]+styles\.xml/);
   assert.equal((rels.match(/Id="rId3"/g) ?? []).length, 1);
+});
+
+test('getStyleGallery returns only quick-format styles sorted by uiPriority', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:t>Gallery</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Body"><w:name w:val="Body"/><w:qFormat/><w:uiPriority w:val="20"/></w:style>
+      <w:style w:type="character" w:styleId="Strong"><w:name w:val="Strong"/><w:qFormat/><w:uiPriority w:val="10"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Alpha"><w:name w:val="Alpha"/><w:qFormat/></w:style>
+      <w:style w:type="paragraph" w:styleId="Hidden"><w:name w:val="Hidden"/></w:style>
+    </w:styles>`,
+  );
+  assert.deepEqual(doc.getStyleGallery().map((style) => style.id), ['Strong', 'Body', 'Alpha']);
+});
+
+test('applyParagraphStyle rejects missing styles without changing legacy formatParagraph behavior', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.applyParagraphStyle(0, 'Missing'), /Paragraph style not found/i);
+  assert.doesNotThrow(() => doc.formatParagraph(0, { style: 'Missing' }));
+});
+
+test('applyParagraphStyle can clear conflicting direct paragraph and run formatting', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:jc w:val="right"/><w:spacing w:before="80" w:after="120"/></w:pPr><w:r><w:rPr><w:color w:val="AA5500"/><w:u w:val="single"/></w:rPr><w:t>Clear</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Styled">
+        <w:name w:val="Styled"/>
+        <w:pPr><w:jc w:val="center"/><w:spacing w:after="240"/></w:pPr>
+        <w:rPr><w:color w:val="336699"/></w:rPr>
+      </w:style>
+    </w:styles>`,
+  );
+  doc.applyParagraphStyle(0, 'Styled', { clearDirectFormat: true });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.style, 'Styled');
+  assert.equal(paragraph.effective.alignment, 'center');
+  assert.equal(paragraph.effective.spacingAfter, 240);
+  assert.equal(paragraph.spacingBefore, 80);
+  assert.equal(paragraph.runs[0].effective.color, '336699');
+  assert.equal(paragraph.runs[0].underline, true);
+  assert.doesNotMatch(xml, /w:jc w:val="right"/);
+  assert.doesNotMatch(xml, /w:after="120"/);
+  assert.match(xml, /w:before="80"/);
+  assert.doesNotMatch(xml, /w:color w:val="AA5500"/);
+  assert.match(xml, /w:u w:val="single"/);
+});
+
+test('applyParagraphStyle is a no-op when the style and conflicting direct format already match', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Styled"/><w:spacing w:after="240"/></w:pPr><w:r><w:rPr><w:color w:val="336699"/></w:rPr><w:t>A</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Styled">
+        <w:name w:val="Styled"/>
+        <w:pPr><w:spacing w:after="240"/></w:pPr>
+        <w:rPr><w:color w:val="336699"/></w:rPr>
+      </w:style>
+    </w:styles>`,
+  );
+  const revision = doc.revision;
+  doc.applyParagraphStyle(0, 'Styled', { clearDirectFormat: true });
+  assert.equal(doc.revision, revision);
+});
+
+test('applyCharacterStyle rejects missing character styles', () => {
+  const doc = DocxDocument.create();
+  assert.throws(() => doc.applyCharacterStyle({ paragraph: 0, start: 0, end: 1 }, 'Missing'), /Character style not found/i);
+});
+
+test('applyCharacterStyle can clear conflicting direct run formatting', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:b/><w:color w:val="AA5500"/><w:u w:val="single"/></w:rPr><w:t>Word</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="character" w:styleId="Emphasis">
+        <w:name w:val="Emphasis"/>
+        <w:rPr><w:i/><w:color w:val="224466"/></w:rPr>
+      </w:style>
+    </w:styles>`,
+  );
+  doc.applyCharacterStyle({ paragraph: 0, start: 0, end: 4 }, 'Emphasis', { clearDirectFormat: true });
+  const run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.style, 'Emphasis');
+  assert.equal(run.effective.italic, true);
+  assert.equal(run.effective.color, '224466');
+  assert.equal(run.effective.bold, true);
+  assert.equal(run.effective.underline, true);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:color w:val="AA5500"/);
+});
+
+test('createStyleFromSelection creates a paragraph style that reloads with ordered children', async () => {
+  const doc = withBody('<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="80"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="445566"/></w:rPr><w:t>Pick</w:t></w:r></w:p>');
+  const created = doc.createStyleFromSelection(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } },
+    { id: 'FromSelection', name: 'From Selection' },
+  );
+  assert.equal(created.type, 'paragraph');
+  assert.equal(created.paragraph.alignment, 'center');
+  assert.equal(created.paragraph.spacingBefore, 80);
+  assert.equal(created.run.bold, true);
+  assert.equal(created.run.color, '445566');
+  const xml = doc.getPartXml('word/styles.xml');
+  const order = ['<w:name', '<w:pPr', '<w:rPr'].map((token) => xml.indexOf(token));
+  assert.deepEqual(order.slice().sort((a, b) => a - b), order);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reopened.getStyle('FromSelection').run.color, '445566');
+});
+
+test('createStyleFromSelection rejects duplicate ids', () => {
+  const doc = DocxDocument.create();
+  doc.defineStyle({ id: 'Taken', name: 'Taken', type: 'paragraph' });
+  assert.throws(() => doc.createStyleFromSelection(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 0 } },
+    { id: 'Taken', name: 'Taken Again' },
+  ), /already exists/i);
+});
+
+test('getOutline infers levels from style names instead of style ids', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Foo"/></w:pPr><w:r><w:t>Heading</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Foo"><w:name w:val="heading 2"/></w:style>
+    </w:styles>`,
+  );
+  assert.deepEqual(doc.getOutline(), [{ paragraph: 0, level: 1, text: 'Heading', styleId: 'Foo', children: [] }]);
+});
+
+test('getOutline prefers direct outlineLvl over heading style names', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="HeadingLike"/><w:outlineLvl w:val="4"/></w:pPr><w:r><w:t>Override</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="HeadingLike"><w:name w:val="heading 1"/></w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getOutline()[0].level, 4);
+});
+
+test('getOutline follows basedOn chains when a derived style has no heading name', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Derived"/></w:pPr><w:r><w:t>Chain</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="BaseHeading"><w:name w:val="heading 3"/></w:style>
+      <w:style w:type="paragraph" w:styleId="Derived"><w:name w:val="Custom Title"/><w:basedOn w:val="BaseHeading"/></w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getOutline()[0].level, 2);
+});
+
+test('getOutline caches builds until the revision changes', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Heading"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Heading"><w:name w:val="heading 1"/></w:style>
+    </w:styles>`,
+  );
+  const original = doc.buildOutline;
+  let calls = 0;
+  doc.buildOutline = function (...args) {
+    calls++;
+    return original.apply(this, args);
+  };
+  assert.equal(doc.getOutline()[0].text, 'A');
+  assert.equal(doc.getOutline()[0].text, 'A');
+  assert.equal(calls, 1);
+  doc.insertParagraph('B');
+  doc.formatParagraph(1, { style: 'Heading' });
+  assert.equal(doc.getOutline().at(-1).text, 'B');
+  assert.equal(calls, 2);
+});
+
+test('setOutlineLevel writes and clears explicit outlineLvl', () => {
+  const doc = withBody('<w:p><w:r><w:t>Outline</w:t></w:r></w:p>');
+  doc.setOutlineLevel(0, 3);
+  assert.equal(doc.getParagraphs()[0].outlineLevel, 3);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:outlineLvl w:val="3"/);
+  doc.setOutlineLevel(0, null);
+  assert.equal(doc.getParagraphs()[0].outlineLevel, undefined);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /w:outlineLvl/);
+});
+
+test('moveOutlineSection moves a heading subtree together with following tables in one revision', async () => {
+  const doc = withStyles(
+    [
+      '<w:p><w:pPr><w:pStyle w:val="Heading"/></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t>Alpha body</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading"/></w:pPr><w:r><w:t>Beta</w:t></w:r></w:p>',
+      '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Beta table</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+      '<w:p><w:r><w:t>Beta body</w:t></w:r></w:p>',
+    ].join(''),
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Heading"><w:name w:val="heading 1"/></w:style>
+    </w:styles>`,
+  );
+  const revision = doc.revision;
+  doc.moveOutlineSection(2, 0);
+  assert.equal(doc.revision, revision + 1);
+  assert.deepEqual(doc.getBlocks().map((block) => block.type === 'paragraph' ? block.paragraph.text : 'TABLE'), [
+    'Beta',
+    'TABLE',
+    'Beta body',
+    'Alpha',
+    'Alpha body',
+  ]);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(reopened.getBlocks().map((block) => block.type === 'paragraph' ? block.paragraph.text : 'TABLE'), [
+    'Beta',
+    'TABLE',
+    'Beta body',
+    'Alpha',
+    'Alpha body',
+  ]);
+});
+
+test('moveOutlineSection is a no-op when moving within the same section span', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Heading"/></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="Heading"/></w:pPr><w:r><w:t>Beta</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Heading"><w:name w:val="heading 1"/></w:style>
+    </w:styles>`,
+  );
+  const revision = doc.revision;
+  doc.moveOutlineSection(0, 1);
+  assert.equal(doc.revision, revision);
+});
+
+test('applyOperations accepts new style and outline operations', () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Heading"><w:name w:val="heading 1"/></w:style>
+      <w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:i/></w:rPr></w:style>
+    </w:styles>`,
+  );
+  const snapshot = doc.applyOperations({
+    operations: [
+      { type: 'applyParagraphStyle', index: 0, styleId: 'Heading' },
+      { type: 'applyCharacterStyle', range: { paragraph: 0, start: 0, end: 1 }, styleId: 'Emphasis' },
+      { type: 'setOutlineLevel', index: 1, level: 2 },
+      { type: 'moveOutlineSection', from: 1, to: 0 },
+    ],
+  });
+  assert.equal(snapshot.paragraphs[0].text, 'B');
+  assert.equal(snapshot.paragraphs[1].text, 'A');
+  assert.equal(doc.getParagraphs()[1].runs[0].style, 'Emphasis');
 });
 
 test('format APIs can clear direct formatting with null to fall back to inherited values', () => {
@@ -2472,7 +2715,7 @@ test('applyOperations supports comment operations and schema count stays aligned
     operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
   });
   assert.equal(snapshot.comments.length, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
@@ -3070,7 +3313,7 @@ test('revision author survives undo and redo for later tracked edits', () => {
 test('agent operation schema includes tracked-review settings operations', () => {
   const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
     .map((entry) => entry.properties.type.const);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 58);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
   assert.ok(types.includes('setTrackChanges'));
   assert.ok(types.includes('setRevisionAuthor'));
 });

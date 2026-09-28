@@ -36,6 +36,7 @@
                 <button class="tool text-italic" id="format-italic" aria-label="整段斜体" title="整段斜体" aria-pressed="false">I</button>
                 <button class="tool text-underline" id="format-underline" aria-label="整段下划线" title="整段下划线" aria-pressed="false">U</button>
                 <button class="tool wide" id="format-painter" aria-label="格式刷（双击锁定）" title="格式刷（双击锁定）" aria-pressed="false">🖌 格式刷</button>
+                <button class="tool wide" id="clear-format" aria-label="清除直接格式" title="清除直接格式">⌫ 清除格式</button>
               </div>
               <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
               <div class="tool-group"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div>
@@ -111,6 +112,12 @@
               <div class="panel-title"><h3>实时文档快照</h3><span class="code-badge">READ ONLY</span></div>
               <p class="panel-description"><code>getSnapshot()</code> 返回修订号、段落、文本片段、块结构和部件清单。</p>
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
+            </section>
+            <section class="outline-panel" aria-label="大纲面板">
+              <div class="comment-panel-header">
+                <div><strong>大纲</strong><p class="hint">拖拽标题可调整顺序；横向拖拽可改变层级。</p></div>
+              </div>
+              <ul id="outline-list" class="outline-list"></ul>
             </section>
             <section class="comment-panel" aria-label="批注面板">
               <div class="review-panel">
