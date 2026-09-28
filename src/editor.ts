@@ -19,6 +19,7 @@ import type {
   WidthFormat,
 } from './types.js';
 import { pxToEmu } from './drawing.js';
+import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { sanitizeText, sanitizeTextWithInfo } from './xml.js';
 
@@ -75,7 +76,6 @@ function borderStyle(value: string): string {
 }
 
 const DOCX_CLIPBOARD_MIME = 'application/x-docx-view+json';
-const DOCX_CLIPBOARD_HTML_ATTR = 'data-docx-clip';
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
@@ -1057,16 +1057,6 @@ export class DocxEditor {
     return range ? this.documentRange(range) : null;
   }
 
-  private escapeHtml(text: string): string {
-    return text.replace(/[&<>"']/g, (char) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      '\'': '&#39;',
-    }[char]!));
-  }
-
   private parseClipboardFragment(raw: string | null | undefined): ClipboardFragment | null {
     if (!raw) return null;
     try {
@@ -1078,30 +1068,13 @@ export class DocxEditor {
     }
   }
 
-  private parseClipboardFragmentFromHtml(html: string | null | undefined): ClipboardFragment | null {
-    if (!html) return null;
-    const parser = this.root.ownerDocument.defaultView?.DOMParser;
-    if (!parser) return null;
-    const document = new parser().parseFromString(html, 'text/html');
-    const container = document.querySelector<HTMLElement>(`[${DOCX_CLIPBOARD_HTML_ATTR}="1"]`);
-    const payload = container?.dataset.docxPayload;
-    if (!payload) return null;
-    return this.parseClipboardFragment(decodeURIComponent(payload));
-  }
-
   private writeClipboardFragment(data: DataTransfer | null, fragment: ClipboardFragment): boolean {
     if (!data) return false;
     const json = JSON.stringify(fragment);
     data.setData(DOCX_CLIPBOARD_MIME, json);
     data.setData('text/plain', fragment.text);
-    data.setData('text/html', `<div ${DOCX_CLIPBOARD_HTML_ATTR}="1" data-docx-payload="${encodeURIComponent(json)}">${this.escapeHtml(fragment.text)}</div>`);
+    data.setData('text/html', fragment.text);
     return true;
-  }
-
-  private isUnsafeHtmlHref(value: string): boolean {
-    const trimmed = value.trim().replace(/[\u0000-\u001f\s]+/g, '');
-    if (!trimmed) return false;
-    return /^(?:javascript|vbscript|file):/i.test(trimmed) || /^data:/i.test(trimmed);
   }
 
   private mapExternalHtmlFragment(html: string, plainText: string): ClipboardFragment {
@@ -1109,6 +1082,8 @@ export class DocxEditor {
     if (!parser) return { version: 1, text: sanitizeText(plainText), paragraphs: [{ runs: [{ text: sanitizeText(plainText) }] }] };
     const document = new parser().parseFromString(html, 'text/html');
     const paragraphs: ClipboardFragment['paragraphs'] = [];
+    const blocks: NonNullable<ClipboardFragment['blocks']> = [];
+    let nextListId = 1;
     type State = { format: RunFormat; hyperlink?: ClipboardRun['hyperlink'] };
     const pushParagraph = (runs: ClipboardRun[]): void => {
       const normalized = runs
@@ -1135,7 +1110,8 @@ export class DocxEditor {
         last.text = `${last.text ?? ''}${run.text ?? ''}`;
       } else runs.push(run);
     };
-    const walkInline = (node: Node, state: State, runs: ClipboardRun[]): void => {
+    const walkInline = (node: Node, state: State, runs: ClipboardRun[], depth = 0): void => {
+      if (depth > 100) return;
       if (node.nodeType === 3) {
         const text = node.textContent ?? '';
         if (text) pushRun(runs, { text, format: { ...state.format }, ...(state.hyperlink ? { hyperlink: { ...state.hyperlink } } : {}) });
@@ -1152,7 +1128,7 @@ export class DocxEditor {
       if (tag === 'img') {
         const src = element.getAttribute('src') ?? '';
         const match = src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
-        if (!match) return;
+        if (!match || !['image/png', 'image/jpeg', 'image/gif', 'image/bmp'].includes(match[1]!.toLowerCase())) return;
         pushRun(runs, {
           images: [{
             contentType: match[1]!,
@@ -1171,16 +1147,40 @@ export class DocxEditor {
       if (['s', 'del'].includes(tag)) nextState.format.strike = true;
       if (tag === 'a') {
         const href = element.getAttribute('href') ?? '';
-        if (href && !this.isUnsafeHtmlHref(href)) nextState.hyperlink = { url: href };
+        if (href && isSafeHyperlinkUrl(href)) nextState.hyperlink = { url: href };
         else nextState.hyperlink = undefined;
       }
-      for (const child of Array.from(node.childNodes)) walkInline(child, nextState, runs);
+      for (const child of Array.from(node.childNodes)) walkInline(child, nextState, runs, depth + 1);
     };
-    const walkBlocks = (node: Node): void => {
+    const walkList = (list: HTMLElement, kind: 'bullet' | 'decimal', level: number, listId: number, depth: number): void => {
+      if (depth > 100) return;
+      const items = Array.from(list.children).filter((child) => child.tagName.toLowerCase() === 'li');
+      for (const item of items) {
+        const runs: ClipboardRun[] = [];
+        for (const child of Array.from(item.childNodes)) {
+          if (child.nodeType === 1) {
+            const tag = (child as HTMLElement).tagName.toLowerCase();
+            if (tag === 'ul') { walkList(child as HTMLElement, 'bullet', Math.min(8, level + 1), listId, depth + 1); continue; }
+            if (tag === 'ol') { walkList(child as HTMLElement, 'decimal', Math.min(8, level + 1), listId, depth + 1); continue; }
+          }
+          walkInline(child, { format: {} }, runs, depth + 1);
+        }
+        pushParagraph(runs);
+        if (paragraphs.length) {
+          const paragraph = paragraphs[paragraphs.length - 1]!;
+          paragraph.numbering = { kind, level, listId };
+          blocks.push({ type: 'paragraph', paragraph });
+        }
+      }
+    };
+    const walkBlocks = (node: Node, depth = 0): void => {
+      if (depth > 100) return;
       if (node.nodeType === 3) {
         const text = node.textContent?.trim();
         if (!text) return;
-        pushParagraph([{ text, format: {} }]);
+        const paragraph = { runs: [{ text, format: {} }] };
+        pushParagraph(paragraph.runs);
+        blocks.push({ type: 'paragraph', paragraph });
         return;
       }
       if (node.nodeType !== 1) return;
@@ -1189,20 +1189,17 @@ export class DocxEditor {
       if (['script', 'style', 'noscript'].includes(tag)) return;
       if (['p', 'div'].includes(tag)) {
         const runs: ClipboardRun[] = [];
-        for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs);
+        for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs, depth + 1);
         pushParagraph(runs);
+        if (paragraphs.length) blocks.push({ type: 'paragraph', paragraph: paragraphs[paragraphs.length - 1]! });
         return;
       }
       if (tag === 'ul' || tag === 'ol') {
-        const items = Array.from(element.children).filter((child) => child.tagName.toLowerCase() === 'li');
-        items.forEach((item) => {
-          const runs: ClipboardRun[] = [];
-          for (const child of Array.from(item.childNodes)) walkInline(child, { format: {} }, runs);
-          pushParagraph(runs);
-        });
+        walkList(element, tag === 'ul' ? 'bullet' : 'decimal', 0, nextListId++, depth + 1);
         return;
       }
       if (tag === 'table') {
+        const tableRows: ClipboardFragment['paragraphs'][] = [];
         const rows = Array.from(element.children).flatMap((child) => {
           const name = child.tagName.toLowerCase();
           if (name === 'tr') return [child];
@@ -1213,28 +1210,36 @@ export class DocxEditor {
         });
         for (const row of rows) {
           const cells = Array.from(row.children).filter((child) => ['th', 'td'].includes(child.tagName.toLowerCase()));
-          const runs: ClipboardRun[] = [];
-          cells.forEach((cell, index) => {
-            if (index > 0) runs.push({ text: '\t', format: {} });
-            for (const child of Array.from(cell.childNodes)) walkInline(child, { format: {} }, runs);
-          });
-          pushParagraph(runs);
+          const tableRow: ClipboardFragment['paragraphs'] = [];
+          for (const cell of cells) {
+            const runs: ClipboardRun[] = [];
+            for (const child of Array.from(cell.childNodes)) walkInline(child, { format: {} }, runs, depth + 1);
+            const cellParagraph: ClipboardFragment['paragraphs'][number] = { runs };
+            tableRow.push(cellParagraph);
+          }
+          if (tableRow.length) tableRows.push(tableRow);
         }
+        if (tableRows.length) blocks.push({ type: 'table', table: { rows: tableRows } });
         return;
       }
       const runs: ClipboardRun[] = [];
-      for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs);
+      for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs, depth + 1);
       pushParagraph(runs);
+      if (paragraphs.length) blocks.push({ type: 'paragraph', paragraph: paragraphs[paragraphs.length - 1]! });
     };
-    for (const child of Array.from(document.body.childNodes)) walkBlocks(child);
-    if (!paragraphs.length) {
+    for (const child of Array.from(document.body.childNodes)) walkBlocks(child, 0);
+    if (!blocks.length) {
       const text = sanitizeText(plainText || document.body.textContent || '');
       return { version: 1, text, paragraphs: [{ runs: [{ text }] }] };
     }
-    const text = paragraphs
-      .map((paragraph) => paragraph.runs.map((run) => run.text ?? '').join(''))
-      .join('\n');
-    return { version: 1, text, paragraphs };
+    const allParagraphs = blocks.flatMap((block) => block.type === 'paragraph' ? [block.paragraph] : block.table.rows.flat());
+    const text = blocks.map((block) => {
+      if (block.type === 'paragraph') return block.paragraph.runs.map((run) => run.text ?? '').join('');
+      return block.table.rows
+        .map((row) => row.map((cell) => cell.runs.map((run) => run.text ?? '').join('')).join('\t'))
+        .join('\n');
+    }).join('\n');
+    return { version: 1, text, paragraphs: allParagraphs, blocks };
   }
 
   private handleClipboardCopy(event: ClipboardEvent): void {
@@ -1247,8 +1252,11 @@ export class DocxEditor {
 
   private handleClipboardCut(event: ClipboardEvent, content: HTMLElement): void {
     const range = this.currentDocumentRange();
-    if (!range || range.start.paragraph !== range.end.paragraph) return;
-    if (range.start.offset === range.end.offset) return;
+    if (!range) return;
+    if (range.start.paragraph !== range.end.paragraph || range.start.offset === range.end.offset) {
+      event.preventDefault();
+      return;
+    }
     const fragment = this.document.copyClipboardFragment(range);
     if (!this.writeClipboardFragment(event.clipboardData, fragment)) return;
     const before = this.document.revision;
@@ -1259,8 +1267,8 @@ export class DocxEditor {
     } finally {
       this.document.endHistoryGroup();
     }
-    if (!handled) return;
     event.preventDefault();
+    if (!handled) return;
     if (this.document.revision === before) {
       this.insertText(content, '');
       return;
@@ -1287,7 +1295,9 @@ export class DocxEditor {
           }
           return;
         }
-      } catch { /* fall through to plain/html mapping */ }
+      } catch (error) {
+        this.reportError(error, range.start.paragraph);
+      }
     }
     const html = data.getData('text/html');
     if (html) {
@@ -1302,7 +1312,9 @@ export class DocxEditor {
           }
           return;
         }
-      } catch { /* fallback to plain text insertion */ }
+      } catch (error) {
+        this.reportError(error, range.start.paragraph);
+      }
     }
     event.preventDefault();
     this.insertText(content, plain);

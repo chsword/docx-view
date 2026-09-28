@@ -304,36 +304,36 @@ function formatRuns(format: RunFormat): void {
       end: { paragraph: index, offset: paragraph.text.length },
     }, format);
   }
-
-  function selectedTextRange() {
-    const range = selectedRange;
-    if (range && range.start.paragraph === range.end.paragraph) {
-      const converted = toDocumentRange(range);
-      return { paragraph: converted.start.paragraph, start: converted.start.offset, end: converted.end.offset };
-    }
-    const index = selectedIndex();
-    const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
-    return { paragraph: index, start: 0, end: paragraph.text.length };
-  }
-
-  function activateFormatPainter(locked: boolean): void {
-    const range = selectedTextRange();
-    const format = doc.copyFormat(range);
-    if (!Object.keys(format).length) throw new Error('当前选区没有可复制的直接文字格式。');
-    formatPainter = { format, locked };
-    updateSelection();
-    message(locked ? '格式刷已锁定，连续点击可多次应用；按 Esc 取消。' : '格式刷已启用，下一次选区应用后自动关闭。');
-  }
-
-  function cancelFormatPainter(silent = false): void {
-    if (!formatPainter) return;
-    formatPainter = null;
-    updateSelection();
-    if (!silent) message('已取消格式刷。');
-  }
   editor.render();
   refresh();
   message('已更新文字格式。');
+}
+
+function selectedTextRange() {
+  const range = selectedRange;
+  if (range && range.start.paragraph === range.end.paragraph) {
+    const converted = toDocumentRange(range);
+    return { paragraph: converted.start.paragraph, start: converted.start.offset, end: converted.end.offset };
+  }
+  const index = selectedIndex();
+  const paragraph = doc.getParagraphs().find((item) => item.index === index)!;
+  return { paragraph: index, start: 0, end: paragraph.text.length };
+}
+
+function activateFormatPainter(locked: boolean): void {
+  const range = selectedTextRange();
+  const format = doc.copyFormat(range);
+  if (!Object.keys(format).length) throw new Error('当前选区没有可复制的直接文字格式。');
+  formatPainter = { format, locked };
+  updateSelection();
+  message(locked ? '格式刷已锁定，连续点击可多次应用；按 Esc 取消。' : '格式刷已启用，下一次选区应用后自动关闭。');
+}
+
+function cancelFormatPainter(silent = false): void {
+  if (!formatPainter) return;
+  formatPainter = null;
+  updateSelection();
+  if (!silent) message('已取消格式刷。');
 }
 
 function loadXmlParts(): void {

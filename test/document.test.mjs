@@ -2846,7 +2846,44 @@ test('pasteClipboardFragment applies 100-paragraph payload in one transaction', 
   const before = doc.revision;
   assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } }, fragment), true);
   assert.equal(doc.revision, before + 1);
-  assert.equal(doc.getParagraphs()[0].text.includes('p99'), true);
+  const paragraphs = doc.getParagraphs();
+  assert.equal(paragraphs.length >= 100, true);
+  assert.equal(paragraphs[0].text, 'p0');
+  assert.equal(paragraphs[99].text, 'p99');
+});
+
+test('pasteClipboardFragment sanitizes clipboard run text', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.equal(doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'a\u0000b', paragraphs: [{ runs: [{ text: 'a\u0000b' }] }] },
+  ), true);
+  assert.equal(doc.getParagraphs()[0].text, 'ab');
+});
+
+test('pasteClipboardFragment validates run format payload', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x', format: { color: 'BAD' } }] }] },
+  ), /color must be six hexadecimal digits/);
+});
+
+test('pasteClipboardFragment rejects unsafe hyperlink urls', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: 'bad', paragraphs: [{ runs: [{ text: 'bad', hyperlink: { url: 'javascript:alert(1)' } }] }] },
+  ), /link\.url must use http, https or mailto/);
+});
+
+test('pasteClipboardFragment enforces paragraph count limit', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  const paragraphs = Array.from({ length: 10001 }, () => ({ runs: [{ text: 'x' }] }));
+  assert.throws(() => doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+    { version: 1, text: '', paragraphs },
+  ), /clipboard paragraph count exceeds 10000/);
 });
 
 test('clipboard copy/paste round-trip keeps richer direct run format fields', () => {

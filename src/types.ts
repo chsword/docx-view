@@ -413,12 +413,23 @@ export interface ClipboardRun {
 
 export interface ClipboardParagraph {
   runs: ClipboardRun[];
+  format?: ParagraphFormat;
+  numbering?: { kind: 'bullet' | 'decimal'; level?: number; listId?: number };
 }
+
+export interface ClipboardTable {
+  rows: ClipboardParagraph[][];
+}
+
+export type ClipboardBlock =
+  | { type: 'paragraph'; paragraph: ClipboardParagraph }
+  | { type: 'table'; table: ClipboardTable };
 
 export interface ClipboardFragment {
   version: 1;
   text: string;
   paragraphs: ClipboardParagraph[];
+  blocks?: ClipboardBlock[];
 }
 
 export type AgentOperation =

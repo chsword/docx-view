@@ -327,7 +327,7 @@ test('parseClipboardFragment validates payload shape', () => {
   assert.equal(invalid, null);
 });
 
-test('writeClipboardFragment writes custom mime, html marker, and plain text', () => {
+test('writeClipboardFragment writes custom mime, plain html text, and plain text', () => {
   const editor = Object.create(DocxEditor.prototype);
   const written = new Map();
   const transfer = { setData: (type, value) => written.set(type, value) };
@@ -335,35 +335,7 @@ test('writeClipboardFragment writes custom mime, html marker, and plain text', (
   assert.equal(ok, true);
   assert.equal(written.get('application/x-docx-view+json').includes('"version":1'), true);
   assert.equal(written.get('text/plain'), 'hello');
-  assert.equal(/data-docx-clip="1"/.test(written.get('text/html')), true);
-});
-
-test('parseClipboardFragmentFromHtml reads embedded docx payload', () => {
-  const editor = Object.create(DocxEditor.prototype);
-  const payload = encodeURIComponent('{"version":1,"text":"ok","paragraphs":[]}');
-  editor.root = {
-    ownerDocument: {
-      defaultView: {
-        DOMParser: class {
-          parseFromString() {
-            return {
-              querySelector: () => ({ dataset: { docxPayload: payload } }),
-            };
-          }
-        },
-      },
-    },
-  };
-  const parsed = editor.parseClipboardFragmentFromHtml('<div data-docx-clip="1"></div>');
-  assert.equal(parsed.text, 'ok');
-});
-
-test('isUnsafeHtmlHref blocks script-like schemes', () => {
-  const editor = Object.create(DocxEditor.prototype);
-  assert.equal(editor.isUnsafeHtmlHref('javascript:alert(1)'), true);
-  assert.equal(editor.isUnsafeHtmlHref('vbscript:msgbox(1)'), true);
-  assert.equal(editor.isUnsafeHtmlHref('data:text/html;base64,abcd'), true);
-  assert.equal(editor.isUnsafeHtmlHref('https://example.com'), false);
+  assert.equal(written.get('text/html'), 'hello');
 });
 
 test('mapExternalHtmlFragment strips unsafe href and external images', () => {
@@ -467,6 +439,45 @@ test('mapExternalHtmlFragment does not inject list marker text into document run
   };
   const fragment = editor.mapExternalHtmlFragment('<ul><li>item</li></ul>', 'item');
   assert.equal(fragment.paragraphs[0].runs.map((run) => run.text ?? '').join(''), 'item');
+  assert.deepEqual(fragment.paragraphs[0].numbering, { kind: 'bullet', level: 0, listId: 1 });
+});
+
+test('mapExternalHtmlFragment maps html tables into table blocks', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value, childNodes: [] });
+  const element = (tagName, attrs = {}, childNodes = []) => ({
+    nodeType: 1,
+    tagName,
+    childNodes,
+    children: childNodes.filter((child) => child.nodeType === 1),
+    getAttribute: (name) => attrs[name] ?? null,
+    querySelectorAll: () => [],
+  });
+  editor.root = {
+    ownerDocument: {
+      defaultView: {
+        DOMParser: class {
+          parseFromString() {
+            return {
+              body: {
+                childNodes: [element('TABLE', {}, [
+                  element('TR', {}, [
+                    element('TD', {}, [text('A')]),
+                    element('TD', {}, [text('B')]),
+                  ]),
+                ])],
+                textContent: 'A B',
+              },
+            };
+          }
+        },
+      },
+    },
+  };
+  const fragment = editor.mapExternalHtmlFragment('<table><tr><td>A</td><td>B</td></tr></table>', '');
+  assert.equal(fragment.blocks[0].type, 'table');
+  assert.equal(fragment.blocks[0].table.rows[0][0].runs[0].text, 'A');
+  assert.equal(fragment.blocks[0].table.rows[0][1].runs[0].text, 'B');
 });
 
 test('handleClipboardPaste prefers internal rich fragment and re-renders once', () => {
@@ -481,7 +492,6 @@ test('handleClipboardPaste prefers internal rich fragment and re-renders once', 
     getSnapshot: () => ({ revision: 2 }),
   };
   editor.parseClipboardFragment = () => ({ version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] });
-  editor.parseClipboardFragmentFromHtml = () => null;
   editor.render = () => calls.push('render');
   editor.options = { onChange: () => calls.push('change') };
   const event = {
@@ -501,8 +511,10 @@ test('handleClipboardPaste does not trust HTML marker without custom mime payloa
   editor.document = { revision: 1, pasteClipboardFragment: () => false, getSnapshot: () => ({ revision: 1 }) };
   editor.insertText = (_content, text) => calls.push(`plain:${text}`);
   editor.parseClipboardFragment = () => null;
-  editor.parseClipboardFragmentFromHtml = () => ({ version: 1, text: 'evil', paragraphs: [{ runs: [{ text: 'evil' }] }] });
-  editor.mapExternalHtmlFragment = () => ({ version: 1, text: 'safe', paragraphs: [{ runs: [{ text: 'safe' }] }] });
+  editor.mapExternalHtmlFragment = (html) => {
+    calls.push(`html:${html.includes('data-docx-clip="1"')}`);
+    return { version: 1, text: 'safe', paragraphs: [{ runs: [{ text: 'safe' }] }] };
+  };
   const event = {
     clipboardData: {
       getData: (type) => type === 'text/plain' ? 'plain' : type === 'text/html' ? '<div data-docx-clip="1" data-docx-payload="..."></div>' : '',
@@ -510,7 +522,7 @@ test('handleClipboardPaste does not trust HTML marker without custom mime payloa
     preventDefault: () => calls.push('prevent'),
   };
   editor.handleClipboardPaste(event, {});
-  assert.deepEqual(calls, ['prevent', 'plain:plain']);
+  assert.deepEqual(calls, ['html:true', 'prevent', 'plain:plain']);
 });
 
 test('handleClipboardCut wraps deletion in one history group', () => {
@@ -532,4 +544,13 @@ test('handleClipboardCut wraps deletion in one history group', () => {
   editor.options = { onChange: () => calls.push('change') };
   editor.handleClipboardCut({ clipboardData: {}, preventDefault: () => calls.push('prevent') }, {});
   assert.deepEqual(calls, ['begin:cut', 'end', 'prevent', 'render', 'change']);
+});
+
+test('handleClipboardCut prevents default for unsupported multi-paragraph ranges', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  let prevented = false;
+  editor.captureDocumentRange = () => ({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 1, offset: 0 } });
+  editor.documentRange = (range) => range;
+  editor.handleClipboardCut({ preventDefault: () => { prevented = true; } }, {});
+  assert.equal(prevented, true);
 });
