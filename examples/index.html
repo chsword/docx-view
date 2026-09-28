@@ -23,7 +23,7 @@
 
       <main>
         <section class="intro">
-          <div><div class="eyebrow">LOCAL FIRST · OPEN XML · AGENT READY</div><h1>让文档，保持开放。</h1><p>可视化编辑、底层 XML 与 AI 指令，在同一张工作台相遇。</p></div>
+          <div><div class="eyebrow">LOCAL FIRST · OPEN XML · AGENT READY</div><h1>让文档，保持开放。</h1><p>可视化编辑、底层 XML 与 AI 指令，在同一张工作台相遇。外部 HTML 粘贴会映射常见文字样式/链接/列表/表格；不支持结构会自动降级为纯文本。</p></div>
           <span class="version-pill">开源编辑器 / 技术预览</span>
         </section>
         <div id="status" class="status" role="status" aria-live="polite">已准备好。点击正文开始编辑。</div>
@@ -35,6 +35,7 @@
                 <button class="tool text-bold" id="format-bold" aria-label="整段加粗" title="整段加粗" aria-pressed="false">B</button>
                 <button class="tool text-italic" id="format-italic" aria-label="整段斜体" title="整段斜体" aria-pressed="false">I</button>
                 <button class="tool text-underline" id="format-underline" aria-label="整段下划线" title="整段下划线" aria-pressed="false">U</button>
+                <button class="tool wide" id="format-painter" aria-label="格式刷（双击锁定）" title="格式刷（双击锁定）" aria-pressed="false">🖌 格式刷</button>
               </div>
               <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
               <div class="tool-group"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div>

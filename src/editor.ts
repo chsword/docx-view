@@ -1,6 +1,8 @@
 import { DocxDocument } from './document.js';
 import type {
   BorderFormat,
+  ClipboardFragment,
+  ClipboardRun,
   BordersFormat,
   CellFormat,
   DocumentRange,
@@ -71,6 +73,9 @@ function borderStyle(value: string): string {
     nil: 'none',
   }[value] ?? 'solid';
 }
+
+const DOCX_CLIPBOARD_MIME = 'application/x-docx-view+json';
+const DOCX_CLIPBOARD_HTML_ATTR = 'data-docx-clip';
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
@@ -665,10 +670,9 @@ export class DocxEditor {
         this.flush();
       }
     });
-    content.addEventListener('paste', (event) => {
-      event.preventDefault();
-      this.insertText(content, event.clipboardData?.getData('text/plain') ?? '');
-    });
+    content.addEventListener('copy', (event) => this.handleClipboardCopy(event));
+    content.addEventListener('cut', (event) => this.handleClipboardCut(event, content));
+    content.addEventListener('paste', (event) => this.handleClipboardPaste(event, content));
     // Do not allow rich HTML or embedded objects from drag-and-drop either.
     content.addEventListener('drop', (event) => { event.preventDefault(); });
     content.addEventListener('keydown', (event) => {
@@ -1046,6 +1050,242 @@ export class DocxEditor {
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+  }
+
+  private currentDocumentRange(): DocumentRange | null {
+    const range = this.captureDocumentRange();
+    return range ? this.documentRange(range) : null;
+  }
+
+  private escapeHtml(text: string): string {
+    return text.replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      '\'': '&#39;',
+    }[char]!));
+  }
+
+  private parseClipboardFragment(raw: string | null | undefined): ClipboardFragment | null {
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as ClipboardFragment;
+      if (!value || value.version !== 1 || typeof value.text !== 'string' || !Array.isArray(value.paragraphs)) return null;
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  private parseClipboardFragmentFromHtml(html: string | null | undefined): ClipboardFragment | null {
+    if (!html) return null;
+    const parser = this.root.ownerDocument.defaultView?.DOMParser;
+    if (!parser) return null;
+    const document = new parser().parseFromString(html, 'text/html');
+    const container = document.querySelector<HTMLElement>(`[${DOCX_CLIPBOARD_HTML_ATTR}="1"]`);
+    const payload = container?.dataset.docxPayload;
+    if (!payload) return null;
+    return this.parseClipboardFragment(decodeURIComponent(payload));
+  }
+
+  private writeClipboardFragment(data: DataTransfer | null, fragment: ClipboardFragment): boolean {
+    if (!data) return false;
+    const json = JSON.stringify(fragment);
+    data.setData(DOCX_CLIPBOARD_MIME, json);
+    data.setData('text/plain', fragment.text);
+    data.setData('text/html', `<div ${DOCX_CLIPBOARD_HTML_ATTR}="1" data-docx-payload="${encodeURIComponent(json)}">${this.escapeHtml(fragment.text)}</div>`);
+    return true;
+  }
+
+  private isUnsafeHtmlHref(value: string): boolean {
+    const trimmed = value.trim().replace(/[\u0000-\u001f\s]+/g, '');
+    if (!trimmed) return false;
+    return /^(?:javascript|vbscript|file):/i.test(trimmed) || /^data:/i.test(trimmed);
+  }
+
+  private mapExternalHtmlFragment(html: string, plainText: string): ClipboardFragment {
+    const parser = this.root.ownerDocument.defaultView?.DOMParser;
+    if (!parser) return { version: 1, text: sanitizeText(plainText), paragraphs: [{ runs: [{ text: sanitizeText(plainText) }] }] };
+    const document = new parser().parseFromString(html, 'text/html');
+    const paragraphs: ClipboardFragment['paragraphs'] = [];
+    type State = { format: RunFormat; hyperlink?: ClipboardRun['hyperlink'] };
+    const pushParagraph = (runs: ClipboardRun[]): void => {
+      const normalized = runs
+        .map((run) => ({ ...run, ...(run.text ? { text: sanitizeText(run.text) } : {}) }))
+        .filter((run) => run.text || run.images?.length);
+      if (normalized.length) paragraphs.push({ runs: normalized });
+    };
+    const pushRun = (runs: ClipboardRun[], run: ClipboardRun): void => {
+      const last = runs.at(-1);
+      if (last && !last.images?.length && !run.images?.length &&
+          JSON.stringify(last.format ?? {}) === JSON.stringify(run.format ?? {}) &&
+          JSON.stringify(last.hyperlink ?? {}) === JSON.stringify(run.hyperlink ?? {})) {
+        last.text = `${last.text ?? ''}${run.text ?? ''}`;
+      } else runs.push(run);
+    };
+    const walkInline = (node: Node, state: State, runs: ClipboardRun[]): void => {
+      if (node.nodeType === 3) {
+        const text = node.textContent ?? '';
+        if (text) pushRun(runs, { text, format: { ...state.format }, ...(state.hyperlink ? { hyperlink: { ...state.hyperlink } } : {}) });
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      const element = node as HTMLElement;
+      const tag = element.tagName.toLowerCase();
+      if (['script', 'style', 'noscript'].includes(tag)) return;
+      if (tag === 'br') {
+        pushRun(runs, { text: '\n', format: { ...state.format }, ...(state.hyperlink ? { hyperlink: { ...state.hyperlink } } : {}) });
+        return;
+      }
+      if (tag === 'img') {
+        const src = element.getAttribute('src') ?? '';
+        const match = src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+        if (!match) return;
+        pushRun(runs, {
+          images: [{
+            contentType: match[1]!,
+            bytes: match[2]!,
+            alt: element.getAttribute('alt') ?? undefined,
+          }],
+          format: { ...state.format },
+          ...(state.hyperlink ? { hyperlink: { ...state.hyperlink } } : {}),
+        });
+        return;
+      }
+      const nextState: State = { format: { ...state.format }, hyperlink: state.hyperlink ? { ...state.hyperlink } : undefined };
+      if (['b', 'strong'].includes(tag)) nextState.format.bold = true;
+      if (['i', 'em'].includes(tag)) nextState.format.italic = true;
+      if (tag === 'u') nextState.format.underline = true;
+      if (['s', 'del'].includes(tag)) nextState.format.strike = true;
+      if (tag === 'a') {
+        const href = element.getAttribute('href') ?? '';
+        if (href && !this.isUnsafeHtmlHref(href)) nextState.hyperlink = { url: href };
+        else nextState.hyperlink = undefined;
+      }
+      for (const child of Array.from(node.childNodes)) walkInline(child, nextState, runs);
+    };
+    const walkBlocks = (node: Node): void => {
+      if (node.nodeType === 3) {
+        const text = node.textContent?.trim();
+        if (!text) return;
+        pushParagraph([{ text, format: {} }]);
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      const element = node as HTMLElement;
+      const tag = element.tagName.toLowerCase();
+      if (['script', 'style', 'noscript'].includes(tag)) return;
+      if (['p', 'div'].includes(tag)) {
+        const runs: ClipboardRun[] = [];
+        for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs);
+        pushParagraph(runs);
+        return;
+      }
+      if (tag === 'ul' || tag === 'ol') {
+        const items = Array.from(element.children).filter((child) => child.tagName.toLowerCase() === 'li');
+        items.forEach((item, index) => {
+          const runs: ClipboardRun[] = [{ text: tag === 'ol' ? `${index + 1}. ` : '• ', format: {} }];
+          for (const child of Array.from(item.childNodes)) walkInline(child, { format: {} }, runs);
+          pushParagraph(runs);
+        });
+        return;
+      }
+      if (tag === 'table') {
+        for (const row of Array.from(element.querySelectorAll('tr'))) {
+          const cells = Array.from(row.querySelectorAll('th,td'));
+          const runs: ClipboardRun[] = [];
+          cells.forEach((cell, index) => {
+            if (index > 0) runs.push({ text: '\t', format: {} });
+            for (const child of Array.from(cell.childNodes)) walkInline(child, { format: {} }, runs);
+          });
+          pushParagraph(runs);
+        }
+        return;
+      }
+      const runs: ClipboardRun[] = [];
+      for (const child of Array.from(element.childNodes)) walkInline(child, { format: {} }, runs);
+      pushParagraph(runs);
+    };
+    for (const child of Array.from(document.body.childNodes)) walkBlocks(child);
+    if (!paragraphs.length) {
+      const text = sanitizeText(plainText || document.body.textContent || '');
+      return { version: 1, text, paragraphs: [{ runs: [{ text }] }] };
+    }
+    const text = paragraphs
+      .map((paragraph) => paragraph.runs.map((run) => run.text ?? '').join(''))
+      .join('\n');
+    return { version: 1, text, paragraphs };
+  }
+
+  private handleClipboardCopy(event: ClipboardEvent): void {
+    const range = this.currentDocumentRange();
+    if (!range) return;
+    const fragment = this.document.copyClipboardFragment(range);
+    if (!this.writeClipboardFragment(event.clipboardData, fragment)) return;
+    event.preventDefault();
+  }
+
+  private handleClipboardCut(event: ClipboardEvent, content: HTMLElement): void {
+    const range = this.currentDocumentRange();
+    if (!range || range.start.paragraph !== range.end.paragraph) return;
+    const fragment = this.document.copyClipboardFragment(range);
+    if (!this.writeClipboardFragment(event.clipboardData, fragment)) return;
+    const before = this.document.revision;
+    this.document.beginHistoryGroup('cut');
+    let handled = false;
+    try {
+      handled = this.document.pasteClipboardFragment(range, { version: 1, text: '', paragraphs: [] });
+    } finally {
+      this.document.endHistoryGroup();
+    }
+    if (!handled) return;
+    event.preventDefault();
+    if (this.document.revision === before) {
+      this.insertText(content, '');
+      return;
+    }
+    this.render();
+    this.options.onChange?.(this.document.getSnapshot());
+  }
+
+  private handleClipboardPaste(event: ClipboardEvent, content: HTMLElement): void {
+    const data = event.clipboardData;
+    if (!data) return;
+    const range = this.currentDocumentRange();
+    if (!range) return;
+    const plain = data.getData('text/plain') ?? '';
+    const own = this.parseClipboardFragment(data.getData(DOCX_CLIPBOARD_MIME)) ?? this.parseClipboardFragmentFromHtml(data.getData('text/html'));
+    if (own) {
+      try {
+        const before = this.document.revision;
+        if (this.document.pasteClipboardFragment(range, own)) {
+          event.preventDefault();
+          if (this.document.revision !== before) {
+            this.render();
+            this.options.onChange?.(this.document.getSnapshot());
+          }
+          return;
+        }
+      } catch { /* fall through to plain/html mapping */ }
+    }
+    const html = data.getData('text/html');
+    if (html) {
+      try {
+        const mapped = this.mapExternalHtmlFragment(html, plain);
+        const before = this.document.revision;
+        if (this.document.pasteClipboardFragment(range, mapped)) {
+          event.preventDefault();
+          if (this.document.revision !== before) {
+            this.render();
+            this.options.onChange?.(this.document.getSnapshot());
+          }
+          return;
+        }
+      } catch { /* fallback to plain text insertion */ }
+    }
+    event.preventDefault();
+    this.insertText(content, plain);
   }
 
   private reportError(error: unknown, paragraph: number): void {

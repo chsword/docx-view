@@ -395,6 +395,32 @@ export interface DocumentRange {
   end: { paragraph: number; offset: number };
 }
 
+export interface ClipboardImage {
+  bytes: string;
+  contentType: string;
+  widthEmu?: number;
+  heightEmu?: number;
+  alt?: string;
+  placement?: 'inline' | 'floating';
+}
+
+export interface ClipboardRun {
+  text?: string;
+  format?: RunFormat;
+  hyperlink?: { url?: string; anchor?: string; tooltip?: string };
+  images?: ClipboardImage[];
+}
+
+export interface ClipboardParagraph {
+  runs: ClipboardRun[];
+}
+
+export interface ClipboardFragment {
+  version: 1;
+  text: string;
+  paragraphs: ClipboardParagraph[];
+}
+
 export type AgentOperation =
   | { type: 'setParagraphText'; index: number; text: string }
   | { type: 'insertParagraph'; text: string; before?: number }

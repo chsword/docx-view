@@ -2728,3 +2728,96 @@ test('applyOperations validates new formatting operations', () => {
   ] });
   assert.equal(snapshot.revision, doc.revision);
 });
+
+test('copyFormat mirrors getRangeFormat', () => {
+  const doc = withBody('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>abc</w:t></w:r></w:p>');
+  assert.deepEqual(doc.copyFormat({ paragraph: 0, start: 0, end: 3 }), doc.getRangeFormat({ paragraph: 0, start: 0, end: 3 }));
+});
+
+test('applyFormat mirrors formatDocumentRange', () => {
+  const doc = withBody('<w:p><w:r><w:t>abc</w:t></w:r></w:p>');
+  const before = doc.revision;
+  doc.applyFormat({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 3 } }, { italic: true });
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].runs.some((run) => run.italic), true);
+});
+
+test('copyClipboardFragment includes direct formatting, hyperlinks, and images', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'hello world');
+  doc.formatRange({ paragraph: 0, start: 0, end: 5 }, { bold: true, color: 'FF0000' });
+  doc.insertHyperlink({ paragraph: 0, start: 6, end: 11 }, { url: 'https://example.com' });
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+  const fragment = doc.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 11 } });
+  const runs = fragment.paragraphs.flatMap((paragraph) => paragraph.runs);
+  assert.equal(fragment.text, 'hello world');
+  assert.equal(runs.some((run) => run.format?.bold), true);
+  assert.equal(runs.some((run) => run.hyperlink?.url === 'https://example.com'), true);
+  assert.equal(runs.some((run) => (run.images?.length ?? 0) > 0), true);
+});
+
+test('pasteClipboardFragment inserts rich runs and bumps revision once', () => {
+  const doc = withBody('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  const fragment = {
+    version: 1,
+    text: 'A B',
+    paragraphs: [{
+      runs: [
+        { text: 'A', format: { bold: true } },
+        { text: ' ', format: {} },
+        { text: 'B', hyperlink: { url: 'https://example.com' }, format: { underline: true } },
+      ],
+    }],
+  };
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } }, fragment), true);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text.includes('A B'), true);
+  assert.equal(doc.getHyperlinks().some((item) => item.url === 'https://example.com'), true);
+});
+
+test('pasteClipboardFragment imports image bytes into a new media part in target docs', () => {
+  const source = DocxDocument.create();
+  source.setParagraphText(0, 'img');
+  source.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 } });
+  const target = DocxDocument.create();
+  target.setParagraphText(0, 'X');
+  const beforeSourceParts = source.listParts();
+  assert.equal(target.pasteClipboardFragment({ start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 } }, fragment), true);
+  assert.equal(target.getImages().length > 0, true);
+  assert.equal(target.listParts().some((path) => /^word\/media\/image\d+\./.test(path)), true);
+  assert.deepEqual(source.listParts(), beforeSourceParts);
+});
+
+test('pasteClipboardFragment returns false for cross-paragraph targets', () => {
+  const doc = withBody('<w:p><w:r><w:t>a</w:t></w:r></w:p><w:p><w:r><w:t>b</w:t></w:r></w:p>');
+  const fragment = { version: 1, text: 'x', paragraphs: [{ runs: [{ text: 'x' }] }] };
+  const revision = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 1, offset: 1 } }, fragment), false);
+  assert.equal(doc.revision, revision);
+});
+
+test('pasteClipboardFragment with empty fragment removes selected text', () => {
+  const doc = withBody('<w:p><w:r><w:t>abcdef</w:t></w:r></w:p>');
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment(
+    { start: { paragraph: 0, offset: 2 }, end: { paragraph: 0, offset: 4 } },
+    { version: 1, text: '', paragraphs: [] },
+  ), true);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text, 'abef');
+});
+
+test('pasteClipboardFragment applies 100-paragraph payload in one transaction', () => {
+  const doc = withBody('<w:p><w:r><w:t>base</w:t></w:r></w:p>');
+  const fragment = {
+    version: 1,
+    text: Array.from({ length: 100 }, (_, index) => `p${index}`).join('\n'),
+    paragraphs: Array.from({ length: 100 }, (_, index) => ({ runs: [{ text: `p${index}` }] })),
+  };
+  const before = doc.revision;
+  assert.equal(doc.pasteClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 4 } }, fragment), true);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text.includes('p99'), true);
+});

@@ -15,7 +15,7 @@ export type {
   RevisionInfo, RevisionMark,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, TabStop, BorderSide, TableCellInfo, TableFormat, TableInfo, TableRowInfo,
-  TextRange, DocumentRange,
+  TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
   PageSetup, SectionInfo, SectionType,
 } from './types.js';

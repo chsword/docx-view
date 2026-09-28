@@ -1,7 +1,8 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
+  CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
@@ -148,6 +149,19 @@ function decodeXml(bytes: Uint8Array): string {
 
 function encodeXml(xml: string): Uint8Array {
   return encoder.encode(xml.replace(/^(<\?xml\b[^?]*\bencoding\s*=\s*)(["'])[^"']*\2/i, '$1"UTF-8"'));
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  const NodeBuffer = (globalThis as { Buffer?: { from(bytes: ArrayBufferLike, byteOffset?: number, length?: number): { toString(encoding: 'base64'): string } } }).Buffer;
+  if (NodeBuffer) {
+    return NodeBuffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function dirname(path: string): string {
@@ -3389,6 +3403,197 @@ export class DocxDocument {
     return merged;
   }
 
+  private directRunFormat(run: RunInfo): RunFormat {
+    const format: RunFormat = {};
+    for (const field of RUN_FORMAT_FIELDS) {
+      const value = run[field];
+      if (value !== undefined) (format as Record<string, unknown>)[field] = cloneRunFormatValue(value);
+    }
+    return format;
+  }
+
+  copyClipboardFragment(range: DocumentRange): ClipboardFragment {
+    const preview = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preview, range);
+    const paragraphs = this.getParagraphs();
+    const byIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+    const textChunks: string[] = [];
+    const result: ClipboardParagraph[] = [];
+    for (let index = normalized.start.paragraph; index <= normalized.end.paragraph; index++) {
+      const paragraph = byIndex.get(index);
+      if (!paragraph) continue;
+      const start = index === normalized.start.paragraph ? normalized.start.offset : 0;
+      const end = index === normalized.end.paragraph ? normalized.end.offset : paragraph.text.length;
+      if (start >= end) {
+        if (index < normalized.end.paragraph) textChunks.push('');
+        continue;
+      }
+      const runs: ClipboardRun[] = [];
+      let cursor = 0;
+      for (const run of paragraph.runs) {
+        const runStart = cursor;
+        const runEnd = cursor + run.text.length;
+        const overlapStart = Math.max(start, runStart);
+        const overlapEnd = Math.min(end, runEnd);
+        cursor = runEnd;
+        if (overlapStart >= overlapEnd && !(run.images?.length && start <= runStart && end >= runStart)) continue;
+        const text = overlapStart < overlapEnd ? run.text.slice(overlapStart - runStart, overlapEnd - runStart) : '';
+        const images: ClipboardImage[] = (run.images ?? []).flatMap((image) => {
+          if (image.isExternal || !image.partPath) return [];
+          try {
+            return [{
+              bytes: encodeBase64(this.getImageBytes(image)),
+              contentType: image.contentType ?? this.getContentType(image.partPath) ?? 'image/png',
+              widthEmu: image.widthEmu,
+              heightEmu: image.heightEmu,
+              alt: image.alt,
+              placement: image.placement,
+            }];
+          } catch {
+            return [];
+          }
+        });
+        if (!text && !images.length) continue;
+        runs.push({
+          ...(text ? { text } : {}),
+          format: this.directRunFormat(run),
+          ...(run.hyperlink ? { hyperlink: { ...run.hyperlink } } : {}),
+          ...(images.length ? { images } : {}),
+        });
+      }
+      const paragraphText = paragraph.text.slice(start, end);
+      textChunks.push(paragraphText);
+      if (runs.length) result.push({ runs });
+    }
+    return {
+      version: 1,
+      text: textChunks.join('\n'),
+      paragraphs: result,
+    };
+  }
+
+  pasteClipboardFragment(range: DocumentRange, fragment: ClipboardFragment): boolean {
+    if (!fragment || fragment.version !== 1 || typeof fragment.text !== 'string' || !Array.isArray(fragment.paragraphs)) {
+      throw new Error('Invalid clipboard fragment.');
+    }
+    const preview = this.getCachedPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(preview, range);
+    if (normalized.start.paragraph !== normalized.end.paragraph) return false;
+    const hasRichContent = fragment.paragraphs.some((paragraph) => paragraph.runs.some((run) =>
+      !!run.text || !!run.images?.length || !!run.hyperlink || !!run.format && Object.keys(run.format).length));
+    if (!hasRichContent) {
+      this.setParagraphText(normalized.start.paragraph,
+        `${this.getParagraphs()[normalized.start.paragraph]?.text.slice(0, normalized.start.offset) ?? ''}${fragment.text}${this.getParagraphs()[normalized.start.paragraph]?.text.slice(normalized.end.offset) ?? ''}`);
+      return true;
+    }
+    this.withDraft((draft) => {
+      draft.materializeAllParts();
+      let next = new Map(draft.parts);
+      const main = parseXml(decodeXml(next.get(draft.mainPath)!));
+      const paragraph = paragraphAt(main, normalized.start.paragraph);
+      draft.splitRunAtOffset(paragraph, normalized.end.offset);
+      draft.splitRunAtOffset(paragraph, normalized.start.offset);
+      const selected = draft.runsInRange(paragraph, normalized.start.offset, normalized.end.offset);
+      let marker: Node;
+      if (selected.length) {
+        const firstChild = paragraphDirectChild(paragraph, selected[0]!);
+        marker = main.createTextNode('');
+        paragraph.insertBefore(marker, firstChild);
+        for (const run of selected) {
+          const parent = run.parentNode as Element | null;
+          if (!parent) continue;
+          parent.removeChild(run);
+          if (parent !== paragraph && !children(parent, 'r').length && !children(parent, 'proofErr').length) parent.parentNode?.removeChild(parent);
+        }
+      } else {
+        const runs = ownRuns(paragraph);
+        let cursor = 0;
+        let before: Node | null = null;
+        for (const run of runs) {
+          const nextCursor = cursor + textOf(run).length;
+          if (normalized.start.offset <= cursor || normalized.start.offset < nextCursor) {
+            before = paragraphDirectChild(paragraph, run);
+            break;
+          }
+          cursor = nextCursor;
+        }
+        marker = main.createTextNode('');
+        paragraph.insertBefore(marker, before);
+      }
+      const relPath = resolveRelationshipsPath(draft.mainPath);
+      let rels: Document | undefined;
+      const ensureRels = (): Document => {
+        if (rels) return rels;
+        const bytes = next.get(relPath);
+        rels = bytes ? parseXml(decodeXml(bytes)) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+        return rels;
+      };
+      fragment.paragraphs.forEach((paragraphFragment, paragraphIndex) => {
+        for (const runFragment of paragraphFragment.runs) {
+          if (!runFragment || (typeof runFragment !== 'object')) continue;
+          const run = wordElement(main, 'r');
+          if (runFragment.format && typeof runFragment.format === 'object') {
+            applyRunFormatTo(properties(run, 'rPr'), runFragment.format);
+          }
+          if (runFragment.text) appendText(run, runFragment.text);
+          for (const image of runFragment.images ?? []) {
+            if (!image || typeof image.bytes !== 'string' || typeof image.contentType !== 'string') continue;
+            const bytes = decodeBase64(image.bytes);
+            const size = draft.inferImageSize(bytes, image.contentType, image.widthEmu, image.heightEmu);
+            const partPath = draft.nextImagePartPath(image.contentType);
+            next = draft.ensureMediaContentType(partPath, image.contentType, next);
+            next.set(partPath, Uint8Array.from(bytes));
+            const relsDocument = ensureRels();
+            const relationshipId = draft.nextRelationshipId(relsDocument);
+            const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
+            relationship.setAttribute('Id', relationshipId);
+            relationship.setAttribute('Type', IMAGE_REL);
+            relationship.setAttribute('Target', relativeTargetPath(draft.mainPath, partPath));
+            relsDocument.documentElement!.appendChild(relationship);
+            run.appendChild(createDrawingElement(main, relationshipId, size, {
+              alt: image.alt,
+              title: image.alt,
+              placement: image.placement ?? 'inline',
+              docPrId: draft.nextDocPrId(main),
+            }));
+          }
+          if (!run.firstChild) continue;
+          const link = runFragment.hyperlink;
+          if (link && typeof link === 'object' && (link.url || link.anchor)) {
+            const hyperlink = wordElement(main, 'hyperlink');
+            if (link.url) {
+              const relsDocument = ensureRels();
+              const relationshipId = draft.nextRelationshipId(relsDocument);
+              const relationship = relsDocument.createElementNS(REL_NS, 'Relationship');
+              relationship.setAttribute('Id', relationshipId);
+              relationship.setAttribute('Type', HYPERLINK_REL);
+              relationship.setAttribute('Target', link.url);
+              relationship.setAttribute('TargetMode', 'External');
+              relsDocument.documentElement!.appendChild(relationship);
+              hyperlink.setAttributeNS(OFFICE_REL_NS, 'r:id', relationshipId);
+            }
+            if (link.anchor) hyperlink.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
+            if (link.tooltip) hyperlink.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
+            hyperlink.appendChild(run);
+            paragraph.insertBefore(hyperlink, marker);
+          } else {
+            paragraph.insertBefore(run, marker);
+          }
+        }
+        if (paragraphIndex < fragment.paragraphs.length - 1) {
+          const breakRun = wordElement(main, 'r');
+          appendText(breakRun, '\n');
+          paragraph.insertBefore(breakRun, marker);
+        }
+      });
+      marker.parentNode?.removeChild(marker);
+      next.set(draft.mainPath, encodeXml(serializeXml(main)));
+      if (rels) next.set(relPath, encodeXml(serializeXml(rels)));
+      draft.commitParts(next);
+    });
+    return true;
+  }
+
   insertHyperlink(
     target: { paragraph: number; start: number; end: number },
     link: { url?: string; anchor?: string; tooltip?: string },
@@ -4557,6 +4762,10 @@ export class DocxDocument {
     return this.mergeRangeFormats(this.rangeRunFormats(document, range, theme));
   }
 
+  copyFormat(range: TextRange): RunFormat {
+    return this.getRangeFormat(range);
+  }
+
   clearRangeFormat(range: TextRange, fields?: (keyof RunFormat)[]): void {
     const targets = this.validateRangeFields(fields);
     if (!targets.length) return;
@@ -4609,6 +4818,10 @@ export class DocxDocument {
       formats.push(...rangeFormats);
     }
     return this.mergeRangeFormats(formats);
+  }
+
+  applyFormat(range: DocumentRange, format: RunFormat): void {
+    this.formatDocumentRange(range, format);
   }
 
   setParagraphTabs(index: number, tabs: TabStop[]): void {
