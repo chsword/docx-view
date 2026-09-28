@@ -2164,6 +2164,23 @@ test('setCommentText replaces comment text instead of appending', () => {
   assert.doesNotMatch(xml, /old.*new/);
 });
 
+test('setCommentText updates existing header comment bodies', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId10"/></w:sectPr></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="headerX.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/headerX.xml', encoder.encode(`<w:hdr xmlns:w="${WORD_NS}"><w:p><w:commentRangeStart w:id="3"/><w:r><w:t>head</w:t></w:r><w:commentRangeEnd w:id="3"/><w:r><w:commentReference w:id="3"/></w:r></w:p></w:hdr>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml');
+  doc.addPart('word/_rels/headerX.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="hdr-comments.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/hdr-comments.xml', encoder.encode(`<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="3"><w:p w14:paraId="00000033"><w:r><w:annotationRef/></w:r><w:r><w:t>old</w:t></w:r></w:p></w:comment></w:comments>`), COMMENTS_TYPE);
+  doc.setCommentText(3, 'new');
+  assert.match(doc.getPartXml('word/hdr-comments.xml'), /new/);
+  assert.doesNotMatch(doc.getPartXml('word/hdr-comments.xml'), /old.*new/);
+  assert.equal(doc.getComments().find((item) => item.id === 3)?.text, 'new');
+});
+
 test('deleteComment removes anchors and orphan relationships when last comment is removed', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
@@ -2173,6 +2190,23 @@ test('deleteComment removes anchors and orphan relationships when last comment i
   assert.equal(doc.listParts().includes('word/comments.xml'), false);
   assert.equal(doc.listParts().includes('word/commentsExtended.xml'), false);
   assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /commentRange(Start|End)|commentReference/);
+});
+
+test('deleteComment removes existing header comment anchors and parts', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId10"/></w:sectPr></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="headerX.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/headerX.xml', encoder.encode(`<w:hdr xmlns:w="${WORD_NS}"><w:p><w:commentRangeStart w:id="3"/><w:r><w:t>head</w:t></w:r><w:commentRangeEnd w:id="3"/><w:r><w:commentReference w:id="3"/></w:r></w:p></w:hdr>`), 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml');
+  doc.addPart('word/_rels/headerX.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}">
+    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="hdr-comments.xml"/>
+  </Relationships>`), RELS_TYPE);
+  doc.addPart('word/hdr-comments.xml', encoder.encode(`<w:comments xmlns:w="${WORD_NS}" xmlns:w14="${W14_NS}"><w:comment w:id="3"><w:p w14:paraId="00000033"><w:r><w:annotationRef/></w:r><w:r><w:t>old</w:t></w:r></w:p></w:comment></w:comments>`), COMMENTS_TYPE);
+  doc.deleteComment(3);
+  assert.equal(doc.getComments().length, 0);
+  assert.equal(doc.listParts().includes('word/hdr-comments.xml'), false);
+  assert.doesNotMatch(doc.getPartXml('word/headerX.xml'), /commentRange(Start|End)|commentReference/);
 });
 
 test('deleteComment cascades to replies by default', () => {
