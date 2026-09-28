@@ -2209,12 +2209,12 @@ export class DocxDocument {
   }
 
   getFootnotes(): NoteInfo[] {
-    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
+    const body = bodyOf(this.getPartDocument(this.mainPath));
     return this.getNotesWith('footnote', this.getNoteState(body));
   }
 
   getEndnotes(): NoteInfo[] {
-    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
+    const body = bodyOf(this.getPartDocument(this.mainPath));
     return this.getNotesWith('endnote', this.getNoteState(body));
   }
 
