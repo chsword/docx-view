@@ -4848,6 +4848,8 @@ export class DocxDocument {
     const sourceBase = basename(sourcePartPath).replace(/\.xml$/i, '');
     let commentsPath = this.getCommentsPartPath(sourcePartPath);
     if (!commentsPath) {
+      // Keep new comment parts next to the source part; non-main fallback names stay source-specific
+      // so future cleanup/interoperability logic can reconstruct the relationship target deterministically.
       commentsPath = sourcePartPath === this.mainPath
         ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`
         : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-comments.xml`;
@@ -5048,6 +5050,9 @@ export class DocxDocument {
   }
 
   addComment(range: TextRange | DocumentRange, comment: { author?: string; initials?: string; text: string }): number {
+    // TextRange/DocumentRange use the main-document paragraph namespace in this API surface.
+    // Header/footer/footnote/endnote comment anchors are readable via getComments(), but write APIs
+    // currently insert anchors only into the main document part.
     return this.withDraft((draft) => draft.addCommentDirect(range, comment));
   }
 

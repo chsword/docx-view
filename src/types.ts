@@ -359,12 +359,14 @@ export interface CommentInfo {
   isOrphan: boolean;
 }
 
+/** Character offsets in the main-document paragraph namespace. */
 export interface TextRange {
   paragraph: number;
   start: number;
   end: number;
 }
 
+/** Cross-paragraph offsets in the main-document paragraph namespace. */
 export interface DocumentRange {
   start: { paragraph: number; offset: number };
   end: { paragraph: number; offset: number };

@@ -352,7 +352,7 @@ export class DocxEditor {
       if (node.nodeType === 3) return node.textContent ?? '';
       if (node.nodeType !== 1) return '';
       const current = node as HTMLElement;
-      if (current.dataset.image || current.dataset.docxMark === '1') return '';
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return '';
       if (current.tagName === 'BR') return '\n';
       const text = Array.from(current.childNodes).map(walk).join('');
       if (['DIV', 'P'].includes(current.tagName)) return text ? `${text}\n` : '';
@@ -1097,7 +1097,7 @@ export class DocxEditor {
     if (node.nodeType === 3) return Array.from(node.textContent ?? '').length;
     if (node.nodeType !== 1) return 0;
     const current = node as HTMLElement;
-    if (current.dataset.image || current.dataset.docxMark === '1') return 0;
+    if (current.dataset.image || current.dataset.docxMark !== undefined) return 0;
     if (current.tagName === 'BR') return 1;
     return Array.from(current.childNodes).reduce((total, child) => total + this.textLength(child), 0);
   }
@@ -1140,7 +1140,7 @@ export class DocxEditor {
         }
         if (node.nodeType !== 1) return true;
         const current = node as HTMLElement;
-        if (current.dataset.image || current.dataset.docxMark === '1') return true;
+        if (current.dataset.image || current.dataset.docxMark !== undefined) return true;
         if (current.tagName === 'BR') {
           offset += targetOffset > 0 ? 1 : 0;
           return true;
@@ -1157,7 +1157,7 @@ export class DocxEditor {
       }
       if (node.nodeType !== 1) return false;
       const current = node as HTMLElement;
-      if (current.dataset.image || current.dataset.docxMark === '1') return false;
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return false;
       if (current.tagName === 'BR') {
         offset += 1;
         return false;
@@ -1184,7 +1184,7 @@ export class DocxEditor {
       }
       if (node.nodeType !== 1) return null;
       const current = node as HTMLElement;
-      if (current.dataset.image || current.dataset.docxMark === '1') return null;
+      if (current.dataset.image || current.dataset.docxMark !== undefined) return null;
       if (current.tagName === 'BR') {
         if (remaining <= 1) {
           const parent = node.parentNode as Node;
