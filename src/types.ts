@@ -192,6 +192,7 @@ export interface RowFormat {
   alignment?: 'left' | 'center' | 'right';
   deleted?: boolean;
   inserted?: boolean;
+  revision?: { author?: string; date?: string };
 }
 
 export interface CellFormat {

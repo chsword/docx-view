@@ -328,28 +328,52 @@ test('formatTableRow writes row height and header properties', () => {
   assert.match(xml, /<w:tblHeader\/>/);
 });
 
-test('formatTableRow writes legal tracked row insertion/deletion markup with ids', async () => {
+test('formatTableRow writes tracked row revision markup with required id and author attributes', async () => {
   const doc = DocxDocument.create();
   doc.insertTable([['A']]);
   doc.formatTableRow(0, 0, { inserted: true, deleted: true });
-  const xml = doc.getPartXml(doc.mainDocumentPath);
-  assert.match(xml, /<w:ins w:id="\d+"\/>/);
-  assert.match(xml, /<w:del w:id="\d+"\/>/);
+  const document = doc.getPartDocument(doc.mainDocumentPath);
+  const markers = [
+    ...Array.from(document.getElementsByTagNameNS(WORD_NS, 'ins')),
+    ...Array.from(document.getElementsByTagNameNS(WORD_NS, 'del')),
+  ];
+  assert.equal(markers.length, 2);
+  for (const marker of markers) {
+    assert.match(marker.getAttributeNS(WORD_NS, 'id') ?? '', /^\d+$/);
+    assert.equal(marker.getAttributeNS(WORD_NS, 'author'), 'docx-view');
+  }
   const reopened = await DocxDocument.load(await doc.toUint8Array());
   assert.equal(reopened.getTable(0).rows[0].format.inserted, true);
   assert.equal(reopened.getTable(0).rows[0].format.deleted, true);
 });
 
+test('formatTableRow can write an explicit revision author and date', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.formatTableRow(0, 0, { deleted: true, revision: { author: 'Alice', date: '2026-09-28T00:00:00Z' } });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:del w:id="\d+" w:author="Alice" w:date="2026-09-28T00:00:00Z"\/>/);
+});
+
 test('formatTableRow(false) removes tracked row markup instead of writing boolean val', () => {
   const doc = withBody(tableXml(`
     <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
-    <w:tr><w:trPr><w:ins w:id="4"/><w:del w:id="5"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr>
+    <w:tr><w:trPr><w:ins w:id="4" w:author="docx-view"/><w:del w:id="5" w:author="docx-view"/></w:trPr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr>
   `));
   doc.formatTableRow(0, 0, { inserted: false, deleted: false });
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.doesNotMatch(xml, /w:ins/);
   assert.doesNotMatch(xml, /w:del/);
   assert.doesNotMatch(xml, /w:val="0"/);
+});
+
+test('applyOperations accepts row revision metadata', () => {
+  const doc = DocxDocument.create();
+  doc.insertTable([['A']]);
+  doc.applyOperations({
+    operations: [{ type: 'formatTableRow', table: 0, row: 0, format: { inserted: true, revision: { author: 'Agent' } } }],
+  });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="\d+" w:author="Agent"\/>/);
 });
 
 test('formatCell writes cell formatting and preserves merge metadata fields', () => {

@@ -1220,11 +1220,11 @@ function setRowFormat(row: Element, format: RowFormat): void {
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
   if (format.deleted !== undefined) {
     removeWordChildren(props, 'del');
-    if (format.deleted) markRevision(props, 'del');
+    if (format.deleted) markRevision(props, 'del', format.revision?.author, format.revision?.date);
   }
   if (format.inserted !== undefined) {
     removeWordChildren(props, 'ins');
-    if (format.inserted) markRevision(props, 'ins');
+    if (format.inserted) markRevision(props, 'ins', format.revision?.author, format.revision?.date);
   }
 }
 

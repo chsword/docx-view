@@ -6,6 +6,7 @@ import { WORD_NS, assertText, children, descendants, wordElement } from './xml.j
 const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange'] as const;
 const VISIBLE_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
 const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
+const DEFAULT_REVISION_AUTHOR = 'docx-view';
 const WRAPPER_KIND = {
   ins: 'insertion',
   moveTo: 'insertion',
@@ -177,9 +178,9 @@ export function markRevision(parent: Element, kind: 'ins' | 'del', author?: stri
     .map((element) => revisionIdOf(element))
     .filter((value): value is number => value !== undefined);
   const marker = orderedRevisionChild(parent, kind);
+  const resolvedAuthor = author?.trim() || DEFAULT_REVISION_AUTHOR;
   marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
-  if (author?.trim()) marker.setAttributeNS(WORD_NS, 'w:author', author.trim());
-  else { marker.removeAttributeNS(WORD_NS, 'author'); marker.removeAttribute('w:author'); }
+  marker.setAttributeNS(WORD_NS, 'w:author', resolvedAuthor);
   if (date?.trim()) marker.setAttributeNS(WORD_NS, 'w:date', date.trim());
   else { marker.removeAttributeNS(WORD_NS, 'date'); marker.removeAttribute('w:date'); }
   marker.removeAttributeNS(WORD_NS, 'val');
