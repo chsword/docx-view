@@ -334,9 +334,14 @@ export interface DocumentSnapshot {
 
 export interface RevisionMark {
   id: number;
-  kind: 'insertion' | 'deletion' | 'runFormatChange' | 'paragraphFormatChange' | 'tableFormatChange' | 'rowFormatChange' | 'cellFormatChange';
+  kind: 'insertion' | 'deletion' | 'move' | 'runFormatChange' | 'paragraphFormatChange' | 'tableFormatChange' | 'rowFormatChange' | 'cellFormatChange';
   author?: string;
   date?: string;
+  move?: {
+    name: string;
+    side: 'from' | 'to';
+    pairedId?: number;
+  };
 }
 
 export interface RevisionInfo extends RevisionMark {

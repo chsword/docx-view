@@ -741,15 +741,25 @@ test('reviewScopedRun applies revisionView final/original semantics without muta
   const context = { deletedTextByRun: new Map([['0:0', 'deleted text']]) };
   const deletedRun = { index: 0, text: '', revisions: [{ id: 1, kind: 'deletion' }] };
   const insertionRun = { index: 1, text: 'inserted', revisions: [{ id: 2, kind: 'insertion' }] };
+  const moveFromRun = { index: 2, text: '', revisions: [{ id: 3, kind: 'move', move: { name: 'm', side: 'from', pairedId: 4 } }] };
+  const moveToRun = { index: 3, text: 'moved', revisions: [{ id: 4, kind: 'move', move: { name: 'm', side: 'to', pairedId: 3 } }] };
   const originalDeleted = editor.reviewScopedRun(0, deletedRun, context);
   const originalInserted = editor.reviewScopedRun(0, insertionRun, context);
+  const originalMoveFrom = editor.reviewScopedRun(0, moveFromRun, { deletedTextByRun: new Map([['0:2', 'moved']]) });
+  const originalMoveTo = editor.reviewScopedRun(0, moveToRun, context);
   assert.equal(originalDeleted.text, 'deleted text');
   assert.equal(originalInserted.text, '');
+  assert.equal(originalMoveFrom.text, 'moved');
+  assert.equal(originalMoveTo.text, '');
   assert.equal(deletedRun.text, '');
   assert.equal(insertionRun.text, 'inserted');
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'final' };
   const finalDeleted = editor.reviewScopedRun(0, { index: 0, text: 'old', revisions: [{ id: 3, kind: 'deletion' }] }, context);
+  const finalMoveFrom = editor.reviewScopedRun(0, moveFromRun, context);
+  const finalMoveTo = editor.reviewScopedRun(0, moveToRun, context);
   assert.equal(finalDeleted.text, '');
+  assert.equal(finalMoveFrom.text, '');
+  assert.equal(finalMoveTo.text, 'moved');
 });
 
 test('reviewScopedRun author filtering does not collide named and unattributed buckets', () => {
@@ -771,6 +781,11 @@ test('reviewScopedRun author filtering does not collide named and unattributed b
   };
   const filtered = editor.reviewScopedRun(0, run, context);
   assert.deepEqual(filtered.revisions?.map((revision) => revision.id), [1]);
+});
+
+test('revisionAriaDescription includes move label', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  assert.equal(editor.revisionAriaDescription([{ id: 1, kind: 'move', author: 'Alice', move: { name: 'm', side: 'to' } }]).includes('移动'), true);
 });
 
 test('readText skips deleted-text visualization nodes', () => {
@@ -1072,4 +1087,34 @@ test('appendDeletedRunVisualization emits a non-editable deleted marker only in 
     revisionColors: new Map([['named:Alice', '#2E75B6']]),
   });
   assert.equal(appended.length, 1);
+});
+
+test('appendDeletedRunVisualization marks move-from text distinctly in markup view', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const appended = [];
+  editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
+  editor.makeMark = (text, label) => ({ dataset: { docxMark: '1' }, textContent: text, title: label });
+  editor.root = {
+    ownerDocument: {
+      createElement: () => ({
+        dataset: {},
+        style: {},
+        className: '',
+        children: [],
+        setAttribute: () => {},
+        append(node) { this.children.push(node); },
+      }),
+    },
+  };
+  editor.registerRevisionNode = () => {};
+  const parent = { append: (node) => appended.push(node) };
+  editor.appendDeletedRunVisualization(parent, 0, {
+    index: 0,
+    revisions: [{ id: 1, kind: 'move', author: 'Alice', move: { name: 'm', side: 'from', pairedId: 2 } }],
+  }, {
+    deletedTextByRun: new Map([['0:0', 'old']]),
+    revisionColors: new Map([['named:Alice', '#2E75B6']]),
+  });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].style.textDecoration.includes('underline'), true);
 });

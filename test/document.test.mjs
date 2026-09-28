@@ -3448,13 +3448,59 @@ test('getRevisions inside table cells uses the same paragraph index namespace as
   assert.deepEqual(doc.getRevisions(), [{ id: 21, kind: 'insertion', paragraph: cellParagraph.index, run: 0 }]);
 });
 
-test('moveFrom and moveTo revisions are downgraded to deletion and insertion', () => {
-  const doc = withBody('<w:p><w:moveFrom w:id="17"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:moveTo w:id="18"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
-  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, kind: revision.kind })), [
-    { id: 17, kind: 'deletion' },
-    { id: 18, kind: 'insertion' },
+test('getRevisions reads moveFrom/moveTo as paired move revisions', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="17" w:author="Alice" w:name="move1"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t>mid</w:t></w:r><w:moveTo w:id="18" w:author="Alice" w:name="move1"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({
+    id: revision.id,
+    kind: revision.kind,
+    deletedText: revision.deletedText,
+    move: revision.move,
+  })), [
+    { id: 17, kind: 'move', deletedText: 'old', move: { name: 'move1', side: 'from', pairedId: 18 } },
+    { id: 18, kind: 'move', deletedText: undefined, move: { name: 'move1', side: 'to', pairedId: 17 } },
   ]);
-  assert.equal(doc.getParagraphs()[0].text, 'new');
+  assert.equal(doc.getParagraphs()[0].text, 'midnew');
+});
+
+test('getRevisions keeps single-sided moveFrom readable without throwing', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="19" w:name="solo"><w:r><w:delText>gone</w:delText></w:r></w:moveFrom></w:p>');
+  assert.doesNotThrow(() => doc.getRevisions());
+  assert.deepEqual(doc.getRevisions(), [{
+    id: 19,
+    kind: 'move',
+    paragraph: 0,
+    run: 0,
+    deletedText: 'gone',
+    move: { name: 'solo', side: 'from' },
+  }]);
+});
+
+test('getRevisions keeps single-sided moveTo readable without throwing', () => {
+  const doc = withBody('<w:p><w:moveTo w:id="20" w:name="solo"><w:r><w:t>kept</w:t></w:r></w:moveTo></w:p>');
+  assert.doesNotThrow(() => doc.getRevisions());
+  assert.deepEqual(doc.getRevisions(), [{
+    id: 20,
+    kind: 'move',
+    paragraph: 0,
+    run: 0,
+    move: { name: 'solo', side: 'to' },
+  }]);
+});
+
+test('getRevisions pairs repeated move names by document order for consistency with accept/reject', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="21" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="22" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:moveFrom w:id="23" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="24" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, move: revision.move })), [
+    { id: 21, move: { name: 'dup', side: 'from', pairedId: 22 } },
+    { id: 22, move: { name: 'dup', side: 'to', pairedId: 21 } },
+    { id: 23, move: { name: 'dup', side: 'from', pairedId: 24 } },
+    { id: 24, move: { name: 'dup', side: 'to', pairedId: 23 } },
+  ]);
+});
+
+test('getRevisions kind filter treats move as an independent kind', () => {
+  const doc = withBody('<w:p><w:ins w:id="1"><w:r><w:t>I</w:t></w:r></w:ins><w:del w:id="2"><w:r><w:delText>D</w:delText></w:r></w:del><w:moveFrom w:id="3" w:name="m"><w:r><w:delText>M</w:delText></w:r></w:moveFrom><w:moveTo w:id="4" w:name="m"><w:r><w:t>M</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions({ kinds: ['deletion'] }).map((revision) => revision.id), [2]);
+  assert.deepEqual(doc.getRevisions({ kinds: ['move'] }).map((revision) => revision.id), [3, 4]);
 });
 
 test('inserted images remain discoverable through transparent revision wrappers', () => {
@@ -3492,6 +3538,12 @@ test('getReviewers aggregates revision and comment counts with date range', () =
     firstDate: '2026-01-01T00:00:00Z',
     lastDate: '2026-01-05T00:00:00Z',
   });
+});
+
+test('getReviewers counts a paired move revision as one revision', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="30" w:author="Alice" w:name="m"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:moveTo w:id="31" w:author="Alice" w:name="m"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  const reviewer = doc.getReviewers().find((item) => item.kind === 'named' && item.author === 'Alice');
+  assert.equal(reviewer?.revisionCount, 1);
 });
 
 test('getReviewers keeps missing, empty, and blank authors in explicit buckets', () => {
@@ -4149,6 +4201,36 @@ test('rejectRevision unwraps deletion wrappers and converts delText back to text
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t(?: xml:space="preserve")?>A<\/w:t>/);
 });
 
+test('acceptRevision on moveFrom processes paired moveTo in one revision step', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="40" w:name="m1"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t>M</w:t></w:r><w:moveTo w:id="41" w:name="m1"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  const before = doc.revision;
+  doc.acceptRevision(40);
+  assert.equal(doc.revision, before + 1);
+  assert.equal(doc.getParagraphs()[0].text, 'Mnew');
+  assert.deepEqual(doc.getRevisions(), []);
+  assert.equal((doc.getPartXml(doc.mainDocumentPath).match(/<w:move(?:From|To)\b/g) ?? []).length, 0);
+});
+
+test('rejectRevision on moveTo processes paired moveFrom and prevents duplicated content', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="42" w:name="m2"><w:r><w:delText>AAA</w:delText></w:r></w:moveFrom><w:r><w:t> MID </w:t></w:r><w:moveTo w:id="43" w:name="m2"><w:r><w:t>AAA</w:t></w:r></w:moveTo></w:p>');
+  doc.rejectRevision(43);
+  assert.equal(doc.getParagraphs()[0].text, 'AAA MID ');
+  assert.equal((doc.getParagraphs()[0].text.match(/AAA/g) ?? []).length, 1);
+  assert.deepEqual(doc.getRevisions(), []);
+});
+
+test('acceptRevision on single-sided moveFrom degrades to deletion behavior without throwing', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="44" w:name="solo"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:r><w:t>B</w:t></w:r></w:p>');
+  assert.doesNotThrow(() => doc.acceptRevision(44));
+  assert.equal(doc.getParagraphs()[0].text, 'B');
+});
+
+test('rejectRevision on single-sided moveTo degrades to insertion behavior without throwing', () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r><w:moveTo w:id="45" w:name="solo"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
+  assert.doesNotThrow(() => doc.rejectRevision(45));
+  assert.equal(doc.getParagraphs()[0].text, 'A');
+});
+
 test('acceptRevision drops rPrChange while keeping current format', () => {
   const doc = withBody('<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="5"><w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr><w:t>X</w:t></w:r></w:p>');
   doc.acceptRevision(5);
@@ -4298,6 +4380,48 @@ test('acceptAllRevisions can filter by author', () => {
   assert.equal(doc.getParagraphs()[0].text, 'ABC');
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(16), true);
   assert.equal(doc.getRevisions().map((revision) => revision.id).includes(15), false);
+});
+
+test('acceptAllRevisions author filter accepts a full move pair when only one side matches', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="46" w:author="Alice" w:name="m3"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t> + </w:t></w:r><w:moveTo w:id="47" w:author="Bob" w:name="m3"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  doc.acceptAllRevisions({ authors: ['Alice'] });
+  assert.equal(doc.getParagraphs()[0].text, ' + new');
+  assert.deepEqual(doc.getRevisions(), []);
+});
+
+test('rejectAllRevisions author filter rejects a full move pair when only one side matches', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="48" w:author="Alice" w:name="m4"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t> + </w:t></w:r><w:moveTo w:id="49" w:author="Bob" w:name="m4"><w:r><w:t>old</w:t></w:r></w:moveTo></w:p>');
+  doc.rejectAllRevisions({ authors: ['Bob'] });
+  assert.equal(doc.getParagraphs()[0].text, 'old + ');
+  assert.deepEqual(doc.getRevisions(), []);
+});
+
+test('acceptAllRevisions author filter supports reviewer bucket keys for move pairs', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="57" w:name="m6"><w:r><w:delText>old</w:delText></w:r></w:moveFrom><w:r><w:t>/</w:t></w:r><w:moveTo w:id="58" w:author="Bob" w:name="m6"><w:r><w:t>new</w:t></w:r></w:moveTo></w:p>');
+  doc.acceptAllRevisions({ authors: ['unattributed'] });
+  assert.equal(doc.getParagraphs()[0].text, '/new');
+  assert.deepEqual(doc.getRevisions(), []);
+});
+
+test('acceptRevision on one move pair does not affect another pair with same name', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="50" w:name="dup"><w:r><w:delText>A</w:delText></w:r></w:moveFrom><w:moveTo w:id="51" w:name="dup"><w:r><w:t>A</w:t></w:r></w:moveTo><w:r><w:t>|</w:t></w:r><w:moveFrom w:id="52" w:name="dup"><w:r><w:delText>B</w:delText></w:r></w:moveFrom><w:moveTo w:id="53" w:name="dup"><w:r><w:t>B</w:t></w:r></w:moveTo></w:p>');
+  assert.deepEqual(doc.getRevisions().map((revision) => ({ id: revision.id, pairedId: revision.move?.pairedId })), [
+    { id: 50, pairedId: 51 },
+    { id: 51, pairedId: 50 },
+    { id: 52, pairedId: 53 },
+    { id: 53, pairedId: 52 },
+  ]);
+  doc.acceptRevision(50);
+  assert.deepEqual(doc.getRevisions().map((revision) => revision.id), [52, 53]);
+  assert.equal(doc.getParagraphs()[0].text, 'A|B');
+});
+
+test('accepting a move pair then accepting another revision keeps both changes', () => {
+  const doc = withBody('<w:p><w:moveFrom w:id="54" w:name="m5"><w:r><w:delText>X</w:delText></w:r></w:moveFrom><w:moveTo w:id="55" w:name="m5"><w:r><w:t>X</w:t></w:r></w:moveTo><w:ins w:id="56"><w:r><w:t>Y</w:t></w:r></w:ins></w:p>');
+  doc.acceptRevision(54);
+  doc.acceptRevision(56);
+  assert.equal(doc.getParagraphs()[0].text, 'XY');
+  assert.deepEqual(doc.getRevisions(), []);
 });
 
 test('acceptAllRevisions processes 20+ revisions and increments revision once', () => {

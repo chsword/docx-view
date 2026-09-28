@@ -706,6 +706,125 @@ function revisionAuthorOf(element: Element): string | undefined {
   return author ? author : undefined;
 }
 
+function revisionAuthorRawOf(element: Element): string | undefined {
+  return element.getAttributeNS(WORD_NS, 'author') ?? element.getAttribute('w:author') ?? undefined;
+}
+
+function revisionNameOf(element: Element): string | undefined {
+  const value = element.getAttributeNS(WORD_NS, 'name') ?? element.getAttribute('w:name') ?? undefined;
+  const name = value?.trim();
+  return name ? name : undefined;
+}
+
+function moveRevisionSideOf(element: Element): 'from' | 'to' | undefined {
+  if (element.namespaceURI !== WORD_NS) return undefined;
+  if (element.localName === 'moveFrom') return 'from';
+  if (element.localName === 'moveTo') return 'to';
+  return undefined;
+}
+
+function isMoveRevisionMarker(element: Element): boolean {
+  return moveRevisionSideOf(element) !== undefined;
+}
+
+function rangeMarkerIdOf(element: Element): string | undefined {
+  const value = element.getAttributeNS(WORD_NS, 'id') ?? element.getAttribute('w:id') ?? undefined;
+  return value && /^\d+$/.test(value) ? value : undefined;
+}
+
+function activeMoveRangeId(paragraph: Element, marker: Element, side: 'from' | 'to'): string | undefined {
+  const startName = side === 'from' ? 'moveFromRangeStart' : 'moveToRangeStart';
+  const endName = side === 'from' ? 'moveFromRangeEnd' : 'moveToRangeEnd';
+  const active: string[] = [];
+  let found: string | undefined;
+  const walk = (node: Node): boolean => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      if (element.namespaceURI === WORD_NS && element.localName === startName) {
+        const id = rangeMarkerIdOf(element);
+        if (id) active.push(id);
+      }
+      if (element === marker) {
+        found = active.at(-1);
+        return true;
+      }
+      if (walk(element)) return true;
+      if (element.namespaceURI === WORD_NS && element.localName === endName) {
+        const id = rangeMarkerIdOf(element);
+        if (id) {
+          const index = active.lastIndexOf(id);
+          if (index >= 0) active.splice(index, 1);
+        }
+      }
+    }
+    return false;
+  };
+  walk(paragraph);
+  return found;
+}
+
+interface MoveMarkerPairing {
+  pairs: Map<Element, Element>;
+  stable: Set<Element>;
+}
+
+function pairMoveRevisionMarkers(markers: Element[]): MoveMarkerPairing {
+  const pairs = new Map<Element, Element>();
+  const stable = new Set<Element>();
+  interface MoveEntry {
+    marker: Element;
+    index: number;
+    side: 'from' | 'to';
+    name: string;
+    rangeId?: string;
+  }
+  const entries: MoveEntry[] = [];
+  for (const [index, marker] of markers.entries()) {
+    const side = moveRevisionSideOf(marker);
+    const name = revisionNameOf(marker);
+    if (!side || !name) continue;
+    const paragraph = revisionParagraphAnchor(marker);
+    const rangeId = paragraph ? activeMoveRangeId(paragraph, marker, side) : undefined;
+    entries.push({ marker, index, side, name, ...(rangeId ? { rangeId } : {}) });
+  }
+  const countsByName = new Map<string, { from: number; to: number }>();
+  for (const entry of entries) {
+    const count = countsByName.get(entry.name) ?? { from: 0, to: 0 };
+    count[entry.side]++;
+    countsByName.set(entry.name, count);
+  }
+  const pairByKey = (keyOf: (entry: MoveEntry) => string | undefined, markStable: (entry: MoveEntry) => boolean): void => {
+    const pending = new Map<string, { from: MoveEntry[]; to: MoveEntry[] }>();
+    for (const entry of entries) {
+      if (pairs.has(entry.marker)) continue;
+      const key = keyOf(entry);
+      if (!key) continue;
+      const bucket = pending.get(key) ?? { from: [], to: [] };
+      pending.set(key, bucket);
+      const opposite = entry.side === 'from' ? bucket.to : bucket.from;
+      if (opposite.length) {
+        const mate = opposite.shift()!;
+        if (mate.side === entry.side) continue;
+        pairs.set(entry.marker, mate.marker);
+        pairs.set(mate.marker, entry.marker);
+        if (markStable(entry) && markStable(mate)) {
+          stable.add(entry.marker);
+          stable.add(mate.marker);
+        }
+      } else {
+        (entry.side === 'from' ? bucket.from : bucket.to).push(entry);
+      }
+    }
+  };
+  pairByKey((entry) => entry.rangeId ? `${entry.name}\u0000${entry.rangeId}` : undefined, () => true);
+  pairByKey((entry) => entry.name, (entry) => {
+    const count = countsByName.get(entry.name);
+    return count?.from === 1 && count?.to === 1;
+  });
+  return { pairs, stable };
+}
+
 function unwrapNode(element: Element): void {
   const parent = element.parentNode;
   if (!parent) return;
@@ -930,11 +1049,12 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
     index,
     text: textOf(run),
     ...direct,
-    revisions: revisions.length ? revisions.map(({ id, kind, author, date }) => ({
+    revisions: revisions.length ? revisions.map(({ id, kind, author, date, move }) => ({
       id,
       kind,
       ...(author !== undefined ? { author } : {}),
       ...(date !== undefined ? { date } : {}),
+      ...(move !== undefined ? { move } : {}),
     })) : undefined,
     effective: computeEffectiveRunFormat(styles, paragraph, run),
     hyperlink: runHyperlinkInfo(run, paragraph, imageContext?.relationships),
@@ -3689,7 +3809,14 @@ export class DocxDocument {
       byAuthor.set(reviewerBucketKey(created), created);
       return created;
     };
+    const countedMovePairs = new Set<string>();
     for (const revision of revisions) {
+      if (revision.kind === 'move' && revision.move?.pairedId !== undefined) {
+        if (revision.move.side === 'from') continue;
+        const key = `${Math.min(revision.id, revision.move.pairedId)}:${Math.max(revision.id, revision.move.pairedId)}`;
+        if (countedMovePairs.has(key)) continue;
+        countedMovePairs.add(key);
+      }
       const reviewer = reviewerBucketOf(revision.author);
       const entry = aggregateFor(reviewer.author, reviewer.kind);
       entry.revisionCount++;
@@ -4306,6 +4433,7 @@ export class DocxDocument {
       return entries.get(run);
     };
     const result: RevisionInfo[] = [];
+    const moveEntries: { element: Element; info: RevisionInfo }[] = [];
     const push = (element: Element, kind: RevisionInfo['kind']): void => {
       const paragraph = revisionParagraphAnchor(element);
       if (!paragraph) return;
@@ -4322,11 +4450,13 @@ export class DocxDocument {
         paragraph: paragraphNumber,
         ...(mark.author !== undefined ? { author: mark.author } : {}),
         ...(mark.date !== undefined ? { date: mark.date } : {}),
+        ...(mark.move !== undefined ? { move: { ...mark.move } } : {}),
         ...(runNumber !== undefined ? { run: runNumber } : {}),
         ...(deletedText !== undefined ? { deletedText } : {}),
         ...(mark.previousFormat !== undefined ? { previousFormat: mark.previousFormat } : {}),
       };
       result.push(info);
+      if (info.kind === 'move') moveEntries.push({ element, info });
     };
     const walk = (node: Node): void => {
       for (let child = node.firstChild; child; child = child.nextSibling) {
@@ -4335,14 +4465,16 @@ export class DocxDocument {
         if (element.namespaceURI !== WORD_NS) continue;
         switch (element.localName) {
           case 'ins':
-          case 'moveTo':
           case 'cellIns':
             push(element, 'insertion');
             break;
           case 'del':
-          case 'moveFrom':
           case 'cellDel':
             push(element, 'deletion');
+            break;
+          case 'moveTo':
+          case 'moveFrom':
+            push(element, 'move');
             break;
           case 'rPrChange':
             push(element, 'runFormatChange');
@@ -4364,6 +4496,15 @@ export class DocxDocument {
       }
     };
     walk(body);
+    const movePairing = pairMoveRevisionMarkers(moveEntries.map((entry) => entry.element));
+    const moveInfoByElement = new Map(moveEntries.map((entry) => [entry.element, entry.info] as const));
+    for (const { element, info } of moveEntries) {
+      const paired = movePairing.pairs.get(element);
+      if (!paired) continue;
+      const pairedInfo = moveInfoByElement.get(paired);
+      if (!pairedInfo || !info.move) continue;
+      info.move.pairedId = pairedInfo.id;
+    }
     this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
     return result;
   }
@@ -4382,15 +4523,21 @@ export class DocxDocument {
 
   acceptAllRevisions(filter: { authors?: string[] } = {}): void {
     const authors = this.normalizeRevisionAuthorFilter(filter);
-    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    const revisions = this.getRevisions();
     if (!revisions.length) return;
+    if (authors && !revisions.some((revision) =>
+      (revision.author !== undefined && authors.has(revision.author)) ||
+      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'accept'));
   }
 
   rejectAllRevisions(filter: { authors?: string[] } = {}): void {
     const authors = this.normalizeRevisionAuthorFilter(filter);
-    const revisions = this.getRevisions().filter((revision) => !authors || (revision.author !== undefined && authors.has(revision.author)));
+    const revisions = this.getRevisions();
     if (!revisions.length) return;
+    if (authors && !revisions.some((revision) =>
+      (revision.author !== undefined && authors.has(revision.author)) ||
+      authors.has(reviewerBucketKey(reviewerBucketOf(revision.author))))) return;
     this.withDraft((draft) => draft.applyRevisionBatch(authors, 'reject'));
   }
 
@@ -4412,22 +4559,80 @@ export class DocxDocument {
 
   private applyRevisionById(id: number, action: 'accept' | 'reject'): void {
     this.updatePartXmlInternal(this.mainPath, (document) => {
-      let changed = false;
-      while (this.processNextRevision(document, (marker, markerId) => markerId === id, action)) changed = true;
-      if (!changed) throw new Error(`Revision ${id} does not exist.`);
+      const markers = this.collectRevisionMarkers(document, () => true);
+      const marker = markers.find((entry) => revisionIdOf(entry) === id);
+      if (!marker) throw new Error(`Revision ${id} does not exist.`);
+      if (isMoveRevisionMarker(marker)) {
+        const paired = pairMoveRevisionMarkers(markers).pairs.get(marker);
+        if (paired?.parentNode) {
+          this.applyMovePairDecision(marker, paired, action);
+          return;
+        }
+      }
+      this.applyRevisionDecision(marker, action);
     });
   }
 
   private applyRevisionBatch(authors: Set<string> | undefined, action: 'accept' | 'reject'): void {
     this.updatePartXmlInternal(this.mainPath, (document) => {
-      const markers = this.collectRevisionMarkers(document, (marker) => {
-        if (!authors) return true;
-        const author = revisionAuthorOf(marker);
-        return author !== undefined && authors.has(author);
-      });
-      for (const marker of markers.reverse()) {
+      const markers = this.collectRevisionMarkers(document, () => true);
+      const movePairs = pairMoveRevisionMarkers(markers).pairs;
+      if (!authors) {
+        const processed = new Set<Element>();
+        for (const marker of [...markers].reverse()) {
+          if (processed.has(marker) || !marker.parentNode) continue;
+          if (isMoveRevisionMarker(marker)) {
+            const paired = movePairs.get(marker);
+            if (paired && paired.parentNode && !processed.has(paired)) {
+              this.applyMovePairDecision(marker, paired, action);
+              processed.add(marker);
+              processed.add(paired);
+              continue;
+            }
+          }
+          if (!marker.parentNode) continue;
+          this.applyRevisionDecision(marker, action);
+          processed.add(marker);
+        }
+        return;
+      }
+      const selected = new Set<Element>();
+      const matchesAuthor = (marker: Element): boolean => {
+        const raw = revisionAuthorRawOf(marker);
+        const normalized = revisionAuthorOf(marker);
+        const bucket = reviewerBucketKey(reviewerBucketOf(raw));
+        return (raw !== undefined && authors.has(raw)) || (normalized !== undefined && authors.has(normalized)) || authors.has(bucket);
+      };
+      for (const marker of markers) {
+        if (!isMoveRevisionMarker(marker)) {
+          if (matchesAuthor(marker)) selected.add(marker);
+          continue;
+        }
+        const paired = movePairs.get(marker);
+        if (paired) {
+          if (matchesAuthor(marker) || matchesAuthor(paired)) {
+            selected.add(marker);
+            selected.add(paired);
+          }
+          continue;
+        }
+        if (matchesAuthor(marker)) selected.add(marker);
+      }
+      const processed = new Set<Element>();
+      for (const marker of [...markers].reverse()) {
+        if (!selected.has(marker) || processed.has(marker) || !marker.parentNode) continue;
+        if (isMoveRevisionMarker(marker)) {
+          const paired = movePairs.get(marker);
+          if (paired && selected.has(paired) && paired.parentNode && !processed.has(paired)) {
+            this.applyMovePairDecision(marker, paired, action);
+            processed.add(marker);
+            processed.add(paired);
+            continue;
+          }
+        }
         if (!marker.parentNode) continue;
         this.applyRevisionDecision(marker, action);
+        processed.add(marker);
       }
     });
   }
@@ -4498,6 +4703,16 @@ export class DocxDocument {
       } else {
         this.removeRevisionMarker(marker);
       }
+    }
+  }
+
+  private applyMovePairDecision(marker: Element, paired: Element, action: 'accept' | 'reject'): void {
+    const from = moveRevisionSideOf(marker) === 'from' ? marker : paired;
+    const to = from === marker ? paired : marker;
+    const order = action === 'accept' ? [from, to] : [to, from];
+    for (const item of order) {
+      if (!item.parentNode) continue;
+      this.applyInsertionDeletionRevision(item, action);
     }
   }
 
