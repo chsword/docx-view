@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { paginate } from '../dist/layout.js';
+import { DocxDocument } from '../dist/document.js';
+import { WORD_NS } from '../dist/xml.js';
 
 const section = (overrides = {}) => ({
   index: 0,
@@ -30,7 +32,8 @@ const paragraph = (index, lines, format = {}) => ({
 
 const measurer = {
   measureParagraph(p) {
-    return p.lines.map((height, index) => ({ heightPx: height, startOffset: index, endOffset: index + 1 }));
+    const heights = p.lines ?? [10];
+    return heights.map((height, index) => ({ heightPx: height, startOffset: index, endOffset: index + 1 }));
   },
   measureTableRow() {
     return 10;
@@ -68,6 +71,15 @@ test('breaks an oversized keepNext chain into independently paginated paragraphs
   assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0], [1], [2]]);
 });
 
+test('does not create an empty page for pageBreakBefore plus keepNext', () => {
+  const result = paginate(blocks(
+    paragraph(0, [40]),
+    paragraph(1, [40], { pageBreakBefore: true, keepNext: true }),
+    paragraph(2, [40]),
+  ), [section()], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0], [1, 2]]);
+});
+
 test('widow control defaults on but can be disabled', () => {
   const on = paginate(blocks(paragraph(9, [40]), paragraph(0, [60, 60])), [section()], measurer, { defaultTabStopTwips: 720 });
   const off = paginate(blocks(paragraph(9, [40]), paragraph(0, [60, 60], { widowControl: false })), [section()], measurer, { defaultTabStopTwips: 720 });
@@ -87,6 +99,30 @@ test('handles section numbering, parity and malformed page sizes without throwin
   assert.doesNotThrow(() => paginate(blocks(paragraph(0, [1000])), [section({ pageHeight: 0 })], measurer, { defaultTabStopTwips: 720 }));
   assert.deepEqual(paginate([], [section()], measurer, { defaultTabStopTwips: 720 }), []);
   assert.equal(paginate(blocks(paragraph(0, [10])), [], measurer, { defaultTabStopTwips: 720 }).length, 1);
+});
+
+test('paginates the real block and section shapes from DocxDocument', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body>
+    <w:p><w:r><w:t>p0</w:t></w:r></w:p>
+    <w:p><w:r><w:t>p1</w:t></w:r></w:p>
+    <w:p><w:pPr><w:sectPr><w:pgSz w:w="1500" w:h="1500"/></w:sectPr></w:pPr></w:p>
+    <w:p><w:r><w:t>p2</w:t></w:r></w:p>
+    <w:p><w:r><w:t>p3</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="1500" w:h="1500"/></w:sectPr>
+  </w:body></w:document>`);
+  const actualBlocks = doc.getBlocks();
+  const actualSections = doc.getSections();
+  const result = paginate(actualBlocks, actualSections, measurer, { defaultTabStopTwips: 720 });
+  const paragraphPages = result.flatMap((page) =>
+    page.items.filter((item) => item.type === 'line').map((item) => ({ paragraph: item.paragraph, section: page.section })),
+  );
+  assert.deepEqual(actualBlocks.filter((block) => block.type === 'sectionBreak').map((block) => block.section), [0]);
+  assert.deepEqual(paragraphPages.map((item) => item.paragraph), [0, 1, 2, 3, 4]);
+  for (const item of paragraphPages) {
+    const section = actualSections.find((candidate) => candidate.startParagraph <= item.paragraph && item.paragraph <= candidate.endParagraph);
+    assert.equal(item.section, section?.index);
+  }
 });
 
 test('layout has no DOM dependencies', () => {

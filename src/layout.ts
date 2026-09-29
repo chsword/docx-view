@@ -166,8 +166,10 @@ export function paginate(
     }
     const measured = paragraphs.map((paragraph) => ({ paragraph, lines: paragraphLines(paragraph) }));
     const total = measured.reduce((sum, item) => sum + item.lines.reduce((n, line) => n + Math.max(0, line.heightPx), 0), 0);
+    if (measured.some((item) => item.paragraph.pageBreakBefore) && hasContent(ensurePage())) newPage();
     const page = ensurePage();
-    if (measured.some((item) => item.paragraph.pageBreakBefore) && hasContent(page)) newPage();
+    // A pageBreakBefore anywhere in a keepNext group moves the whole group;
+    // splitting that chain is deferred with the other advanced pagination rules.
     if (total > Math.max(0, heightLimit() - page.contentHeightPx) && hasContent(page)) newPage();
     if (total > heightLimit()) {
       for (const item of paragraphs) addParagraph(item);
