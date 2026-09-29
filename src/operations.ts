@@ -424,6 +424,20 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'index']); assertIndex(op.index); break;
       case 'setParagraphLevel':
         keys(op, ['type', 'index', 'delta']); assertIndex(op.index); assertInteger(op.delta, 'delta'); break;
+      case 'restartNumbering':
+        keys(op, ['type', 'index', 'options']);
+        assertIndex(op.index);
+        if ('options' in op && op.options !== undefined) {
+          object(op.options);
+          keys(op.options, ['start']);
+          if ('start' in op.options && op.options.start !== undefined) {
+            assertIndex(op.options.start);
+            if (op.options.start < 1) throw new Error('options.start must be a positive integer.');
+          }
+        }
+        break;
+      case 'continueNumbering':
+        keys(op, ['type', 'index']); assertIndex(op.index); break;
       case 'formatRun':
         keys(op, ['type', 'paragraph', 'run', 'format']);
         assertIndex(op.paragraph); assertIndex(op.run); validateRunFormat(op.format); break;
@@ -872,6 +886,8 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
           operation('clearParagraphNumbering', { index }),
           operation('setParagraphLevel', { index, delta: integer }),
+          operation('restartNumbering', { index, options: shape({ start: { ...index, minimum: 1 } }, []) }, ['index']),
+          operation('continueNumbering', { index }),
           operation('formatRun', { paragraph: index, run: index, format: shape({
             style: nullable(text),
             bold: nullable({ type: 'boolean' }),
