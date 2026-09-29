@@ -214,6 +214,51 @@ d.setParagraphBorders(0, d.getParagraphs()[0].borders);  // ✗ border.shadow mu
 - **README 的操作清单、能力表这类列举，永远从代码重新生成，不要手工增删**。`AGENT_OPERATION_SCHEMA` 就是操作清单的唯一事实来源，按 schema 顺序生成后断言与 schema 完全一致（数量、内容、顺序）。
 - **写文档时就要防冲突**：一个段落只讲一件事。一旦某段塞进十几条互不相关的说明，任何两个并行 PR 碰它都必然冲突——README 里那段「索引与作用域 / 修订 / 比较 / 属性与保护」混在一起的 6 行长段落，就是因此被拆成了分组条目。**新增说明请加进对应的分组，不要继续往长段落里追加。**
 
+## 19. `examples/` 里的引用没有任何东西兜底
+
+`src/` 有 `tsc` 兜底，`examples/` 只有一半——**TS 里的 id 字面量与 HTML 里的 `id` 之间不参与类型检查，也不在任何单元测试的覆盖路径上**。这是本仓库唯一一条「编译干净、测试全绿、功能完全不可用」的缝。
+
+**实际发生过一次，而且持续了 33 个 PR**：
+
+`examples/main.ts` 顶层执行 `element('add-footnote').addEventListener(…)`，而 `element()` 的实现是找不到就 `throw`：
+
+```ts
+function element<T extends HTMLElement>(id: string): T {
+  const node = document.getElementById(id);
+  if (!node) throw new Error(`找不到界面元素：${id}`);
+  return node as T;
+}
+```
+
+`examples/index.html` 里**从来没有**这个 id（`git log -S'add-footnote' -- examples/index.html` 只有修复那一个提交）。于是自「脚注尾注支持」合并起，**示例应用一加载就抛错、整个初始化中断**，此后 33 个 PR、611 个测试全绿，而演示页根本打不开。
+
+没人发现的原因很简单：**没有任何测试加载 `examples/`**。
+
+具体要求：
+
+- **`test/ribbon.test.mjs` 里那条结构性断言必须保持通过**：`examples/main.ts` 中所有 `element('…')` 字面量与 `commandControls` 表的 `elementId`，都要在 `examples/index.html` 里有对应 `id`。它在 `main` 上会直接报出上面那两个缺失 id，注入一个不存在的引用也会如期失败——**有牙，别绕过它**。
+- **界面元素优先静态写在 `index.html` 里**（能被上面那条断言覆盖）。确实需要运行时动态创建的（菜单项、列表项），**不要用 `element()` 去找，用局部变量持有引用**——不要为了「让断言过」往 HTML 里塞占位元素，那是绕过而非遵守。
+- 改 `examples/` 时，把「演示页能否正常初始化」当成一项验收，而不是假定测试覆盖了它。
+
+## 20. 类型的重复定义比逻辑的重复更难自查
+
+第 15 条讲的是逻辑上的平行路径。**类型层面的重复更隐蔽**：逻辑重复迟早跑出不同结果，类型重复只在「有人用到那个多出来的字段」时才暴露。
+
+**实际发生过一次**：#63（命令注册表）与 #65（`getTableCellAt`）并行开发，各自定义了 `TableCellLocation`：
+
+```ts
+// src/types.ts（权威）        … nested: boolean;   ← 有
+// examples/commands.ts        …                    ← 缺
+```
+
+`CommandContext.table` 用的是 `examples/` 那份，于是**命令的 `enabled` 拿不到 `nested`**。两份在合并当天就已经不一致，但**没有任何测试会失败**——直到 #67 真的需要用 `nested` 去禁用嵌套表格下的按钮，缺失才变成阻塞。
+
+具体要求：
+
+- **`examples/` 里出现与 `src/types.ts` 同名的 `interface` / `type`，直接当缺陷处理**，从库里 import。
+- 并行开发多个 issue 时，新增公开类型前先 `grep -rn "interface <名字>" src/ examples/` 一遍。
+- 同一个概念只能有一处定义——这条对类型和对函数同样成立。
+
 ---
 
 ## 通用底线

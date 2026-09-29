@@ -15,6 +15,7 @@ import type {
 } from '../src/index.js';
 import { reviewerBucketKey, reviewerBucketLabel, reviewerBucketOf } from '../src/revisions.js';
 import { findReusableNumberingId } from '../src/numbering.js';
+import { RibbonContextState } from './context-tabs.js';
 import {
   createCommandRegistry,
   createExampleCommandDescriptors,
@@ -75,7 +76,14 @@ function element<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
-initializeRibbon(element('ribbon'));
+const ribbonContextState = new RibbonContextState(
+  ['ribbon-tab-home', 'ribbon-tab-insert', 'ribbon-tab-layout', 'ribbon-tab-review', 'ribbon-tab-view'],
+  ['ribbon-tab-table', 'ribbon-tab-image'],
+);
+const ribbon = initializeRibbon(element('ribbon'), {
+  onManualActivate: (tabId) => ribbonContextState.manualActivate(tabId),
+  onContextActivate: (tabId) => ribbonContextState.activateContext(tabId),
+});
 
 const recentNumbering = new Map<'bullet' | 'decimal', number>();
 
@@ -437,14 +445,28 @@ function updateSelection(): void {
   style.value = currentStyle?.id ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
   element('effective-format').textContent = paragraph ? JSON.stringify(paragraph.effective ?? {}, null, 2) : '点击正文选择段落';
+  updateTableSelection(editor.selectedTableCell, false);
   syncCommandState();
 }
 
 function updateImageSelection(): void {
   const image = editor.selectedImage;
+  setContextTabVisible('ribbon-tab-image', image !== null);
   element('image-selection-label').textContent = image ? `已选择图片 · ${image.alt ?? image.name ?? image.relationshipId}` : '未选中图片';
   element<HTMLInputElement>('image-alt').value = image?.alt ?? '';
   syncCommandState();
+}
+
+function setContextTabVisible(tabId: string, visible: boolean): void {
+  const activateTabId = ribbonContextState.setContextVisible(tabId, visible);
+  ribbon.setTabVisible(tabId, visible);
+  if (activateTabId) ribbon.activate(activateTabId);
+}
+
+function updateTableSelection(cell: TableCellLocation | null = editor.selectedTableCell, syncCommands = true): void {
+  setContextTabVisible('ribbon-tab-table', cell !== null);
+  element<HTMLElement>('table-context-hint').hidden = !cell?.nested;
+  if (syncCommands) syncCommandState();
 }
 
 function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
@@ -1201,6 +1223,10 @@ host.addEventListener('docx-rangechange', (event) => {
   updateSelection();
 });
 host.addEventListener('docx-imageselectionchange', updateImageSelection);
+host.addEventListener('docx-tablecellchange', (event) => {
+  const detail = (event as CustomEvent<{ cell: TableCellLocation } | null>).detail;
+  updateTableSelection(detail?.cell ?? null);
+});
 host.addEventListener('docx-commentclick', (event) => {
   const ids = (event as CustomEvent<{ ids: number[] }>).detail?.ids ?? [];
   selectedCommentId = ids[0] ?? null;

@@ -124,7 +124,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
   const hasLink = (ctx: CommandContext) => ctx.hyperlink !== null;
   const hasPointRevision = (ctx: CommandContext) => ctx.revisionsAtPoint.length > 0;
   const hasPointComment = (ctx: CommandContext) => ctx.commentsAtPoint.length > 0;
-  const tableStructural = (ctx: CommandContext) => ctx.table !== null && !ctx.table.nested;
+  const tableIsAddressable = (ctx: CommandContext) => ctx.table !== null && !ctx.table.nested;
   return [
     {
       id: 'clipboard.cut',
@@ -263,14 +263,14 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.insertRow',
       title: '插入行',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       run: () => deps.actions.insertTableRow(),
     },
     {
       id: 'table.insertRowAbove',
       title: '在上方插入行',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.insertTableRowAt('above'),
     },
@@ -278,7 +278,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.insertRowBelow',
       title: '在下方插入行',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.insertTableRowAt('below'),
     },
@@ -286,21 +286,21 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.deleteRow',
       title: '删除行',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       run: () => deps.actions.deleteTableRow(),
     },
     {
       id: 'table.insertColumn',
       title: '插入列',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       run: () => deps.actions.insertTableColumn(),
     },
     {
       id: 'table.insertColumnLeft',
       title: '在左侧插入列',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.insertTableColumnAt('left'),
     },
@@ -308,7 +308,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.insertColumnRight',
       title: '在右侧插入列',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.insertTableColumnAt('right'),
     },
@@ -316,14 +316,14 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.deleteColumn',
       title: '删除列',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       run: () => deps.actions.deleteTableColumn(),
     },
     {
       id: 'table.mergeCells',
       title: '合并单元格',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.mergeCells(),
     },
@@ -331,7 +331,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.splitCell',
       title: '拆分单元格',
       group: 'table',
-      enabled: tableStructural,
+      enabled: tableIsAddressable,
       visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.splitCell(),
     },
@@ -339,7 +339,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.applyCellStyle',
       title: '单元格边框与底纹',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.applyCellStyle(deps.getCellFillValue()),
     },
     {
