@@ -146,3 +146,17 @@ test('Ribbon panels contain every migrated control once and keep developer tabs 
   assert.match(html, /class="tabs" role="tablist" aria-label="开发者工具"/);
   assert.doesNotMatch(ribbon, /tab-agent|tab-xml|tab-snapshot/);
 });
+
+test('every example main element lookup and command control has an HTML element', () => {
+  const html = readFileSync(new URL('../examples/index.html', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../examples/main.ts', import.meta.url), 'utf8');
+  const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  const elementLookups = [...main.matchAll(/\belement(?:<[^>\n]+>)?\s*\(\s*(['"])([^'"]+)\1/g)]
+    .map((match) => match[2]);
+  const commandControls = [...main.matchAll(/\belementId:\s*(['"])([^'"]+)\1/g)]
+    .map((match) => match[2]);
+
+  for (const id of [...elementLookups, ...commandControls]) {
+    assert.ok(htmlIds.has(id), `examples/index.html is missing id="${id}" referenced by examples/main.ts`);
+  }
+});
