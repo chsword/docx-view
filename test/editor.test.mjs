@@ -88,13 +88,41 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
       style: {},
       childNodes: [],
       className: '',
+      textContent: '',
       attributes: new Map(),
-      append(child) { this.childNodes.push(child); },
-      appendChild(child) { this.childNodes.push(child); },
+      append(...children) { this.childNodes.push(...children); },
+      appendChild(child) { this.childNodes.push(child); return child; },
       addEventListener() {},
       contains() { return false; },
       setAttribute(name, value) { this.attributes.set(name, value); },
+      getBoundingClientRect() { return { height: this.tagName === 'TD' ? 27 : 0 }; },
+      remove() {},
     };
+    if (element.tagName === 'TABLE') {
+      element.createTBody = () => {
+        const body = createElement('tbody');
+        element.append(body);
+        return body;
+      };
+      Object.defineProperty(element, 'rows', {
+        get: () => element.childNodes.flatMap((child) => child.tagName === 'TBODY' ? child.childNodes : []),
+      });
+    }
+    if (element.tagName === 'TBODY') {
+      element.insertRow = () => {
+        const row = createElement('tr');
+        element.append(row);
+        return row;
+      };
+    }
+    if (element.tagName === 'TR') {
+      element.insertCell = () => {
+        const cell = createElement('td');
+        element.append(cell);
+        return cell;
+      };
+      Object.defineProperty(element, 'cells', { get: () => element.childNodes });
+    }
     element.classList = {
       add: (...names) => {
         for (const name of names) {
@@ -110,6 +138,7 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
       createElement,
       createTextNode: (text) => ({ nodeType: 3, textContent: text }),
     },
+    append() {},
   };
   return editor;
 }
@@ -132,6 +161,69 @@ test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
   editor.renderShapeInfos = [];
   const withoutShape = editor.makeParagraph(paragraph, 720, reviewContext);
   assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
+});
+
+test('paginated page content renders row subsets in their assigned columns', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = { index: 0, text: 'x', runs: [{ index: 0, text: 'x', images: [] }], images: [] };
+  const makeRow = (header = false) => ({
+    cells: [{ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false }],
+    format: header ? { header: true } : {},
+  });
+  const blocks = [
+    { type: 'paragraph', paragraph },
+    { type: 'table', rows: [makeRow(true), makeRow(), makeRow()], grid: [1000] },
+  ];
+  const page = {
+    index: 0,
+    number: 1,
+    section: 0,
+    contentHeightPx: 40,
+    items: [
+      { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 0, endOffset: 1 }, column: 0 },
+      { type: 'tableRow', table: 1, row: 0, heightPx: 10, column: 0 },
+      { type: 'tableRow', table: 1, row: 2, heightPx: 10, column: 0 },
+      { type: 'tableRow', table: 1, row: 0, heightPx: 10, column: 1 },
+      { type: 'tableRow', table: 1, row: 1, heightPx: 10, column: 1 },
+    ],
+  };
+  const section = {
+    pageWidth: 1500,
+    pageHeight: 1500,
+    margins: { top: 0, right: 0, bottom: 0, left: 0 },
+    columns: { count: 2, space: 0, equalWidth: true },
+  };
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const body = editor.makePageContent(page, section, blocks, [paragraph], 720, reviewContext);
+  assert.equal(body.className, 'docx-page-content');
+  assert.deepEqual(body.childNodes.map((column) => column.dataset.column), ['0', '1']);
+  assert.deepEqual(body.childNodes[0].childNodes.map((node) => node.tagName), ['P', 'TABLE']);
+  assert.deepEqual(body.childNodes[0].childNodes[1].rows.map((tr) => tr.childNodes[0].dataset.rowStart), ['0', '2']);
+  assert.deepEqual(body.childNodes[1].childNodes[0].rows.map((tr) => tr.childNodes[0].dataset.rowStart), ['0', '1']);
+  assert.equal(body.childNodes[0].childNodes[1].rows[0].dataset.header, 'true');
+  assert.equal(body.childNodes[1].childNodes[0].rows[0].dataset.header, 'true');
+});
+
+test('pagination table row measurement uses the tallest rendered cell', () => {
+  const editor = makeRunRenderEditor();
+  const table = {
+    type: 'table',
+    rows: [{
+      cells: [
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false },
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false },
+      ],
+    }],
+    grid: [1000, 1000],
+  };
+  assert.equal(editor.measureTableRowForPagination(table, 0, 100, { defaultTabStopTwips: 720 }), 27);
 });
 
 function appendRunToParagraph(editor, {

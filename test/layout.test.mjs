@@ -35,12 +35,15 @@ const measurer = {
     const heights = p.lines ?? [10];
     return heights.map((height, index) => ({ heightPx: height, startOffset: index, endOffset: index + 1 }));
   },
-  measureTableRow() {
-    return 10;
+  measureTableRow(_table, row) {
+    return row.height ?? 10;
   },
 };
 
 const blocks = (...paragraphs) => paragraphs.map((p) => ({ type: 'paragraph', paragraph: p }));
+const cell = (rowSpan = 1) => ({ blocks: [], colSpan: 1, rowSpan, isMergeContinuation: false });
+const row = (height, format = {}, cells = [cell()]) => ({ cells, format, height });
+const table = (...rows) => ({ type: 'table', index: 0, rows, grid: [1000] });
 
 test('paginates lines and honors explicit and paragraph page breaks', () => {
   const result = paginate(blocks(
@@ -78,6 +81,126 @@ test('does not create an empty page for pageBreakBefore plus keepNext', () => {
     paragraph(2, [40]),
   ), [section()], measurer, { defaultTabStopTwips: 720 });
   assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0], [1, 2]]);
+});
+
+test('pageBreakBefore in the middle of a keepNext chain breaks the chain', () => {
+  const result = paginate(blocks(
+    paragraph(9, [40]),
+    paragraph(0, [40], { keepNext: true }),
+    paragraph(1, [40], { pageBreakBefore: true, keepNext: true }),
+    paragraph(2, [40]),
+  ), [section({ pageHeight: 1800 })], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[9, 0], [1, 2]]);
+});
+
+test('splits tables by row and repeats all leading header rows', () => {
+  const result = paginate([
+    table(
+      row(10, { header: true }),
+      row(10, { header: true }),
+      row(60),
+      row(60, { cantSplit: true }),
+      row(200),
+    ),
+  ], [section()], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) =>
+    page.items.filter((item) => item.type === 'tableRow').map((item) => item.row)), [
+    [0, 1, 2],
+    [0, 1, 3],
+    [0, 1, 4],
+  ]);
+  assert.deepEqual(result.map((page) => page.contentHeightPx), [80, 80, 220]);
+});
+
+test('moves all rows covered by a rowSpan to the same page', () => {
+  const result = paginate([
+    ...blocks(paragraph(0, [30])),
+    table(row(60, {}, [cell(2)]), row(60, {}, [{ ...cell(), isMergeContinuation: true, rowSpan: 0 }])),
+  ], [section()], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) =>
+    page.items.filter((item) => item.type === 'tableRow').map((item) => item.row)), [[], [0, 1]]);
+});
+
+test('fills columns before creating a new page and measures at each column width', () => {
+  const measuredWidths = [];
+  const recordingMeasurer = {
+    ...measurer,
+    measureParagraph(p, area) {
+      measuredWidths.push(area.widthPx);
+      return measurer.measureParagraph(p);
+    },
+  };
+  const result = paginate(blocks(
+    paragraph(0, [60]),
+    paragraph(1, [60]),
+    paragraph(2, [60]),
+  ), [section({ columns: { count: 2, space: 0, equalWidth: true } })], recordingMeasurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) =>
+    page.items.filter((item) => item.type === 'line').map((item) => [item.paragraph, item.column])), [
+    [[0, 0], [1, 1]],
+    [[2, 0]],
+  ]);
+  assert.ok(measuredWidths.every((width) => width === 50));
+});
+
+test('uses explicit unequal column widths and nextColumn stays on the page', () => {
+  const measuredWidths = [];
+  const recordingMeasurer = {
+    ...measurer,
+    measureParagraph(p, area) {
+      measuredWidths.push(area.widthPx);
+      return measurer.measureParagraph(p);
+    },
+  };
+  const columns = { count: 2, space: 0, equalWidth: false, widths: [300, 600] };
+  const result = paginate([
+    ...blocks(paragraph(0, [20])),
+    { type: 'sectionBreak', section: 0, breakType: 'nextColumn' },
+    ...blocks(paragraph(1, [20])),
+  ], [section({ columns }), section({ index: 1, columns })], recordingMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0].items.filter((item) => item.type === 'line').map((item) => item.column), [0, 1]);
+  assert.deepEqual(measuredWidths, [20, 40]);
+});
+
+test('passes floating wrap exclusions to paragraph measurement and carries their remaining height', () => {
+  const areas = [];
+  const wrappingMeasurer = {
+    ...measurer,
+    measureParagraph(p, area) {
+      areas.push(area);
+      const sideWidth = area.wraps
+        .filter((wrap) => ['square', 'tight', 'through'].includes(wrap.wrap))
+        .reduce((sum, wrap) => sum + wrap.widthPx, 0);
+      return [{ heightPx: 20, startOffset: 0, endOffset: Math.max(1, Math.floor((area.widthPx - sideWidth) / 10)) }];
+    },
+  };
+  const image = { placement: 'floating', wrap: 'square', widthPx: 30, heightPx: 50 };
+  paginate(blocks(
+    paragraph(0, [20], { images: [image] }),
+    paragraph(1, [20]),
+  ), [section()], wrappingMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(areas[0].widthPx - areas[0].wraps[0].widthPx, 70);
+  assert.deepEqual(areas[1].wraps.map((wrap) => [wrap.wrap, wrap.heightPx, wrap.carried]), [['square', 30, true]]);
+});
+
+test('topAndBottom exclusions occupy the full line and degenerate columns still make progress', () => {
+  const areas = [];
+  const recordingMeasurer = {
+    ...measurer,
+    measureParagraph(p, area) {
+      areas.push(area);
+      return measurer.measureParagraph(p);
+    },
+  };
+  const image = { placement: 'floating', wrap: 'topAndBottom', widthPx: 20, heightPx: 50 };
+  const result = paginate(blocks(paragraph(0, [200], { images: [image] })), [
+    section({ pageWidth: 0, columns: { count: 3, space: 720, equalWidth: false, widths: [0] } }),
+  ], recordingMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(areas[0].wraps[0].wrap, 'topAndBottom');
+  assert.equal(areas[0].widthPx, 0);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].items.length, 1);
 });
 
 test('widow control defaults on but can be disabled', () => {
