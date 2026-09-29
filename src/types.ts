@@ -143,6 +143,7 @@ export interface RunInfo extends RunFormat {
   image?: ImageInfo;
   images?: ImageInfo[];
   noteReference?: { kind: 'footnote' | 'endnote'; id: number; number: number; marker: string };
+  /** Field index is scoped to the source part; use kind/instruction across parts. */
   field?: { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string };
 }
 

@@ -658,7 +658,7 @@ export class DocxEditor {
         this.renderPaginated(fragment, reviewContext, defaultTabStopTwips);
       } else {
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
-        this.renderShapeInfos = [];
+        this.renderShapeInfos = this.document.getShapes();
         this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
       }
@@ -675,7 +675,7 @@ export class DocxEditor {
       this.updateRangeSelection(this.captureDocumentRange());
       this.setActiveRevision(this.activeRevisionId);
     } finally {
-      this.renderShapeInfos = this.document.getShapes();
+      this.renderShapeInfos = [];
       reviewContext.deletedTextByRun.clear();
       reviewContext.revisionColors.clear();
     }
