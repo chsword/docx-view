@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { paginate } from '../dist/layout.js';
+import { columnWidthsPx, pageBoxPx, paginate } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -312,4 +312,27 @@ test('layout has no DOM dependencies', () => {
   const source = readFileSync(new URL('../src/layout.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\b(?:document|window)\.|HTMLElement/);
   assert.deepEqual([...source.matchAll(/from ['"]([^'"]+)['"]/g)].map((match) => match[1]), ['./types.js']);
+});
+
+test('pageBoxPx converts section page size and all four margins from twips to px', () => {
+  const box = pageBoxPx(section({
+    pageWidth: 12240,
+    pageHeight: 15840,
+    margins: { top: 1440, right: 1800, bottom: 720, left: 1080, header: 360, footer: 360, gutter: 0 },
+  }));
+  assert.deepEqual(box, { widthPx: 816, heightPx: 1056, padding: { top: 96, right: 120, bottom: 48, left: 72 } });
+  const landscape = pageBoxPx(section({
+    pageWidth: 15840,
+    pageHeight: 12240,
+    margins: { top: 0, right: 15, bottom: 30, left: 45, header: 0, footer: 0, gutter: 0 },
+  }));
+  assert.deepEqual(landscape, { widthPx: 1056, heightPx: 816, padding: { top: 0, right: 1, bottom: 2, left: 3 } });
+});
+
+test('columnWidthsPx splits usable width across equal columns and honours explicit widths', () => {
+  const page = { pageWidth: 12240, margins: { top: 0, right: 1440, bottom: 0, left: 1440, header: 0, footer: 0, gutter: 0 } };
+  assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 1, space: 0, equalWidth: true } })), [624]);
+  assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 2, space: 720, equalWidth: true } })), [288, 288]);
+  assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 2, space: 720, equalWidth: false, widths: [2880, 5760] } })), [192, 384]);
+  assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 3, space: 720, equalWidth: false, widths: [2880, 5760] } })), [176, 176, 176]);
 });

@@ -56,6 +56,26 @@ function usableSize(section: SectionInfo): { width: number; height: number } {
   return { width: Math.max(0, width), height: Math.max(0, height) };
 }
 
+export interface PageBoxPx {
+  widthPx: number;
+  heightPx: number;
+  padding: { top: number; right: number; bottom: number; left: number };
+}
+
+export function pageBoxPx(section: Pick<SectionInfo, 'pageWidth' | 'pageHeight' | 'margins'>): PageBoxPx {
+  const toPx = (twips: number) => twips * 96 / 1440;
+  return {
+    widthPx: toPx(section.pageWidth),
+    heightPx: toPx(section.pageHeight),
+    padding: {
+      top: toPx(section.margins.top),
+      right: toPx(section.margins.right),
+      bottom: toPx(section.margins.bottom),
+      left: toPx(section.margins.left),
+    },
+  };
+}
+
 export function columnWidthsPx(section: SectionInfo): number[] {
   const count = Math.max(1, Math.floor(section.columns.count) || 1);
   const total = usableSize(section).width;

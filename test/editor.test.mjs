@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
-import { DocxEditor, deriveLineBoxes, formatPageNumber } from '../dist/editor.js';
+import { DocxEditor, deriveLineBoxes, formatPageNumber, replacePageFields, selectHeaderFooter } from '../dist/editor.js';
 import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
 
 test('formats paginated page numbers and falls back to decimal', () => {
@@ -38,6 +38,89 @@ test('pagination paragraph slices retain zero-length inline content', () => {
   assert.equal(slice.text, '前文');
   assert.equal(slice.runs[1].images[0].id, 'image-1');
   assert.equal(slice.runs[2].noteReference.marker, '1');
+});
+
+test('pagination paragraph slices concatenate back to the original without overlap or loss', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const paragraph = {
+    index: 3,
+    text: 'abcdefghij',
+    runs: [
+      { index: 0, text: '', images: [{ id: 'leading' }] },
+      { index: 1, text: 'abc', images: [] },
+      { index: 2, text: '', images: [{ id: 'between' }] },
+      { index: 3, text: 'defgh', images: [] },
+      { index: 4, text: 'ij', images: [] },
+      { index: 5, text: '', noteReference: { kind: 'footnote', id: 1, number: 1, marker: '1' } },
+    ],
+    images: [],
+  };
+  const length = paragraph.text.length;
+  for (let first = 1; first < length; first++) {
+    for (let second = first; second < length; second++) {
+      const bounds = [[0, first], [first, second], [second, length]].filter(([start, end]) => end > start);
+      const slices = bounds.map(([start, end]) => editor.sliceParagraph(paragraph, start, end));
+      const label = `cuts at ${first}/${second}`;
+      for (const slice of slices) {
+        assert.equal(slice.index, paragraph.index, label);
+        assert.equal(slice.runs.map((run) => run.text).join(''), slice.text, label);
+      }
+      assert.equal(slices.map((slice) => slice.text).join(''), paragraph.text, label);
+      const runs = slices.flatMap((slice) => slice.runs);
+      assert.deepEqual(runs.filter((run) => !run.text).map((run) => run.index), [0, 2, 5], label);
+      assert.deepEqual([...new Set(runs.map((run) => run.index))], [0, 1, 2, 3, 4, 5], label);
+      const byRun = new Map();
+      for (const run of runs) byRun.set(run.index, (byRun.get(run.index) ?? '') + run.text);
+      for (const run of paragraph.runs) assert.equal(byRun.get(run.index), run.text, `${label} run ${run.index}`);
+    }
+  }
+  assert.equal(paragraph.runs[3].text, 'defgh');
+});
+
+test('paginated header/footer kind follows title page, first physical page and parity', () => {
+  const all = { default: 'word/header1.xml', first: 'word/header2.xml', even: 'word/header3.xml' };
+  const pick = (options, parts = all) => selectHeaderFooter(parts, { selectedKind: 'default', ...options });
+  assert.deepEqual(pick({ pageNumber: 1, firstPhysicalPage: true, titlePage: true }), { kind: 'first', part: all.first });
+  assert.deepEqual(pick({ pageNumber: 1, firstPhysicalPage: true, titlePage: false }), { kind: 'default', part: all.default });
+  assert.deepEqual(pick({ pageNumber: 2, firstPhysicalPage: false, titlePage: true }), { kind: 'even', part: all.even });
+  assert.deepEqual(pick({ pageNumber: 3, firstPhysicalPage: false, titlePage: true }), { kind: 'default', part: all.default });
+  // A section that starts on an even page still shows its first-page variant there.
+  assert.deepEqual(pick({ pageNumber: 4, firstPhysicalPage: true, titlePage: true }), { kind: 'first', part: all.first });
+  assert.deepEqual(pick({ pageNumber: 4, firstPhysicalPage: true, titlePage: false }), { kind: 'even', part: all.even });
+  // Missing variants keep their kind but fall back to the default part.
+  const defaultOnly = { default: 'word/header1.xml' };
+  assert.deepEqual(pick({ pageNumber: 1, firstPhysicalPage: true, titlePage: true }, defaultOnly), { kind: 'first', part: defaultOnly.default });
+  assert.deepEqual(pick({ pageNumber: 2, firstPhysicalPage: false, titlePage: false }, defaultOnly), { kind: 'even', part: defaultOnly.default });
+  assert.deepEqual(pick({ pageNumber: 2, firstPhysicalPage: false, titlePage: false }, {}), { kind: 'even', part: undefined });
+  // Without a physical page number the caller's selected kind is kept.
+  assert.deepEqual(selectHeaderFooter(all, { selectedKind: 'even', firstPhysicalPage: true, titlePage: true }), { kind: 'even', part: all.even });
+  assert.deepEqual(selectHeaderFooter(defaultOnly, { selectedKind: 'first' }), { kind: 'first', part: defaultOnly.default });
+});
+
+test('paginated header/footer replaces only PAGE and NUMPAGES field results', () => {
+  const run = (index, text, field) => ({ index, text, images: [], ...(field ? { field } : {}) });
+  const runs = [
+    run(0, 'Page '),
+    run(1, '', { index: 0, role: 'instruction', kind: 'PAGE', instruction: ' PAGE ' }),
+    run(2, '1', { index: 0, role: 'result', kind: 'PAGE', instruction: ' PAGE ' }),
+    run(3, ' of '),
+    run(4, '', { index: 1, role: 'instruction', kind: 'NUMPAGES', instruction: ' NUMPAGES ' }),
+    run(5, '9', { index: 1, role: 'result', kind: 'NUMPAGES', instruction: ' NUMPAGES ' }),
+    run(6, '7', { index: 2, role: 'result', kind: 'SEQ', instruction: ' SEQ x ' }),
+    run(7, '2', { index: 3, role: 'result', instruction: ' UNKNOWN ' }),
+  ];
+  const table = { type: 'table', rows: [], grid: [] };
+  const blocks = [{ type: 'paragraph', paragraph: { index: 0, text: 'Page 1 of 972', runs, images: [] } }, table, { type: 'pageBreak' }];
+  const replaced = replacePageFields(blocks, 3, 12);
+  assert.deepEqual(replaced[0].paragraph.runs.map((entry) => entry.text), ['Page ', '', '3', ' of ', '', '12', '7', '2']);
+  for (const index of [0, 1, 3, 4, 6, 7]) assert.equal(replaced[0].paragraph.runs[index], runs[index]);
+  assert.deepEqual(replaced[0].paragraph.runs[2].field, runs[2].field);
+  assert.equal(replaced[1], table);
+  assert.equal(replaced[2], blocks[2]);
+  assert.deepEqual(runs.map((entry) => entry.text), ['Page ', '', '1', ' of ', '', '9', '7', '2']);
+  assert.deepEqual(replacePageFields(blocks, 4, 14, 'upperRoman')[0].paragraph.runs.map((entry) => entry.text)
+    .filter((_, index) => index === 2 || index === 5), ['IV', 'XIV']);
+  assert.equal(replacePageFields(blocks, 2, undefined)[0].paragraph.runs[5].text, '0');
 });
 
 function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
@@ -210,6 +293,173 @@ test('paginated page content renders row subsets in their assigned columns', () 
   assert.deepEqual(body.childNodes[1].childNodes[0].rows.map((tr) => tr.childNodes[0].dataset.rowStart), ['0', '1']);
   assert.equal(body.childNodes[0].childNodes[1].rows[0].dataset.header, 'true');
   assert.equal(body.childNodes[1].childNodes[0].rows[0].dataset.header, 'true');
+});
+
+test('makeTable renders only the requested row subset with row and column span datasets intact', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = (colSpan = 1, rowSpan = 1, isMergeContinuation = false) => ({ blocks: [], colSpan, rowSpan, isMergeContinuation });
+  const block = {
+    type: 'table',
+    grid: [1000, 1000, 1000],
+    rows: [
+      { cells: [cell(2), cell(1, 2)], format: {} },
+      { cells: [cell(), cell(), cell(1, 1, true)], format: {} },
+      { cells: [cell(), cell(2, 2)], format: {} },
+      { cells: [cell(), cell(2, 1, true)], format: {} },
+    ],
+  };
+  const datasets = (table) => table.rows.map((tr) => tr.childNodes.map((td) => ({
+    grid: `${td.dataset.gridStart}-${td.dataset.gridEnd}`,
+    rows: `${td.dataset.rowStart}-${td.dataset.rowEnd}`,
+    colSpan: td.colSpan,
+    rowSpan: td.rowSpan,
+  })));
+  assert.deepEqual(datasets(editor.makeTable(block, [0, 2], 720, { deletedTextByRun: new Map(), revisionColors: new Map() })), [
+    [
+      { grid: '0-2', rows: '0-1', colSpan: 2, rowSpan: undefined },
+      { grid: '2-3', rows: '0-2', colSpan: 1, rowSpan: 2 },
+    ],
+    [
+      { grid: '0-1', rows: '2-3', colSpan: 1, rowSpan: undefined },
+      { grid: '1-3', rows: '2-4', colSpan: 2, rowSpan: 2 },
+    ],
+  ]);
+  assert.deepEqual(datasets(editor.makeTable(block, [1, 3], 720, { deletedTextByRun: new Map(), revisionColors: new Map() })), [
+    [
+      { grid: '0-1', rows: '1-2', colSpan: 1, rowSpan: undefined },
+      { grid: '1-2', rows: '1-2', colSpan: 1, rowSpan: undefined },
+    ],
+    [{ grid: '0-1', rows: '3-4', colSpan: 1, rowSpan: undefined }],
+  ]);
+  assert.deepEqual(editor.makeTable(block, [7], 720, { deletedTextByRun: new Map(), revisionColors: new Map() }).rows, []);
+});
+
+test('makeParagraph keeps paragraphs with fields editable in markup view and read-only in preview views', () => {
+  const run = (index, text, field) => ({ index, text, images: [], ...(field ? { field } : {}) });
+  const paragraphs = {
+    plain: { index: 0, text: 'plain', runs: [run(0, 'plain')], images: [] },
+    field: {
+      index: 1,
+      text: 'Page 7 end',
+      images: [],
+      runs: [
+        run(0, 'Page '),
+        run(1, '', { index: 0, role: 'instruction', kind: 'PAGE', instruction: ' PAGE ' }),
+        run(2, '7', { index: 0, role: 'result', kind: 'PAGE', instruction: ' PAGE ' }),
+        run(3, ' end'),
+      ],
+    },
+  };
+  for (const revisionView of ['markup', 'final', 'original']) {
+    const editor = makeRunRenderEditor({ revisionView });
+    editor.paragraphs = new Map();
+    editor.measuring = false;
+    editor.composing = false;
+    editor.renderAfterComposition = false;
+    editor.readText = (content) => content.textContent ?? '';
+    editor.document = { getShapeParagraphs: () => [] };
+    editor.renderShapeInfos = [];
+    for (const [name, paragraph] of Object.entries(paragraphs)) {
+      const element = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+      const content = element.childNodes.find((node) => node.className === 'docx-paragraph-content');
+      assert.ok(content, `${revisionView}/${name}`);
+      assert.equal(content.contentEditable, revisionView === 'markup' ? 'true' : 'false', `${revisionView}/${name}`);
+      assert.equal(content.attributes.get('aria-readonly'), revisionView === 'markup' ? undefined : 'true', `${revisionView}/${name}`);
+    }
+  }
+});
+
+function makeViewModeRenderEditor(viewMode) {
+  const editor = makeRunRenderEditor();
+  const createElement = editor.root.ownerDocument.createElement;
+  const output = { fragment: null, shapesDuringRender: null };
+  Object.assign(editor, {
+    viewMode,
+    destroyed: false,
+    measuring: false,
+    composing: false,
+    renderAfterComposition: false,
+    paragraphs: new Map(),
+    selected: null,
+    selectedImageInfo: null,
+    activeRevisionId: null,
+    readText: (content) => content.textContent ?? '',
+    flush: () => {},
+    applyPageSetup: () => {},
+    captureDocumentRange: () => null,
+    updateRangeSelection: () => {},
+    selectImage: () => {},
+    setActiveRevision: () => {},
+    makeHeaderFooter: (type) => {
+      const area = createElement('div');
+      area.className = `docx-${type}`;
+      return area;
+    },
+    measureParagraphForPagination: (paragraph) => [{ heightPx: 18, startOffset: 0, endOffset: paragraph.text.length }],
+  });
+  const section = {
+    index: 0,
+    startParagraph: 0,
+    endParagraph: 0,
+    type: 'nextPage',
+    pageWidth: 12240,
+    pageHeight: 15840,
+    orientation: 'portrait',
+    margins: { top: 1440, right: 1800, bottom: 720, left: 1080, header: 0, footer: 0, gutter: 0 },
+    columns: { count: 1, space: 0, equalWidth: true },
+    titlePage: false,
+    headers: {},
+    footers: {},
+  };
+  const paragraph = { index: 0, text: 'shape anchor', runs: [{ index: 0, text: 'shape anchor', images: [] }], images: [] };
+  editor.document = {
+    mainDocumentPath: 'word/document.xml',
+    getRevisions: () => [],
+    getComments: () => [],
+    getSettings: () => ({ defaultTabStop: 720 }),
+    getShapes: () => [{ id: 'shape-1', paragraph: 0, run: 0, kind: 'textbox', placement: 'inline', hasTextContent: false }],
+    getShapeParagraphs: () => [],
+    getBlocks: () => [{ type: 'paragraph', paragraph }],
+    getSections: () => [section],
+    getSection: () => section,
+    getImages: () => [],
+  };
+  editor.root.ownerDocument.createDocumentFragment = () => createElement('fragment');
+  editor.root.replaceChildren = (fragment) => {
+    output.fragment = fragment;
+    output.shapesDuringRender = editor.renderShapeInfos.length;
+  };
+  return { editor, output };
+}
+
+function collectNodes(node, into = []) {
+  into.push(node);
+  for (const child of node.childNodes ?? []) collectNodes(child, into);
+  return into;
+}
+
+test('shapes render in both continuous and paginated view modes', () => {
+  for (const viewMode of ['continuous', 'paginated']) {
+    const { editor, output } = makeViewModeRenderEditor(viewMode);
+    editor.render();
+    const nodes = collectNodes(output.fragment);
+    const shapes = nodes.filter((node) => typeof node.className === 'string' && node.className.split(' ').includes('docx-shape'));
+    assert.deepEqual(shapes.map((node) => node.dataset.docxShape), ['shape-1'], viewMode);
+    assert.equal(output.shapesDuringRender, 1, viewMode);
+    assert.deepEqual(editor.renderShapeInfos, [], viewMode);
+    const pages = nodes.filter((node) => node.className === 'docx-page');
+    if (viewMode === 'continuous') {
+      assert.equal(pages.length, 0);
+    } else {
+      assert.equal(pages.length, 1);
+      assert.equal(pages[0].style.width, '816px');
+      assert.equal(pages[0].style.minHeight, '1056px');
+      assert.equal(pages[0].style.padding, '96px 120px 48px 72px');
+    }
+  }
 });
 
 test('pagination table row measurement uses the tallest rendered cell', () => {
