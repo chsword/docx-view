@@ -99,6 +99,7 @@ console.log(reopened.getSnapshot());
 | `getRangeFormat(range)` | 读取字符范围内一致的 run 直接格式；同一字段在范围内不一致时返回 `undefined` |
 | `copyFormat(range)` / `applyFormat(range, format)` | 格式刷 API：复制段落内范围的 run 直接格式，并应用到跨段落选区 |
 | `formatDocumentRange(range, format)` / `getDocumentRangeFormat(range)` | 支持跨段落选区：首段部分 + 中间整段 + 末段部分 |
+| `getEditableRegions()` / `addEditableRegion(range, options)` / `removeEditableRegion(id)` | 读取、创建和移除正文区域编辑权限标记；授权方式为编辑组或用户 ID |
 | `copyClipboardFragment(range)` / `pasteClipboardFragment(range, fragment)` | 内部富文本剪贴板 API：run 直接格式、超链接、内嵌图片、段落格式与样式引用、编号（含多级）和表格；粘贴按落点切分段落，图片按目标文档关系与 media 部件重建（不复用源 `rId`） |
 | `defineStyle(style)` | 创建或更新 `styles.xml` 样式定义；缺少部件时自动补内容类型与主文档关系 |
 | `createStyleFromSelection(range, style)` | 从当前选区提炼段落 / 字符直接格式并写成新的段落样式定义 |
@@ -155,6 +156,8 @@ console.log(reopened.getSnapshot());
 
 - `getDocumentProperties().revisionNumber` / `setDocumentProperties({ revisionNumber })` 读写的是 DOCX `cp:revision` 文档属性，**与**实例级 `doc.revision`（内存中的变更计数，不持久化到 DOCX）互不联动。
 - `documentProtection` 只是文档内声明：库会如实读写它，但**不会**因为 `readOnly` / `comments` / `trackedChanges` 而禁用编辑 API；若宿主需要据此调整按钮或 UI，请自行在外层实现。
+- `w:permStart` / `w:permEnd` 区域编辑权限同样只是文档内声明，不是安全机制；`getEditableRegions()` 如实读取声明，但不会禁用 `setParagraphText()` 或其他编辑 API。调用方可自行据此调整 UI，不能把这些标记当作访问控制。
+- `getEditableRegions()` 按正文标记文档顺序以 `w:id` 配对；重复 ID 按出现顺序配对，只有一端的标记会以 `unpaired: 'startOnly'` 或 `'endOnly'` 返回。
 
 | `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `getComments()` / `addComment()` / `replyComment()` / `setCommentResolved()` / `setCommentText()` / `deleteComment()` | 读取和编辑批注、回复链与解决状态 |
@@ -291,7 +294,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setTrackChanges`、`setRevisionAuthor`、`acceptRevision`、`rejectRevision`、`acceptAllRevisions`、`rejectAllRevisions`、`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`applyParagraphStyle`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`formatRange`、`applyCharacterStyle`、`clearRangeFormat`、`formatDocumentRange`、`setOutlineLevel`、`moveOutlineSection`、`setParagraphTabs`、`setParagraphBorders`、`setParagraphShading`、`insertBreak`、`insertSymbol`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertHyperlink`、`updateHyperlink`、`removeHyperlink`、`insertBookmark`、`deleteBookmark`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`addComment`、`replyComment`、`setCommentResolved`、`setCommentText`、`deleteComment`、`undo`、`redo`。
+支持的操作类型：`setTrackChanges`、`setRevisionAuthor`、`acceptRevision`、`rejectRevision`、`acceptAllRevisions`、`rejectAllRevisions`、`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`applyParagraphStyle`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`formatRange`、`applyCharacterStyle`、`clearRangeFormat`、`formatDocumentRange`、`setOutlineLevel`、`moveOutlineSection`、`setParagraphTabs`、`setParagraphBorders`、`setParagraphShading`、`insertBreak`、`insertSymbol`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertHyperlink`、`updateHyperlink`、`removeHyperlink`、`insertBookmark`、`deleteBookmark`、`addEditableRegion`、`removeEditableRegion`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`addComment`、`replyComment`、`setCommentResolved`、`setCommentText`、`deleteComment`、`undo`、`redo`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

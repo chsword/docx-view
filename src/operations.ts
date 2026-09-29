@@ -1,4 +1,7 @@
-import type { AgentRequest, BorderSide, CellFormat, ParagraphFormat, RowFormat, RunFormat, Shading, TableFormat, TabStop } from './types.js';
+import type {
+  AgentRequest, BorderSide, CellFormat, EditableRegionEditorGroup, ParagraphFormat, RowFormat, RunFormat, Shading,
+  TableFormat, TabStop,
+} from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
@@ -331,6 +334,22 @@ function validateCommentInput(value: unknown, name = 'comment'): void {
   assertText(value.text, `${name}.text`);
 }
 
+function validateEditableRegionOptions(value: unknown): asserts value is {
+  editorGroup?: EditableRegionEditorGroup;
+  editorId?: string;
+} {
+  object(value);
+  keys(value, ['editorGroup', 'editorId']);
+  if (value.editorGroup !== undefined &&
+      !['none', 'everyone', 'administrators', 'contributors', 'editors', 'owners', 'current'].includes(String(value.editorGroup))) {
+    throw new Error('options.editorGroup must be a supported editor group.');
+  }
+  if (value.editorId !== undefined) assertText(value.editorId, 'options.editorId');
+  if ((value.editorGroup !== undefined) === (value.editorId !== undefined)) {
+    throw new Error('Specify exactly one of options.editorGroup or options.editorId.');
+  }
+}
+
 function validateRevisionFilter(value: unknown): void {
   object(value);
   keys(value, ['authors']);
@@ -538,6 +557,15 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'name']);
         assertText(op.name, 'name');
         break;
+      case 'addEditableRegion':
+        keys(op, ['type', 'range', 'options']);
+        validateDocumentRange(op.range);
+        validateEditableRegionOptions(op.options);
+        break;
+      case 'removeEditableRegion':
+        keys(op, ['type', 'id']);
+        assertIndex(op.id);
+        break;
       case 'insertImage':
         keys(op, ['type', 'bytes', 'contentType', 'paragraph', 'run', 'widthEmu', 'heightEmu', 'alt', 'placement']);
         assertText(op.bytes, 'bytes');
@@ -681,6 +709,13 @@ const hyperlinkRef = {
       text,
     }),
   ],
+};
+const editableRegionOptions = {
+  ...shape({
+    editorGroup: { enum: ['none', 'everyone', 'administrators', 'contributors', 'editors', 'owners', 'current'] },
+    editorId: text,
+  }, []),
+  oneOf: [{ required: ['editorGroup'] }, { required: ['editorId'] }],
 };
 const width = shape({ type: { enum: ['auto', 'dxa', 'pct'] }, value: { type: 'number', minimum: 0 } });
 const border = shape({
@@ -899,6 +934,8 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('removeHyperlink', { hyperlink: hyperlinkRef, options: shape({ keepText: { type: 'boolean' } }, []) }, ['hyperlink']),
           operation('insertBookmark', { name: text, range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']) }),
           operation('deleteBookmark', { name: text }),
+          operation('addEditableRegion', { range: documentRange, options: editableRegionOptions }),
+          operation('removeEditableRegion', { id: index }),
           operation('insertImage', {
             bytes: { type: 'string', maxLength: 22_500_000 },
             contentType: text,
