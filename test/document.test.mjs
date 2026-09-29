@@ -1787,6 +1787,23 @@ test('insertField writes a complex field and rejects external-resource fields', 
   assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
 });
 
+test('field enumeration excludes textbox fields and keeps run indices aligned', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:pict><w:txbxContent><w:p><w:fldSimple w:instr=" SEQ 框内 "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p></w:txbxContent></w:pict></w:r></w:p>` +
+    `<w:p><w:fldSimple w:instr=" SEQ 正文 "><w:r><w:t>5</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  const fields = doc.getFields();
+  const paragraphs = doc.getParagraphs();
+  assert.equal(fields.length, 1);
+  assert.equal(fields[0].instruction, ' SEQ 正文 ');
+  assert.equal(paragraphs[fields[0].paragraph].text, '5');
+  const fieldRun = paragraphs[fields[0].paragraph].runs.find(run => run.field?.role === 'result');
+  assert.ok(fieldRun);
+  assert.equal(fields[fieldRun.field.index].instruction, fields[0].instruction);
+  doc.updateFields({ now: new Date('2026-01-01T00:00:00Z') });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t>9<\/w:t>/);
+});
+
 test('setParagraphText preserves fldSimple and keeps runs valid', () => {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath,
