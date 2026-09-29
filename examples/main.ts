@@ -19,6 +19,7 @@ import { findReusableNumberingId } from '../src/numbering.js';
 import { RibbonContextState } from './context-tabs.js';
 import {
   createCommandRegistry,
+  createCommandContextBuilder,
   createExampleCommandDescriptors,
   getCommandControlState,
   type CommandContext,
@@ -1118,38 +1119,45 @@ const commandControls: Array<{ elementId: string; commandId: string; pressed?: b
   { elementId: 'review-reject-all', commandId: 'review.rejectAll' },
 ] as const;
 
-function buildCommandContext(
-  source: CommandContext['source'] = 'ribbon',
-  target: HTMLElement | null = currentSelectionElement(),
-): CommandContext {
-  const range = editor.selectedRange ?? selectedRange;
-  const targetParagraph = Number(target?.closest<HTMLElement>('[data-paragraph]')?.dataset.paragraph);
-  const paragraph = Number.isSafeInteger(targetParagraph)
-    ? targetParagraph
-    : doc.getParagraphs().find((item) => item.index === editor.selectedParagraph)?.index ?? null;
-  const imageId = target?.closest<HTMLElement>('[data-image]')?.dataset.image;
-  const image = imageId
-    ? doc.getParagraphs().flatMap((item) => item.runs.flatMap((run) => run.images ?? [])).find((item) => item.id === imageId) ?? null
-    : editor.selectedImage ?? null;
-  const revisionIds = target ? idsAtTarget(target, 'docxRevisionIds') : [];
-  return {
-    revisionView: reviewRevisionView,
-    editable: isMarkupView(),
-    selection: {
+const commandContextBuilder = createCommandContextBuilder({
+  getRevisionView: () => reviewRevisionView,
+  getSelection(target) {
+    const range = editor.selectedRange ?? selectedRange;
+    const targetParagraph = Number(target?.closest<HTMLElement>('[data-paragraph]')?.dataset.paragraph);
+    const paragraph = Number.isSafeInteger(targetParagraph)
+      ? targetParagraph
+      : doc.getParagraphs().find((item) => item.index === editor.selectedParagraph)?.index ?? null;
+    return {
       paragraph,
       range,
       format: selectedRangeFormat,
       collapsed: !range || (range.start.paragraph === range.end.paragraph && range.start.offset === range.end.offset),
-    },
-    table: paragraph === null ? currentTableContext() : doc.getTableCellAt(paragraph),
-    image,
-    hyperlink: target ? hyperlinkAtTarget(target) : null,
-    revisionsAtPoint: doc.getRevisions().filter((revision) => revisionIds.includes(revision.id)),
-    commentsAtPoint: target ? idsAtTarget(target, 'docxCommentIds') : currentCommentIdsAtSelection(),
-    activeCommentId: selectedCommentId,
-    clipboard: 'unknown',
-    source,
-  };
+    };
+  },
+  getTable(_target, paragraph) {
+    return paragraph === null ? currentTableContext() : doc.getTableCellAt(paragraph);
+  },
+  getImage(target) {
+    const imageId = target?.closest<HTMLElement>('[data-image]')?.dataset.image;
+    return imageId
+      ? doc.getParagraphs().flatMap((item) => item.runs.flatMap((run) => run.images ?? [])).find((item) => item.id === imageId) ?? null
+      : editor.selectedImage ?? null;
+  },
+  getHyperlink: (target) => target ? hyperlinkAtTarget(target) : null,
+  getRevisionsAtPoint(target) {
+    const revisionIds = target ? idsAtTarget(target, 'docxRevisionIds') : [];
+    return doc.getRevisions().filter((revision) => revisionIds.includes(revision.id));
+  },
+  getCommentsAtPoint: (target) => target ? idsAtTarget(target, 'docxCommentIds') : currentCommentIdsAtSelection(),
+  getActiveCommentId: () => selectedCommentId,
+  getClipboard: () => 'unknown',
+});
+
+function buildCommandContext(
+  source: CommandContext['source'] = 'ribbon',
+  target: HTMLElement | null = currentSelectionElement(),
+): CommandContext {
+  return commandContextBuilder(source, target);
 }
 
 function moveCaretToPoint(x: number, y: number): void {
@@ -1244,6 +1252,7 @@ element<HTMLInputElement>('toggle-comments').addEventListener('change', (event) 
 element<HTMLSelectElement>('review-revision-view').addEventListener('change', (event) => {
   reviewRevisionView = (event.target as HTMLSelectElement).value as 'final' | 'original' | 'markup';
   applyReviewFilter();
+  syncCommandState();
 });
 element<HTMLInputElement>('review-show-revisions').addEventListener('change', (event) => {
   reviewShowRevisions = (event.target as HTMLInputElement).checked;

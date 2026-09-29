@@ -28,6 +28,41 @@ export interface CommandContext {
   source: 'ribbon' | 'context-menu' | 'keyboard';
 }
 
+export interface CommandContextBuilderDependencies {
+  getRevisionView(): CommandContext['revisionView'];
+  getSelection(target: HTMLElement | null): CommandContext['selection'];
+  getTable(target: HTMLElement | null, paragraph: number | null): TableCellLocation | null;
+  getImage(target: HTMLElement | null): ImageInfo | null;
+  getHyperlink(target: HTMLElement | null): HyperlinkInfo | null;
+  getRevisionsAtPoint(target: HTMLElement | null): RevisionMark[];
+  getCommentsAtPoint(target: HTMLElement | null): number[];
+  getActiveCommentId(): number | null | undefined;
+  getClipboard(): CommandContext['clipboard'];
+}
+
+export function createCommandContextBuilder(deps: CommandContextBuilderDependencies) {
+  return (
+    source: CommandContext['source'] = 'ribbon',
+    target: HTMLElement | null = null,
+  ): CommandContext => {
+    const revisionView = deps.getRevisionView();
+    const selection = deps.getSelection(target);
+    return {
+      revisionView,
+      editable: revisionView === 'markup',
+      selection,
+      table: deps.getTable(target, selection.paragraph),
+      image: deps.getImage(target),
+      hyperlink: deps.getHyperlink(target),
+      revisionsAtPoint: deps.getRevisionsAtPoint(target),
+      commentsAtPoint: deps.getCommentsAtPoint(target),
+      activeCommentId: deps.getActiveCommentId(),
+      clipboard: deps.getClipboard(),
+      source,
+    };
+  };
+}
+
 export interface CommandDescriptor {
   id: string;
   title: string;
@@ -124,7 +159,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
   const hasLink = (ctx: CommandContext) => ctx.hyperlink !== null;
   const hasPointRevision = (ctx: CommandContext) => ctx.revisionsAtPoint.length > 0;
   const hasPointComment = (ctx: CommandContext) => ctx.commentsAtPoint.length > 0;
-  const tableIsAddressable = (ctx: CommandContext) => ctx.table !== null && !ctx.table.nested;
+  const tableIsAddressable = (ctx: CommandContext) => ctx.editable && ctx.table !== null && !ctx.table.nested;
   return [
     {
       id: 'clipboard.cut',
@@ -152,7 +187,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '加粗',
       group: 'font',
       shortcut: 'Ctrl+B',
-      enabled: hasSelectionTarget,
+      enabled: (ctx) => ctx.editable && hasSelectionTarget(ctx),
       checked: (ctx) => Boolean(ctx.selection.format?.bold),
       run: () => deps.actions.toggleRunFormat('bold'),
     },
@@ -161,7 +196,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '斜体',
       group: 'font',
       shortcut: 'Ctrl+I',
-      enabled: hasSelectionTarget,
+      enabled: (ctx) => ctx.editable && hasSelectionTarget(ctx),
       checked: (ctx) => Boolean(ctx.selection.format?.italic),
       run: () => deps.actions.toggleRunFormat('italic'),
     },
@@ -170,7 +205,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '下划线',
       group: 'font',
       shortcut: 'Ctrl+U',
-      enabled: hasSelectionTarget,
+      enabled: (ctx) => ctx.editable && hasSelectionTarget(ctx),
       checked: (ctx) => Boolean(ctx.selection.format?.underline),
       run: () => deps.actions.toggleRunFormat('underline'),
     },
@@ -178,7 +213,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'format.painter',
       title: '格式刷',
       group: 'font',
-      enabled: hasSelectionTarget,
+      enabled: (ctx) => ctx.editable && hasSelectionTarget(ctx),
       checked: () => deps.isFormatPainterActive(),
       run: () => deps.actions.activateFormatPainter(false),
     },
@@ -362,14 +397,14 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'image.insert',
       title: '插入图片',
       group: 'image',
-      enabled: () => true,
+      enabled: (ctx) => ctx.editable,
       run: () => deps.actions.startInsertImage(),
     },
     {
       id: 'image.replace',
       title: '替换图片',
       group: 'image',
-      enabled: (ctx) => ctx.image !== null,
+      enabled: (ctx) => ctx.editable && ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
       run: (ctx) => deps.actions.startReplaceImage(ctx.image),
     },
@@ -377,7 +412,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'image.delete',
       title: '删除图片',
       group: 'image',
-      enabled: (ctx) => ctx.image !== null,
+      enabled: (ctx) => ctx.editable && ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
       run: (ctx) => deps.actions.deleteImage(ctx.image),
     },
@@ -385,7 +420,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'image.setAlt',
       title: '设置图片替代文本',
       group: 'image',
-      enabled: (ctx) => ctx.image !== null,
+      enabled: (ctx) => ctx.editable && ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
       run: (ctx) => deps.actions.setImageAlt(deps.getImageAltValue(), ctx.image),
     },
@@ -502,7 +537,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.new',
       title: '新建批注',
       group: 'comment',
-      enabled: () => true,
+      enabled: (ctx) => ctx.editable,
       run: () => deps.actions.addComment(),
     },
     {
@@ -516,7 +551,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.reply',
       title: '回复批注',
       group: 'comment',
-      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.editable && (ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.replyComment(firstCommentId(ctx)),
     },
@@ -524,7 +559,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.replyAtPoint',
       title: '回复批注…',
       group: 'comment',
-      enabled: hasPointComment,
+      enabled: (ctx) => ctx.editable && hasPointComment(ctx),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.replyComment(firstCommentId(ctx)),
     },
@@ -532,7 +567,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.toggleResolved',
       title: '解决或取消批注',
       group: 'comment',
-      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.editable && (ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.toggleCommentResolved(firstCommentId(ctx)),
     },
@@ -540,7 +575,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.toggleResolvedAtPoint',
       title: '标记为已解决 / 取消已解决',
       group: 'comment',
-      enabled: hasPointComment,
+      enabled: (ctx) => ctx.editable && hasPointComment(ctx),
       checked: (ctx) => hasPointComment(ctx) && deps.isCommentResolved(firstCommentId(ctx)),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.toggleCommentResolved(firstCommentId(ctx)),
@@ -549,7 +584,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.delete',
       title: '删除批注',
       group: 'comment',
-      enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      enabled: (ctx) => ctx.editable && (ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.deleteComment(firstCommentId(ctx)),
     },
@@ -557,7 +592,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'comment.deleteAtPoint',
       title: '删除批注',
       group: 'comment',
-      enabled: hasPointComment,
+      enabled: (ctx) => ctx.editable && hasPointComment(ctx),
       visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.deleteComment(firstCommentId(ctx)),
     },

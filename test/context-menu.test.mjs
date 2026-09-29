@@ -122,6 +122,85 @@ test('overlapping link revision and comment marks append all matching groups', (
   assert.ok(ids.includes('comment.replyAtPoint'));
 });
 
+test('read-only context menus disable writes while allowing revision acceptance', async () => {
+  const { root, target } = targetTree({});
+  const calls = [];
+  const writeCommands = new Set([
+    'clipboard.cut', 'clipboard.paste', 'format.bold', 'comment.addAtSelection',
+  ]);
+  const registry = {
+    get(id) {
+      return {
+        id,
+        title: id,
+        group: 'test',
+        enabled: (ctx) => !writeCommands.has(id) || ctx.editable,
+        run: () => calls.push(id),
+      };
+    },
+    list: () => [],
+    run: async (id) => { calls.push(id); },
+  };
+  const controller = initializeContextMenu({
+    editorRoot: root,
+    registry,
+    buildContext: () => context({
+      revisionView: 'final',
+      editable: false,
+      selection: { paragraph: 0, range: null, format: null, collapsed: true },
+    }),
+  });
+  root.dispatch('contextmenu', { target, shiftKey: false, clientX: 1, clientY: 1 });
+  const find = (node, id) => {
+    for (const child of node.children) {
+      if (child.dataset.command === id) return child;
+      const nested = find(child, id);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const id of ['clipboard.cut', 'clipboard.paste', 'format.bold', 'comment.addAtSelection']) {
+    assert.equal(find(controller.element, id)?.getAttribute('aria-disabled'), 'true', id);
+  }
+
+  controller.destroy();
+  const revisionFixture = targetTree({ docxRevisionIds: '1' });
+  const revisionRegistry = {
+    get(id) {
+      return {
+        id,
+        title: id,
+        group: 'review',
+        enabled: () => true,
+        run: () => calls.push(id),
+      };
+    },
+    list: () => [],
+    run: async (id) => { calls.push(id); },
+  };
+  const revisionMenu = initializeContextMenu({
+    editorRoot: revisionFixture.root,
+    registry: revisionRegistry,
+    buildContext: () => context({
+      revisionView: 'final',
+      editable: false,
+      revisionsAtPoint: [{ id: 1, kind: 'insertion' }],
+    }),
+  });
+  revisionFixture.root.dispatch('contextmenu', {
+    target: revisionFixture.target,
+    shiftKey: false,
+    clientX: 1,
+    clientY: 1,
+  });
+  const accept = find(revisionMenu.element, 'revision.acceptAtPoint');
+  assert.equal(accept?.getAttribute('aria-disabled'), 'false');
+  accept.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['revision.acceptAtPoint']);
+  revisionMenu.destroy();
+});
+
 class FakeElement {
   constructor(ownerDocument, attributes = {}) {
     this.ownerDocument = ownerDocument;

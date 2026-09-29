@@ -848,18 +848,48 @@ test('toggling reviewFilter fields does not mutate document revision, text, or X
   doc.setParagraphText(0, 'Alpha');
   const beforeRevision = doc.revision;
   const beforeText = doc.getParagraphs().map((paragraph) => paragraph.text);
-  const beforeXml = doc.getPartXml(doc.mainDocumentPath);
+  const beforeXml = doc.listParts().map((path) => [path, doc.getPartXml(path)]);
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;
   editor.reviewFilter = { showRevisions: true, showComments: true, revisionView: 'markup' };
   editor.flush = () => {};
   editor.render = () => {};
+  let changes = 0;
+  editor.options = { onChange: () => { changes++; } };
   editor.setReviewFilter({ showComments: false });
   editor.setReviewFilter({ showComments: true, revisionView: 'original' });
   editor.setReviewFilter({ showRevisions: false, revisionView: 'final' });
+  editor.setReviewFilter({ revisionView: 'markup' });
   assert.equal(doc.revision, beforeRevision);
   assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), beforeText);
-  assert.equal(doc.getPartXml(doc.mainDocumentPath), beforeXml);
+  assert.deepEqual(doc.listParts().map((path) => [path, doc.getPartXml(path)]), beforeXml);
+  assert.equal(changes, 0);
+});
+
+test('revision acceptance mutates the document in final and original preview views', async (t) => {
+  for (const revisionView of ['final', 'original']) {
+    await t.test(revisionView, () => {
+      const doc = DocxDocument.create();
+      doc.setTrackChanges(true);
+      doc.setParagraphText(0, 'Accepted text');
+      const [revision] = doc.getRevisions();
+      assert.ok(revision);
+
+      const editor = Object.create(DocxEditor.prototype);
+      let changes = 0;
+      editor.reviewFilter = { showRevisions: true, showComments: true, revisionView };
+      editor.document = doc;
+      editor.flush = () => {};
+      editor.render = () => {};
+      editor.options = { onChange: () => { changes++; } };
+      editor.setActiveRevision = () => {};
+
+      assert.equal(editor.acceptRevision(revision.id), true);
+      assert.equal(doc.getRevisions().length, 0);
+      assert.equal(doc.getParagraphs()[0].text, 'Accepted text');
+      assert.equal(changes, 1);
+    });
+  }
 });
 
 test('reviewFilter author narrowing does not change unfiltered getRevisions output', () => {
