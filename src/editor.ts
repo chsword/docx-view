@@ -250,6 +250,7 @@ export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
   onError?: (error: Error, context: { paragraph: number }) => void;
   showFormattingMarks?: boolean;
+  showFieldShading?: boolean;
   reviewFilter?: EditorReviewFilter;
 }
 
@@ -263,6 +264,7 @@ export class DocxEditor {
     content: HTMLSpanElement;
     text: string;
     failed: boolean;
+    fieldRuns?: { node: HTMLElement; text: string }[];
   }>();
   private headerKind: 'default' | 'first' | 'even' = 'default';
   private footerKind: 'default' | 'first' | 'even' = 'default';
@@ -364,6 +366,7 @@ export class DocxEditor {
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
+      if (entry.fieldRuns?.some(({ node, text }) => !entry.content.contains(node) || node.textContent !== text)) continue;
       const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
       if (sanitized.text === entry.text) {
         entry.failed = false;
@@ -983,7 +986,9 @@ export class DocxEditor {
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
+    const fieldRuns = Array.from(content.querySelectorAll<HTMLElement>('[data-docx-field]'))
+      .map((node) => ({ node, text: node.textContent ?? '' }));
+    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false, fieldRuns });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
@@ -1067,6 +1072,10 @@ export class DocxEditor {
       if (event.inputType === 'historyRedo') {
         event.preventDefault();
         this.applyHistory('redo');
+        return;
+      }
+      if (this.selectionTouchesField(content)) {
+        event.preventDefault();
         return;
       }
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
@@ -1301,6 +1310,15 @@ export class DocxEditor {
     const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
     const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
     runSpan.dataset.docxRun = String(run.index);
+    if (run.field) {
+      runSpan.dataset.docxField = String(run.field.index);
+      runSpan.dataset.docxFieldRole = run.field.role;
+      runSpan.contentEditable = 'false';
+      if (run.field.role === 'result') {
+        runSpan.dataset.docxContent = '1';
+        if (this.options.showFieldShading !== false) runSpan.classList.add('docx-field-shading');
+      }
+    }
     if (run.revisions?.length) runSpan.dataset.docxRevisionIds = run.revisions.map((revision) => revision.id).join(',');
     const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
     if (commentIds.length) {
@@ -1347,7 +1365,7 @@ export class DocxEditor {
       if (description) runSpan.setAttribute('aria-description', description);
       this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
     }
-    const segments = run.text.split(/(\t|\n)/);
+    const segments = (run.field?.role === 'instruction' ? '' : run.text).split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
       if (!segment) continue;
@@ -1516,7 +1534,7 @@ export class DocxEditor {
 
   private insertText(element: HTMLElement, text: string): void {
     const selection = this.root.ownerDocument.getSelection();
-    if (!selection?.rangeCount) return;
+    if (!selection?.rangeCount || this.selectionTouchesField(element)) return;
     const range = selection.getRangeAt(0);
     if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return;
     range.deleteContents();
@@ -1727,6 +1745,10 @@ export class DocxEditor {
   }
 
   private handleClipboardCut(event: ClipboardEvent, content: HTMLElement): void {
+    if (this.selectionTouchesField(content)) {
+      event.preventDefault();
+      return;
+    }
     const range = this.currentDocumentRange();
     if (!range) return;
     if (range.start.paragraph !== range.end.paragraph || range.start.offset === range.end.offset) {
@@ -1754,6 +1776,10 @@ export class DocxEditor {
   }
 
   private handleClipboardPaste(event: ClipboardEvent, content: HTMLElement): void {
+    if (this.selectionTouchesField(content)) {
+      event.preventDefault();
+      return;
+    }
     const data = event.clipboardData;
     if (!data) return;
     const range = this.currentDocumentRange();
@@ -2088,6 +2114,7 @@ export class DocxEditor {
       this.updateRangeSelection(null);
       return;
     }
+    this.expandFieldSelection(selection);
     const element = node.nodeType === 1 ? node as Element : node.parentElement;
     const paragraph = element?.closest<HTMLElement>('[data-paragraph]');
     if (paragraph && this.root.contains(paragraph)) this.selectParagraph(Number(paragraph.dataset.paragraph));
@@ -2095,6 +2122,42 @@ export class DocxEditor {
     if (!image) this.selectImage(null);
     this.updateRangeSelection(this.captureDocumentRange());
   };
+
+  private expandFieldSelection(selection: Selection): void {
+    if (!selection.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    const fields = Array.from(this.root.querySelectorAll<HTMLElement>('[data-docx-field-role="result"]'));
+    const anchor = selection.anchorNode;
+    const anchorElement = anchor?.nodeType === 1 ? anchor as Element : anchor?.parentElement;
+    const touched = fields.filter((node) => range.intersectsNode(node) &&
+      (!range.collapsed || anchorElement?.closest('[data-docx-field-role="result"]') === node));
+    if (!touched.length) return;
+    const ids = new Set(touched.map((node) => node.dataset.docxField));
+    const selected = fields.filter((node) => ids.has(node.dataset.docxField));
+    const expanded = range.cloneRange();
+    const first = selected[0]!;
+    const last = selected[selected.length - 1]!;
+    const bounds = range.cloneRange();
+    bounds.selectNode(first);
+    if (range.compareBoundaryPoints(Range.START_TO_START, bounds) > 0) expanded.setStartBefore(first);
+    bounds.selectNode(last);
+    if (range.compareBoundaryPoints(Range.END_TO_END, bounds) < 0) expanded.setEndAfter(last);
+    if (expanded.startContainer === range.startContainer && expanded.startOffset === range.startOffset &&
+        expanded.endContainer === range.endContainer && expanded.endOffset === range.endOffset) return;
+    selection.removeAllRanges();
+    selection.addRange(expanded);
+  }
+
+  private selectionTouchesField(content: HTMLElement): boolean {
+    const selection = this.root?.ownerDocument.getSelection?.();
+    if (!selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    const anchor = selection.anchorNode;
+    const element = anchor?.nodeType === 1 ? anchor as Element : anchor?.parentElement;
+    return Array.from(content?.querySelectorAll?.<HTMLElement>('[data-docx-field]') ?? [])
+      .some((node) => range.intersectsNode(node) &&
+        (!range.collapsed || element === node || node.contains(element ?? null)));
+  }
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {
     if (this.handleHistoryShortcut(event)) return;

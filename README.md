@@ -311,6 +311,7 @@ console.log(tool, result.revision);
 域指令不会生成合成文本；因此没有缓存结果的 `PAGE` / `NUMPAGES` 域现在读作空字符串，而不是旧版的 `"1"` / `"?"`。真实页码要等分页能力（A4）落地后再提供。
 
 `getFields()` 与 `updateFields()` 只覆盖正文；文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
+编辑器中的域结果默认显示灰色底纹（可通过 `DocxEditorOptions.showFieldShading: false` 关闭），选区落在结果内时扩展到整个域结果。域指令不显示；域结果在编辑器中只读，更新请调用 `updateFields()` 或重新插入域，不能在编辑区直接修改。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。
@@ -341,6 +342,7 @@ console.log(tool, result.revision);
 
 - 当前已支持读取修订（插入、删除、`rPrChange` / `pPrChange` / `tblPrChange` / `trPrChange` / `tcPrChange`）、`trackChanges` 开关，以及常见文本 / 段落 / 图片 / 表格行编辑自动写入修订；这些部件 / XML 会尽量保留。
 - 接受 / 拒绝修订已支持（逐条、批量、按作者筛选，移动修订成对处理）；域值计算仍不完整——分页域和目录暂不计算，低层 API 仍可直接操作。
+- 编辑器标记域 run 的 `data-docx-field` / `data-docx-field-role`；结果灰底可关闭，结果不可直接编辑（不是“支持编辑域”）。
 
 支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 中 Pages / Words / Characters / Lines / Paragraphs 等统计值不会自动重算。
 

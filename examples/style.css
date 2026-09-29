@@ -102,6 +102,7 @@ input { border: 1px solid var(--border); border-radius: 5px; color: #536077; bac
 .docx-note-ref { font-size: 0.75em; vertical-align: super; user-select: none; pointer-events: none; color: #4b5f82; }
 .docx-note-ref::before { content: attr(data-note-marker); }
 .docx-comment-anchor { background: #fff2b8; border-radius: 2px; cursor: pointer; }
+.docx-editor .docx-field-shading { background: #e7e7e7; }
 .docx-comment-anchor.docx-comment-active { background: #ffd36e; box-shadow: inset 0 0 0 1px #e2a847; }
 .docx-revision-active { outline: 2px solid #90b3ff; border-radius: 2px; }
 .docx-deleted-text { user-select: none; }

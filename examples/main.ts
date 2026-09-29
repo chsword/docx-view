@@ -289,6 +289,8 @@ function createSample(): DocxDocument {
   sample.insertParagraph('好的工具，让内容成为主角。');
   const last = sample.getParagraphs().at(-1)!;
   sample.formatParagraph(last.index, { style: 'Quote' }, { validateStyle: true });
+  sample.insertParagraph('域结果（只读）：');
+  sample.insertField(sample.getParagraphs().at(-1)!.index, ' SEQ 演示 ', '1');
   return sample;
 }
 
