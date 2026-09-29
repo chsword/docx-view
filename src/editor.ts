@@ -653,12 +653,11 @@ export class DocxEditor {
       } catch {
         defaultTabStopTwips = 720;
       }
+      this.renderShapeInfos = this.document.getShapes();
       if (this.viewMode === 'paginated') {
-        this.renderShapeInfos = this.document.getShapes();
         this.renderPaginated(fragment, reviewContext, defaultTabStopTwips);
       } else {
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
-        this.renderShapeInfos = this.document.getShapes();
         this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
       }
