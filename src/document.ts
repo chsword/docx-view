@@ -8151,7 +8151,6 @@ export class DocxDocument {
     if (options.validateStyle && typeof format.style === 'string' && !this.getStyle(format.style)) {
       throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
     }
-    paragraphAt(this.getCachedPartDocument(this.mainPath), index);
     this.nextHistoryAction = { kind: 'paragraphDelta', target: { kind: 'paragraph', index } };
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
@@ -8166,9 +8165,6 @@ export class DocxDocument {
   formatRun(paragraph: number, run: number, format: RunFormat): void {
     assertIndex(run);
     validateRunFormat(format);
-    if (!ownRuns(paragraphAt(this.getCachedPartDocument(this.mainPath), paragraph))[run]) {
-      throw new Error(`Run ${run} does not exist.`);
-    }
     this.nextHistoryAction = { kind: 'paragraphDelta', target: { kind: 'paragraph', index: paragraph } };
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraphElement = paragraphAt(document, paragraph);
