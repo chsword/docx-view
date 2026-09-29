@@ -11,6 +11,7 @@ export {
   resolveRelationshipsPath, resolveTargetPath,
 } from './drawing.js';
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS } from './xml.js';
+export { readRunShapes } from './shapes.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, CommentAnchor, CommentInfo, ContentControlInfo, ContentControlKind,
   EditableRegionEditorGroup, EditableRegionInfo,
@@ -20,5 +21,5 @@ export type {
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
-  PageSetup, SectionInfo, SectionType,
+  PageSetup, SectionInfo, SectionType, ShapeInfo, ShapeKind,
 } from './types.js';

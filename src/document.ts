@@ -5,7 +5,7 @@ import type {
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
-  SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   TableCellLocation,
 } from './types.js';
 import {
@@ -35,6 +35,7 @@ import {
   isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, sanitizeText, serializeXml, setWordValue, validatePath,
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
+import { readRunShapes, shapeTextElements } from './shapes.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -320,6 +321,9 @@ function paragraphAt(document: Document, index: number): Element {
     stack[stack.length - 1] = current.nextSibling;
     if (current.nodeType === 1) {
       const element = current as Element;
+      if (element.namespaceURI === WORD_NS && element.localName === 'txbxContent') {
+        continue;
+      }
       if (element.namespaceURI === WORD_NS && element.localName === 'p') {
         if (remaining === 0) return element;
         remaining--;
@@ -328,6 +332,17 @@ function paragraphAt(document: Document, index: number): Element {
     if (current.firstChild) stack.push(current.firstChild);
   }
   throw new Error(`Paragraph ${index} does not exist.`);
+}
+
+function mainParagraphElements(body: Element): Element[] {
+  return descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
 }
 
 function blockContainerOf(document: Document): Element {
@@ -1227,7 +1242,7 @@ function sectionSettings(body: Element, base: NoteSettings): Map<number, NoteSet
 
 function referenceRecords(body: Element): NoteReferenceRecord[] {
   const sectionMap = sectionOfParagraphs(body);
-  const paragraphs = descendants(body, 'p');
+  const paragraphs = mainParagraphElements(body);
   const records: NoteReferenceRecord[] = [];
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     for (const [runIndex, run] of ownRuns(paragraph).entries()) {
@@ -3868,7 +3883,8 @@ export class DocxDocument {
     sourcePartPath = this.mainPath,
     noteState?: NoteState,
   ): ParagraphInfo[] {
-    const elements = descendants(blockContainerOf(document), 'p');
+    const container = blockContainerOf(document);
+    const elements = container.localName === 'body' ? mainParagraphElements(container) : descendants(container, 'p');
     const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
     const noteNumber = noteState ? (kind: NoteKind, id: number) => noteState.byKind[kind].get(id) ?? null : undefined;
     const imageContext: ImageReadContext = {
@@ -3920,7 +3936,7 @@ export class DocxDocument {
 
   private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
     const body = blockContainerOf(document);
-    const paragraphElements = descendants(body, 'p');
+    const paragraphElements = mainParagraphElements(body);
     const paragraphByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, paragraphs[index]!]));
     const paragraphIndexByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, index]));
     const sectionByParagraph = this.sectionBreakByParagraph(document);
@@ -3980,9 +3996,48 @@ export class DocxDocument {
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
   }
 
+  getShapes(): ShapeInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const shapes: ShapeInfo[] = [];
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath));
+      }
+    }
+    return shapes;
+  }
+
+  getShapeParagraphs(shapeId: string): ParagraphInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const styles = this.getStylesContext();
+    const imageContext: ImageReadContext = {
+      relationships: this.relationshipsFor(this.mainPath),
+      getContentType: this.createContentTypeResolver(),
+      sourcePartPath: this.mainPath,
+    };
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
+        for (const child of children) {
+          if (!['drawing', 'pict', 'AlternateContent'].includes(child.localName ?? '')) continue;
+          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath);
+          const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
+          if (shapeIndex < 0) continue;
+          const elements = shapeTextElements(child);
+          return elements.map((element, index) => readParagraph(element, index, styles, undefined, imageContext));
+        }
+      }
+    }
+    return [];
+  }
+
   getContentControls(): ContentControlInfo[] {
     const body = bodyOf(this.getCachedPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     return descendants(body, 'sdt').map((control) => {
       const properties = children(control, 'sdtPr')[0];
@@ -4913,7 +4968,7 @@ export class DocxDocument {
   getHyperlinks(): HyperlinkInfo[] {
     const main = this.getPartDocument(this.mainPath);
     const body = bodyOf(main);
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const relationships = this.relationshipsFor(this.mainPath);
     const result: HyperlinkInfo[] = [];
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
@@ -4987,7 +5042,7 @@ export class DocxDocument {
     }
     const body = bodyOf(document);
     const theme = styles.theme;
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const runIndexByParagraph = new Map<Element, Map<Element, number>>();
     const runIndexOf = (paragraph: Element, run: Element): number | undefined => {
@@ -5421,7 +5476,7 @@ export class DocxDocument {
 
   getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const order = preOrderElements(body);
     const paragraphFromNode = (node: Element): number | undefined => {
@@ -5465,7 +5520,7 @@ export class DocxDocument {
 
   getEditableRegions(): EditableRegionInfo[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const paragraphInfo = this.getParagraphs();
     const order = preOrderElements(body);
@@ -6896,7 +6951,7 @@ export class DocxDocument {
     }
 
     const document = this.getCachedPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(document), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(document));
     const sourceNumId = target.numbering.numId;
     const level = target.numbering.level;
     const affected: { paragraph: Element; level: number }[] = [];
@@ -6978,7 +7033,7 @@ export class DocxDocument {
     if (previousNumId === undefined || previousNumId === target.numbering.numId) return;
 
     const document = this.getCachedPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(document), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(document));
     for (let paragraphIndex = index; paragraphIndex < paragraphInfos.length; paragraphIndex++) {
       const info = paragraphInfos[paragraphIndex]!;
       if (!info.numbering || info.numbering.numId !== target.numbering.numId ||
@@ -7239,7 +7294,7 @@ export class DocxDocument {
     const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
     const main = this.getPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(main), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(main));
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
       : paragraphs.at(-1) ?? paragraphAt(main, 0);
@@ -8228,7 +8283,7 @@ export class DocxDocument {
     const document = this.getCachedPartDocument(this.mainPath);
     const paragraphs = this.buildParagraphs(document);
     const body = bodyOf(document);
-    const indices = new Map(descendants(body, 'p').map((paragraph, i) => [paragraph, paragraphs[i]!]));
+    const indices = new Map(mainParagraphElements(body).map((paragraph, i) => [paragraph, paragraphs[i]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
       if (child.localName === 'tbl') return [readTable(child, walk)];
@@ -8426,7 +8481,7 @@ export class DocxDocument {
       ensureCellParagraph(cell);
       const paragraph = childrenThroughTransparent(cell, 'p')[0];
       if (!paragraph) throw new Error('Cell paragraph does not exist.');
-      const indices = new Map(descendants(bodyOf(document), 'p').map((item, index) => [item, index]));
+      const indices = new Map(mainParagraphElements(bodyOf(document)).map((item, index) => [item, index]));
       const index = indices.get(paragraph);
       if (index === undefined) throw new Error('Cell paragraph index does not exist.');
       const old = textOf(paragraph);
@@ -9294,7 +9349,7 @@ export class DocxDocument {
         if (operation.type === 'setParagraphText') {
           if (!paragraphDocument) {
             paragraphDocument = draft.getCachedPartDocument(draft.mainPath);
-            PARAGRAPH_LOOKUP_CACHE.set(paragraphDocument, descendants(bodyOf(paragraphDocument), 'p'));
+            PARAGRAPH_LOOKUP_CACHE.set(paragraphDocument, mainParagraphElements(bodyOf(paragraphDocument)));
           }
         } else if (paragraphDocument) {
           PARAGRAPH_LOOKUP_CACHE.delete(paragraphDocument);

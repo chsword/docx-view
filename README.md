@@ -119,6 +119,7 @@ console.log(reopened.getSnapshot());
 | `formatTable()` / `formatTableRow()` / `formatCell()` | 设置表格宽度、布局、边框、底纹、行高、标题行、单元格对齐和边距等显式属性 |
 | `setCellText()` | 修改可见单元格文字，同时保留段落结构与其他未改内容 |
 | `getImages()` / `getImageBytes()` / `getImageDataUrl()` | 读取主文档中的图片元数据、二进制内容和可直接渲染的 `data:` URL |
+| `getShapes()` / `getShapeParagraphs(shapeId)` | 读取文本框、纯形状、SmartArt、图表等的降级元数据及文本框独立文字流；形状本身只提供降级显示，不是几何渲染 |
 | `insertImage()` / `replaceImageBytes()` / `resizeImage()` / `setImageAlt()` / `deleteImage()` | 插入、替换、调整尺寸、更新替代文本和删除图片 |
 | `getSections()` / `getSection(index)` | 读取分节类型、纸张、页边距、分栏、页眉页脚引用 |
 | `setPageSetup(section, setup)` | 修改指定节的纸张方向、边距、分栏和页码起始等页面设置 |
@@ -132,6 +133,8 @@ console.log(reopened.getSnapshot());
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
 
 **索引与作用域**
+
+`getParagraphs()` 和 `getBlocks()` 只包含正文段落；文本框（`w:txbxContent`）里的段落属于独立的只读文字流，通过 `getShapeParagraphs(shapeId)` 访问，不占用正文段落下标。文本框与形状当前仅作降级显示（占位框/边框和可读文字），不是完整的形状、SmartArt 或图表渲染；因此这是一次有意的段落索引破坏性变更，正文按下标写入不会穿透到文本框内部。
 
 - 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。
 - 高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*`、`getReviewers()` 与 `DocxDocument.compare()` 当前都只作用于主文档。

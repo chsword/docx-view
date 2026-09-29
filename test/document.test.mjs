@@ -179,6 +179,50 @@ test('create, edit, export and reopen a DOCX in Node without browser globals', a
   assert.equal((await DocxDocument.load(await doc.toBlob())).getParagraphs()[0].text, reopened.getParagraphs()[0].text);
 });
 
+test('isolates textbox paragraphs and exposes shape fallbacks without duplicating AlternateContent', async () => {
+  const drawingMl = `
+    <w:drawing>
+      <wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="7" name="Box" descr="Box alt"/>
+        <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+          <wps:wsp><wps:txbx><w:txbxContent>
+            <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>inside one</w:t></w:r>
+            </w:p><w:p><w:r><w:t>inside two</w:t></w:r></w:p>
+          </w:txbxContent></wps:txbx></wps:wsp>
+        </a:graphicData></a:graphic>
+      </wp:inline>
+    </w:drawing>`;
+  const alternateDrawing = `<mc:AlternateContent><mc:Choice Requires="wps">${drawingMl}</mc:Choice><mc:Fallback><w:pict><v:shape id="fallback"><v:textbox><w:txbxContent><w:p><w:r><w:t>fallback must not duplicate</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent>`;
+  const body = `
+    <w:p><w:r><w:t>before</w:t></w:r></w:p>
+    <w:p><w:r>${alternateDrawing}</w:r></w:p>
+    <w:p><w:r><w:pict><v:shape id="rect" type="#rect" style="width:40pt;height:20pt"/></w:pict></w:r></w:p>
+    <w:p><w:r><w:pict><v:shape id="vml-box" alt="VML alt" style="width:60pt;height:30pt"><v:textbox><w:txbxContent>
+      <w:p><w:r><w:t>VML text</w:t></w:r></w:p>
+    </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+    <w:p><w:r><w:t>after</w:t></w:r></w:p>`;
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="${V_NS}"><w:body>${body}<w:sectPr/></w:body></w:document>`);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['before', '', '', '', 'after']);
+  assert.deepEqual(doc.getBlocks().filter((block) => block.type === 'paragraph').map((block) => block.paragraph.text), ['before', '', '', '', 'after']);
+  const shapes = doc.getShapes();
+  assert.equal(shapes.length, 3);
+  assert.deepEqual(shapes.map((shape) => shape.form), ['drawingml', 'vml', 'vml']);
+  assert.deepEqual(shapes.map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
+  assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
+  assert.deepEqual(doc.getShapeParagraphs(shapes[2].id).map((paragraph) => paragraph.text), ['VML text']);
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 1, text: 'changed body paragraph' },
+      { type: 'setParagraphText', index: 4, text: 'changed after paragraph' },
+    ],
+  });
+  assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
+  assert.equal(doc.getParagraphs()[4].text, 'changed after paragraph');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.match(reopened.getPartXml(reopened.mainDocumentPath), /txbxContent/);
+  assert.deepEqual(reopened.getShapes().map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
+});
+
 test('unmodified binary and XML parts survive an unrelated paragraph edit byte-for-byte', async () => {
   const doc = DocxDocument.create();
   const bytes = Uint8Array.from([0, 1, 2, 255, 23]);
@@ -1558,12 +1602,12 @@ test('section ranges stay aligned when body contains table paragraphs', () => {
   assert.equal(sections[1].startParagraph, 2);
 });
 
-test('section ranges stay aligned with descendants order including txbxContent paragraphs', () => {
+test('section ranges exclude independent txbxContent paragraphs', () => {
   const doc = withBody('<w:p><w:r><w:pict><w:txbxContent><w:p><w:r><w:t>inside box</w:t></w:r></w:p></w:txbxContent></w:pict><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:r><w:t>C</w:t></w:r></w:p>');
   const sections = doc.getSections();
-  assert.equal(doc.getParagraphs().length, 4);
-  assert.equal(sections[0].endParagraph, 2);
-  assert.equal(sections[1].startParagraph, 3);
+  assert.equal(doc.getParagraphs().length, 3);
+  assert.equal(sections[0].endParagraph, 1);
+  assert.equal(sections[1].startParagraph, 2);
 });
 
 test('setPageSetup updates known fields and keeps unknown sectPr children', () => {
