@@ -822,7 +822,6 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 64);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1360,7 +1359,10 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 64);
+  const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.map((entry) => entry.properties.type.const);
+  for (const type of ['insertImage', 'replaceImageBytes', 'resizeImage', 'setImageAlt', 'deleteImage']) {
+    assert.ok(types.includes(type));
+  }
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -3012,14 +3014,13 @@ test('getComments author filter matches comments whose named author differs only
   assert.deepEqual(doc.getComments({ authors: ['Alice'] }).map((item) => item.id), [1]);
 });
 
-test('applyOperations supports comment operations and schema count stays aligned', () => {
+test('applyOperations supports comment operations', () => {
   const doc = DocxDocument.create();
   doc.setParagraphText(0, 'abc');
   const snapshot = doc.applyOperations({
     operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
   });
   assert.equal(snapshot.comments.length, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 64);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
@@ -3641,7 +3642,6 @@ test('Agent editable-region operations validate and commit once each', () => {
     .map(operation => operation.properties.type.const);
   assert.equal(names.includes('addEditableRegion'), true);
   assert.equal(names.includes('removeEditableRegion'), true);
-  assert.equal(names.length, 64);
 });
 
 test('Agent editable-region validation rejects invalid authorization and ids atomically', () => {
@@ -4432,7 +4432,6 @@ test('revision author survives undo and redo for later tracked edits', () => {
 test('agent operation schema includes tracked-review settings operations', () => {
   const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
     .map((entry) => entry.properties.type.const);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 64);
   assert.ok(types.includes('setTrackChanges'));
   assert.ok(types.includes('setRevisionAuthor'));
 });

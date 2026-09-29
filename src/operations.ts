@@ -557,6 +557,39 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         keys(op, ['type', 'name']);
         assertText(op.name, 'name');
         break;
+      case 'setContentControlText':
+        keys(op, ['type', 'id', 'text']);
+        assertIndex(op.id); assertText(op.text);
+        break;
+      case 'setContentControlChecked':
+        keys(op, ['type', 'id', 'checked']);
+        assertIndex(op.id);
+        if (typeof op.checked !== 'boolean') throw new Error('checked must be boolean.');
+        break;
+      case 'setContentControlProperties':
+        keys(op, ['type', 'id', 'patch']);
+        assertIndex(op.id);
+        object(op.patch);
+        keys(op.patch, ['alias', 'tag', 'lock']);
+        for (const key of ['alias', 'tag'] as const) {
+          if (key in op.patch) maybeNull(op.patch[key] as string | null | undefined, (entry) => assertText(entry, key));
+        }
+        if ('lock' in op.patch && op.patch.lock !== undefined &&
+            !['sdtLocked', 'contentLocked', 'sdtContentLocked', 'unlocked'].includes(String(op.patch.lock))) {
+          throw new Error('Invalid content control lock.');
+        }
+        break;
+      case 'removeContentControl':
+        keys(op, ['type', 'id', 'options']);
+        assertIndex(op.id);
+        if ('options' in op && op.options !== undefined) {
+          object(op.options);
+          keys(op.options, ['keepContent']);
+          if ('keepContent' in op.options && typeof op.options.keepContent !== 'boolean') {
+            throw new Error('options.keepContent must be boolean.');
+          }
+        }
+        break;
       case 'addEditableRegion':
         keys(op, ['type', 'range', 'options']);
         validateDocumentRange(op.range);
@@ -934,6 +967,20 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('removeHyperlink', { hyperlink: hyperlinkRef, options: shape({ keepText: { type: 'boolean' } }, []) }, ['hyperlink']),
           operation('insertBookmark', { name: text, range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']) }),
           operation('deleteBookmark', { name: text }),
+          operation('setContentControlText', { id: index, text }),
+          operation('setContentControlChecked', { id: index, checked: { type: 'boolean' } }),
+          operation('setContentControlProperties', {
+            id: index,
+            patch: shape({
+              alias: nullable(text),
+              tag: nullable(text),
+              lock: { enum: ['sdtLocked', 'contentLocked', 'sdtContentLocked', 'unlocked'] },
+            }, []),
+          }),
+          operation('removeContentControl', {
+            id: index,
+            options: shape({ keepContent: { type: 'boolean' } }, []),
+          }, ['id']),
           operation('addEditableRegion', { range: documentRange, options: editableRegionOptions }),
           operation('removeEditableRegion', { id: index }),
           operation('insertImage', {
