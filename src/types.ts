@@ -143,7 +143,7 @@ export interface RunInfo extends RunFormat {
   image?: ImageInfo;
   images?: ImageInfo[];
   noteReference?: { kind: 'footnote' | 'endnote'; id: number; number: number; marker: string };
-  field?: { index: number; role: 'instruction' | 'result' };
+  field?: { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string };
 }
 
 export interface ParagraphInfo extends ParagraphFormat {

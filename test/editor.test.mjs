@@ -22,6 +22,24 @@ test('groups browser line rectangles into continuous character ranges', () => {
   ]);
 });
 
+test('pagination paragraph slices retain zero-length inline content', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const paragraph = {
+    index: 0,
+    text: '前文',
+    runs: [
+      { index: 0, text: '前文', images: [] },
+      { index: 1, text: '', images: [{ id: 'image-1' }] },
+      { index: 2, text: '', noteReference: { kind: 'footnote', id: 1, number: 1, marker: '1' } },
+    ],
+    images: [],
+  };
+  const slice = editor.sliceParagraph(paragraph, 0, paragraph.text.length);
+  assert.equal(slice.text, '前文');
+  assert.equal(slice.runs[1].images[0].id, 'image-1');
+  assert.equal(slice.runs[2].noteReference.marker, '1');
+});
+
 function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);
   editor.destroyed = false;

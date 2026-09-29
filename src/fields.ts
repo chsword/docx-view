@@ -10,7 +10,7 @@ const NEVER_EVALUATE = new Set<FieldKind>([
 
 export interface ParsedFields {
   fields: FieldInfo[];
-  roles: Map<Element, { index: number; role: 'instruction' | 'result' }>;
+  roles: Map<Element, { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string }>;
 }
 
 function visibleText(element: Element): string {
@@ -83,7 +83,7 @@ function belongsToParagraph(field: Element, paragraph: Element): boolean {
 
 export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element) => Element[]): ParsedFields {
   const fields: FieldInfo[] = [];
-  const roles = new Map<Element, { index: number; role: 'instruction' | 'result' }>();
+  const roles = new Map<Element, { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string }>();
   const add = (paragraph: Element, paragraphIndex: number, form: 'simple' | 'complex', instruction: string,
     runElements: Element[], resultRuns: Element[], flags: { locked: boolean; dirty: boolean }, nestedIn?: number): void => {
     const parsed = parseInstruction(instruction);
@@ -93,7 +93,7 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
     const resultIndexes = resultRuns.map(run => paragraphRuns.indexOf(run)).filter(run => run >= 0).sort((a, b) => a - b);
     const result = resultRuns.map(visibleText).join('');
     for (const run of runElements) {
-      if (!roles.has(run)) roles.set(run, { index, role: resultRuns.includes(run) ? 'result' : 'instruction' });
+      if (!roles.has(run)) roles.set(run, { index, role: resultRuns.includes(run) ? 'result' : 'instruction', kind: parsed.kind, instruction });
     }
     fields.push({
       index, paragraph: paragraphIndex, runs: [...new Set(runIndexes)], resultRuns: [...new Set(resultIndexes)], form,

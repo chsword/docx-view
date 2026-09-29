@@ -321,6 +321,7 @@ export class DocxEditor {
   private renderShapeInfos: ShapeInfo[] = [];
   private activeRevisionId: number | null = null;
   private viewMode: 'continuous' | 'paginated';
+  private measuring = false;
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -653,10 +654,11 @@ export class DocxEditor {
         defaultTabStopTwips = 720;
       }
       if (this.viewMode === 'paginated') {
+        this.renderShapeInfos = this.document.getShapes();
         this.renderPaginated(fragment, reviewContext, defaultTabStopTwips);
       } else {
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
-        this.renderShapeInfos = this.document.getShapes();
+        this.renderShapeInfos = [];
         this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
         if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
       }
@@ -673,7 +675,7 @@ export class DocxEditor {
       this.updateRangeSelection(this.captureDocumentRange());
       this.setActiveRevision(this.activeRevisionId);
     } finally {
-      this.renderShapeInfos = [];
+      this.renderShapeInfos = this.document.getShapes();
       reviewContext.deletedTextByRun.clear();
       reviewContext.revisionColors.clear();
     }
@@ -846,13 +848,15 @@ export class DocxEditor {
   private measureParagraphForPagination(paragraph: ParagraphInfo, widthPx: number, context: MeasureContext): LineBox[] {
     const host = this.root.ownerDocument.createElement('div');
     host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, widthPx)}px;`;
+    this.measuring = true;
     const measured = this.makeParagraph(paragraph, context.defaultTabStopTwips, {
       authors: undefined,
       deletedTextByRun: new Map(),
       revisionColors: new Map(),
     });
+    this.measuring = false;
     host.append(measured);
-    this.root.ownerDocument.body?.append(host);
+    this.root.append(host);
     const textNodes: Array<{ node: Text; start: number }> = [];
     const collect = (node: Node, start: number): number => {
       if (node.nodeType === 3) {
@@ -866,18 +870,44 @@ export class DocxEditor {
       return offset;
     };
     collect(measured.querySelector('.docx-paragraph-content') ?? measured, 0);
+    const content = measured.querySelector('.docx-paragraph-content') ?? measured;
+    const paragraphRange = this.root.ownerDocument.createRange();
+    paragraphRange.selectNodeContents(content);
+    const lineRects = Array.from(paragraphRange.getClientRects()).filter((rect, index, all) =>
+      index === all.findIndex((entry) => Math.abs(entry.top - rect.top) < 1));
+    const nodeAt = (offset: number): { node: Text; offset: number } | undefined => {
+      const entry = textNodes.find((item, index) => offset <= item.start + item.node.data.length && (index === textNodes.length - 1 || offset < textNodes[index + 1]!.start));
+      return entry ? { node: entry.node, offset: Math.max(0, Math.min(entry.node.data.length, offset - entry.start)) } : undefined;
+    };
+    const charRect = (offset: number): DOMRect | undefined => {
+      const start = nodeAt(offset);
+      const end = nodeAt(Math.min(offset + 1, paragraph.text.length));
+      if (!start || !end || start === end) return undefined;
+      const range = this.root.ownerDocument.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      return Array.from(range.getClientRects())[0];
+    };
     const rects: Array<{ top: number; height: number; start: number; end: number }> = [];
-    for (const entry of textNodes) {
-      for (let index = 0; index < entry.node.data.length; index++) {
-        const range = this.root.ownerDocument.createRange();
-        range.setStart(entry.node, index);
-        range.setEnd(entry.node, index + 1);
-        const rect = Array.from(range.getClientRects())[0];
-        if (rect) rects.push({ top: rect.top, height: rect.height, start: entry.start + index, end: entry.start + index + 1 });
+    for (const line of lineRects) {
+      let start = 0;
+      let end = paragraph.text.length;
+      while (start < end) {
+        const middle = Math.floor((start + end) / 2);
+        const rect = charRect(middle);
+        if (!rect || rect.top < line.top - 1) start = middle + 1; else end = middle;
       }
+      const lineStart = start;
+      start = lineStart;
+      end = paragraph.text.length;
+      while (start < end) {
+        const middle = Math.ceil((start + end) / 2);
+        const rect = charRect(Math.max(lineStart, middle - 1));
+        if (rect && Math.abs(rect.top - line.top) < 1) start = middle; else end = middle - 1;
+      }
+      if (start > lineStart) rects.push({ top: line.top, height: line.height, start: lineStart, end: start });
     }
     host.remove();
-    this.paragraphs.delete(paragraph.index);
     if (!rects.length) return paragraph.text ? [{ heightPx: 18, startOffset: 0, endOffset: paragraph.text.length }] : [];
     return deriveLineBoxes(rects);
   }
@@ -889,6 +919,7 @@ export class DocxEditor {
       offset += run.text.length;
       const from = Math.max(start, runStart);
       const to = Math.min(end, offset);
+      if (!run.text.length && runStart >= start && (runStart < end || (end === paragraph.text.length && runStart === end))) return [{ ...run }];
       if (to <= from) return [];
       return [{ ...run, text: run.text.slice(from - runStart, to - runStart) }];
     });
@@ -903,11 +934,13 @@ export class DocxEditor {
     const measurer = {
       measureParagraph: (paragraph: ParagraphInfo, widthPx: number, context: MeasureContext) =>
         this.measureParagraphForPagination(paragraph, widthPx, context),
+      // A3 will replace this approximation when table rows can split across pages.
       measureTableRow: (row: TableRowInfo) => Math.max(18, typeof row.format?.height?.value === 'number' ? row.format.height.value : row.cells.length * 18),
     };
     const pages = paginate(blocks, sections, measurer, { defaultTabStopTwips });
     for (const page of pages) {
       const section = this.document.getSection(page.section);
+      const firstPhysicalPage = page.index === 0 || pages[page.index - 1]?.section !== page.section;
       const pageElement = this.root.ownerDocument.createElement('section');
       pageElement.className = 'docx-page';
       pageElement.contentEditable = 'false';
@@ -916,7 +949,7 @@ export class DocxEditor {
       pageElement.style.minHeight = `${section.pageHeight * 96 / 1440}px`;
       pageElement.style.padding = `${section.margins.top * 96 / 1440}px ${section.margins.right * 96 / 1440}px ${section.margins.bottom * 96 / 1440}px ${section.margins.left * 96 / 1440}px`;
       pageElement.style.boxSizing = 'border-box';
-      pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length));
+      pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length, firstPhysicalPage));
       const body = this.root.ownerDocument.createElement('div');
       body.className = 'docx-page-content';
       const renderedTables = new Set<number>();
@@ -932,7 +965,7 @@ export class DocxEditor {
           }
         }
       }
-      pageElement.append(body, this.makeHeaderFooter('footer', page.section, page.number, pages.length));
+      pageElement.append(body, this.makeHeaderFooter('footer', page.section, page.number, pages.length, firstPhysicalPage));
       (parent as DocumentFragment).append(pageElement);
     }
   }
@@ -970,13 +1003,13 @@ export class DocxEditor {
     }
   }
 
-  private makeHeaderFooter(type: 'header' | 'footer', sectionIndex = 0, pageNumber?: number, pageCount?: number): HTMLElement {
+  private makeHeaderFooter(type: 'header' | 'footer', sectionIndex = 0, pageNumber?: number, pageCount?: number, firstPhysicalPage = false): HTMLElement {
     let kind = type === 'header' ? this.headerKind : this.footerKind;
     let map: Partial<Record<'default' | 'first' | 'even', string>> = {};
     try {
       const section = this.document.getSection(sectionIndex);
       if (pageNumber !== undefined) {
-        kind = pageNumber === 1 && section.titlePage ? 'first' : pageNumber % 2 === 0 ? 'even' : 'default';
+        kind = firstPhysicalPage && section.titlePage ? 'first' : pageNumber % 2 === 0 ? 'even' : 'default';
       }
       map = type === 'header' ? section.headers : section.footers;
     } catch {
@@ -989,16 +1022,13 @@ export class DocxEditor {
     if (pageNumber !== undefined) {
       const replaceFields = (block: DocumentBlock): DocumentBlock => {
         if (block.type !== 'paragraph') return block;
-        const instructions = new Map(block.paragraph.runs.filter((entry) => entry.field?.role === 'instruction')
-          .map((entry) => [entry.field!.index, entry.text.trim().toUpperCase()]));
         return {
           ...block,
           paragraph: {
             ...block.paragraph,
             runs: block.paragraph.runs.map((run) => {
-              const instruction = run.field?.role === 'result' ? instructions.get(run.field.index) : undefined;
-              const kind = instruction?.match(/\b(PAGE|NUMPAGES)\b/)?.[1];
-              return kind
+              const kind = run.field?.role === 'result' ? run.field.kind : undefined;
+              return kind === 'PAGE' || kind === 'NUMPAGES'
                 ? { ...run, text: formatPageNumber(kind === 'PAGE' ? pageNumber : pageCount ?? 0, this.document.getSection(sectionIndex).pageNumbering?.format) }
                 : run;
             }),
@@ -1119,10 +1149,12 @@ export class DocxEditor {
       if (markerRevisionIds.size) {
         element.dataset.docxRevisionIds = [...markerRevisionIds].join(',');
       }
-      for (const id of markerRevisionIds) {
-        const list = this.revisionParagraphIds.get(id) ?? [];
-        list.push(element);
-        this.revisionParagraphIds.set(id, list);
+      if (!this.measuring) {
+        for (const id of markerRevisionIds) {
+          const list = this.revisionParagraphIds.get(id) ?? [];
+          list.push(element);
+          this.revisionParagraphIds.set(id, list);
+        }
       }
     }
     const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
@@ -1159,7 +1191,7 @@ export class DocxEditor {
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
+    if (!this.measuring) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
@@ -1343,6 +1375,7 @@ export class DocxEditor {
   }
 
   private registerRevisionNode(ids: number[], node: HTMLElement): void {
+    if (this.measuring) return;
     if (!ids.length) return;
     node.dataset.docxRevisionIds = ids.join(',');
     node.tabIndex = -1;
