@@ -60,6 +60,37 @@ function withStyles(bodyXml, stylesXml, themeXml) {
   return doc;
 }
 
+const ON_OFF_FORMATS = [
+  ...['kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi']
+    .map((key) => ({ key, tag: key, scope: 'paragraph' })),
+  { key: 'rtl', tag: 'rtl', scope: 'run' },
+  { key: 'complexScript', tag: 'cs', scope: 'run' },
+  { key: 'bidiVisual', tag: 'bidiVisual', scope: 'table' },
+];
+
+function formatFieldDocument(field, value) {
+  const attribute = value === undefined ? '' : ` w:val="${value}"`;
+  const property = `<w:${field.tag}${attribute}/>`;
+  const body = field.scope === 'paragraph'
+    ? `<w:p><w:pPr>${property}</w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+    : field.scope === 'run'
+      ? `<w:p><w:r><w:rPr>${property}</w:rPr><w:t>x</w:t></w:r></w:p>`
+      : `<w:tbl><w:tblPr>${property}</w:tblPr><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`;
+  return withBody(body);
+}
+
+function readFormatField(doc, field) {
+  if (field.scope === 'paragraph') return doc.getParagraphs()[0][field.key];
+  if (field.scope === 'run') return doc.getParagraphs()[0].runs[0][field.key];
+  return doc.getBlocks()[0].format?.[field.key];
+}
+
+function writeFormatField(doc, field, value) {
+  if (field.scope === 'paragraph') doc.formatParagraph(0, { [field.key]: value });
+  else if (field.scope === 'run') doc.formatRun(0, 0, { [field.key]: value });
+  else doc.formatTable(0, { [field.key]: value });
+}
+
 function withImageDoc(body, relationships, media = [{ path: 'word/media/image1.png', bytes: PNG_BYTES, type: 'image/png' }]) {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:pic="${PIC_NS}" xmlns:v="${V_NS}"><w:body>${body}<w:sectPr/></w:body></w:document>`);
@@ -1871,6 +1902,142 @@ test('getEffectiveParagraphFormat and getEffectiveRunFormat expose merged values
   assert.equal(doc.getEffectiveParagraphFormat(0).alignment, 'distribute');
   assert.equal(doc.getEffectiveParagraphFormat(0).spacingAfter, 240);
   assert.equal(doc.getEffectiveRunFormat(0, 0).highlight, 'yellow');
+});
+
+for (const field of ON_OFF_FORMATS) {
+  test(`${field.key} reads explicit false`, () => {
+    assert.equal(readFormatField(formatFieldDocument(field, '0'), field), false);
+  });
+
+  test(`${field.key} reads a missing w:val as true`, () => {
+    assert.equal(readFormatField(formatFieldDocument(field, undefined), field), true);
+  });
+
+  test(`${field.key} reads an absent element as undefined`, () => {
+    assert.equal(readFormatField(withBody(field.scope === 'table'
+      ? '<w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>'
+      : '<w:p><w:r><w:t>x</w:t></w:r></w:p>'), field), undefined);
+  });
+
+  test(`${field.key} writes false as w:val="0"`, () => {
+    const doc = formatFieldDocument(field, undefined);
+    writeFormatField(doc, field, false);
+    assert.match(doc.getPartXml(doc.mainDocumentPath), new RegExp(`<w:${field.tag} w:val="0"\\/>`));
+    assert.equal(readFormatField(doc, field), false);
+  });
+
+  test(`${field.key} removes direct formatting when set to null`, () => {
+    const doc = formatFieldDocument(field, undefined);
+    writeFormatField(doc, field, null);
+    assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), new RegExp(`<w:${field.tag}(?:\\s|/|>)`));
+  });
+}
+
+test('paragraph textDirection reads, writes, and clears the direct value', () => {
+  const doc = withBody('<w:p><w:pPr><w:textDirection w:val="tbRl"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>');
+  assert.equal(doc.getParagraphs()[0].textDirection, 'tbRl');
+  doc.formatParagraph(0, { textDirection: 'lrTb' });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:textDirection w:val="lrTb"\/>/);
+  doc.formatParagraph(0, { textDirection: null });
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:textDirection(?:\s|\/|>)/);
+});
+
+test('CJK and bidi paragraph properties participate in paragraph-style inheritance', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Derived"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:docDefaults><w:pPrDefault><w:pPr><w:wordWrap/></w:pPr></w:pPrDefault></w:docDefaults>
+      <w:style w:type="paragraph" w:styleId="Base"><w:pPr><w:kinsoku w:val="0"/><w:autoSpaceDE/></w:pPr></w:style>
+      <w:style w:type="paragraph" w:styleId="Derived"><w:basedOn w:val="Base"/></w:style>
+    </w:styles>`,
+  );
+  assert.equal(doc.getEffectiveParagraphFormat(0).kinsoku, false);
+  assert.equal(doc.getEffectiveParagraphFormat(0).autoSpaceDE, true);
+  assert.equal(doc.getEffectiveParagraphFormat(0).wordWrap, true);
+  doc.formatParagraph(0, { bidi: false });
+  assert.equal(doc.getEffectiveParagraphFormat(0).bidi, false);
+});
+
+test('CJK and bidi paragraph formats round-trip through the effective format API', () => {
+  const doc = withBody(
+    '<w:p><w:pPr><w:kinsoku w:val="0"/><w:wordWrap/><w:overflowPunct w:val="0"/><w:topLinePunct/><w:autoSpaceDE/><w:autoSpaceDN w:val="0"/><w:bidi/><w:textDirection w:val="tbRl"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>',
+  );
+  const before = doc.getEffectiveParagraphFormat(0);
+  assert.doesNotThrow(() => doc.formatParagraph(0, before));
+  assert.deepEqual(doc.getEffectiveParagraphFormat(0), before);
+});
+
+test('format writers keep CJK and bidi properties in OOXML property order', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
+  doc.formatParagraph(0, {
+    kinsoku: true, wordWrap: false, overflowPunct: true, topLinePunct: false,
+    autoSpaceDE: true, autoSpaceDN: false, bidi: true, textDirection: 'tbRl',
+    alignment: 'center', spacingAfter: 120,
+  });
+  doc.formatRun(0, 0, { bold: true, rtl: true, complexScript: false });
+  doc.formatTable(0, { bidiVisual: true, alignment: 'right' });
+  const xml = doc.getPartDocument(doc.mainDocumentPath);
+  const orderedNames = (container) => [...container.childNodes]
+    .filter((node) => node.nodeType === 1)
+    .map((node) => node.localName);
+  const ascending = (names, order) => {
+    const positions = names.map((name) => order.indexOf(name));
+    assert.ok(positions.every((position) => position >= 0), 'all generated properties must be in the schema order');
+    assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+  };
+  ascending(orderedNames(xml.getElementsByTagNameNS(WORD_NS, 'pPr')[0]), [
+    'pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
+    'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
+    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
+    'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap',
+    'jc', 'textDirection',
+  ]);
+  ascending(orderedNames(xml.getElementsByTagNameNS(WORD_NS, 'rPr')[0]), [
+    'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
+    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
+    'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
+    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs',
+  ]);
+  ascending(orderedNames(xml.getElementsByTagNameNS(WORD_NS, 'tblPr')[0]), [
+    'tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+    'tblW', 'jc',
+  ]);
+});
+
+test('new format fields are in the operation schema and accepted by runtime validation', () => {
+  const operations = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf;
+  const formatSchema = (name) => operations.find((operation) => operation.properties.type.const === name)
+    .properties.format.properties;
+  const paragraphFields = ['kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection'];
+  const runFields = ['rtl', 'complexScript'];
+  for (const key of paragraphFields) assert.ok(key in formatSchema('formatParagraph'));
+  for (const key of runFields) {
+    assert.ok(key in formatSchema('formatRun'));
+    assert.ok(key in formatSchema('formatRange'));
+    assert.ok(key in formatSchema('formatDocumentRange'));
+  }
+  assert.ok('bidiVisual' in formatSchema('formatTable'));
+
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
+  assert.doesNotThrow(() => doc.applyOperations({ operations: [
+    { type: 'formatParagraph', index: 0, format: Object.fromEntries(paragraphFields.map((key) => [key, key === 'textDirection' ? 'tbRl' : false])) },
+    { type: 'formatRun', paragraph: 0, run: 0, format: { rtl: false, complexScript: true } },
+    { type: 'formatTable', table: 0, format: { bidiVisual: false } },
+  ] }));
+});
+
+test('clearing absent new format fields and repeating identical values are revision no-ops', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
+  const before = doc.revision;
+  doc.formatParagraph(0, { kinsoku: null });
+  doc.formatRun(0, 0, { rtl: null });
+  doc.formatTable(0, { bidiVisual: null });
+  assert.equal(doc.revision, before);
+
+  doc.formatParagraph(0, { kinsoku: false });
+  const revision = doc.revision;
+  doc.formatParagraph(0, { kinsoku: false });
+  assert.equal(doc.revision, revision);
 });
 
 test('read-only round trips preserve styles.xml bytes exactly', async () => {

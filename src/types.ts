@@ -11,6 +11,8 @@ export interface RunFormat {
   color?: string | null;
   strike?: boolean | null;
   doubleStrike?: boolean | null;
+  rtl?: boolean | null;
+  complexScript?: boolean | null;
   verticalAlign?: 'baseline' | 'subscript' | 'superscript' | null;
   smallCaps?: boolean | null;
   allCaps?: boolean | null;
@@ -57,6 +59,14 @@ export interface ParagraphFormat {
   widowControl?: boolean | null;
   suppressLineNumbers?: boolean | null;
   suppressAutoHyphens?: boolean | null;
+  kinsoku?: boolean | null;
+  wordWrap?: boolean | null;
+  overflowPunct?: boolean | null;
+  topLinePunct?: boolean | null;
+  autoSpaceDE?: boolean | null;
+  autoSpaceDN?: boolean | null;
+  bidi?: boolean | null;
+  textDirection?: string | null;
   outlineLevel?: number | null;
   tabs?: TabStop[] | null;
   borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>> | null;
@@ -192,6 +202,7 @@ export interface TableFormat {
   look?: string;
   caption?: string;
   description?: string;
+  bidiVisual?: boolean | null;
 }
 
 export interface RowFormat {
