@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { DocxDocument } from '../dist/document.js';
 
 const ROUNDS = 5;
-const WARMUPS = 1;
+const WARMUPS = 2;
 const INITIAL_PARAGRAPH_COUNT = 1;
 
 function elapsedMs(run) {
@@ -19,57 +20,135 @@ function median(values) {
   return (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function measureMedian(run) {
-  for (let i = 0; i < WARMUPS; i++) run();
-  const samples = Array.from({ length: ROUNDS }, () => elapsedMs(run));
-  return { median: median(samples), samples };
+// 只给 run 计时，setup 不算。播种文档、构造操作数组都属于 setup：
+// 把它们算进耗时会把被测操作的成本冲淡，而且两侧冲淡的程度还不一样。
+function sample({ setup, run }) {
+  const state = setup ? setup() : undefined;
+  return elapsedMs(() => run(state));
+}
+
+// 配对交替测量。两个测量必须在同一时间窗口里交替进行，否则任何跨窗口的漂移
+// （JIT 预热、GC、机器负载）都会被整份记进比值 —— 而不是被比值抵消掉。
+// 每轮内部还要换序，这样两侧都不会系统性地替对方付预热/缓存的账。
+// 比值取「每轮配对比值的中位数」，而不是「两个中位数的比值」：前者才真正抵消轮间波动。
+function measurePairedRatio(numerator, denominator) {
+  for (let i = 0; i < WARMUPS; i++) {
+    sample(numerator);
+    sample(denominator);
+  }
+  const numeratorSamples = [];
+  const denominatorSamples = [];
+  const ratios = [];
+  for (let round = 0; round < ROUNDS; round++) {
+    let top;
+    let bottom;
+    if (round % 2 === 0) {
+      top = sample(numerator);
+      bottom = sample(denominator);
+    } else {
+      bottom = sample(denominator);
+      top = sample(numerator);
+    }
+    numeratorSamples.push(top);
+    denominatorSamples.push(bottom);
+    ratios.push(top / bottom);
+  }
+  return {
+    ratio: median(ratios),
+    ratios,
+    numerator: { median: median(numeratorSamples), samples: numeratorSamples },
+    denominator: { median: median(denominatorSamples), samples: denominatorSamples },
+  };
 }
 
 function formatMeasurement(label, measurement) {
   return `${label}: median=${measurement.median.toFixed(1)}ms samples=[${measurement.samples.map((value) => value.toFixed(1)).join(', ')}]`;
 }
 
-function seedParagraphs(doc, totalParagraphs) {
-  const extraParagraphs = Math.max(0, totalParagraphs - INITIAL_PARAGRAPH_COUNT);
-  if (extraParagraphs === 0) return;
-  doc.applyOperations({
-    operations: Array.from({ length: extraParagraphs }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
-  });
+function assertRatioBelow(result, threshold, description, numeratorLabel, denominatorLabel) {
+  assert.ok(result.ratio < threshold, [
+    `${description} exceeded threshold ${threshold.toFixed(2)} (actual ${result.ratio.toFixed(2)})`,
+    `paired ratios=[${result.ratios.map((value) => value.toFixed(2)).join(', ')}]`,
+    formatMeasurement(numeratorLabel, result.numerator),
+    formatMeasurement(denominatorLabel, result.denominator),
+  ].join('\n'));
 }
 
-function measureSingleInsert(count, seedCount = 0) {
-  return measureMedian(() => {
-    const doc = DocxDocument.create();
-    seedParagraphs(doc, seedCount);
-    for (let i = 0; i < count; i++) doc.insertParagraph(`段落内容 ${i}`);
-  });
-}
+const MAX_OPERATIONS_PER_REQUEST = 1000;
 
-function measureBatchInsert(count) {
-  return measureMedian(() => {
-    const doc = DocxDocument.create();
+function seededDocument(totalParagraphs) {
+  const doc = DocxDocument.create();
+  let remaining = Math.max(0, totalParagraphs - INITIAL_PARAGRAPH_COUNT);
+  while (remaining > 0) {
+    const take = Math.min(MAX_OPERATIONS_PER_REQUEST, remaining);
     doc.applyOperations({
-      operations: Array.from({ length: count }, (_, i) => ({ type: 'insertParagraph', text: `段落内容 ${i}` })),
+      operations: Array.from({ length: take }, (_, i) => ({ type: 'insertParagraph', text: `seed-${i}` })),
     });
-  });
+    remaining -= take;
+  }
+  return doc;
 }
 
-function measureSetParagraphText(count) {
-  return measureMedian(() => {
-    const doc = DocxDocument.create();
-    seedParagraphs(doc, count);
-    for (let i = 0; i < count; i++) doc.setParagraphText(i, `改写 ${i}`);
-  });
+function setTextRequest(start, count) {
+  return { operations: Array.from({ length: count }, (_, i) => ({ type: 'setParagraphText', index: start + i, text: `更新-${start + i}` })) };
 }
 
-function measureBatchSetParagraphText(count) {
-  return measureMedian(() => {
-    const doc = DocxDocument.create();
-    seedParagraphs(doc, count);
-    doc.applyOperations({
-      operations: Array.from({ length: count }, (_, i) => ({ type: 'setParagraphText', index: i, text: `更新-${i}` })),
-    });
-  });
+function singleInsert(count, seedCount = 0) {
+  return {
+    setup: () => seededDocument(seedCount),
+    run: (doc) => {
+      for (let i = 0; i < count; i++) doc.insertParagraph(`段落内容 ${i}`);
+    },
+  };
+}
+
+function batchInsert(count) {
+  return {
+    setup: () => ({
+      doc: DocxDocument.create(),
+      request: { operations: Array.from({ length: count }, (_, i) => ({ type: 'insertParagraph', text: `段落内容 ${i}` })) },
+    }),
+    run: ({ doc, request }) => doc.applyOperations(request),
+  };
+}
+
+function singleSetParagraphText(count) {
+  return {
+    setup: () => seededDocument(count),
+    run: (doc) => {
+      for (let i = 0; i < count; i++) doc.setParagraphText(i, `改写 ${i}`);
+    },
+  };
+}
+
+// 在一份固定大小的文档上，把同样多的改写拆成 chunkSize 一批。
+// 两侧每个样本做的工作量完全相同 —— 这样 JIT 与堆的轨迹一致，
+// 比值才只反映批处理粒度本身，不掺进「小的那侧越跑越快」的假象。
+function chunkedSetParagraphText(totalParagraphs, chunkSize) {
+  return {
+    setup: () => {
+      const requests = [];
+      for (let start = 0; start < totalParagraphs; start += chunkSize) {
+        requests.push(setTextRequest(start, Math.min(chunkSize, totalParagraphs - start)));
+      }
+      return { doc: seededDocument(totalParagraphs), requests };
+    },
+    run: ({ doc, requests }) => {
+      for (const request of requests) doc.applyOperations(request);
+    },
+  };
+}
+
+// 固定操作次数、只变文档规模，衡量「单次按下标操作的成本随文档规模怎么长」。
+//
+// 这一档必须开独立进程。同一个进程里，小规模那侧会因为 JIT 越跑越快、又会被大规模那侧
+// 留下的垃圾拖慢 —— 配对交替抵消不了这种工作集大小的不对称：实测同进程的配对比值会在
+// 3.8 到 11.0 之间跳，5 次里有 1 次误报。独立进程测出来则稳定在 3.7 上下。
+function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5) {
+  const output = execFileSync(process.execPath,
+    [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds)],
+    { encoding: 'utf8' });
+  return JSON.parse(output);
 }
 
 function buildTableLookupDoc(tableCount) {
@@ -84,70 +163,66 @@ function buildTableLookupDoc(tableCount) {
   return doc;
 }
 
-function measureTableCellSwitches(tableCount) {
-  for (let i = 0; i < WARMUPS; i++) {
-    const doc = buildTableLookupDoc(tableCount);
-    const indices = doc.getBlocks()
-      .filter((block) => block.type === 'table')
-      .flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.blocks[0].paragraph.index)));
-    doc.getTableCellAt(indices[0]);
-    for (let index = 0; index < 100; index++) doc.getTableCellAt(indices[index % indices.length]);
-  }
-  const samples = Array.from({ length: ROUNDS }, () => {
-    const doc = buildTableLookupDoc(tableCount);
-    const indices = doc.getBlocks()
-      .filter((block) => block.type === 'table')
-      .flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.blocks[0].paragraph.index)));
-    doc.getTableCellAt(indices[0]);
-    return elapsedMs(() => {
-      for (let index = 0; index < 100; index++) doc.getTableCellAt(indices[index % indices.length]);
-    });
-  });
-  return { median: median(samples), samples };
+// 查的是缓存命中的成本，单次只有几十纳秒，所以必须查够多次：
+// 被测区间若短到几十微秒，比值就只是计时噪声，断言会随机通过或失败。
+const TABLE_CELL_LOOKUPS = 20_000;
+
+function tableCellSwitches(tableCount) {
+  return {
+    setup: () => {
+      const doc = buildTableLookupDoc(tableCount);
+      const indices = doc.getBlocks()
+        .filter((block) => block.type === 'table')
+        .flatMap((table) => table.rows.flatMap((row) => row.cells.map((cell) => cell.blocks[0].paragraph.index)));
+      doc.getTableCellAt(indices[0]);
+      return { doc, indices };
+    },
+    run: ({ doc, indices }) => {
+      for (let index = 0; index < TABLE_CELL_LOOKUPS; index++) doc.getTableCellAt(indices[index % indices.length]);
+    },
+  };
 }
 
 test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
-  const inserts = measureSingleInsert(200, 200);
-  const sets = measureSetParagraphText(200);
-  const perOpInsert = inserts.median / 200;
-  const perOpSet = sets.median / 200;
-  const ratio = perOpInsert / perOpSet;
-  assert.ok(ratio < 4, [
-    `insertParagraph cost ratio exceeded threshold 4.00 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('single insert x200 after 200 seeded paragraphs', inserts),
-    formatMeasurement('setParagraphText x200', sets),
-  ].join('\n'));
+  const result = measurePairedRatio(singleInsert(200, 200), singleSetParagraphText(200));
+  assertRatioBelow(result, 3, 'insertParagraph cost ratio',
+    'single insert x200 into 200 seeded paragraphs', 'setParagraphText x200');
 });
 
 test('performance regression: batched inserts remain materially faster than repeated single inserts', () => {
-  const single = measureSingleInsert(300);
-  const batch = measureBatchInsert(300);
-  const ratio = batch.median / single.median;
-  assert.ok(ratio < 0.75, [
-    `batch insert ratio exceeded threshold 0.75 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('single insert x300', single),
-    formatMeasurement('batch insert x300', batch),
-  ].join('\n'));
+  const result = measurePairedRatio(batchInsert(300), singleInsert(300));
+  assertRatioBelow(result, 0.75, 'batch insert ratio',
+    'batch insert x300', 'single insert x300');
 });
 
-test('performance regression: batched 1000-paragraph updates scale near-linearly', () => {
-  const t500 = measureBatchSetParagraphText(500);
-  const t1000 = measureBatchSetParagraphText(1000);
-  const ratio = t1000.median / t500.median;
-  assert.ok(ratio < 4, [
-    `1000-paragraph update ratio exceeded threshold 4.00 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('batch setParagraphText x500', t500),
-    formatMeasurement('batch setParagraphText x1000', t1000),
+test('performance regression: one large batch is no worse than several small ones', () => {
+  // 同一份 1000 段文档，1000 次改写一批 vs 拆成两批 500。工作量相同，所以线性 ≈ 1.00。
+  // 这条守的是 #15 的成果：批处理不得退化成「每次操作各提交一遍」。
+  const result = measurePairedRatio(chunkedSetParagraphText(1000, 1000), chunkedSetParagraphText(1000, 500));
+  assertRatioBelow(result, 1.5, 'single-batch vs split-batch ratio',
+    'setParagraphText x1000 in one batch', 'setParagraphText x1000 in two batches');
+});
+
+test('performance regression: per-operation cost does not degrade further with document size', () => {
+  // 固定 10 批、每批 1000 次操作，文档规模 4 倍。期望比值高于 1：
+  // 每批都要 O(文档规模) 地构建一次段落缓存；阈值 2.5 区分这项固定成本与逐操作 O(文档规模) 退化。
+  const large = perOperationCostInChildProcess(2000, 1000);
+  const small = perOperationCostInChildProcess(500, 1000);
+  assert.ok(large.median >= 30 && small.median >= 30, [
+    'indexed edit measurement was shorter than the 30ms minimum; the instrumented setter may not have run',
+    formatMeasurement('10000 ops on a 2000-paragraph document', large),
+    formatMeasurement('10000 ops on a 500-paragraph document', small),
+  ].join('\n'));
+  const ratio = large.perOperation / small.perOperation;
+  assert.ok(ratio < 2.5, [
+    `per-operation cost ratio across a 4x document-size gap exceeded threshold 2.50 (actual ${ratio.toFixed(2)})`,
+    formatMeasurement('10000 ops on a 2000-paragraph document', large),
+    formatMeasurement('10000 ops on a 500-paragraph document', small),
   ].join('\n'));
 });
 
 test('performance regression: cached getTableCellAt lookups do not scale linearly with table count', () => {
-  const small = measureTableCellSwitches(12);
-  const large = measureTableCellSwitches(36);
-  const ratio = large.median / small.median;
-  assert.ok(ratio < 2.2, [
-    `getTableCellAt lookup ratio exceeded threshold 2.20 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('cached getTableCellAt x100 over 12 tables', small),
-    formatMeasurement('cached getTableCellAt x100 over 36 tables', large),
-  ].join('\n'));
+  const result = measurePairedRatio(tableCellSwitches(36), tableCellSwitches(12));
+  assertRatioBelow(result, 2.2, 'getTableCellAt lookup ratio',
+    'cached getTableCellAt over 36 tables', 'cached getTableCellAt over 12 tables');
 });

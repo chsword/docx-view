@@ -7,7 +7,7 @@ import {
   A_NS, OFFICE_REL_NS, PIC_NS, V_NS, WP_NS,
   dataUrlForBytes, decodeBase64, emuToPx, pxToEmu,
 } from '../dist/index.js';
-import { REL_NS, WORD_NS } from '../dist/xml.js';
+import { REL_NS, WORD_NS, descendants, parseXml } from '../dist/xml.js';
 
 const RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
 const PNG_BYTES = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -210,8 +210,14 @@ test('isolates textbox paragraphs and exposes shape fallbacks without duplicatin
   assert.deepEqual(shapes.map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
   assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
   assert.deepEqual(doc.getShapeParagraphs(shapes[2].id).map((paragraph) => paragraph.text), ['VML text']);
-  doc.setParagraphText(1, 'changed body paragraph');
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 1, text: 'changed body paragraph' },
+      { type: 'setParagraphText', index: 4, text: 'changed after paragraph' },
+    ],
+  });
   assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
+  assert.equal(doc.getParagraphs()[4].text, 'changed after paragraph');
   const reopened = await DocxDocument.load(await doc.toUint8Array());
   assert.match(reopened.getPartXml(reopened.mainDocumentPath), /txbxContent/);
   assert.deepEqual(reopened.getShapes().map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
@@ -874,6 +880,13 @@ test('OOXML DOM edits are namespace-aware and detached until explicitly committe
   assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
 });
 
+test('descendants returns Word elements in document order without including its root', () => {
+  const xml = parseXml(`<w:p xmlns:w="${WORD_NS}" xmlns:x="urn:other"><w:r/><x:p/><w:wrap><w:p/></w:wrap></w:p>`);
+  assert.deepEqual(descendants(xml.documentElement, 'p').map((element) => element.localName), ['p']);
+  assert.deepEqual(descendants(xml.documentElement, 'r').map((element) => element.localName), ['r']);
+  assert.deepEqual(descendants(xml.documentElement, '*').map((element) => element.localName), ['r', 'wrap', 'p']);
+});
+
 test('agent batches are atomic, revision checked and increment once per transaction', () => {
   const doc = DocxDocument.create();
   const result = doc.applyOperations({ expectedRevision: 0, operations: [
@@ -891,6 +904,17 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
+});
+
+test('applyOperations refreshes indexed paragraph lookup after structural edits', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'existing');
+  doc.applyOperations({ operations: [
+    { type: 'setParagraphText', index: 0, text: 'updated' },
+    { type: 'insertParagraph', text: 'inserted', before: 0 },
+    { type: 'setParagraphText', index: 0, text: 'new first' },
+  ] });
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['new first', 'updated']);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
