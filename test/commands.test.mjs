@@ -103,6 +103,9 @@ function makeRegistry(options = {}) {
     getImageAltValue() {
       return state.imageAltValue;
     },
+    isCommentResolved() {
+      return false;
+    },
   }));
   return { registry, state, calls };
 }
@@ -132,6 +135,7 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['table.insertColumn enables with table context', 'table.insertColumn', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1 } }), true],
     ['table.deleteColumn disables without table context', 'table.deleteColumn', makeContext(), false],
     ['table.mergeCells enables with table context', 'table.mergeCells', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1 } }), true],
+    ['table.mergeCells disables in nested tables', 'table.mergeCells', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1, nested: true } }), false],
     ['table.splitCell disables without table context', 'table.splitCell', makeContext(), false],
     ['image.replace disables without a selected image', 'image.replace', makeContext(), false],
     ['image.insert is always enabled', 'image.insert', makeContext(), true],
@@ -140,6 +144,8 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['image.replace enables with a selected image', 'image.replace', makeContext({ image: { relationshipId: 'rId5' } }), true],
     ['image.setAlt disables without a selected image', 'image.setAlt', makeContext(), false],
     ['image.setAlt enables with a selected image', 'image.setAlt', makeContext({ image: { relationshipId: 'rId6' } }), true],
+    ['hyperlink insertion disables at a collapsed caret', 'hyperlink.insertAtSelection', makeContext({ selection: { paragraph: 0, collapsed: true } }), false],
+    ['hyperlink insertion enables for a same-paragraph range', 'hyperlink.insertAtSelection', makeContext({ selection: { paragraph: 0, range: { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 2 } }, collapsed: false } }), true],
     ['comment.new is always enabled', 'comment.new', makeContext(), true],
     ['comment.reply disables without a selected comment', 'comment.reply', makeContext(), false],
     ['comment.reply enables with a selected comment target', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],

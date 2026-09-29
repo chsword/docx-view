@@ -4,12 +4,14 @@ import type {
   AgentRequest,
   DocumentRange,
   DocumentSnapshot,
+  HyperlinkInfo,
   OutlineNode,
   ParagraphFormat,
   ReviewerFilterAuthor,
   ReviewerInfo,
   RunFormat,
   StyleInfo,
+  TableCellLocation,
 } from '../src/index.js';
 import { reviewerBucketKey, reviewerBucketLabel, reviewerBucketOf } from '../src/revisions.js';
 import { findReusableNumberingId } from '../src/numbering.js';
@@ -20,6 +22,7 @@ import {
   type CommandContext,
 } from './commands.js';
 import { initializeRibbon } from './ribbon.js';
+import { initializeContextMenu } from './context-menu.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -608,42 +611,18 @@ function selectedCommentRange() {
   return { paragraph: index, start: 0, end: text.length };
 }
 
-function selectedCell(): { table: number; row: number; col: number; rowSpan: number; colSpan: number } {
+function selectedCell(): TableCellLocation {
   editor.flush();
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+  const cell = editor.selectedTableCell;
   if (!cell) throw new Error('请先把光标放进一个表格单元格，再使用表格工具。');
-  const tableElement = cell.closest('.docx-table');
-  if (!tableElement) throw new Error('未找到当前表格。');
-  if (tableElement.parentElement?.closest('.docx-table')) {
+  if (cell.nested) {
     throw new Error('当前演示的结构化表格工具仅支持正文顶层表格，不支持嵌套表格。');
   }
-  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
-  if (table < 0) throw new Error('未找到当前表格。');
-  return {
-    table,
-    row: Number(cell.dataset.rowStart ?? 0),
-    col: Number(cell.dataset.gridStart ?? 0),
-    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
-    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
-  };
+  return cell;
 }
 
-function currentTableContext(): ReturnType<typeof selectedCell> | null {
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
-  if (!cell) return null;
-  const tableElement = cell.closest('.docx-table');
-  if (!tableElement || tableElement.parentElement?.closest('.docx-table')) return null;
-  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
-  if (table < 0) return null;
-  return {
-    table,
-    row: Number(cell.dataset.rowStart ?? 0),
-    col: Number(cell.dataset.gridStart ?? 0),
-    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
-    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
-  };
+function currentTableContext(): TableCellLocation | null {
+  return editor.selectedTableCell;
 }
 
 function currentSelectionElement(): HTMLElement | null {
@@ -661,6 +640,23 @@ function currentCommentIdsAtSelection(): number[] {
     .split(',')
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value));
+}
+
+function idsAtTarget(target: HTMLElement, attribute: 'docxCommentIds' | 'docxRevisionIds'): number[] {
+  const node = target.closest<HTMLElement>(`[data-${attribute.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}]`);
+  return (node?.dataset[attribute] ?? '')
+    .split(',')
+    .map(Number)
+    .filter((value) => Number.isSafeInteger(value) && value >= 0);
+}
+
+function hyperlinkAtTarget(target: HTMLElement): HyperlinkInfo | null {
+  const run = target.closest<HTMLElement>('[data-docx-run]');
+  const paragraph = run?.closest<HTMLElement>('[data-paragraph]');
+  const paragraphIndex = Number(paragraph?.dataset.paragraph);
+  const runIndex = Number(run?.dataset.docxRun);
+  if (!Number.isSafeInteger(paragraphIndex) || !Number.isSafeInteger(runIndex)) return null;
+  return doc.getHyperlinks().find((link) => link.paragraph === paragraphIndex && link.runs.includes(runIndex)) ?? null;
 }
 
 function toDocumentRange(range: DocumentRange): DocumentRange {
@@ -772,6 +768,9 @@ function setDocument(next: DocxDocument, name: string): void {
 
 const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
   actions: {
+    clipboard(action) {
+      if (!document.execCommand(action)) message(`浏览器未允许${action === 'copy' ? '复制' : action === 'cut' ? '剪切' : '粘贴'}，请使用键盘快捷键。`, true);
+    },
     toggleRunFormat(kind) {
       formatRuns({ [kind]: !selectedRangeFormat?.[kind] });
     },
@@ -824,6 +823,13 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       refresh();
       message('已在当前单元格下方插入一行。');
     },
+    insertTableRowAt(where) {
+      const cell = selectedCell();
+      doc.insertTableRow(cell.table, where === 'above' ? cell.row : cell.row + cell.rowSpan);
+      editor.render();
+      refresh();
+      message(`已在当前单元格${where === 'above' ? '上方' : '下方'}插入一行。`);
+    },
     deleteTableRow() {
       const cell = selectedCell();
       doc.deleteTableRow(cell.table, cell.row);
@@ -837,6 +843,13 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       editor.render();
       refresh();
       message('已在当前单元格右侧插入一列。');
+    },
+    insertTableColumnAt(where) {
+      const cell = selectedCell();
+      doc.insertTableColumn(cell.table, where === 'left' ? cell.col : cell.col + cell.colSpan);
+      editor.render();
+      refresh();
+      message(`已在当前单元格${where === 'left' ? '左侧' : '右侧'}插入一列。`);
     },
     deleteTableColumn() {
       const cell = selectedCell();
@@ -873,6 +886,9 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       editor.render();
       refresh();
       message('已应用当前单元格边框与底纹。');
+    },
+    unavailableTableAction() {
+      message('当前版本尚未提供此表格操作。', true);
     },
     startInsertImage() {
       imageAction = 'insert';
@@ -917,6 +933,61 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       selectedRevisionId = null;
       refresh();
     },
+    insertHyperlink(ctx) {
+      const range = ctx.selection.range;
+      if (!range || range.start.paragraph !== range.end.paragraph || ctx.selection.collapsed) {
+        throw new Error('请先选择同一段落内的文字。');
+      }
+      const url = window.prompt('输入超链接地址');
+      if (url === null) return;
+      const converted = toDocumentRange(range);
+      doc.insertHyperlink({
+        paragraph: converted.start.paragraph,
+        start: converted.start.offset,
+        end: converted.end.offset,
+      }, { url });
+      editor.render();
+      refresh();
+    },
+    openHyperlink(link) {
+      const target = link.url ?? (link.anchor ? `#${link.anchor}` : '');
+      if (target) window.open(target, '_blank', 'noopener,noreferrer');
+    },
+    copyHyperlinkAddress(link) {
+      const target = link.url ?? (link.anchor ? `#${link.anchor}` : '');
+      if (target) void navigator.clipboard?.writeText(target).catch(reportError);
+    },
+    editHyperlink(link) {
+      const url = window.prompt('编辑超链接地址', link.url ?? (link.anchor ? `#${link.anchor}` : ''));
+      if (url === null) return;
+      doc.updateHyperlink(link, url.startsWith('#') ? { anchor: url.slice(1) } : { url });
+      editor.render();
+      refresh();
+    },
+    removeHyperlink(link) {
+      doc.removeHyperlink(link, { keepText: true });
+      editor.render();
+      refresh();
+    },
+    acceptRevisions(ctx, paragraph) {
+      const revisions = paragraph
+        ? doc.getRevisions().filter((revision) => revision.paragraph === ctx.selection.paragraph)
+        : ctx.revisionsAtPoint;
+      if (revisions.length) doc.applyOperations({ operations: revisions.map((revision) => ({ type: 'acceptRevision' as const, id: revision.id })) });
+      editor.render();
+      refresh();
+    },
+    rejectRevisions(ctx, paragraph) {
+      const revisions = paragraph
+        ? doc.getRevisions().filter((revision) => revision.paragraph === ctx.selection.paragraph)
+        : ctx.revisionsAtPoint;
+      if (revisions.length) doc.applyOperations({ operations: revisions.map((revision) => ({ type: 'rejectRevision' as const, id: revision.id })) });
+      editor.render();
+      refresh();
+    },
+    openReviewOptions() {
+      element('ribbon-tab-review').click();
+    },
     addComment() {
       const text = window.prompt('输入批注内容');
       if (text === null) return;
@@ -947,6 +1018,11 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       refresh();
       message('已删除批注。');
     },
+    focusComment(commentId) {
+      selectedCommentId = commentId;
+      refreshComments();
+      element('comment-list').querySelector<HTMLElement>('button.active')?.focus();
+    },
   },
   getParagraphInfo(paragraph) {
     if (paragraph === null) return null;
@@ -975,6 +1051,9 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
   },
   getImageAltValue() {
     return element<HTMLInputElement>('image-alt').value;
+  },
+  isCommentResolved(commentId) {
+    return doc.getComments().find((comment) => comment.id === commentId)?.resolved === true;
   },
 }));
 
@@ -1011,9 +1090,20 @@ const commandControls: Array<{ elementId: string; commandId: string; pressed?: b
   { elementId: 'review-reject-all', commandId: 'review.rejectAll' },
 ] as const;
 
-function buildCommandContext(source: CommandContext['source'] = 'ribbon'): CommandContext {
-  const range = selectedRange;
-  const paragraph = doc.getParagraphs().find((item) => item.index === editor.selectedParagraph)?.index ?? null;
+function buildCommandContext(
+  source: CommandContext['source'] = 'ribbon',
+  target: HTMLElement | null = currentSelectionElement(),
+): CommandContext {
+  const range = editor.selectedRange ?? selectedRange;
+  const targetParagraph = Number(target?.closest<HTMLElement>('[data-paragraph]')?.dataset.paragraph);
+  const paragraph = Number.isSafeInteger(targetParagraph)
+    ? targetParagraph
+    : doc.getParagraphs().find((item) => item.index === editor.selectedParagraph)?.index ?? null;
+  const imageId = target?.closest<HTMLElement>('[data-image]')?.dataset.image;
+  const image = imageId
+    ? doc.getParagraphs().flatMap((item) => item.runs.flatMap((run) => run.images ?? [])).find((item) => item.id === imageId) ?? null
+    : editor.selectedImage ?? null;
+  const revisionIds = target ? idsAtTarget(target, 'docxRevisionIds') : [];
   return {
     revisionView: reviewRevisionView,
     editable: isMarkupView(),
@@ -1023,16 +1113,47 @@ function buildCommandContext(source: CommandContext['source'] = 'ribbon'): Comma
       format: selectedRangeFormat,
       collapsed: !range || (range.start.paragraph === range.end.paragraph && range.start.offset === range.end.offset),
     },
-    table: currentTableContext(),
-    image: editor.selectedImage ?? null,
-    hyperlink: null,
-    revisionsAtPoint: [],
-    commentsAtPoint: currentCommentIdsAtSelection(),
+    table: paragraph === null ? currentTableContext() : doc.getTableCellAt(paragraph),
+    image,
+    hyperlink: target ? hyperlinkAtTarget(target) : null,
+    revisionsAtPoint: doc.getRevisions().filter((revision) => revisionIds.includes(revision.id)),
+    commentsAtPoint: target ? idsAtTarget(target, 'docxCommentIds') : currentCommentIdsAtSelection(),
     activeCommentId: selectedCommentId,
     clipboard: 'unknown',
     source,
   };
 }
+
+function moveCaretToPoint(x: number, y: number): void {
+  const owner = host.ownerDocument;
+  const legacy = owner as Document & { caretRangeFromPoint?: (left: number, top: number) => Range | null };
+  const modern = owner as Document & { caretPositionFromPoint?: (left: number, top: number) => { offsetNode: Node; offset: number } | null };
+  let range = legacy.caretRangeFromPoint?.(x, y) ?? null;
+  if (!range) {
+    const position = modern.caretPositionFromPoint?.(x, y);
+    if (position) {
+      range = owner.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    }
+  }
+  if (!range || !host.contains(range.startContainer)) return;
+  const selection = owner.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  owner.dispatchEvent(new Event('selectionchange'));
+}
+
+const editorRoot = host.querySelector<HTMLElement>('.docx-editor');
+if (!editorRoot) throw new Error('找不到文档编辑区。');
+initializeContextMenu({
+  editorRoot,
+  registry: commandRegistry,
+  buildContext: (source, target) => buildCommandContext(source, target),
+  moveCaretToPoint,
+  beforeRun: () => editor.flush(),
+  onError: reportError,
+});
 
 function syncCommandState(): void {
   const ctx = buildCommandContext();
