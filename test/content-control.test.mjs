@@ -75,6 +75,17 @@ test('setContentControlText writes inline control content without changing adjac
   assert.equal(doc.getParagraphs()[0].text, 'beforenewafter');
 });
 
+test('setContentControlText preserves paragraph properties and unknown surrounding XML', () => {
+  const doc = withBody(`<w:sdt><w:sdtPr><w:id w:val="45"/><w:text/></w:sdtPr><w:sdtContent><w:p><w:pPr><w:keepNext/></w:pPr><w:bookmarkStart w:id="1" w:name="before"/><w:r><w:rPr><w:b/></w:rPr><w:t>old</w:t></w:r><w:bookmarkEnd w:id="1"/><w:customXml w:uri="urn:custom"><w:customXmlPr/></w:customXml></w:p></w:sdtContent></w:sdt>`);
+  doc.setContentControlText(45, 'new');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:pPr><w:keepNext\/><\/w:pPr>/);
+  assert.match(xml, /<w:bookmarkStart w:id="1" w:name="before"\/>/);
+  assert.match(xml, /<w:bookmarkEnd w:id="1"\/>/);
+  assert.match(xml, /<w:customXml w:uri="urn:custom"><w:customXmlPr\/><\/w:customXml>/);
+  assert.match(xml, /<w:rPr><w:b\/><\/w:rPr><w:t(?: xml:space="preserve")?>new<\/w:t>/);
+});
+
 test('setContentControlText rejects content-locked controls while paragraph editing remains available', () => {
   const doc = withBody(`<w:sdt><w:sdtPr><w:id w:val="33"/><w:lock w:val="contentLocked"/><w:text/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>old</w:t></w:r></w:p></w:sdtContent></w:sdt>`);
   assert.throws(() => doc.setContentControlText(33, 'new'), /locked/);

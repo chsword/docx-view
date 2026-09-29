@@ -661,31 +661,92 @@ function contentControlKind(control: Element): ContentControlKind {
   return types.find(([name]) => children(properties, name).length > 0)?.[1] ?? 'unknown';
 }
 
+function textSpanWithin(root: Element, scope: Element): { start: number; end: number; text: string } | undefined {
+  const elements = textElements(root);
+  const selected = elements.filter((element) => {
+    let ancestor: Node | null = element;
+    while (ancestor && ancestor !== scope) ancestor = ancestor.parentNode;
+    return ancestor === scope;
+  });
+  if (!selected.length) return undefined;
+  const firstIndex = elements.indexOf(selected[0]!);
+  const start = elements.slice(0, firstIndex).reduce((length, element) => length + elementText(element).length, 0);
+  const text = selected.map(elementText).join('');
+  return { start, end: start + text.length, text };
+}
+
+function appendContentControlText(parent: Element, text: string, withinParagraph: boolean): void {
+  const runs = descendants(parent, 'r');
+  const run = runs[0] ?? wordElement(parent.ownerDocument!, 'r');
+  if (!run.parentNode) {
+    if (withinParagraph) {
+      const paragraphProperties = children(parent, 'pPr')[0];
+      if (paragraphProperties) parent.insertBefore(run, paragraphProperties.nextSibling);
+      else parent.insertBefore(run, parent.firstChild);
+    } else {
+      parent.appendChild(run);
+    }
+  }
+  appendText(run, text);
+}
+
 function setSdtText(control: Element, text: string): void {
   const content = children(control, 'sdtContent')[0];
   if (!content) throw new Error('Content control has no w:sdtContent.');
-  const oldParagraph = descendants(content, 'p')[0];
-  let paragraphAncestor: Element | null = control.parentNode as Element | null;
-  let inline = false;
-  while (paragraphAncestor && paragraphAncestor.namespaceURI === WORD_NS) {
-    if (paragraphAncestor.localName === 'p') { inline = true; break; }
-    if (['body', 'tc'].includes(paragraphAncestor.localName ?? '')) break;
-    paragraphAncestor = paragraphAncestor.parentNode as Element | null;
-  }
-  while (content.firstChild) content.removeChild(content.firstChild);
-  if (!inline) {
-    const paragraph = wordElement(control.ownerDocument!, 'p');
-    const paragraphProperties = oldParagraph && children(oldParagraph, 'pPr')[0];
-    if (paragraphProperties) paragraph.appendChild(paragraphProperties.cloneNode(true));
-    content.appendChild(paragraph);
-    const run = wordElement(control.ownerDocument!, 'r');
-    paragraph.appendChild(run);
-    appendText(run, text);
+  const paragraphs = descendants(content, 'p');
+  if (!paragraphs.length) {
+    let ancestor = control.parentNode as Element | null;
+    while (ancestor && ancestor.localName !== 'p' && ancestor.localName !== 'body' && ancestor.localName !== 'tc') {
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    if (ancestor?.localName === 'p') {
+      const span = textSpanWithin(ancestor, content);
+      if (span) {
+        const old = span.text;
+        let prefix = 0;
+        while (prefix < old.length && prefix < text.length && old[prefix] === text[prefix]) prefix++;
+        let oldEnd = old.length;
+        let newEnd = text.length;
+        while (oldEnd > prefix && newEnd > prefix && old[oldEnd - 1] === text[newEnd - 1]) {
+          oldEnd--;
+          newEnd--;
+        }
+        if (prefix > 0 && /[\ud800-\udbff]/.test(old[prefix - 1]!)) prefix--;
+        if (oldEnd < old.length && /[\udc00-\udfff]/.test(old[oldEnd]!)) { oldEnd++; newEnd++; }
+        replaceSpan(ancestor, span.start + prefix, span.start + oldEnd, text.slice(prefix, newEnd));
+      } else {
+        appendContentControlText(content, text, false);
+      }
+      return;
+    }
+    appendContentControlText(content, text, false);
     return;
   }
-  const run = wordElement(control.ownerDocument!, 'r');
-  content.appendChild(run);
-  appendText(run, text);
+  if (paragraphs.length === 1) {
+    const paragraph = paragraphs[0]!;
+    const span = textSpanWithin(paragraph, content);
+    if (span) {
+      let prefix = 0;
+      while (prefix < span.text.length && prefix < text.length && span.text[prefix] === text[prefix]) prefix++;
+      let oldEnd = span.text.length;
+      let newEnd = text.length;
+      while (oldEnd > prefix && newEnd > prefix && span.text[oldEnd - 1] === text[newEnd - 1]) {
+        oldEnd--;
+        newEnd--;
+      }
+      if (prefix > 0 && /[\ud800-\udbff]/.test(span.text[prefix - 1]!)) prefix--;
+      if (oldEnd < span.text.length && /[\udc00-\udfff]/.test(span.text[oldEnd]!)) { oldEnd++; newEnd++; }
+      replaceSpan(paragraph, span.start + prefix, span.start + oldEnd, text.slice(prefix, newEnd));
+    } else {
+      appendContentControlText(paragraph, text, true);
+    }
+    return;
+  }
+  for (const paragraph of paragraphs) {
+    const span = textSpanWithin(paragraph, content);
+    if (span) replaceSpan(paragraph, span.start, span.end, '');
+  }
+  appendContentControlText(paragraphs[0]!, text, true);
 }
 
 function ensureW14Namespace(control: Element): void {
