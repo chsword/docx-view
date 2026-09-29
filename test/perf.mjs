@@ -204,14 +204,19 @@ test('performance regression: one large batch is no worse than several small one
 });
 
 test('performance regression: per-operation cost does not degrade further with document size', () => {
-  // 固定 200 次操作，文档规模 4 倍。理想（下标查找 O(1)）≈ 1.00。
-  const large = perOperationCostInChildProcess(2000, 200);
-  const small = perOperationCostInChildProcess(500, 200);
+  // 固定 10 批、每批 1000 次操作，文档规模 4 倍。理想（下标查找 O(1)）≈ 1.00。
+  const large = perOperationCostInChildProcess(2000, 1000);
+  const small = perOperationCostInChildProcess(500, 1000);
+  assert.ok(large.median >= 50 && small.median >= 50, [
+    'indexed edit measurement was shorter than the 50ms minimum; the instrumented setter may not have run',
+    formatMeasurement('10000 ops on a 2000-paragraph document', large),
+    formatMeasurement('10000 ops on a 500-paragraph document', small),
+  ].join('\n'));
   const ratio = large.perOperation / small.perOperation;
   assert.ok(ratio < 1.5, [
     `per-operation cost ratio across a 4x document-size gap exceeded threshold 1.50 (actual ${ratio.toFixed(2)})`,
-    formatMeasurement('200 ops on a 2000-paragraph document', large),
-    formatMeasurement('200 ops on a 500-paragraph document', small),
+    formatMeasurement('10000 ops on a 2000-paragraph document', large),
+    formatMeasurement('10000 ops on a 500-paragraph document', small),
   ].join('\n'));
 });
 
