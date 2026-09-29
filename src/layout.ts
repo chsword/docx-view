@@ -65,7 +65,6 @@ export function paginate(
   };
   const sizeFor = (index: number) => usableSize(sectionAt(index));
   const startPage = (index: number, number = nextNumber): PageBox => {
-    const size = sizeFor(index);
     const page: PageBox = {
       index: pages.length,
       number,
@@ -205,7 +204,6 @@ export function paginate(
       sectionIndex = target;
       if (current) {
         current.section = target;
-        current.contentHeightPx = 0;
       }
     }
     sectionIndex = target;
