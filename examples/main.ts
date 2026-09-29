@@ -795,6 +795,11 @@ function setDocument(next: DocxDocument, name: string): void {
 
 const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
   actions: {
+    toggleViewMode() {
+      editor.setViewMode(editor.getViewMode() === 'continuous' ? 'paginated' : 'continuous');
+      element<HTMLButtonElement>('toggle-view-mode').textContent = editor.getViewMode() === 'continuous' ? '分页预览' : '连续视图';
+      message(editor.getViewMode() === 'continuous' ? '已切换到连续视图。' : '已切换到只读分页预览。');
+    },
     clipboard(action) {
       if (!document.execCommand(action)) message(`浏览器未允许${action === 'copy' ? '复制' : action === 'cut' ? '剪切' : '粘贴'}，请使用键盘快捷键。`, true);
     },
@@ -1089,6 +1094,7 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
 }));
 
 const commandControls: Array<{ elementId: string; commandId: string; pressed?: boolean }> = [
+  { elementId: 'toggle-view-mode', commandId: 'view.mode' },
   { elementId: 'format-bold', commandId: 'format.bold', pressed: true },
   { elementId: 'format-italic', commandId: 'format.italic', pressed: true },
   { elementId: 'format-underline', commandId: 'format.underline', pressed: true },
@@ -1287,6 +1293,7 @@ element('review-clear-authors').addEventListener('click', () => {
 element('comment-author-filter').addEventListener('input', () => refreshComments());
 element('comment-resolved-filter').addEventListener('change', () => refreshComments());
 element('new-comment').addEventListener('click', () => runCommand('comment.new'));
+element('toggle-view-mode').addEventListener('click', () => runCommand('view.mode'));
 element('review-prev-revision').addEventListener('click', () => runCommand('review.previousRevision'));
 element('review-next-revision').addEventListener('click', () => runCommand('review.nextRevision'));
 element('review-accept-all').addEventListener('click', () => runCommand('review.acceptAll'));

@@ -79,6 +79,7 @@ export interface CommandDescriptor {
 }
 
 export interface ExampleCommandActions {
+  toggleViewMode(): void;
   clipboard(action: 'cut' | 'copy' | 'paste'): void;
   toggleRunFormat(kind: 'bold' | 'italic' | 'underline'): void;
   activateFormatPainter(locked: boolean): void;
@@ -165,6 +166,13 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
   const hasPointComment = (ctx: CommandContext) => ctx.commentsAtPoint.length > 0;
   const tableIsAddressable = (ctx: CommandContext) => ctx.editable && ctx.table !== null && !ctx.table.nested;
   return [
+    {
+      id: 'view.mode',
+      title: '切换视图',
+      group: 'view',
+      enabled: () => true,
+      run: () => deps.actions.toggleViewMode(),
+    },
     {
       id: 'clipboard.cut',
       title: '剪切',

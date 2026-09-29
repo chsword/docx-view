@@ -4003,7 +4003,7 @@ export class DocxDocument {
     const container = blockContainerOf(document);
     const elements = container.localName === 'body' ? mainParagraphElements(container) : descendants(container, 'p');
     const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
-    const parsedFields = sourcePartPath === this.mainPath ? parseFields(elements, ownRuns) : undefined;
+    const parsedFields = parseFields(elements, ownRuns);
     const noteNumber = noteState ? (kind: NoteKind, id: number) => noteState.byKind[kind].get(id) ?? null : undefined;
     const imageContext: ImageReadContext = {
       relationships: this.relationshipsFor(sourcePartPath),

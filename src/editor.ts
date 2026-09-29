@@ -26,6 +26,8 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
+import { paginate } from './layout.js';
+import type { FlowItem, LineBox, MeasureContext, PageBox } from './layout.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -175,6 +177,42 @@ function reviewFilterEqual(a: NormalizedReviewFilter, b: NormalizedReviewFilter)
   authorsA.every((value, index) => reviewerBucketKey(value) === reviewerBucketKey(authorsB[index]!));
 }
 
+export function formatPageNumber(number: number, format = 'decimal'): string {
+  if (!Number.isFinite(number) || number < 1) return '0';
+  const value = Math.trunc(number);
+  if (format === 'upperRoman' || format === 'lowerRoman') {
+    const digits: Array<[number, string]> = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+    let result = '';
+    let rest = value;
+    for (const [unit, glyph] of digits) while (rest >= unit) { result += glyph; rest -= unit; }
+    return format === 'lowerRoman' ? result.toLowerCase() : result;
+  }
+  if (format === 'upperLetter' || format === 'lowerLetter') {
+    let result = '';
+    let rest = value;
+    while (rest > 0) { rest--; result = String.fromCharCode(65 + (rest % 26)) + result; rest = Math.floor(rest / 26); }
+    return format === 'lowerLetter' ? result.toLowerCase() : result;
+  }
+  if (format === 'chineseCounting') {
+    const digits = '〇一二三四五六七八九';
+    return String(value).split('').map((digit) => digits[Number(digit)] ?? digit).join('');
+  }
+  return String(value);
+}
+
+export function deriveLineBoxes(rects: Array<{ top: number; height: number; start: number; end: number }>): LineBox[] {
+  const lines: Array<{ top: number; height: number; start: number; end: number }> = [];
+  for (const rect of rects) {
+    const line = lines.find((entry) => Math.abs(entry.top - rect.top) < 1);
+    if (line) {
+      line.start = Math.min(line.start, rect.start);
+      line.end = Math.max(line.end, rect.end);
+      line.height = Math.max(line.height, rect.height);
+    } else lines.push({ ...rect });
+  }
+  return lines.sort((a, b) => a.start - b.start).map(({ height, start, end }) => ({ heightPx: height, startOffset: start, endOffset: end }));
+}
+
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
@@ -252,6 +290,7 @@ export interface DocxEditorOptions {
   showFormattingMarks?: boolean;
   showFieldShading?: boolean;
   reviewFilter?: EditorReviewFilter;
+  viewMode?: 'continuous' | 'paginated';
 }
 
 /** A browser-only, editable view of the supported DOCX paragraph/run/table subset. */
@@ -282,6 +321,8 @@ export class DocxEditor {
   private revisionParagraphIds = new Map<number, HTMLElement[]>();
   private renderShapeInfos: ShapeInfo[] = [];
   private activeRevisionId: number | null = null;
+  private viewMode: 'continuous' | 'paginated';
+  private measuring = false;
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -321,6 +362,7 @@ export class DocxEditor {
   constructor(container: HTMLElement, document: DocxDocument, options: DocxEditorOptions = {}) {
     this.document = document;
     this.options = options;
+    this.viewMode = options.viewMode ?? 'continuous';
     this.reviewFilter = normalizeReviewFilter(options.reviewFilter);
     this.root = container.ownerDocument.createElement('div');
     this.root.className = 'docx-editor';
@@ -355,6 +397,18 @@ export class DocxEditor {
     return this.selectedRangeInfo ? { ...this.selectedRangeInfo.format } : null;
   }
 
+  getViewMode(): 'continuous' | 'paginated' {
+    return this.viewMode;
+  }
+
+  setViewMode(mode: 'continuous' | 'paginated'): void {
+    if (this.destroyed || mode === this.viewMode) return;
+    if (mode === 'paginated') this.flush();
+    else this.paragraphs.clear();
+    this.viewMode = mode;
+    this.render();
+  }
+
   private isMarkupReviewView(): boolean {
     return (this.reviewFilter ?? normalizeReviewFilter(this.options?.reviewFilter)).revisionView === 'markup';
   }
@@ -362,6 +416,7 @@ export class DocxEditor {
   /** Commit visible text before an external API operation or an export. */
   flush(): void {
     if (this.destroyed) return;
+    if (this.viewMode === 'paginated') return;
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
@@ -550,7 +605,7 @@ export class DocxEditor {
       ?? this.selectedImageInfo?.id
       ?? null;
     this.flush();
-    this.applyPageSetup();
+    if (this.viewMode === 'continuous') this.applyPageSetup();
     this.paragraphs.clear();
     this.commentRunIds ??= new Map();
     this.commentParagraphIds ??= new Map();
@@ -593,7 +648,6 @@ export class DocxEditor {
       }
       const fragment = this.root.ownerDocument.createDocumentFragment();
       const canRenderHeaderFooter = typeof this.root.ownerDocument.createElement === 'function';
-      if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
       let defaultTabStopTwips = 720;
       try {
         defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
@@ -601,8 +655,13 @@ export class DocxEditor {
         defaultTabStopTwips = 720;
       }
       this.renderShapeInfos = this.document.getShapes();
-      this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
-      if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
+      if (this.viewMode === 'paginated') {
+        this.renderPaginated(fragment, reviewContext, defaultTabStopTwips);
+      } else {
+        if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
+        this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
+        if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
+      }
       this.root.replaceChildren(fragment);
       if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
       const nextSelected = activeImageId ? this.document.getImages().find((image) => image.id === activeImageId) ?? null : null;
@@ -786,6 +845,131 @@ export class DocxEditor {
     }
   }
 
+  private measureParagraphForPagination(paragraph: ParagraphInfo, widthPx: number, context: MeasureContext): LineBox[] {
+    const host = this.root.ownerDocument.createElement('div');
+    host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, widthPx)}px;`;
+    this.measuring = true;
+    const measured = this.makeParagraph(paragraph, context.defaultTabStopTwips, {
+      authors: undefined,
+      deletedTextByRun: new Map(),
+      revisionColors: new Map(),
+    });
+    this.measuring = false;
+    host.append(measured);
+    this.root.append(host);
+    const textNodes: Array<{ node: Text; start: number }> = [];
+    const collect = (node: Node, start: number): number => {
+      if (node.nodeType === 3) {
+        const text = node as Text;
+        textNodes.push({ node: text, start });
+        return start + text.data.length;
+      }
+      if (node.nodeType !== 1 || (node as HTMLElement).dataset.docxMark !== undefined) return start;
+      let offset = start;
+      for (const child of Array.from(node.childNodes)) offset = collect(child, offset);
+      return offset;
+    };
+    collect(measured.querySelector('.docx-paragraph-content') ?? measured, 0);
+    const content = measured.querySelector('.docx-paragraph-content') ?? measured;
+    const paragraphRange = this.root.ownerDocument.createRange();
+    paragraphRange.selectNodeContents(content);
+    const lineRects = Array.from(paragraphRange.getClientRects()).filter((rect, index, all) =>
+      index === all.findIndex((entry) => Math.abs(entry.top - rect.top) < 1));
+    const nodeAt = (offset: number): { node: Text; offset: number } | undefined => {
+      const entry = textNodes.find((item, index) => offset <= item.start + item.node.data.length && (index === textNodes.length - 1 || offset < textNodes[index + 1]!.start));
+      return entry ? { node: entry.node, offset: Math.max(0, Math.min(entry.node.data.length, offset - entry.start)) } : undefined;
+    };
+    const charRect = (offset: number): DOMRect | undefined => {
+      const start = nodeAt(offset);
+      const end = nodeAt(Math.min(offset + 1, paragraph.text.length));
+      if (!start || !end || start === end) return undefined;
+      const range = this.root.ownerDocument.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      return Array.from(range.getClientRects())[0];
+    };
+    const rects: Array<{ top: number; height: number; start: number; end: number }> = [];
+    for (const line of lineRects) {
+      let start = 0;
+      let end = paragraph.text.length;
+      while (start < end) {
+        const middle = Math.floor((start + end) / 2);
+        const rect = charRect(middle);
+        if (!rect || rect.top < line.top - 1) start = middle + 1; else end = middle;
+      }
+      const lineStart = start;
+      start = lineStart;
+      end = paragraph.text.length;
+      while (start < end) {
+        const middle = Math.ceil((start + end) / 2);
+        const rect = charRect(Math.max(lineStart, middle - 1));
+        if (rect && Math.abs(rect.top - line.top) < 1) start = middle; else end = middle - 1;
+      }
+      if (start > lineStart) rects.push({ top: line.top, height: line.height, start: lineStart, end: start });
+    }
+    host.remove();
+    if (!rects.length) return paragraph.text ? [{ heightPx: 18, startOffset: 0, endOffset: paragraph.text.length }] : [];
+    return deriveLineBoxes(rects);
+  }
+
+  private sliceParagraph(paragraph: ParagraphInfo, start: number, end: number): ParagraphInfo {
+    let offset = 0;
+    const runs = paragraph.runs.flatMap((run) => {
+      const runStart = offset;
+      offset += run.text.length;
+      const from = Math.max(start, runStart);
+      const to = Math.min(end, offset);
+      if (!run.text.length && runStart >= start && (runStart < end || (end === paragraph.text.length && runStart === end))) return [{ ...run }];
+      if (to <= from) return [];
+      return [{ ...run, text: run.text.slice(from - runStart, to - runStart) }];
+    });
+    return { ...paragraph, text: paragraph.text.slice(start, end), runs };
+  }
+
+  private renderPaginated(parent: Node, reviewContext: ReviewRenderContext, defaultTabStopTwips: number): void {
+    const blocks = this.document.getBlocks();
+    const sections = this.document.getSections();
+    const paragraphs = blocks.filter((block): block is Extract<DocumentBlock, { type: 'paragraph' }> => block.type === 'paragraph')
+      .map((block) => block.paragraph);
+    const measurer = {
+      measureParagraph: (paragraph: ParagraphInfo, widthPx: number, context: MeasureContext) =>
+        this.measureParagraphForPagination(paragraph, widthPx, context),
+      // A3 will replace this approximation when table rows can split across pages.
+      measureTableRow: (row: TableRowInfo) => Math.max(18, typeof row.format?.height?.value === 'number' ? row.format.height.value : row.cells.length * 18),
+    };
+    const pages = paginate(blocks, sections, measurer, { defaultTabStopTwips });
+    for (const page of pages) {
+      const section = this.document.getSection(page.section);
+      const firstPhysicalPage = page.index === 0 || pages[page.index - 1]?.section !== page.section;
+      const pageElement = this.root.ownerDocument.createElement('section');
+      pageElement.className = 'docx-page';
+      pageElement.contentEditable = 'false';
+      pageElement.dataset.page = String(page.number);
+      pageElement.style.width = `${section.pageWidth * 96 / 1440}px`;
+      pageElement.style.minHeight = `${section.pageHeight * 96 / 1440}px`;
+      pageElement.style.padding = `${section.margins.top * 96 / 1440}px ${section.margins.right * 96 / 1440}px ${section.margins.bottom * 96 / 1440}px ${section.margins.left * 96 / 1440}px`;
+      pageElement.style.boxSizing = 'border-box';
+      pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length, firstPhysicalPage));
+      const body = this.root.ownerDocument.createElement('div');
+      body.className = 'docx-page-content';
+      const renderedTables = new Set<number>();
+      for (const item of page.items) {
+        if (item.type === 'line') {
+          const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
+          if (paragraph) body.append(this.makeParagraph(this.sliceParagraph(paragraph, item.line.startOffset, item.line.endOffset), defaultTabStopTwips, reviewContext));
+        } else if (item.type === 'tableRow' && !renderedTables.has(item.table)) {
+          const block = blocks[item.table];
+          if (block) {
+            this.appendBlocks(body, [block], defaultTabStopTwips, reviewContext);
+            renderedTables.add(item.table);
+          }
+        }
+      }
+      pageElement.append(body, this.makeHeaderFooter('footer', page.section, page.number, pages.length, firstPhysicalPage));
+      (parent as DocumentFragment).append(pageElement);
+    }
+  }
+
   private applyPageSetup(): void {
     const rootStyle = (this.root as unknown as { style?: CSSStyleDeclaration }).style;
     const paper = this.root.parentElement as HTMLElement | null;
@@ -819,19 +1003,40 @@ export class DocxEditor {
     }
   }
 
-  private makeHeaderFooter(type: 'header' | 'footer'): HTMLElement {
-    const kind = type === 'header' ? this.headerKind : this.footerKind;
+  private makeHeaderFooter(type: 'header' | 'footer', sectionIndex = 0, pageNumber?: number, pageCount?: number, firstPhysicalPage = false): HTMLElement {
+    let kind = type === 'header' ? this.headerKind : this.footerKind;
     let map: Partial<Record<'default' | 'first' | 'even', string>> = {};
     try {
-      const section = this.document.getSection(0);
+      const section = this.document.getSection(sectionIndex);
+      if (pageNumber !== undefined) {
+        kind = firstPhysicalPage && section.titlePage ? 'first' : pageNumber % 2 === 0 ? 'even' : 'default';
+      }
       map = type === 'header' ? section.headers : section.footers;
     } catch {
       map = {};
     }
     const part = map[kind] ?? map.default;
-    const blocks = type === 'header'
-      ? this.document.getHeaderBlocks(0, kind)
-      : this.document.getFooterBlocks(0, kind);
+    let blocks = type === 'header'
+      ? this.document.getHeaderBlocks(sectionIndex, kind)
+      : this.document.getFooterBlocks(sectionIndex, kind);
+    if (pageNumber !== undefined) {
+      const replaceFields = (block: DocumentBlock): DocumentBlock => {
+        if (block.type !== 'paragraph') return block;
+        return {
+          ...block,
+          paragraph: {
+            ...block.paragraph,
+            runs: block.paragraph.runs.map((run) => {
+              const kind = run.field?.role === 'result' ? run.field.kind : undefined;
+              return kind === 'PAGE' || kind === 'NUMPAGES'
+                ? { ...run, text: formatPageNumber(kind === 'PAGE' ? pageNumber : pageCount ?? 0, this.document.getSection(sectionIndex).pageNumbering?.format) }
+                : run;
+            }),
+          },
+        };
+      };
+      blocks = blocks.map(replaceFields);
+    }
     const partXml = part ? this.document.getPartXml(part) : '';
     const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar|drawing|hyperlink|object|pict|sdt|customXml|smartTag|ins|del)\b/.test(partXml);
     const area = this.root.ownerDocument.createElement('div');
@@ -841,7 +1046,7 @@ export class DocxEditor {
     label.id = `docx-${type}-${kind}-label`;
     label.textContent = `${type === 'header' ? '页眉' : '页脚'}（${kind}）`;
     const editable = this.root.ownerDocument.createElement('div');
-    editable.contentEditable = plainEditable ? 'true' : 'false';
+    editable.contentEditable = pageNumber === undefined && plainEditable ? 'true' : 'false';
     editable.className = 'docx-header-footer-text';
     editable.setAttribute('role', 'textbox');
     editable.setAttribute('aria-multiline', 'true');
@@ -849,9 +1054,9 @@ export class DocxEditor {
     const renderedText = blocks.flatMap(block => block.type === 'paragraph' ? [block.paragraph.text] : []).join('\n');
     const normalizedRenderedText = renderedText.replace(/\r\n?/g, '\n').trimEnd();
     editable.textContent = renderedText;
-    if (!plainEditable) editable.setAttribute('aria-readonly', 'true');
+    if (pageNumber !== undefined || !plainEditable) editable.setAttribute('aria-readonly', 'true');
     editable.addEventListener('blur', () => {
-      if (!plainEditable) return;
+      if (pageNumber !== undefined || !plainEditable) return;
       const text = editable.innerText.replace(/\r\n?/g, '\n').trimEnd();
       if (text === normalizedRenderedText) return;
       if (type === 'header') this.document.setHeaderText(0, text, kind);
@@ -944,10 +1149,12 @@ export class DocxEditor {
       if (markerRevisionIds.size) {
         element.dataset.docxRevisionIds = [...markerRevisionIds].join(',');
       }
-      for (const id of markerRevisionIds) {
-        const list = this.revisionParagraphIds.get(id) ?? [];
-        list.push(element);
-        this.revisionParagraphIds.set(id, list);
+      if (!this.measuring) {
+        for (const id of markerRevisionIds) {
+          const list = this.revisionParagraphIds.get(id) ?? [];
+          list.push(element);
+          this.revisionParagraphIds.set(id, list);
+        }
       }
     }
     const paragraphCommentIds = this.commentParagraphIds.get(paragraph.index);
@@ -984,7 +1191,7 @@ export class DocxEditor {
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
+    if (!this.measuring) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
@@ -1173,6 +1380,7 @@ export class DocxEditor {
   }
 
   private registerRevisionNode(ids: number[], node: HTMLElement): void {
+    if (this.measuring) return;
     if (!ids.length) return;
     node.dataset.docxRevisionIds = ids.join(',');
     node.tabIndex = -1;

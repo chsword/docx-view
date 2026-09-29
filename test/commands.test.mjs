@@ -344,7 +344,7 @@ test('read-only, navigation, and revision-decision commands remain enabled in pr
 
 test('Ribbon and context-menu enabled states match for every registered command and view', async (t) => {
   const { registry } = makeRegistry({ revisionCount: 1 });
-  assert.equal(registry.list().length, 58);
+  assert.equal(registry.list().length, 59);
   for (const view of ['markup', 'final', 'original']) {
     const userState = populatedContext(view);
     const targetStates = new Map(

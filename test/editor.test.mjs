@@ -1,8 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
-import { DocxEditor } from '../dist/editor.js';
+import { DocxEditor, deriveLineBoxes, formatPageNumber } from '../dist/editor.js';
 import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
+
+test('formats paginated page numbers and falls back to decimal', () => {
+  assert.equal(formatPageNumber(4, 'upperRoman'), 'IV');
+  assert.equal(formatPageNumber(27, 'lowerLetter'), 'aa');
+  assert.equal(formatPageNumber(12, 'chineseCounting'), '一二');
+  assert.equal(formatPageNumber(7, 'not-a-format'), '7');
+});
+
+test('groups browser line rectangles into continuous character ranges', () => {
+  assert.deepEqual(deriveLineBoxes([
+    { top: 10, height: 18, start: 0, end: 1 },
+    { top: 10.5, height: 18, start: 1, end: 3 },
+    { top: 29, height: 18, start: 3, end: 5 },
+  ]), [
+    { heightPx: 18, startOffset: 0, endOffset: 3 },
+    { heightPx: 18, startOffset: 3, endOffset: 5 },
+  ]);
+});
+
+test('pagination paragraph slices retain zero-length inline content', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const paragraph = {
+    index: 0,
+    text: '前文',
+    runs: [
+      { index: 0, text: '前文', images: [] },
+      { index: 1, text: '', images: [{ id: 'image-1' }] },
+      { index: 2, text: '', noteReference: { kind: 'footnote', id: 1, number: 1, marker: '1' } },
+    ],
+    images: [],
+  };
+  const slice = editor.sliceParagraph(paragraph, 0, paragraph.text.length);
+  assert.equal(slice.text, '前文');
+  assert.equal(slice.runs[1].images[0].id, 'image-1');
+  assert.equal(slice.runs[2].noteReference.marker, '1');
+});
 
 function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);
@@ -54,6 +90,9 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
       className: '',
       attributes: new Map(),
       append(child) { this.childNodes.push(child); },
+      appendChild(child) { this.childNodes.push(child); },
+      addEventListener() {},
+      contains() { return false; },
       setAttribute(name, value) { this.attributes.set(name, value); },
     };
     element.classList = {
@@ -74,6 +113,26 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
   };
   return editor;
 }
+
+test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  const paragraph = { index: 0, text: 'text', runs: [{ index: 0, text: 'text' }] };
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+
+  editor.renderShapeInfos = [{ paragraph: 0, run: 0, kind: 'textbox', hasTextContent: false, id: 'shape-1' }];
+  const withShape = editor.makeParagraph(paragraph, 720, reviewContext);
+  assert.equal(withShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), true);
+
+  editor.renderShapeInfos = [];
+  const withoutShape = editor.makeParagraph(paragraph, 720, reviewContext);
+  assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
+});
 
 function appendRunToParagraph(editor, {
   paragraphIndex = 0,
