@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCommandRegistry, createExampleCommandDescriptors, getCommandControlState } from '../examples/commands.ts';
+import {
+  createCommandContextBuilder,
+  createCommandRegistry,
+  createExampleCommandDescriptors,
+  getCommandControlState,
+} from '../examples/commands.ts';
 
 function makeContext(overrides = {}) {
   return {
@@ -340,11 +345,51 @@ test('Ribbon and context-menu enabled states match for every registered command 
   const { registry } = makeRegistry({ revisionCount: 1 });
   assert.equal(registry.list().length, 56);
   for (const view of ['markup', 'final', 'original']) {
-    const ctx = populatedContext(view);
+    const userState = populatedContext(view);
+    const targetStates = new Map(
+      ['selected-target', 'invoked-target'].map((id) => [id, {
+        selection: structuredClone(userState.selection),
+        table: userState.table && { ...userState.table },
+        image: userState.image && { ...userState.image },
+        hyperlink: userState.hyperlink && { ...userState.hyperlink },
+        revisionsAtPoint: userState.revisionsAtPoint.map((revision) => ({ ...revision })),
+        commentsAtPoint: [...userState.commentsAtPoint],
+      }]),
+    );
+    const targetState = (target) => targetStates.get(target.id);
+    const buildContext = createCommandContextBuilder({
+      getRevisionView: () => userState.revisionView,
+      getSelection: (target) => targetState(target).selection,
+      getTable: (target) => targetState(target).table,
+      getImage: (target) => targetState(target).image,
+      getHyperlink: (target) => targetState(target).hyperlink,
+      getRevisionsAtPoint: (target) => targetState(target).revisionsAtPoint,
+      getCommentsAtPoint: (target) => targetState(target).commentsAtPoint,
+      getActiveCommentId: () => userState.activeCommentId,
+      getClipboard: () => userState.clipboard,
+    });
+    const ribbonCtx = buildContext('ribbon', { id: 'selected-target' });
+    const contextMenuCtx = buildContext('context-menu', { id: 'invoked-target' });
+    const relevantFields = (ctx) => ({
+      revisionView: ctx.revisionView,
+      editable: ctx.editable,
+      selection: ctx.selection,
+      table: ctx.table,
+      image: ctx.image,
+      hyperlink: ctx.hyperlink,
+      revisionsAtPoint: ctx.revisionsAtPoint,
+      commentsAtPoint: ctx.commentsAtPoint,
+      activeCommentId: ctx.activeCommentId,
+      clipboard: ctx.clipboard,
+    });
+    assert.notEqual(ribbonCtx, contextMenuCtx);
+    assert.equal(ribbonCtx.source, 'ribbon');
+    assert.equal(contextMenuCtx.source, 'context-menu');
+    assert.deepEqual(relevantFields(ribbonCtx), relevantFields(contextMenuCtx));
     for (const command of registry.list()) {
       await t.test(`${view}: ${command.id}`, () => {
-        const ribbonDisabled = getCommandControlState(command, ctx).disabled;
-        const contextMenuDisabled = !command.enabled(ctx);
+        const ribbonDisabled = getCommandControlState(command, ribbonCtx).disabled;
+        const contextMenuDisabled = !command.enabled(contextMenuCtx);
         assert.equal(ribbonDisabled, contextMenuDisabled);
       });
     }

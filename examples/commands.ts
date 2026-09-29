@@ -28,6 +28,41 @@ export interface CommandContext {
   source: 'ribbon' | 'context-menu' | 'keyboard';
 }
 
+export interface CommandContextBuilderDependencies {
+  getRevisionView(): CommandContext['revisionView'];
+  getSelection(target: HTMLElement | null): CommandContext['selection'];
+  getTable(target: HTMLElement | null, paragraph: number | null): TableCellLocation | null;
+  getImage(target: HTMLElement | null): ImageInfo | null;
+  getHyperlink(target: HTMLElement | null): HyperlinkInfo | null;
+  getRevisionsAtPoint(target: HTMLElement | null): RevisionMark[];
+  getCommentsAtPoint(target: HTMLElement | null): number[];
+  getActiveCommentId(): number | null | undefined;
+  getClipboard(): CommandContext['clipboard'];
+}
+
+export function createCommandContextBuilder(deps: CommandContextBuilderDependencies) {
+  return (
+    source: CommandContext['source'] = 'ribbon',
+    target: HTMLElement | null = null,
+  ): CommandContext => {
+    const revisionView = deps.getRevisionView();
+    const selection = deps.getSelection(target);
+    return {
+      revisionView,
+      editable: revisionView === 'markup',
+      selection,
+      table: deps.getTable(target, selection.paragraph),
+      image: deps.getImage(target),
+      hyperlink: deps.getHyperlink(target),
+      revisionsAtPoint: deps.getRevisionsAtPoint(target),
+      commentsAtPoint: deps.getCommentsAtPoint(target),
+      activeCommentId: deps.getActiveCommentId(),
+      clipboard: deps.getClipboard(),
+      source,
+    };
+  };
+}
+
 export interface CommandDescriptor {
   id: string;
   title: string;
