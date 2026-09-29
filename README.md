@@ -310,7 +310,7 @@ console.log(tool, result.revision);
 
 域指令不会生成合成文本；因此没有缓存结果的 `PAGE` / `NUMPAGES` 域现在读作空字符串，而不是旧版的 `"1"` / `"?"`。真实页码要等分页能力（A4）落地后再提供。
 
-本期 `getFields()` / `updateFields()` 只覆盖正文段落；文本框中的文字流由 `getShapeParagraphs()` 独立读取，文本框内的域暂不纳入域枚举或更新。
+`getFields()` 与 `updateFields()` 只覆盖正文；文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

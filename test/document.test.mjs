@@ -1787,7 +1787,7 @@ test('insertField writes a complex field and rejects external-resource fields', 
   assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
 });
 
-test('field enumeration excludes textbox fields and keeps run indices aligned', () => {
+test('field enumeration excludes textbox fields and keeps paragraph indices aligned', () => {
   const doc = withBody(
     `<w:p><w:r><w:pict><w:txbxContent><w:p><w:fldSimple w:instr=" SEQ 框内 "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p></w:txbxContent></w:pict></w:r></w:p>` +
     `<w:p><w:fldSimple w:instr=" SEQ 正文 "><w:r><w:t>5</w:t></w:r></w:fldSimple></w:p>`,
@@ -1797,11 +1797,25 @@ test('field enumeration excludes textbox fields and keeps run indices aligned', 
   assert.equal(fields.length, 1);
   assert.equal(fields[0].instruction, ' SEQ 正文 ');
   assert.equal(paragraphs[fields[0].paragraph].text, '5');
-  const fieldRun = paragraphs[fields[0].paragraph].runs.find(run => run.field?.role === 'result');
-  assert.ok(fieldRun);
-  assert.equal(fields[fieldRun.field.index].instruction, fields[0].instruction);
-  doc.updateFields({ now: new Date('2026-01-01T00:00:00Z') });
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /SEQ 框内/);
+  doc.updateFields();
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t>9<\/w:t>/);
+});
+
+test('RunInfo.field.index resolves to the matching getFields entry', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ 正文复杂 </w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>3</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  const fields = doc.getFields();
+  assert.equal(fields.length, 1);
+  for (const paragraph of doc.getParagraphs()) {
+    for (const run of paragraph.runs) {
+      if (!run.field) continue;
+      assert.ok(fields[run.field.index]);
+      assert.equal(fields[run.field.index].instruction, ' SEQ 正文复杂 ');
+    }
+  }
 });
 
 test('setParagraphText preserves fldSimple and keeps runs valid', () => {
