@@ -95,7 +95,7 @@ console.log(reopened.getSnapshot());
 | `clearParagraphNumbering(index)` | 清除段落上的直接编号绑定 |
 | `createNumbering(kind)` | 创建新的项目符号 / 编号 / 多级编号定义并返回新的 `numId` |
 | `setParagraphLevel(index, delta)` | 提高 / 降低段落列表级别，结果钳制在 `0..8` |
-| `restartNumbering(index, options?)` | 从段落处重新开始编号（默认 1；可用 `options.start` 指定起始值），并将后续连续列表项（含更深层级）切换到新编号实例；遇到不同 `numId` 或更高层级即停止；重复调用会新建实例并重新应用起始值 |
+| `restartNumbering(index, options?)` | 从段落处重新开始编号（默认 1；可用 `options.start` 指定起始值），并将后续连续列表项（含更深层级）切换到新编号实例；遇到不同 `numId` 或更高层级即停止；重复调用会新建实例并重新应用起始值。普通段落夹在列表中间不构成停止边界（与 Word 一致）；但**若中间插入了另一个列表的项，段落段在此处终止，其后的同列表项将继续原编号实例而非新实例——此处与 Word 不同**（仅在指定 `options.start` 时可观察到差异） |
 | `continueNumbering(index)` | 将段落及后续连续列表项切回前面同抽象编号、同层级段落的编号实例；不存在前项时不做修改 |
 | `formatRun(paragraph, run, format)` | 设置 run 直接格式，包括字符样式、字号、颜色、下划线、删除线、上下标等常用字段；将某个字段设为 `null` 可回退到继承样式 |
 | `formatRange(range, format)` / `clearRangeFormat(range, fields?)` | 按段落内字符偏移格式化任意文本范围，支持清除全部或指定 run 直接格式字段 |
