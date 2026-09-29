@@ -1,6 +1,6 @@
 import type { CommandContext, CommandRegistry } from './commands.js';
 
-export type ContextMenuPosition = 'body' | 'table' | 'image' | 'hyperlink' | 'revision' | 'comment';
+export type ContextMenuPosition = 'body' | 'table' | 'image' | 'shape' | 'hyperlink' | 'revision' | 'comment';
 
 export interface ContextMenuHit {
   position: ContextMenuPosition;
@@ -69,6 +69,11 @@ const IMAGE_MENU: ContextMenuEntry[] = [
   command('image.replace'),
   command('image.setAlt'),
   command('image.delete'),
+];
+
+const SHAPE_MENU: ContextMenuEntry[] = [
+  command('shape.copyText'),
+  command('shape.viewProperties'),
 ];
 
 const HYPERLINK_MENU: ContextMenuEntry[] = [
@@ -146,6 +151,8 @@ export function contextMenuEntries(hit: ContextMenuHit, ctx: CommandContext): Co
   if (hit.position === 'image') {
     entries.push(...copyEntries(IMAGE_MENU));
     if (hit.table) appendGroup(entries, [command('table.applyCellStyle')]);
+  } else if (hit.position === 'shape') {
+    entries.push(...copyEntries(SHAPE_MENU));
   } else if (hit.position === 'table') {
     entries.push(...copyEntries(TABLE_MENU), separator(), ...copyEntries(BODY_MENU));
   } else if (hit.position === 'hyperlink') {
@@ -172,12 +179,13 @@ function closestWithin(target: HTMLElement, selector: string, root: HTMLElement)
 
 export function hitTestContext(target: HTMLElement, root: HTMLElement): ContextMenuHit {
   const image = closestWithin(target, '[data-image]', root);
+  const shape = closestWithin(target, '[data-docx-shape]', root);
   const table = closestWithin(target, '[data-table-cell="true"]', root);
   const hyperlink = closestWithin(target, '[data-docx-link="1"]', root);
   const revision = closestWithin(target, '[data-docx-revision-ids]', root);
   const comment = closestWithin(target, '[data-docx-comment-ids]', root);
   return {
-    position: image ? 'image' : table ? 'table' : hyperlink ? 'hyperlink' : revision ? 'revision' : comment ? 'comment' : 'body',
+    position: image ? 'image' : shape ? 'shape' : table ? 'table' : hyperlink ? 'hyperlink' : revision ? 'revision' : comment ? 'comment' : 'body',
     target,
     table: Boolean(table),
     hyperlink: Boolean(hyperlink),

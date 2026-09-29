@@ -71,6 +71,16 @@ function fieldFlags(element: Element): { locked: boolean; dirty: boolean } {
   };
 }
 
+function belongsToParagraph(field: Element, paragraph: Element): boolean {
+  let parent = field.parentNode;
+  for (; parent && parent !== paragraph; parent = parent.parentNode) {
+    if (parent.nodeType !== 1) continue;
+    const element = parent as Element;
+    if (element.namespaceURI === WORD_NS && ['p', 'txbxContent'].includes(element.localName ?? '')) return false;
+  }
+  return parent === paragraph;
+}
+
 export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element) => Element[]): ParsedFields {
   const fields: FieldInfo[] = [];
   const roles = new Map<Element, { index: number; role: 'instruction' | 'result' }>();
@@ -97,7 +107,7 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
   };
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     const runs = ownRuns(paragraph);
-    for (const simple of descendants(paragraph, 'fldSimple')) {
+    for (const simple of descendants(paragraph, 'fldSimple').filter(field => belongsToParagraph(field, paragraph))) {
       const instruction = attr(simple, 'instr') ?? '';
       const resultRuns = runs.filter(run => {
         for (let parent = run.parentNode; parent && parent !== paragraph; parent = parent.parentNode) {

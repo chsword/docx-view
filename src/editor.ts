@@ -10,6 +10,7 @@ import type {
   DocumentSnapshot,
   ImageInfo,
   ParagraphInfo,
+  ShapeInfo,
   ReviewerFilterAuthor,
   RunFormat,
   RunInfo,
@@ -20,7 +21,7 @@ import type {
   TableRowInfo,
   WidthFormat,
 } from './types.js';
-import { pxToEmu } from './drawing.js';
+import { placeholderDataUrl, pxToEmu } from './drawing.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
@@ -278,6 +279,7 @@ export class DocxEditor {
   private commentParagraphIds = new Map<number, number[]>();
   private revisionRunIds = new Map<string, HTMLElement[]>();
   private revisionParagraphIds = new Map<number, HTMLElement[]>();
+  private renderShapeInfos: ShapeInfo[] = [];
   private activeRevisionId: number | null = null;
 
   private dispatchLinkClick(target: HTMLElement): void {
@@ -597,6 +599,7 @@ export class DocxEditor {
       } catch {
         defaultTabStopTwips = 720;
       }
+      this.renderShapeInfos = this.document.getShapes();
       this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
       if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
       this.root.replaceChildren(fragment);
@@ -612,6 +615,7 @@ export class DocxEditor {
       this.updateRangeSelection(this.captureDocumentRange());
       this.setActiveRevision(this.activeRevisionId);
     } finally {
+      this.renderShapeInfos = [];
       reviewContext.deletedTextByRun.clear();
       reviewContext.revisionColors.clear();
     }
@@ -971,7 +975,11 @@ export class DocxEditor {
         content.append(marker);
       }
       for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
+      for (const shape of this.renderShapeInfos.filter((item) => item.paragraph === paragraph.index && item.run === run.index)) {
+        content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
+      }
     }
+
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
@@ -1068,6 +1076,49 @@ export class DocxEditor {
       if (event.inputType.startsWith('format')) event.preventDefault();
     });
     return element;
+  }
+
+  private makeShape(shape: ShapeInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLElement {
+    const wrapper = this.root.ownerDocument.createElement(shape.placement === 'floating' ? 'div' : 'span');
+    wrapper.className = `docx-shape docx-shape-${shape.kind}`;
+    wrapper.contentEditable = 'false';
+    wrapper.dataset.docxShape = shape.id;
+    wrapper.style.display = shape.placement === 'floating' ? 'block' : 'inline-block';
+    wrapper.style.width = `${Math.max(48, shape.widthPx || 160)}px`;
+    wrapper.style.minHeight = `${Math.max(48, shape.heightPx || 90)}px`;
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.margin = shape.placement === 'floating' ? '8px 12px 8px 0' : '0 2px';
+    wrapper.style.verticalAlign = 'text-bottom';
+    wrapper.style.border = '1px solid #c7d3e5';
+    wrapper.style.background = '#f7f9fd';
+    wrapper.style.padding = '4px';
+    wrapper.style.boxSizing = 'border-box';
+    wrapper.setAttribute('aria-label', shape.alt ?? shape.geometry ?? shape.kind);
+    if (shape.hasTextContent) {
+      for (const paragraph of this.document.getShapeParagraphs(shape.id)) {
+        const element = this.root.ownerDocument.createElement('p');
+        element.className = 'docx-shape-paragraph';
+        element.style.whiteSpace = 'pre-wrap';
+        applyParagraphStyle(element, paragraph);
+        let offset = 0;
+        for (const run of paragraph.runs) offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
+        if (!paragraph.runs.length) element.textContent = paragraph.text;
+        wrapper.append(element);
+      }
+    } else {
+      const label = shape.alt ?? shape.geometry ?? ({
+        smartArt: 'SmartArt', chart: '图表', textbox: '文本框', shape: '形状', ole: 'OLE', unknown: '对象',
+      }[shape.kind] ?? shape.kind);
+      const image = this.root.ownerDocument.createElement('img');
+      image.src = placeholderDataUrl(label, shape.widthPx || 160, shape.heightPx || 90);
+      image.alt = label;
+      image.draggable = false;
+      image.style.width = '100%';
+      image.style.height = '100%';
+      image.style.display = 'block';
+      wrapper.append(image);
+    }
+    return wrapper;
   }
 
   private reviewScopedRun(paragraphIndex: number, run: RunInfo, reviewContext: ReviewRenderContext): RunInfo {

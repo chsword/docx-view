@@ -85,7 +85,14 @@ export interface SectionDescriptor {
 
 export function collectSections(mainDocument: Document): SectionDescriptor[] {
   const body = children(mainDocument.documentElement!, 'body')[0]!;
-  const paragraphs = descendants(body, 'p');
+  const paragraphs = descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
   const indices = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
   const boundaries: Array<{ index: number; paragraph: Element; sectPr: Element }> = [];
   const walk = (parent: Element, sectionScope: boolean): void => {

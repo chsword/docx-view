@@ -336,6 +336,25 @@ export interface ImageInfo {
   behindDoc?: boolean;
 }
 
+export type ShapeKind = 'textbox' | 'shape' | 'smartArt' | 'chart' | 'ole' | 'unknown';
+
+export interface ShapeInfo {
+  id: string;
+  paragraph: number;
+  run: number;
+  kind: ShapeKind;
+  form: 'drawingml' | 'vml';
+  name?: string;
+  alt?: string;
+  title?: string;
+  widthPx: number;
+  heightPx: number;
+  placement: 'inline' | 'floating';
+  wrap?: ImageInfo['wrap'];
+  hasTextContent: boolean;
+  geometry?: string;
+}
+
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';
 
 export interface SectionInfo {

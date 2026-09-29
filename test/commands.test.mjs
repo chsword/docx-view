@@ -19,6 +19,7 @@ function makeContext(overrides = {}) {
     },
     table: null,
     image: null,
+    shape: null,
     hyperlink: null,
     revisionsAtPoint: [],
     commentsAtPoint: [],
@@ -343,7 +344,7 @@ test('read-only, navigation, and revision-decision commands remain enabled in pr
 
 test('Ribbon and context-menu enabled states match for every registered command and view', async (t) => {
   const { registry } = makeRegistry({ revisionCount: 1 });
-  assert.equal(registry.list().length, 56);
+  assert.equal(registry.list().length, 58);
   for (const view of ['markup', 'final', 'original']) {
     const userState = populatedContext(view);
     const targetStates = new Map(
@@ -351,6 +352,7 @@ test('Ribbon and context-menu enabled states match for every registered command 
         selection: structuredClone(userState.selection),
         table: userState.table && { ...userState.table },
         image: userState.image && { ...userState.image },
+        shape: userState.shape && { ...userState.shape },
         hyperlink: userState.hyperlink && { ...userState.hyperlink },
         revisionsAtPoint: userState.revisionsAtPoint.map((revision) => ({ ...revision })),
         commentsAtPoint: [...userState.commentsAtPoint],
@@ -362,6 +364,7 @@ test('Ribbon and context-menu enabled states match for every registered command 
       getSelection: (target) => targetState(target).selection,
       getTable: (target) => targetState(target).table,
       getImage: (target) => targetState(target).image,
+      getShape: (target) => targetState(target).shape,
       getHyperlink: (target) => targetState(target).hyperlink,
       getRevisionsAtPoint: (target) => targetState(target).revisionsAtPoint,
       getCommentsAtPoint: (target) => targetState(target).commentsAtPoint,
