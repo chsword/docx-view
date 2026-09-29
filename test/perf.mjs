@@ -206,9 +206,11 @@ test('performance regression: one large batch is no worse than several small one
 test('performance regression: per-operation cost does not degrade further with document size', () => {
   // 固定 200 次操作，文档规模 4 倍。理想（下标查找 O(1)）≈ 1.00。
   //
-  // 当前实测 2.8 ~ 3.7（纯 O(文档规模) 会是 4.0）—— 单次按下标的操作是 O(文档规模)：paragraphAt() 每次都
-  // getElementsByTagNameNS 整篇，xmldom 的活动 NodeList 再把每次 DOM 改动重扫一遍。
-  // CPU profile 里这两项合计约占被测区间的 55%。跟进见 issue #92。
+  // 当前实测 2.8 ~ 3.7（纯 O(文档规模) 会是 4.0）—— 单次按下标的操作是 O(文档规模)：
+  // paragraphAt() 每次都 getElementsByTagNameNS 整篇，而 xmldom 的 getElementsByTagNameNS
+  // 每次调用都新建一个 LiveNodeList、构造时就走完整棵子树并把每个元素拷进去，
+  // 取完第 index 个之后其余全部丢掉。CPU profile 里这两项合计约占被测区间的 55%。
+  // 跟进见 issue #92。
   //
   // 所以这里的阈值是「不得进一步恶化」的护栏，不是「已经线性」的证明。
   // #92 修掉之后请把阈值收到 1.5 左右，并把这段注释一并删掉。
