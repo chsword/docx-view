@@ -311,7 +311,7 @@ console.log(tool, result.revision);
 域指令不会生成合成文本；因此没有缓存结果的 `PAGE` / `NUMPAGES` 域现在读作空字符串，而不是旧版的 `"1"` / `"?"`。真实页码要等分页能力（A4）落地后再提供。
 
 `getFields()` 与 `updateFields()` 只覆盖正文；文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
-编辑器中的域结果默认显示灰色底纹（可通过 `DocxEditorOptions.showFieldShading: false` 关闭），选区落在结果内时扩展到整个域结果。域指令不显示；为避免段落文字写入误改域结果，含域的整个段落在编辑器中暂时只读（包括域前后的普通文字）。更新域请调用 `updateFields()` 或重新插入域。
+编辑器中的域结果默认显示灰色底纹（可通过 `DocxEditorOptions.showFieldShading: false` 关闭），选区落在结果内时扩展到整个域结果。域指令不显示；域结果只读，域前后的普通文字仍可编辑。更新域请调用 `updateFields()` 或重新插入域。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

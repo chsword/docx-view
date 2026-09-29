@@ -264,7 +264,6 @@ export class DocxEditor {
     content: HTMLSpanElement;
     text: string;
     failed: boolean;
-    hasFields?: boolean;
   }>();
   private headerKind: 'default' | 'first' | 'even' = 'default';
   private footerKind: 'default' | 'first' | 'even' = 'default';
@@ -366,7 +365,6 @@ export class DocxEditor {
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      if (entry.hasFields) continue;
       const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
       if (sanitized.text === entry.text) {
         entry.failed = false;
@@ -907,8 +905,7 @@ export class DocxEditor {
       element.dataset.numberingFormat = paragraph.numbering.format;
     }
     content.className = 'docx-paragraph-content';
-    const hasFields = paragraph.runs.some((run) => run.field !== undefined);
-    content.contentEditable = this.isMarkupReviewView() && !hasFields ? 'true' : 'false';
+    content.contentEditable = this.isMarkupReviewView() ? 'true' : 'false';
     content.spellcheck = false;
     content.setAttribute('role', 'textbox');
     content.setAttribute('aria-multiline', 'true');
@@ -987,7 +984,7 @@ export class DocxEditor {
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false, hasFields });
+    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
@@ -1077,6 +1074,7 @@ export class DocxEditor {
         event.preventDefault();
         return;
       }
+      if (this.preventFieldDeletion(content, event)) return;
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
         event.preventDefault();
         this.insertText(content, '\n');
@@ -2156,6 +2154,40 @@ export class DocxEditor {
     return Array.from(content?.querySelectorAll?.<HTMLElement>('[data-docx-field]') ?? [])
       .some((node) => range.intersectsNode(node) &&
         (!range.collapsed || element === node || node.contains(element ?? null)));
+  }
+
+  private deletionTouchesField(content: HTMLElement, direction: 'backward' | 'forward'): boolean {
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed || !content.contains(range.startContainer)) return false;
+    let node: Node = range.startContainer;
+    let offset = range.startOffset;
+    while (true) {
+      if (node.nodeType === 3) {
+        if (direction === 'backward' ? offset > 0 : offset < (node.textContent ?? '').length) return false;
+      } else if (node.nodeType === 1) {
+        const siblings = node.childNodes;
+        while (direction === 'backward' ? offset > 0 : offset < siblings.length) {
+          const adjacent = siblings[direction === 'backward' ? --offset : offset++]!;
+          if (adjacent.nodeType === 1 && (adjacent as HTMLElement).dataset.docxFieldRole === 'result') return true;
+          if (this.textLength(adjacent) > 0) return false;
+        }
+      }
+      if (node === content || !node.parentNode) return false;
+      const parent = node.parentNode;
+      offset = Array.prototype.indexOf.call(parent.childNodes, node) + (direction === 'forward' ? 1 : 0);
+      node = parent;
+    }
+  }
+
+  private preventFieldDeletion(content: HTMLElement, event: InputEvent): boolean {
+    if (event.inputType === 'deleteContentBackward' && this.deletionTouchesField(content, 'backward') ||
+        event.inputType === 'deleteContentForward' && this.deletionTouchesField(content, 'forward')) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
   }
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {

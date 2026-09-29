@@ -1202,30 +1202,89 @@ test('field result keeps comment and revision markers through repeated rendering
   }
 });
 
-test('flush does not write back edits within or immediately after a field result', () => {
-  const doc = DocxDocument.create();
-  doc.setPartXml(doc.mainDocumentPath,
-    `<w:document xmlns:w="${WORD_NS}"><w:body><w:p>` +
-    `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ test </w:instrText></w:r>` +
-    `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r>` +
-    `<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p><w:sectPr/></w:body></w:document>`);
+test('collapsed backspace/delete at a field boundary is blocked but adjacent text remains editable', () => {
+  const text = (value) => ({ nodeType: 3, textContent: value });
+  const span = (children, role) => ({
+    nodeType: 1, tagName: 'SPAN', childNodes: children,
+    dataset: role ? { docxField: '0', docxFieldRole: role, ...(role === 'result' ? { docxContent: '1' } : {}) } : {},
+    contentEditable: role ? 'false' : 'inherit',
+  });
+  const before = text('before ');
+  const after = text(' after');
+  const content = span([
+    span([before]), span([], 'instruction'), span([], 'instruction'),
+    span([text('7')], 'result'), span([], 'instruction'), span([after]),
+  ]);
+  const attach = (node, parent) => {
+    node.parentNode = parent;
+    for (const child of node.childNodes ?? []) attach(child, node);
+  };
+  attach(content, null);
+  content.contains = (node) => {
+    for (; node; node = node.parentNode) if (node === content) return true;
+    return false;
+  };
+  const range = { startContainer: after, startOffset: 0, collapsed: true };
   const editor = Object.create(DocxEditor.prototype);
-  editor.destroyed = false;
-  editor.document = doc;
-  editor.options = {};
-  const content = {};
-  editor.readText = () => 'typed';
-  editor.paragraphs = new Map([[0, {
-    content, text: '1', failed: false, hasFields: true,
-  }]]);
-  const xml = doc.getPartXml(doc.mainDocumentPath);
-  const revision = doc.revision;
-  editor.flush();
-  editor.readText = () => '1X';
-  editor.flush();
-  assert.equal(doc.revision, revision);
-  assert.equal(doc.getPartXml(doc.mainDocumentPath), xml);
-  assert.equal(doc.getFields()[0].result, '1');
+  editor.root = { ownerDocument: { getSelection: () => ({ rangeCount: 1, getRangeAt: () => range }) } };
+  const event = (inputType) => ({ inputType, prevented: false, preventDefault() { this.prevented = true; } });
+  const backspace = event('deleteContentBackward');
+  assert.equal(editor.preventFieldDeletion(content, backspace), true);
+  assert.equal(backspace.prevented, true);
+  range.startContainer = before;
+  range.startOffset = before.textContent.length;
+  const deleteForward = event('deleteContentForward');
+  assert.equal(editor.preventFieldDeletion(content, deleteForward), true);
+  assert.equal(deleteForward.prevented, true);
+  const safeBackward = event('deleteContentBackward');
+  assert.equal(editor.preventFieldDeletion(content, safeBackward), false);
+  assert.equal(safeBackward.prevented, false);
+  range.startContainer = content;
+  range.startOffset = 4;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), true);
+  range.startOffset = 3;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentForward')), true);
+  range.startContainer = after;
+  range.startOffset = 1;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), false);
+  range.startOffset = 0;
+  range.collapsed = false;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), false);
+  range.collapsed = true;
+  assert.equal(editor.preventFieldDeletion(content, event('insertText')), false);
+});
+
+test('flush edits ordinary text around complex and simple fields without changing fields', () => {
+  for (const form of ['complex', 'simple']) {
+    const doc = DocxDocument.create();
+    const field = form === 'simple'
+      ? `<w:fldSimple w:instr=" SEQ test "><w:r><w:t>7</w:t></w:r></w:fldSimple>`
+      : `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ test </w:instrText></w:r>` +
+        `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r>` +
+        `<w:r><w:fldChar w:fldCharType="end"/></w:r>`;
+    doc.setPartXml(doc.mainDocumentPath,
+      `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t xml:space="preserve">前 </w:t></w:r>` +
+      field + `<w:r><w:t xml:space="preserve"> 后</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+    const editor = Object.create(DocxEditor.prototype);
+    editor.destroyed = false;
+    editor.document = doc;
+    editor.options = {};
+    const content = { text: '前 7 后' };
+    editor.readText = (node) => node.text;
+    editor.paragraphs = new Map([[0, { content, text: content.text, failed: false }]]);
+    const revision = doc.revision;
+    content.text = '前缀 7 后';
+    editor.flush();
+    content.text = '前缀 7 后续';
+    editor.flush();
+    assert.equal(doc.revision, revision + 2, form);
+    assert.equal(doc.getParagraphs()[0].text, content.text, form);
+    assert.equal(doc.getFields()[0].result, '7', form);
+    assert.equal(doc.getFields()[0].instruction, ' SEQ test ', form);
+    const xml = doc.getPartXml(doc.mainDocumentPath);
+    assert.match(xml, form === 'simple' ? /<w:fldSimple\b/ : /<w:fldChar\b/, form);
+    if (form === 'complex') assert.match(xml, /<w:instrText> SEQ test <\/w:instrText>/);
+  }
 });
 
 test('readText includes read-only field results but not instructions', () => {
