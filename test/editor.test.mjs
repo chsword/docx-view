@@ -1202,7 +1202,7 @@ test('field result keeps comment and revision markers through repeated rendering
   }
 });
 
-test('flush does not write back a changed or removed field result', () => {
+test('flush does not write back edits within or immediately after a field result', () => {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath,
     `<w:document xmlns:w="${WORD_NS}"><w:body><w:p>` +
@@ -1213,17 +1213,15 @@ test('flush does not write back a changed or removed field result', () => {
   editor.destroyed = false;
   editor.document = doc;
   editor.options = {};
-  const field = { textContent: '1' };
-  const content = { contains: (node) => node === field };
+  const content = {};
   editor.readText = () => 'typed';
   editor.paragraphs = new Map([[0, {
-    content, text: '1', failed: false, fieldRuns: [{ node: field, text: '1' }],
+    content, text: '1', failed: false, hasFields: true,
   }]]);
   const xml = doc.getPartXml(doc.mainDocumentPath);
   const revision = doc.revision;
-  field.textContent = 'typed';
   editor.flush();
-  content.contains = () => false;
+  editor.readText = () => '1X';
   editor.flush();
   assert.equal(doc.revision, revision);
   assert.equal(doc.getPartXml(doc.mainDocumentPath), xml);

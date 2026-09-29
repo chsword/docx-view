@@ -264,7 +264,7 @@ export class DocxEditor {
     content: HTMLSpanElement;
     text: string;
     failed: boolean;
-    fieldRuns?: { node: HTMLElement; text: string }[];
+    hasFields?: boolean;
   }>();
   private headerKind: 'default' | 'first' | 'even' = 'default';
   private footerKind: 'default' | 'first' | 'even' = 'default';
@@ -366,7 +366,7 @@ export class DocxEditor {
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      if (entry.fieldRuns?.some(({ node, text }) => !entry.content.contains(node) || node.textContent !== text)) continue;
+      if (entry.hasFields) continue;
       const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
       if (sanitized.text === entry.text) {
         entry.failed = false;
@@ -907,7 +907,8 @@ export class DocxEditor {
       element.dataset.numberingFormat = paragraph.numbering.format;
     }
     content.className = 'docx-paragraph-content';
-    content.contentEditable = this.isMarkupReviewView() ? 'true' : 'false';
+    const hasFields = paragraph.runs.some((run) => run.field !== undefined);
+    content.contentEditable = this.isMarkupReviewView() && !hasFields ? 'true' : 'false';
     content.spellcheck = false;
     content.setAttribute('role', 'textbox');
     content.setAttribute('aria-multiline', 'true');
@@ -986,9 +987,7 @@ export class DocxEditor {
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    const fieldRuns = Array.from(content.querySelectorAll<HTMLElement>('[data-docx-field]'))
-      .map((node) => ({ node, text: node.textContent ?? '' }));
-    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false, fieldRuns });
+    this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false, hasFields });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
     content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
     content.addEventListener('compositionstart', () => { this.composing = true; });
