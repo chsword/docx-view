@@ -822,7 +822,7 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 66);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1360,7 +1360,7 @@ test('broken relationships, missing media parts and invalid extents do not crash
 });
 
 test('operations schema includes the image operations', () => {
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 66);
   const resize = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.find((entry) => entry.properties.type.const === 'resizeImage');
   assert.equal(resize.properties.size.anyOf.length, 2);
 });
@@ -3019,7 +3019,7 @@ test('applyOperations supports comment operations and schema count stays aligned
     operations: [{ type: 'addComment', range: { paragraph: 0, start: 0, end: 1 }, comment: { text: 'a' } }],
   });
   assert.equal(snapshot.comments.length, 1);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 66);
   assert.throws(() => doc.applyOperations({ operations: [{ type: 'replyComment', parentId: 0, comment: {} }] }), /comment\.text/);
 });
 
@@ -4123,7 +4123,7 @@ test('revision author survives undo and redo for later tracked edits', () => {
 test('agent operation schema includes tracked-review settings operations', () => {
   const types = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
     .map((entry) => entry.properties.type.const);
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 62);
+  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 66);
   assert.ok(types.includes('setTrackChanges'));
   assert.ok(types.includes('setRevisionAuthor'));
 });
