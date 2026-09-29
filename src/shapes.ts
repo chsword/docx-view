@@ -1,9 +1,9 @@
 import type { Element } from '@xmldom/xmldom';
 import { emuToPx, V_NS, WP_NS, A_NS } from './drawing.js';
 import type { ShapeInfo, ShapeKind } from './types.js';
+import { MC_NS, selectAlternateContentBranch } from './xml.js';
 
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-const MC_NS = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const WPS_NS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
 const DIAGRAM_NS = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
 const CHART_NS = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
@@ -110,10 +110,7 @@ export function readRunShapes(runElement: Element, paragraph: number, run: numbe
     if (child.nodeType !== 1) continue;
     const element = child as Element;
     if (element.namespaceURI === MC_NS && element.localName === 'AlternateContent') {
-      const choices = descendants(element, MC_NS, 'Choice');
-      const choice = choices.find((candidate) => (candidate.getAttribute('Requires') ?? '').split(/\s+/).includes('wps'))
-        ?? choices[0];
-      const branch = choice ?? first(element, MC_NS, 'Fallback');
+      const branch = selectAlternateContentBranch(element);
       if (branch) {
         for (let branchChild = branch.firstChild; branchChild; branchChild = branchChild.nextSibling) {
           if (branchChild.nodeType === 1) elements.push(branchChild as Element);

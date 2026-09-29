@@ -1221,6 +1221,22 @@ test('inline drawing images are parsed and exposed on runs and paragraphs', () =
   assert.match(doc.getImageDataUrl(paragraph.images[0]), /^data:image\/png;base64,/);
 });
 
+test('run-level AlternateContent reads only the preferred drawing image and preserves its fallback', async () => {
+  const doc = withImageDoc(
+    `<w:p><w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="wps"><w:drawing><wp:inline><wp:extent cx="190500" cy="95250"/><wp:docPr id="1" name="choice"/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape id="fallback"><v:imagedata r:id="rId1"/></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>`,
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>`,
+  );
+
+  const [image] = doc.getImages();
+  assert.equal(doc.getImages().length, 1);
+  assert.equal(image.name, 'choice');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.match(
+    reopened.getPartXml(reopened.mainDocumentPath),
+    /<mc:Fallback><w:pict><v:shape id="fallback"><v:imagedata r:id="rId1"\/><\/v:shape><\/w:pict><\/mc:Fallback>/,
+  );
+});
+
 test('a run exposes and preserves multiple images in document order', () => {
   const doc = withImageDoc(
     `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="one"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="one"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing><w:drawing><wp:inline><wp:extent cx="457200" cy="457200"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="2" name="two"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${PIC_NS}"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="two"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="457200" cy="457200"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
