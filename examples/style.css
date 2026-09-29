@@ -72,6 +72,9 @@ input { border: 1px solid var(--border); border-radius: 5px; color: #536077; bac
 .paper-stage { background: #f4f6f9; padding: 28px; min-height: 730px; max-height: 950px; overflow: auto; }
 .paper { min-height: 850px; padding: 53px 48px 65px; max-width: 795px; margin: 0 auto; background: #fff; box-shadow: 0 2px 8px #2939570b, 0 0 0 1px #e9edf3; }
 .docx-editor { font-size: 11pt; line-height: 1.9; overflow-wrap: anywhere; color: #394a61; }
+.docx-page { position: relative; margin: 0 auto 24px; background: #fff; box-shadow: 0 2px 8px #2939570b, 0 0 0 1px #e9edf3; overflow: hidden; }
+.docx-page-content { min-height: 1px; }
+.docx-page .docx-header, .docx-page .docx-footer { contenteditable: false; }
 .paper[data-orientation="landscape"] { min-height: 620px; }
 .docx-header, .docx-footer { break-inside: avoid; margin: 0 0 14px; padding: 8px 10px; border: 1px dashed #cbd7eb; background: #f8fbff; }
 .docx-footer { margin: 16px 0 0; }
