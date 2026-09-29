@@ -6,7 +6,8 @@ import { DocxDocument } from '../dist/document.js';
 
 const MAX_OPERATIONS_PER_REQUEST = 1000;
 const BATCH_COUNT = 10;
-const [documentParagraphs, batchOperationCount, rounds] = process.argv.slice(2).map(Number);
+const [documentParagraphs, batchOperationCount, rounds] = process.argv.slice(2, 5).map(Number);
+const mode = process.argv[5] ?? 'batch';
 
 function seededDocument() {
   const doc = DocxDocument.create();
@@ -47,7 +48,13 @@ DocxDocument.prototype.setParagraphText = function (...args) {
 function runSample() {
   const doc = seededDocument();
   operationTime = 0;
-  for (const request of requests) doc.applyOperations(request);
+  if (mode === 'direct') {
+    for (const request of requests) {
+      for (const operation of request.operations) doc.setParagraphText(operation.index, operation.text);
+    }
+  } else {
+    for (const request of requests) doc.applyOperations(request);
+  }
   return operationTime;
 }
 try {

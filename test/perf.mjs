@@ -74,6 +74,15 @@ function assertRatioBelow(result, threshold, description, numeratorLabel, denomi
   ].join('\n'));
 }
 
+function assertRatioAbove(result, threshold, description, numeratorLabel, denominatorLabel) {
+  assert.ok(result.ratio > threshold, [
+    `${description} fell below threshold ${threshold.toFixed(2)} (actual ${result.ratio.toFixed(2)})`,
+    `paired ratios=[${result.ratios.map((value) => value.toFixed(2)).join(', ')}]`,
+    formatMeasurement(numeratorLabel, result.numerator),
+    formatMeasurement(denominatorLabel, result.denominator),
+  ].join('\n'));
+}
+
 const MAX_OPERATIONS_PER_REQUEST = 1000;
 
 function seededDocument(totalParagraphs) {
@@ -144,9 +153,9 @@ function chunkedSetParagraphText(totalParagraphs, chunkSize) {
 // 这一档必须开独立进程。同一个进程里，小规模那侧会因为 JIT 越跑越快、又会被大规模那侧
 // 留下的垃圾拖慢 —— 配对交替抵消不了这种工作集大小的不对称：实测同进程的配对比值会在
 // 3.8 到 11.0 之间跳，5 次里有 1 次误报。独立进程测出来则稳定在 3.7 上下。
-function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5) {
+function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5, mode = 'batch') {
   const output = execFileSync(process.execPath,
-    [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds)],
+    [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds), mode],
     { encoding: 'utf8' });
   return JSON.parse(output);
 }
@@ -183,10 +192,13 @@ function tableCellSwitches(tableCount) {
   };
 }
 
-test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
-  const result = measurePairedRatio(singleInsert(200, 200), singleSetParagraphText(200));
-  assertRatioBelow(result, 3, 'insertParagraph cost ratio',
-    'single insert x200 into 200 seeded paragraphs', 'setParagraphText x200');
+test('performance regression: setParagraphText retains its delta speed advantage', () => {
+  const result = measurePairedRatio(singleInsert(1000, 1000), singleSetParagraphText(1000));
+  // setParagraphText uses a paragraph delta while insertParagraph still uses
+  // a full-part snapshot. A lower bound catches the delta path regressing to
+  // full-document serialization; the two direct paths have comparable scale.
+  assertRatioAbove(result, 6, 'insertParagraph cost ratio',
+    'single insert x1000 into 1000 seeded paragraphs', 'setParagraphText x1000');
 });
 
 test('performance regression: batched inserts remain materially faster than repeated single inserts', () => {

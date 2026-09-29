@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
@@ -154,6 +155,7 @@ interface HistoryState {
   bytes: number;
   entry: HistoryEntry;
   action: HistoryAction;
+  paragraphDelta?: { paragraph: number; restore: Element; redo?: Element };
 }
 
 function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
@@ -2815,22 +2817,30 @@ export class DocxDocument {
 
   undo(): DocumentSnapshot {
     if (!this.undoHistory.length) return this.getSnapshot();
-    this.materializeAllParts();
-    const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
     const step = this.undoHistory.pop()!;
     this.undoHistoryBytes -= step.bytes;
-    this.restorePartsFromHistory(step.parts);
-    this.currentRevision++;
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.outlineCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.reviewerInfoCache = undefined;
-    this.tableCellLocationCache = undefined;
-    this.imageDataUrls.clear();
-    this.pushRedoState({ ...current, action: step.action });
+    if (step.paragraphDelta) {
+      this.applyParagraphHistoryXml(step.paragraphDelta.paragraph, step.paragraphDelta.restore);
+      this.currentRevision++;
+      this.invalidateMutationCaches();
+      this.pushRedoState({
+        ...step,
+        bytes: step.bytes,
+        paragraphDelta: {
+          paragraph: step.paragraphDelta.paragraph,
+          restore: step.paragraphDelta.redo!,
+          redo: step.paragraphDelta.restore,
+        },
+        action: step.action,
+      });
+    } else {
+      this.materializeAllParts();
+      const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
+      this.restorePartsFromHistory(step.parts);
+      this.currentRevision++;
+      this.invalidateMutationCaches();
+      this.pushRedoState({ ...current, action: step.action });
+    }
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
     return this.getSnapshot();
@@ -2838,22 +2848,30 @@ export class DocxDocument {
 
   redo(): DocumentSnapshot {
     if (!this.redoHistory.length) return this.getSnapshot();
-    this.materializeAllParts();
-    const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
     const step = this.redoHistory.pop()!;
     this.redoHistoryBytes -= step.bytes;
-    this.restorePartsFromHistory(step.parts);
-    this.currentRevision++;
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.outlineCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.reviewerInfoCache = undefined;
-    this.tableCellLocationCache = undefined;
-    this.imageDataUrls.clear();
-    this.pushUndoState({ ...current, action: step.action });
+    if (step.paragraphDelta) {
+      this.applyParagraphHistoryXml(step.paragraphDelta.paragraph, step.paragraphDelta.restore);
+      this.currentRevision++;
+      this.invalidateMutationCaches();
+      this.pushUndoState({
+        ...step,
+        bytes: step.bytes,
+        paragraphDelta: {
+          paragraph: step.paragraphDelta.paragraph,
+          restore: step.paragraphDelta.redo!,
+          redo: step.paragraphDelta.restore,
+        },
+        action: step.action,
+      });
+    } else {
+      this.materializeAllParts();
+      const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
+      this.restorePartsFromHistory(step.parts);
+      this.currentRevision++;
+      this.invalidateMutationCaches();
+      this.pushUndoState({ ...current, action: step.action });
+    }
     this.enforceHistoryLimits();
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
@@ -3239,6 +3257,17 @@ export class DocxDocument {
   }
 
   private snapshotHistoryState(revision: number, label: string | undefined, action: HistoryAction): HistoryState {
+    if (action.kind === 'setParagraphText' && !this.historyGroupDepth) {
+      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), action.paragraph);
+      const restore = paragraph.cloneNode(true) as Element;
+      return {
+        parts: this.cloneParts(this.parts),
+        bytes: new XMLSerializer().serializeToString(restore).length,
+        entry: { revision, label, at: Date.now() },
+        action,
+        paragraphDelta: { paragraph: action.paragraph, restore },
+      };
+    }
     const parts = this.cloneParts(this.parts);
     return {
       parts,
@@ -3313,8 +3342,7 @@ export class DocxDocument {
   }
 
   private restorePartsFromHistory(parts: Map<string, Uint8Array>): void {
-    const next = this.cloneParts(parts);
-    this.parts = next;
+    this.parts = this.cloneParts(parts);
     this.documents = new Map();
     this.dirtyPartXml = new Set();
     this.dirtyPartSizes = new Map();
@@ -3325,18 +3353,31 @@ export class DocxDocument {
   private recordHistory(before: HistoryState): void {
     if (this.suppressHistory) return;
     if (this.historyGroupDepth > 0) {
-      if (!this.historyGroupBase) this.historyGroupBase = { parts: before.parts, bytes: before.bytes };
+      if (!this.historyGroupBase) {
+        this.historyGroupBase = {
+          parts: before.parts,
+          bytes: before.bytes,
+        };
+      }
       if (before.action.kind !== 'other') this.historyGroupAction = before.action;
       this.redoHistory = [];
       this.redoHistoryBytes = 0;
       return;
     }
-    this.pushUndoState({
+    const state: HistoryState = {
       parts: before.parts,
       bytes: before.bytes,
       entry: { revision: this.revision, label: before.entry.label, at: Date.now() },
       action: before.action,
-    });
+    };
+    if (before.paragraphDelta) {
+      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), before.paragraphDelta.paragraph);
+      const redo = paragraph.cloneNode(true) as Element;
+      state.bytes = new XMLSerializer().serializeToString(before.paragraphDelta.restore).length +
+        new XMLSerializer().serializeToString(redo).length;
+      state.paragraphDelta = { ...before.paragraphDelta, redo };
+    }
+    this.pushUndoState(state);
     this.redoHistory = [];
     this.redoHistoryBytes = 0;
     this.enforceHistoryLimits();
@@ -3361,6 +3402,13 @@ export class DocxDocument {
     previous.entry.revision = this.revision;
     previous.entry.at = Date.now();
     previous.entry.label = pending.label ?? previous.entry.label;
+    if (previous.paragraphDelta) {
+      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), previous.paragraphDelta.paragraph);
+      const redo = paragraph.cloneNode(true) as Element;
+      previous.paragraphDelta.redo = redo;
+      previous.bytes = new XMLSerializer().serializeToString(previous.paragraphDelta.restore).length +
+        new XMLSerializer().serializeToString(redo).length;
+    }
     this.redoHistory = [];
     this.redoHistoryBytes = 0;
   }
@@ -3372,8 +3420,29 @@ export class DocxDocument {
       this.pendingMergedHistory = { label, action, at };
       return undefined;
     }
-    this.materializeAllParts();
+    if (action.kind !== 'setParagraphText' || this.historyGroupDepth) this.materializeAllParts();
     return this.snapshotHistoryState(this.revision, label, action);
+  }
+
+  private applyParagraphHistoryXml(index: number, paragraphSnapshot: Element): void {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const paragraph = paragraphAt(document, index);
+    const replacement = paragraphSnapshot.cloneNode(true) as Element;
+    paragraph.parentNode!.replaceChild(replacement, paragraph);
+    this.dirtyPartXml.add(this.mainPath);
+    this.dirtyPartSizes.delete(this.mainPath);
+  }
+
+  private invalidateMutationCaches(): void {
+    this.numberingContextCache = undefined;
+    this.stylesCache = undefined;
+    this.outlineCache = undefined;
+    this.noteStateCache = undefined;
+    this.commentStateCache = undefined;
+    this.revisionInfoCache = undefined;
+    this.reviewerInfoCache = undefined;
+    this.tableCellLocationCache = undefined;
+    this.imageDataUrls.clear();
   }
 
   private abortHistoryGroupOnFailure(): void {
@@ -8660,12 +8729,22 @@ export class DocxDocument {
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
+      paragraphDelta: state.paragraphDelta ? {
+        paragraph: state.paragraphDelta.paragraph,
+        restore: state.paragraphDelta.restore.cloneNode(true) as Element,
+        ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
+      } : undefined,
     }));
     draft.redoHistory = this.redoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
+      paragraphDelta: state.paragraphDelta ? {
+        paragraph: state.paragraphDelta.paragraph,
+        restore: state.paragraphDelta.restore.cloneNode(true) as Element,
+        ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
+      } : undefined,
     }));
     draft.undoHistoryBytes = this.undoHistoryBytes;
     draft.redoHistoryBytes = this.redoHistoryBytes;
@@ -9477,12 +9556,22 @@ export class DocxDocument {
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
+      paragraphDelta: state.paragraphDelta ? {
+        paragraph: state.paragraphDelta.paragraph,
+        restore: state.paragraphDelta.restore.cloneNode(true) as Element,
+        ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
+      } : undefined,
     }));
     draft.redoHistory = this.redoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
+      paragraphDelta: state.paragraphDelta ? {
+        paragraph: state.paragraphDelta.paragraph,
+        restore: state.paragraphDelta.restore.cloneNode(true) as Element,
+        ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
+      } : undefined,
     }));
     draft.undoHistoryBytes = this.undoHistoryBytes;
     draft.redoHistoryBytes = this.redoHistoryBytes;

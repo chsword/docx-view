@@ -191,7 +191,7 @@ console.log(reopened.getSnapshot());
 
 - `DocxEditor.setReviewFilter({ authors })` 也同步改为传 `ReviewerFilterAuthor[]`：`named` 必须带非空 `author`，`unattributed` 不带 `author`，`empty` 必须传 `author: ''`，`blank` 必须传仅空白的 `author`。
 - 旧的字符串数组写法需迁移。
-逐次调用公开方法会按次记录历史（每步一次快照），连续编辑同一段落的文字会在短时间窗口内合并为一步；批量修改请走 `applyOperations`，一个批次只记录一步、也只拍一次快照——实测 600 次逐个 `insertParagraph` 明显慢于同样内容的单批操作，大批量场景请优先使用批次接口。若一次写入调用（包括非空 `applyOperations` 批次）最终没有产生任何部件字节变化，则该调用视为 no-op：不会推进 `revision`、不会新增撤销历史。撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
+逐次调用公开方法会按次记录历史（每步一次快照），连续编辑同一段落的文字会在短时间窗口内合并为一步；`setParagraphText()` 的历史项使用段落级增量，避免为纯文字编辑序列化整篇文档；其他公开写入方法仍按完整部件快照记录。批量修改请走 `applyOperations`，一个批次只记录一步、也只拍一次快照——实测 600 次逐个 `insertParagraph` 明显慢于同样内容的单批操作，大批量场景请优先使用批次接口。若一次写入调用（包括非空 `applyOperations` 批次）最终没有产生任何部件字节变化，则该调用视为 no-op：不会推进 `revision`、不会新增撤销历史。撤销历史默认最多保留 50 步，且总快照字节默认上限 64 MiB；超过上限时会丢弃最旧步骤。`revision` 表示“变更次数”而不是“文档版本号”：执行 `undo()` / `redo()` 时 `revision` 依然单调递增，不会回退。
 
 ### 可视化组件
 

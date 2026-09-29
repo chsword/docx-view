@@ -943,6 +943,20 @@ test('setParagraphText merge is paragraph-local', () => {
   assert.equal(doc.getParagraphs()[1].text, 'x');
 });
 
+test('setParagraphText history deltas undo and redo separate paragraphs', () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('B');
+  doc.setParagraphText(0, 'A1');
+  doc.setParagraphText(1, 'B1');
+  doc.undo();
+  assert.deepEqual(paragraphTexts(doc), ['A1', 'B']);
+  doc.undo();
+  assert.deepEqual(paragraphTexts(doc), ['', 'B']);
+  doc.redo();
+  doc.redo();
+  assert.deepEqual(paragraphTexts(doc), ['A1', 'B1']);
+});
+
 test('applyOperations batch is one undo step and revision still advances on undo', () => {
   const doc = DocxDocument.create();
   doc.applyOperations({
@@ -1161,6 +1175,32 @@ test('merged setParagraphText edits skip repeated history snapshot materializati
   assert.equal(doc.getHistory().undo.length, 1);
   doc.undo();
   assert.equal(doc.getParagraphs()[0].text, '');
+});
+
+test('separate setParagraphText edits defer history materialization', async () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('second');
+  const original = doc.materializeAllParts;
+  let calls = 0;
+  doc.materializeAllParts = function materializeProxy() {
+    calls++;
+    return original.call(this);
+  };
+  doc.setParagraphText(1, 'updated');
+  assert.equal(calls, 0);
+  await doc.toUint8Array();
+  assert.equal(calls, 1);
+});
+
+test('undo restores dirty state that exports and reloads byte-for-byte', async () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('original');
+  const before = packagePartsSignature(doc);
+  doc.setParagraphText(0, 'edited');
+  doc.undo();
+  const exported = await doc.toUint8Array();
+  const restored = await DocxDocument.load(exported);
+  assert.deepEqual(packagePartsSignature(restored), before);
 });
 
 test('undo/redo without history is a no-op', () => {
