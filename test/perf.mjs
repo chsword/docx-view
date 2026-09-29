@@ -189,6 +189,9 @@ function tableCellSwitches(tableCount) {
 
 test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
   const result = measurePairedRatio(singleInsert(200, 200), singleSetParagraphText(200));
+  // setParagraphText is now substantially faster because its history uses a
+  // paragraph delta; the smaller denominator makes this ratio noisier than
+  // the previous threshold of 3, so keep the guard while allowing that gain.
   assertRatioBelow(result, 12, 'insertParagraph cost ratio',
     'single insert x200 into 200 seeded paragraphs', 'setParagraphText x200');
 });
@@ -227,8 +230,8 @@ test('performance regression: per-operation cost does not degrade further with d
 
 test('performance regression: direct edits stay within the batched baseline', () => {
   for (const paragraphs of [500, 2000]) {
-    const direct = directEditCostInChildProcess(paragraphs, 200);
-    const batch = perOperationCostInChildProcess(paragraphs, 200);
+    const direct = directEditCostInChildProcess(paragraphs, 1000);
+    const batch = perOperationCostInChildProcess(paragraphs, 1000);
     const ratio = direct.perOperation / batch.perOperation;
     assert.ok(ratio < 50, [
       `direct edits exceeded 50x batched edits at ${paragraphs} paragraphs (ratio ${ratio.toFixed(1)})`,
