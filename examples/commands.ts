@@ -1,5 +1,6 @@
 import type {
   DocumentRange,
+  HyperlinkInfo,
   ImageInfo,
   ParagraphFormat,
   ParagraphInfo,
@@ -19,7 +20,7 @@ export interface CommandContext {
   };
   table: TableCellLocation | null;
   image: ImageInfo | null;
-  hyperlink: { paragraph: number; runs: number[]; url?: string; anchor?: string; unsafe: boolean } | null;
+  hyperlink: HyperlinkInfo | null;
   revisionsAtPoint: RevisionMark[];
   commentsAtPoint: number[];
   activeCommentId?: number | null;
@@ -39,6 +40,7 @@ export interface CommandDescriptor {
 }
 
 export interface ExampleCommandActions {
+  clipboard(action: 'cut' | 'copy' | 'paste'): void;
   toggleRunFormat(kind: 'bold' | 'italic' | 'underline'): void;
   activateFormatPainter(locked: boolean): void;
   clearFormat(): void;
@@ -49,24 +51,36 @@ export interface ExampleCommandActions {
   applyNumbering(kind: 'bullet' | 'decimal'): void;
   changeNumberingLevel(delta: number): void;
   insertTableRow(): void;
+  insertTableRowAt(where: 'above' | 'below'): void;
   deleteTableRow(): void;
   insertTableColumn(): void;
+  insertTableColumnAt(where: 'left' | 'right'): void;
   deleteTableColumn(): void;
   mergeCells(): void;
   splitCell(): void;
   applyCellStyle(fill: string): void;
+  unavailableTableAction(): void;
   startInsertImage(): void;
-  startReplaceImage(): void;
-  deleteImage(): void;
-  setImageAlt(text: string): void;
+  startReplaceImage(image?: ImageInfo | null): void;
+  deleteImage(image?: ImageInfo | null): void;
+  setImageAlt(text: string, image?: ImageInfo | null): void;
   focusPreviousRevision(): void;
   focusNextRevision(): void;
   acceptAllRevisions(): void;
   rejectAllRevisions(): void;
+  insertHyperlink(ctx: CommandContext): void;
+  openHyperlink(link: HyperlinkInfo): void;
+  copyHyperlinkAddress(link: HyperlinkInfo): void;
+  editHyperlink(link: HyperlinkInfo): void;
+  removeHyperlink(link: HyperlinkInfo): void;
+  acceptRevisions(ctx: CommandContext, paragraph: boolean): void;
+  rejectRevisions(ctx: CommandContext, paragraph: boolean): void;
+  openReviewOptions(): void;
   addComment(): void;
   replyComment(commentId: number): void;
   toggleCommentResolved(commentId: number): void;
   deleteComment(commentId: number): void;
+  focusComment(commentId: number): void;
 }
 
 export interface ExampleCommandDeps {
@@ -80,6 +94,7 @@ export interface ExampleCommandDeps {
   getAlignmentValue(): ParagraphFormat['alignment'];
   getCellFillValue(): string;
   getImageAltValue(): string;
+  isCommentResolved(commentId: number): boolean;
 }
 
 export interface CommandRegistry {
@@ -106,8 +121,32 @@ function firstCommentId(ctx: CommandContext): number {
 
 export function createExampleCommandDescriptors(deps: ExampleCommandDeps): CommandDescriptor[] {
   const paragraph = (ctx: CommandContext) => deps.getParagraphInfo(ctx.selection.paragraph);
+  const hasLink = (ctx: CommandContext) => ctx.hyperlink !== null;
+  const hasPointRevision = (ctx: CommandContext) => ctx.revisionsAtPoint.length > 0;
+  const hasPointComment = (ctx: CommandContext) => ctx.commentsAtPoint.length > 0;
   const tableIsAddressable = (ctx: CommandContext) => ctx.table !== null && !ctx.table.nested;
   return [
+    {
+      id: 'clipboard.cut',
+      title: '剪切',
+      group: 'clipboard',
+      enabled: (ctx) => ctx.editable && hasSelectionTarget(ctx),
+      run: () => deps.actions.clipboard('cut'),
+    },
+    {
+      id: 'clipboard.copy',
+      title: '复制',
+      group: 'clipboard',
+      enabled: hasSelectionTarget,
+      run: () => deps.actions.clipboard('copy'),
+    },
+    {
+      id: 'clipboard.paste',
+      title: '粘贴',
+      group: 'clipboard',
+      enabled: (ctx) => ctx.editable && ctx.clipboard !== 'empty',
+      run: () => deps.actions.clipboard('paste'),
+    },
     {
       id: 'format.bold',
       title: '加粗',
@@ -228,6 +267,22 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       run: () => deps.actions.insertTableRow(),
     },
     {
+      id: 'table.insertRowAbove',
+      title: '在上方插入行',
+      group: 'table',
+      enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.insertTableRowAt('above'),
+    },
+    {
+      id: 'table.insertRowBelow',
+      title: '在下方插入行',
+      group: 'table',
+      enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.insertTableRowAt('below'),
+    },
+    {
       id: 'table.deleteRow',
       title: '删除行',
       group: 'table',
@@ -242,6 +297,22 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       run: () => deps.actions.insertTableColumn(),
     },
     {
+      id: 'table.insertColumnLeft',
+      title: '在左侧插入列',
+      group: 'table',
+      enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.insertTableColumnAt('left'),
+    },
+    {
+      id: 'table.insertColumnRight',
+      title: '在右侧插入列',
+      group: 'table',
+      enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.insertTableColumnAt('right'),
+    },
+    {
       id: 'table.deleteColumn',
       title: '删除列',
       group: 'table',
@@ -253,6 +324,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '合并单元格',
       group: 'table',
       enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.mergeCells(),
     },
     {
@@ -260,6 +332,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '拆分单元格',
       group: 'table',
       enabled: tableIsAddressable,
+      visibleInMenu: (ctx) => ctx.table !== null,
       run: () => deps.actions.splitCell(),
     },
     {
@@ -268,6 +341,22 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       group: 'table',
       enabled: tableIsAddressable,
       run: () => deps.actions.applyCellStyle(deps.getCellFillValue()),
+    },
+    {
+      id: 'table.deleteTable',
+      title: '删除表格',
+      group: 'table',
+      enabled: () => false,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.unavailableTableAction(),
+    },
+    {
+      id: 'table.applyStyle',
+      title: '应用表格样式…',
+      group: 'table',
+      enabled: () => false,
+      visibleInMenu: (ctx) => ctx.table !== null,
+      run: () => deps.actions.unavailableTableAction(),
     },
     {
       id: 'image.insert',
@@ -281,21 +370,24 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '替换图片',
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
-      run: () => deps.actions.startReplaceImage(),
+      visibleInMenu: (ctx) => ctx.image !== null,
+      run: (ctx) => deps.actions.startReplaceImage(ctx.image),
     },
     {
       id: 'image.delete',
       title: '删除图片',
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
-      run: () => deps.actions.deleteImage(),
+      visibleInMenu: (ctx) => ctx.image !== null,
+      run: (ctx) => deps.actions.deleteImage(ctx.image),
     },
     {
       id: 'image.setAlt',
       title: '设置图片替代文本',
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
-      run: () => deps.actions.setImageAlt(deps.getImageAltValue()),
+      visibleInMenu: (ctx) => ctx.image !== null,
+      run: (ctx) => deps.actions.setImageAlt(deps.getImageAltValue(), ctx.image),
     },
     {
       id: 'review.previousRevision',
@@ -326,6 +418,87 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       run: () => deps.actions.rejectAllRevisions(),
     },
     {
+      id: 'hyperlink.insertAtSelection',
+      title: '插入超链接…',
+      group: 'hyperlink',
+      enabled: (ctx) => ctx.editable && !ctx.selection.collapsed &&
+        ctx.selection.range !== null &&
+        ctx.selection.range.start.paragraph === ctx.selection.range.end.paragraph,
+      run: (ctx) => deps.actions.insertHyperlink(ctx),
+    },
+    {
+      id: 'hyperlink.open',
+      title: '打开超链接',
+      group: 'hyperlink',
+      enabled: (ctx) => Boolean(ctx.hyperlink && !ctx.hyperlink.unsafe),
+      visibleInMenu: hasLink,
+      run: (ctx) => { if (ctx.hyperlink) deps.actions.openHyperlink(ctx.hyperlink); },
+    },
+    {
+      id: 'hyperlink.copyAddress',
+      title: '复制超链接地址',
+      group: 'hyperlink',
+      enabled: (ctx) => Boolean(ctx.hyperlink && !ctx.hyperlink.unsafe),
+      visibleInMenu: hasLink,
+      run: (ctx) => { if (ctx.hyperlink) deps.actions.copyHyperlinkAddress(ctx.hyperlink); },
+    },
+    {
+      id: 'hyperlink.edit',
+      title: '编辑超链接…',
+      group: 'hyperlink',
+      enabled: (ctx) => ctx.editable && hasLink(ctx),
+      visibleInMenu: hasLink,
+      run: (ctx) => { if (ctx.hyperlink) deps.actions.editHyperlink(ctx.hyperlink); },
+    },
+    {
+      id: 'hyperlink.remove',
+      title: '取消超链接',
+      group: 'hyperlink',
+      enabled: (ctx) => ctx.editable && hasLink(ctx),
+      visibleInMenu: hasLink,
+      run: (ctx) => { if (ctx.hyperlink) deps.actions.removeHyperlink(ctx.hyperlink); },
+    },
+    {
+      id: 'revision.acceptAtPoint',
+      title: '接受修订',
+      group: 'review',
+      enabled: hasPointRevision,
+      visibleInMenu: hasPointRevision,
+      run: (ctx) => deps.actions.acceptRevisions(ctx, false),
+    },
+    {
+      id: 'revision.rejectAtPoint',
+      title: '拒绝修订',
+      group: 'review',
+      enabled: hasPointRevision,
+      visibleInMenu: hasPointRevision,
+      run: (ctx) => deps.actions.rejectRevisions(ctx, false),
+    },
+    {
+      id: 'revision.acceptParagraph',
+      title: '接受此段的所有修订',
+      group: 'review',
+      enabled: (ctx) => ctx.selection.paragraph !== null,
+      visibleInMenu: hasPointRevision,
+      run: (ctx) => deps.actions.acceptRevisions(ctx, true),
+    },
+    {
+      id: 'revision.rejectParagraph',
+      title: '拒绝此段的所有修订',
+      group: 'review',
+      enabled: (ctx) => ctx.selection.paragraph !== null,
+      visibleInMenu: hasPointRevision,
+      run: (ctx) => deps.actions.rejectRevisions(ctx, true),
+    },
+    {
+      id: 'review.options',
+      title: '修订选项…',
+      group: 'review',
+      enabled: () => true,
+      visibleInMenu: hasPointRevision,
+      run: () => deps.actions.openReviewOptions(),
+    },
+    {
       id: 'comment.new',
       title: '新建批注',
       group: 'comment',
@@ -333,10 +506,26 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       run: () => deps.actions.addComment(),
     },
     {
+      id: 'comment.addAtSelection',
+      title: '插入批注',
+      group: 'comment',
+      enabled: (ctx) => ctx.editable && !ctx.selection.collapsed,
+      run: () => deps.actions.addComment(),
+    },
+    {
       id: 'comment.reply',
       title: '回复批注',
       group: 'comment',
       enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      visibleInMenu: hasPointComment,
+      run: (ctx) => deps.actions.replyComment(firstCommentId(ctx)),
+    },
+    {
+      id: 'comment.replyAtPoint',
+      title: '回复批注…',
+      group: 'comment',
+      enabled: hasPointComment,
+      visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.replyComment(firstCommentId(ctx)),
     },
     {
@@ -344,6 +533,16 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '解决或取消批注',
       group: 'comment',
       enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      visibleInMenu: hasPointComment,
+      run: (ctx) => deps.actions.toggleCommentResolved(firstCommentId(ctx)),
+    },
+    {
+      id: 'comment.toggleResolvedAtPoint',
+      title: '标记为已解决 / 取消已解决',
+      group: 'comment',
+      enabled: hasPointComment,
+      checked: (ctx) => hasPointComment(ctx) && deps.isCommentResolved(firstCommentId(ctx)),
+      visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.toggleCommentResolved(firstCommentId(ctx)),
     },
     {
@@ -351,7 +550,24 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       title: '删除批注',
       group: 'comment',
       enabled: (ctx) => ctx.activeCommentId != null || ctx.commentsAtPoint.length > 0,
+      visibleInMenu: hasPointComment,
       run: (ctx) => deps.actions.deleteComment(firstCommentId(ctx)),
+    },
+    {
+      id: 'comment.deleteAtPoint',
+      title: '删除批注',
+      group: 'comment',
+      enabled: hasPointComment,
+      visibleInMenu: hasPointComment,
+      run: (ctx) => deps.actions.deleteComment(firstCommentId(ctx)),
+    },
+    {
+      id: 'comment.focus',
+      title: '定位到批注面板',
+      group: 'comment',
+      enabled: hasPointComment,
+      visibleInMenu: hasPointComment,
+      run: (ctx) => deps.actions.focusComment(firstCommentId(ctx)),
     },
   ];
 }

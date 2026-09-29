@@ -220,6 +220,8 @@ editor.render();
 
 - `docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引；`docx-rangechange` 的 `detail` 包含 `{ range, format }`（跨段落 `DocumentRange` 与 `getDocumentRangeFormat` 结果，可用于三态工具栏）。
 - 当选区跨越不同容器（如正文与表格单元格）时，`format` 会降级为空对象 `{}`。
+- 示例编辑器的右键菜单遵循 Word 的选区规则：右键落在现有选区内时保留选区，落在选区外时先把插入点移动到点击处。
+- 编辑区内默认使用自定义菜单；`Shift` + 右键放行浏览器原生菜单。菜单也可通过 `Shift+F10` 或 `ContextMenu` 键打开，关闭后恢复编辑区焦点与选区。
 
 组件使用 `.docx-editor`、`.docx-paragraph`、`.docx-table`、`.docx-image` 类名，不强制注入全局 CSS；宿主可以自行设置纸张外观、表格边框等，参考 `examples/style.css`。视图优先使用样式解析后的**有效格式**渲染常用字体、字号、颜色、加粗 / 斜体 / 下划线 / 删除线、上下标、大小写、高亮、字间距及段落缩进 / 间距 / 行距 / 对齐；图片的尺寸、旋转、翻转和裁剪也由组件渲染，浮动环绕采用简化布局。
 

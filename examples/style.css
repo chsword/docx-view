@@ -114,6 +114,13 @@ input { border: 1px solid var(--border); border-radius: 5px; color: #536077; bac
 .docx-break-marker { margin: 8px 0 14px; color: #8ea0ba; font-size: 10px; text-align: center; border-top: 1px dashed #ccd7ea; padding-top: 6px; }
 .docx-editor a[data-docx-link="1"] { color: #0563c1; text-decoration: underline; }
 .docx-editor .docx-link-unsafe { color: #9d3f45; text-decoration: underline wavy #cc6b70; }
+.context-menu, .context-submenu { position: fixed; z-index: 1000; min-width: 220px; padding: 5px; border: 1px solid #d9e1ec; border-radius: 7px; background: #fff; box-shadow: 0 10px 28px #25334a2b; color: #34445b; font-size: 12px; }
+.context-submenu { position: absolute; top: -5px; left: calc(100% + 4px); }
+.context-menu-item, .context-menu-notice { position: relative; padding: 7px 28px 7px 10px; border-radius: 4px; white-space: pre; outline: none; }
+.context-menu-item:focus { background: #eaf0fd; color: var(--accent); }
+.context-menu-item[aria-disabled="true"], .context-menu-notice { color: #98a3b2; }
+.context-menu [role="separator"] { height: 1px; margin: 5px 4px; background: var(--border); }
+.context-menu-notice { max-width: 280px; white-space: normal; }
 .document-footer { display: flex; gap: 10px; justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); font-size: 10px; color: #8693a7; }
 .document-footer b { font-weight: 400; margin: 0 10px; color: #c7d0dd; }
 .inspector { background: #fff; border: 1px solid #dee5ef; border-radius: 12px; overflow: hidden; box-shadow: 0 7px 24px #25334a04; }

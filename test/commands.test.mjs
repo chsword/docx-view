@@ -64,9 +64,9 @@ function makeRegistry(options = {}) {
       splitCell: () => calls.push(['splitCell']),
       applyCellStyle: action('applyCellStyle'),
       startInsertImage: () => calls.push(['startInsertImage']),
-      startReplaceImage: () => calls.push(['startReplaceImage']),
-      deleteImage: () => calls.push(['deleteImage']),
-      setImageAlt: action('setImageAlt'),
+      startReplaceImage: (image) => calls.push(['startReplaceImage', image]),
+      deleteImage: (image) => calls.push(['deleteImage', image]),
+      setImageAlt: (text, image) => calls.push(['setImageAlt', text, image]),
       focusPreviousRevision: () => calls.push(['focusPreviousRevision']),
       focusNextRevision: () => calls.push(['focusNextRevision']),
       acceptAllRevisions: () => calls.push(['acceptAllRevisions']),
@@ -103,6 +103,9 @@ function makeRegistry(options = {}) {
     getImageAltValue() {
       return state.imageAltValue;
     },
+    isCommentResolved() {
+      return false;
+    },
   }));
   return { registry, state, calls };
 }
@@ -132,6 +135,7 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['table.insertColumn enables with table context', 'table.insertColumn', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1, nested: false } }), true],
     ['table.deleteColumn disables without table context', 'table.deleteColumn', makeContext(), false],
     ['table.mergeCells enables with table context', 'table.mergeCells', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1, nested: false } }), true],
+    ['table.mergeCells disables in nested tables', 'table.mergeCells', makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1, nested: true } }), false],
     ['table.splitCell disables without table context', 'table.splitCell', makeContext(), false],
     ...['table.insertRow', 'table.deleteRow', 'table.insertColumn', 'table.deleteColumn', 'table.mergeCells', 'table.splitCell', 'table.applyCellStyle']
       .map((commandId) => [`${commandId} disables in nested tables`, commandId, makeContext({ table: { table: 0, row: 1, col: 2, rowSpan: 1, colSpan: 1, nested: true } }), false]),
@@ -142,6 +146,8 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['image.replace enables with a selected image', 'image.replace', makeContext({ image: { relationshipId: 'rId5' } }), true],
     ['image.setAlt disables without a selected image', 'image.setAlt', makeContext(), false],
     ['image.setAlt enables with a selected image', 'image.setAlt', makeContext({ image: { relationshipId: 'rId6' } }), true],
+    ['hyperlink insertion disables at a collapsed caret', 'hyperlink.insertAtSelection', makeContext({ selection: { paragraph: 0, collapsed: true } }), false],
+    ['hyperlink insertion enables for a same-paragraph range', 'hyperlink.insertAtSelection', makeContext({ selection: { paragraph: 0, range: { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 2 } }, collapsed: false } }), true],
     ['comment.new is always enabled', 'comment.new', makeContext(), true],
     ['comment.reply disables without a selected comment', 'comment.reply', makeContext(), false],
     ['comment.reply enables with a selected comment target', 'comment.reply', makeContext({ commentsAtPoint: [42] }), true],
@@ -185,6 +191,20 @@ test('command run delegates to the shared action registry', async (t) => {
     const { registry, calls } = makeRegistry({ cellFillValue: '#ABCDEF' });
     await registry.run('table.applyCellStyle', makeContext());
     assert.deepEqual(calls, [['applyCellStyle', '#ABCDEF']]);
+  });
+
+  await t.test('image commands use the image captured in command context', async () => {
+    const { registry, calls } = makeRegistry({ imageAltValue: 'right-click image' });
+    const image = { id: 'image-2', relationshipId: 'rId2' };
+    const ctx = makeContext({ image });
+    await registry.run('image.replace', ctx);
+    await registry.run('image.delete', ctx);
+    await registry.run('image.setAlt', ctx);
+    assert.deepEqual(calls, [
+      ['startReplaceImage', image],
+      ['deleteImage', image],
+      ['setImageAlt', 'right-click image', image],
+    ]);
   });
 
   await t.test('comment.reply uses the selected comment id from context', async () => {
