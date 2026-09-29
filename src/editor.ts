@@ -2182,8 +2182,8 @@ export class DocxEditor {
   }
 
   private preventFieldDeletion(content: HTMLElement, event: InputEvent): boolean {
-    if (event.inputType === 'deleteContentBackward' && this.deletionTouchesField(content, 'backward') ||
-        event.inputType === 'deleteContentForward' && this.deletionTouchesField(content, 'forward')) {
+    const direction = /^delete(?:Content|Word|SoftLine|HardLine)(Backward|Forward)$/.exec(event.inputType)?.[1];
+    if (direction && this.deletionTouchesField(content, direction === 'Backward' ? 'backward' : 'forward')) {
       event.preventDefault();
       return true;
     }

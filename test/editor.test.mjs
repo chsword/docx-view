@@ -1231,11 +1231,21 @@ test('collapsed backspace/delete at a field boundary is blocked but adjacent tex
   const backspace = event('deleteContentBackward');
   assert.equal(editor.preventFieldDeletion(content, backspace), true);
   assert.equal(backspace.prevented, true);
+  for (const inputType of ['deleteWordBackward', 'deleteSoftLineBackward', 'deleteHardLineBackward']) {
+    const wordDelete = event(inputType);
+    assert.equal(editor.preventFieldDeletion(content, wordDelete), true);
+    assert.equal(wordDelete.prevented, true);
+  }
   range.startContainer = before;
   range.startOffset = before.textContent.length;
   const deleteForward = event('deleteContentForward');
   assert.equal(editor.preventFieldDeletion(content, deleteForward), true);
   assert.equal(deleteForward.prevented, true);
+  for (const inputType of ['deleteWordForward', 'deleteSoftLineForward', 'deleteHardLineForward']) {
+    const wordDelete = event(inputType);
+    assert.equal(editor.preventFieldDeletion(content, wordDelete), true);
+    assert.equal(wordDelete.prevented, true);
+  }
   const safeBackward = event('deleteContentBackward');
   assert.equal(editor.preventFieldDeletion(content, safeBackward), false);
   assert.equal(safeBackward.prevented, false);
