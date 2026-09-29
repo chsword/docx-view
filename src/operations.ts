@@ -5,6 +5,7 @@ import type {
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
+import { fieldKindFromInstruction, NEVER_EVALUATE } from './fields.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -573,6 +574,21 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
         assertIndex(op.range.startParagraph);
         if ('endParagraph' in op.range) assertIndex(op.range.endParagraph);
         break;
+      case 'updateFields':
+        keys(op, ['type', 'kinds', 'now', 'filename']);
+        if ('kinds' in op && op.kinds !== undefined && (!Array.isArray(op.kinds) || op.kinds.some(kind => typeof kind !== 'string'))) {
+          throw new Error('kinds must be an array.');
+        }
+        if ('now' in op && op.now !== undefined) assertText(op.now, 'now');
+        if ('filename' in op && op.filename !== undefined) assertText(op.filename, 'filename');
+        break;
+      case 'insertField':
+        keys(op, ['type', 'paragraph', 'instruction', 'result']);
+        assertIndex(op.paragraph); assertText(op.instruction, 'instruction');
+        if (op.instruction.length > 4096) throw new Error('Field instruction exceeds 4096 characters.');
+        if ('result' in op && op.result !== undefined) assertText(op.result, 'result');
+        if (NEVER_EVALUATE.has(fieldKindFromInstruction(op.instruction))) throw new Error('This field type is not allowed.');
+        break;
       case 'deleteBookmark':
         keys(op, ['type', 'name']);
         assertText(op.name, 'name');
@@ -1003,6 +1019,12 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('removeHyperlink', { hyperlink: hyperlinkRef, options: shape({ keepText: { type: 'boolean' } }, []) }, ['hyperlink']),
           operation('insertBookmark', { name: text, range: shape({ startParagraph: index, endParagraph: index }, ['startParagraph']) }),
           operation('deleteBookmark', { name: text }),
+          operation('updateFields', {
+            kinds: { type: 'array', items: text },
+            now: text,
+            filename: text,
+          }),
+          operation('insertField', { paragraph: index, instruction: text, result: text }, ['paragraph', 'instruction']),
           operation('setContentControlText', { id: index, text }),
           operation('setContentControlChecked', { id: index, checked: { type: 'boolean' } }),
           operation('setContentControlProperties', {

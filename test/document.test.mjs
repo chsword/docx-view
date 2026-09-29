@@ -1718,22 +1718,104 @@ test('missing header/footer parts or dangling references do not crash block read
   assert.deepEqual(doc.getHeaderBlocks(0), []);
 });
 
-test('insertPageNumberField writes PAGE placeholder and renders text', () => {
+test('insertPageNumberField writes PAGE field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createHeader(0);
   doc.insertPageNumberField(path);
   assert.match(doc.getPartXml(path), /w:fldSimple[^>]+PAGE/);
   const texts = doc.getHeaderBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('1'));
+  assert.ok(texts.includes(''));
 });
 
-test('insertPageNumberField writes NUMPAGES placeholder and renders text', () => {
+test('insertPageNumberField writes NUMPAGES field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createFooter(0);
   doc.insertPageNumberField(path, { total: true, format: 'ROMAN' });
   assert.ok(doc.getPartXml(path).includes('NUMPAGES \\* ROMAN'));
   const texts = doc.getFooterBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('?'));
+  assert.ok(texts.includes(''));
+});
+
+test('getFields parses complex fields and excludes instructions from run text', () => {
+  const doc = withBody(`<w:p><w:r><w:t>前 </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF 锚点A \\h</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t> 后</w:t></w:r></w:p>`);
+  const field = doc.getFields()[0];
+  assert.equal(field.kind, 'PAGEREF');
+  assert.equal(field.result, '7');
+  assert.deepEqual(doc.getParagraphs()[0].runs.map(run => run.text).join(''), doc.getParagraphs()[0].text);
+  assert.equal(doc.getParagraphs()[0].runs[2].text, '');
+});
+
+test('updateFields updates SEQ and DATE but preserves pagination and unsafe fields', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" SEQ 图 \\* ARABIC "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" DATE \\@ &quot;yyyy-MM-dd&quot; "><w:r><w:t>old</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" INCLUDETEXT x "><w:r><w:t>cached</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields({ now: new Date(2026, 0, 2) }), true);
+  assert.deepEqual(doc.getFields().map(field => field.result), ['1', '2026-01-02', '3', 'cached']);
+  assert.equal(doc.updateFields(), false);
+});
+
+test('updateFields resolves REF from a pre-update bookmark snapshot and is repeatable', () => {
+  const doc = withBody(
+    `<w:bookmarkStart w:id="1" w:name="锚点"/><w:p><w:r><w:t>被引用的文字</w:t></w:r></w:p><w:bookmarkEnd w:id="1"/>` +
+    `<w:p><w:fldSimple w:instr=" REF 锚点 "><w:r><w:t>旧值</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields(), true);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+  const revision = doc.revision;
+  assert.equal(doc.updateFields(), false);
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+});
+
+test('field-only paragraphs have text equal to their run text', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r/></w:fldSimple></w:p>` +
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r/><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  for (const paragraph of doc.getParagraphs()) {
+    assert.equal(paragraph.text, paragraph.runs.map(run => run.text).join(''));
+  }
+});
+
+test('insertField writes a complex field and rejects external-resource fields', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  doc.insertField(0, ' SEQ 图 ', '1');
+  assert.equal(doc.getFields()[0].form, 'complex');
+  assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
+});
+
+test('field enumeration excludes textbox fields and keeps paragraph indices aligned', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:pict><w:txbxContent><w:p><w:fldSimple w:instr=" SEQ 框内 "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p></w:txbxContent></w:pict></w:r></w:p>` +
+    `<w:p><w:fldSimple w:instr=" SEQ 正文 "><w:r><w:t>5</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  const fields = doc.getFields();
+  const paragraphs = doc.getParagraphs();
+  assert.equal(fields.length, 1);
+  assert.equal(fields[0].instruction, ' SEQ 正文 ');
+  assert.equal(paragraphs[fields[0].paragraph].text, '5');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /SEQ 框内/);
+  doc.updateFields();
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t>9<\/w:t>/);
+});
+
+test('RunInfo.field.index resolves to the matching getFields entry', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ 正文复杂 </w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>3</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  const fields = doc.getFields();
+  assert.equal(fields.length, 1);
+  for (const paragraph of doc.getParagraphs()) {
+    for (const run of paragraph.runs) {
+      if (!run.field) continue;
+      assert.ok(fields[run.field.index]);
+      assert.equal(fields[run.field.index].instruction, ' SEQ 正文复杂 ');
+    }
+  }
 });
 
 test('setParagraphText preserves fldSimple and keeps runs valid', () => {
