@@ -463,16 +463,6 @@ function elementText(element: Element): string {
   return '\n';
 }
 
-function fieldPlaceholder(root: Element): string | undefined {
-  const instructions = [
-    ...children(root, 'fldSimple').map(node => (node.getAttributeNS(WORD_NS, 'instr') ?? '').toUpperCase()),
-    ...descendants(root, 'instrText').map(node => (node.textContent ?? '').toUpperCase()),
-  ];
-  if (instructions.some(instruction => /^\s*NUMPAGES(?:\s|$)/.test(instruction))) return '?';
-  if (instructions.some(instruction => /^\s*PAGE(?:\s|$)/.test(instruction))) return '1';
-  return undefined;
-}
-
 function formatFieldNumber(value: number, format?: string): string {
   switch ((format ?? 'ARABIC').toUpperCase()) {
     case 'ROMAN': {
@@ -503,8 +493,33 @@ function formatFieldDate(date: Date, format?: string): string {
 function textOf(element: Element): string {
   if (element.localName === 'r' && descendants(element, 'instrText').length > 0) return '';
   const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
-  if (text) return text;
-  return fieldPlaceholder(element) ?? '';
+  return text;
+}
+
+function bookmarkTexts(document: Document): Map<string, string> {
+  const body = bodyOf(document);
+  const order = preOrderElements(body);
+  const positions = new Map(order.map((element, index) => [element, index]));
+  const ends = new Map<string, Element>();
+  for (const end of descendants(body, 'bookmarkEnd')) {
+    const id = end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id');
+    if (id) ends.set(id, end);
+  }
+  const result = new Map<string, string>();
+  for (const start of descendants(body, 'bookmarkStart')) {
+    const id = start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id');
+    const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name');
+    const end = id ? ends.get(id) : undefined;
+    const startPosition = positions.get(start);
+    const endPosition = end ? positions.get(end) : undefined;
+    if (!name || startPosition === undefined || endPosition === undefined || result.has(name)) continue;
+    result.set(name, order
+      .slice(startPosition + 1, endPosition)
+      .filter(element => ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? ''))
+      .map(elementText)
+      .join(''));
+  }
+  return result;
 }
 
 function contentControlText(content: Element): string {
@@ -7823,12 +7838,16 @@ export class DocxDocument {
       throw new Error('options.kinds must be an array of field kinds.');
     }
     const allowed = options.kinds ? new Set(options.kinds) : undefined;
+    const snapshot = this.getPartDocument(this.mainPath);
+    const snapshotParagraphs = descendants(blockContainerOf(snapshot), 'p');
+    const snapshotFields = parseFields(snapshotParagraphs, ownRuns).fields;
+    const snapshotProperties = this.getDocumentProperties() as Record<string, unknown>;
+    const snapshotBookmarks = bookmarkTexts(snapshot);
     let updated = false;
     const sequence = new Map<string, number>();
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraphs = descendants(blockContainerOf(document), 'p');
-      const parsed = parseFields(paragraphs, ownRuns);
-      for (const field of parsed.fields) {
+      for (const field of snapshotFields) {
         if (!field.evaluable || field.locked || (allowed && !allowed.has(field.kind))) continue;
         let value: string | undefined;
         const switches = new Map(field.switches.map(entry => [entry.name.toLowerCase(), entry.value]));
@@ -7846,15 +7865,13 @@ export class DocxDocument {
         } else if (field.kind === 'FILENAME') {
           value = options.filename;
         } else if (field.kind === 'REF') {
-          const bookmark = this.getBookmarks({ includeInternal: true }).find(entry => entry.name === field.argument);
-          if (bookmark) value = this.getParagraphs().slice(bookmark.startParagraph, bookmark.endParagraph + 1).map(entry => entry.text).join('\n');
+          value = snapshotBookmarks.get(field.argument ?? '');
         } else {
-          const properties = this.getDocumentProperties() as Record<string, unknown>;
           const key = field.kind === 'DOCPROPERTY' ? field.argument : ({
             AUTHOR: 'creator', TITLE: 'title', SUBJECT: 'subject', KEYWORDS: 'keywords', COMMENTS: 'description',
             LASTSAVEDBY: 'lastModifiedBy', CREATEDATE: 'created', SAVEDATE: 'modified', PRINTDATE: 'modified',
           } as Record<string, string>)[field.kind];
-          if (key && properties[key] !== undefined) value = String(properties[key]);
+          if (key && snapshotProperties[key] !== undefined) value = String(snapshotProperties[key]);
         }
         if (value === undefined || value === field.result) continue;
         const paragraph = paragraphs[field.paragraph];

@@ -1656,22 +1656,22 @@ test('missing header/footer parts or dangling references do not crash block read
   assert.deepEqual(doc.getHeaderBlocks(0), []);
 });
 
-test('insertPageNumberField writes PAGE placeholder and renders text', () => {
+test('insertPageNumberField writes PAGE field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createHeader(0);
   doc.insertPageNumberField(path);
   assert.match(doc.getPartXml(path), /w:fldSimple[^>]+PAGE/);
   const texts = doc.getHeaderBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('1'));
+  assert.ok(texts.includes(''));
 });
 
-test('insertPageNumberField writes NUMPAGES placeholder and renders text', () => {
+test('insertPageNumberField writes NUMPAGES field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createFooter(0);
   doc.insertPageNumberField(path, { total: true, format: 'ROMAN' });
   assert.ok(doc.getPartXml(path).includes('NUMPAGES \\* ROMAN'));
   const texts = doc.getFooterBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('?'));
+  assert.ok(texts.includes(''));
 });
 
 test('getFields parses complex fields and excludes instructions from run text', () => {
@@ -1693,6 +1693,29 @@ test('updateFields updates SEQ and DATE but preserves pagination and unsafe fiel
   assert.equal(doc.updateFields({ now: new Date(2026, 0, 2) }), true);
   assert.deepEqual(doc.getFields().map(field => field.result), ['1', '2026-01-02', '3', 'cached']);
   assert.equal(doc.updateFields(), false);
+});
+
+test('updateFields resolves REF from a pre-update bookmark snapshot and is repeatable', () => {
+  const doc = withBody(
+    `<w:bookmarkStart w:id="1" w:name="锚点"/><w:p><w:r><w:t>被引用的文字</w:t></w:r></w:p><w:bookmarkEnd w:id="1"/>` +
+    `<w:p><w:fldSimple w:instr=" REF 锚点 "><w:r><w:t>旧值</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields(), true);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+  const revision = doc.revision;
+  assert.equal(doc.updateFields(), false);
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+});
+
+test('field-only paragraphs have text equal to their run text', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r/></w:fldSimple></w:p>` +
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r/><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  for (const paragraph of doc.getParagraphs()) {
+    assert.equal(paragraph.text, paragraph.runs.map(run => run.text).join(''));
+  }
 });
 
 test('insertField writes a complex field and rejects external-resource fields', () => {
