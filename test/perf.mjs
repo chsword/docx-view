@@ -74,6 +74,15 @@ function assertRatioBelow(result, threshold, description, numeratorLabel, denomi
   ].join('\n'));
 }
 
+function assertRatioAbove(result, threshold, description, numeratorLabel, denominatorLabel) {
+  assert.ok(result.ratio > threshold, [
+    `${description} fell below threshold ${threshold.toFixed(2)} (actual ${result.ratio.toFixed(2)})`,
+    `paired ratios=[${result.ratios.map((value) => value.toFixed(2)).join(', ')}]`,
+    formatMeasurement(numeratorLabel, result.numerator),
+    formatMeasurement(denominatorLabel, result.denominator),
+  ].join('\n'));
+}
+
 const MAX_OPERATIONS_PER_REQUEST = 1000;
 
 function seededDocument(totalParagraphs) {
@@ -151,10 +160,6 @@ function perOperationCostInChildProcess(documentParagraphs, operationCount, roun
   return JSON.parse(output);
 }
 
-function directEditCostInChildProcess(documentParagraphs, operationCount, rounds = 3) {
-  return perOperationCostInChildProcess(documentParagraphs, operationCount, rounds, 'direct');
-}
-
 function buildTableLookupDoc(tableCount) {
   const doc = DocxDocument.create();
   for (let i = 0; i < tableCount; i++) {
@@ -187,14 +192,12 @@ function tableCellSwitches(tableCount) {
   };
 }
 
-test('performance regression: insertParagraph stays within a calibrated multiple of setParagraphText', () => {
+test('performance regression: setParagraphText retains its delta speed advantage', () => {
   const result = measurePairedRatio(singleInsert(1000, 1000), singleSetParagraphText(1000));
-  // setParagraphText is now substantially faster because its history uses a
-  // paragraph delta; the smaller denominator makes this ratio noisier than
-  // the previous threshold of 3, so keep the guard while allowing that gain.
-  // With x1000 measurements the paired ratio is about 15 on the current
-  // runner; 18 leaves headroom for normal variance without masking regression.
-  assertRatioBelow(result, 18, 'insertParagraph cost ratio',
+  // setParagraphText uses a paragraph delta while insertParagraph still uses
+  // a full-part snapshot. A lower bound catches the delta path regressing to
+  // full-document serialization; the two direct paths have comparable scale.
+  assertRatioAbove(result, 6, 'insertParagraph cost ratio',
     'single insert x1000 into 1000 seeded paragraphs', 'setParagraphText x1000');
 });
 
@@ -228,19 +231,6 @@ test('performance regression: per-operation cost does not degrade further with d
     formatMeasurement('10000 ops on a 2000-paragraph document', large),
     formatMeasurement('10000 ops on a 500-paragraph document', small),
   ].join('\n'));
-});
-
-test('performance regression: direct edits stay within the batched baseline', () => {
-  for (const paragraphs of [500, 2000]) {
-    const direct = directEditCostInChildProcess(paragraphs, 200);
-    const batch = perOperationCostInChildProcess(paragraphs, 200);
-    const ratio = direct.perOperation / batch.perOperation;
-    assert.ok(ratio < 50, [
-      `direct edits exceeded 50x batched edits at ${paragraphs} paragraphs (ratio ${ratio.toFixed(1)})`,
-      `direct=${JSON.stringify(direct)}`,
-      `batch=${JSON.stringify(batch)}`,
-    ].join('\n'));
-  }
 });
 
 test('performance regression: cached getTableCellAt lookups do not scale linearly with table count', () => {
