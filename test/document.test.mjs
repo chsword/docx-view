@@ -1101,6 +1101,32 @@ test('merged setParagraphText edits skip repeated history snapshot materializati
   assert.equal(doc.getParagraphs()[0].text, '');
 });
 
+test('separate setParagraphText edits defer history snapshot materialization', () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('second');
+  const original = doc.materializeAllParts;
+  let calls = 0;
+  doc.materializeAllParts = function materializeProxy() {
+    calls++;
+    return original.call(this);
+  };
+  doc.setParagraphText(1, 'updated');
+  assert.equal(calls, 0);
+  doc.getPartBytes(doc.mainDocumentPath);
+  assert.equal(calls, 1);
+});
+
+test('undo restores dirty state that exports and reloads byte-for-byte', async () => {
+  const doc = DocxDocument.create();
+  doc.insertParagraph('original');
+  const before = packagePartsSignature(doc);
+  doc.setParagraphText(0, 'edited');
+  doc.undo();
+  const exported = await doc.toUint8Array();
+  const restored = await DocxDocument.load(exported);
+  assert.deepEqual(packagePartsSignature(restored), before);
+});
+
 test('undo/redo without history is a no-op', () => {
   const doc = DocxDocument.create();
   const revision = doc.revision;

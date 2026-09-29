@@ -149,6 +149,10 @@ type HistoryAction =
 
 interface HistoryState {
   parts: Map<string, Uint8Array>;
+  documents: Map<string, Document>;
+  dirtyPartXml: Set<string>;
+  dirtyPartSizes: Map<string, number>;
+  mainPath: string;
   bytes: number;
   entry: HistoryEntry;
   action: HistoryAction;
@@ -2619,7 +2623,7 @@ export class DocxDocument {
   private redoHistoryBytes = 0;
   private historyGroupDepth = 0;
   private historyGroupLabel?: string;
-  private historyGroupBase?: { parts: Map<string, Uint8Array>; bytes: number };
+  private historyGroupBase?: Omit<HistoryState, 'entry' | 'action'>;
   private historyGroupAction: HistoryAction = { kind: 'group' };
   private historyGroupAborted = false;
   private suppressHistory = false;
@@ -2732,7 +2736,7 @@ export class DocxDocument {
     const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
     const step = this.undoHistory.pop()!;
     this.undoHistoryBytes -= step.bytes;
-    this.restorePartsFromHistory(step.parts);
+    this.restoreHistoryState(step);
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
@@ -2755,7 +2759,7 @@ export class DocxDocument {
     const current = this.snapshotHistoryState(this.revision, this.nextHistoryLabel, this.nextHistoryAction);
     const step = this.redoHistory.pop()!;
     this.redoHistoryBytes -= step.bytes;
-    this.restorePartsFromHistory(step.parts);
+    this.restoreHistoryState(step);
     this.currentRevision++;
     this.numberingContextCache = undefined;
     this.stylesCache = undefined;
@@ -2812,6 +2816,10 @@ export class DocxDocument {
     if (this.historyGroupBase && !this.historyGroupAborted) {
       this.pushUndoState({
         parts: this.historyGroupBase.parts,
+        documents: this.historyGroupBase.documents,
+        dirtyPartXml: this.historyGroupBase.dirtyPartXml,
+        dirtyPartSizes: this.historyGroupBase.dirtyPartSizes,
+        mainPath: this.historyGroupBase.mainPath,
         bytes: this.historyGroupBase.bytes,
         entry: { revision: this.revision, label: this.historyGroupLabel, at: Date.now() },
         action: this.historyGroupAction,
@@ -3153,8 +3161,17 @@ export class DocxDocument {
 
   private snapshotHistoryState(revision: number, label: string | undefined, action: HistoryAction): HistoryState {
     const parts = this.cloneParts(this.parts);
+    const documents = new Map<string, Document>();
+    for (const path of this.dirtyPartXml) {
+      const document = this.documents.get(path);
+      if (document) documents.set(path, document.cloneNode(true) as Document);
+    }
     return {
       parts,
+      documents,
+      dirtyPartXml: new Set(this.dirtyPartXml),
+      dirtyPartSizes: new Map(this.dirtyPartSizes),
+      mainPath: this.mainPath,
       bytes: this.historyStateBytes(parts),
       entry: { revision, label, at: Date.now() },
       action,
@@ -3225,20 +3242,31 @@ export class DocxDocument {
     }
   }
 
-  private restorePartsFromHistory(parts: Map<string, Uint8Array>): void {
-    const next = this.cloneParts(parts);
-    this.parts = next;
-    this.documents = new Map();
-    this.dirtyPartXml = new Set();
-    this.dirtyPartSizes = new Map();
+  private restoreHistoryState(state: HistoryState): void {
+    this.parts = this.cloneParts(state.parts);
+    this.documents = new Map<string, Document>();
+    for (const [path, document] of state.documents) {
+      this.documents.set(path, document.cloneNode(true) as Document);
+    }
+    this.dirtyPartXml = new Set(state.dirtyPartXml);
+    this.dirtyPartSizes = new Map(state.dirtyPartSizes);
+    this.mainPath = state.mainPath;
     this.assertPackageLimits();
-    this.mainPath = this.validatePackage();
   }
 
   private recordHistory(before: HistoryState): void {
     if (this.suppressHistory) return;
     if (this.historyGroupDepth > 0) {
-      if (!this.historyGroupBase) this.historyGroupBase = { parts: before.parts, bytes: before.bytes };
+      if (!this.historyGroupBase) {
+        this.historyGroupBase = {
+          parts: before.parts,
+          documents: before.documents,
+          dirtyPartXml: before.dirtyPartXml,
+          dirtyPartSizes: before.dirtyPartSizes,
+          mainPath: before.mainPath,
+          bytes: before.bytes,
+        };
+      }
       if (before.action.kind !== 'other') this.historyGroupAction = before.action;
       this.redoHistory = [];
       this.redoHistoryBytes = 0;
@@ -3285,7 +3313,6 @@ export class DocxDocument {
       this.pendingMergedHistory = { label, action, at };
       return undefined;
     }
-    this.materializeAllParts();
     return this.snapshotHistoryState(this.revision, label, action);
   }
 
@@ -8431,12 +8458,20 @@ export class DocxDocument {
     draft.revisionAuthor = this.revisionAuthor;
     draft.undoHistory = this.undoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
+      documents: new Map([...state.documents].map(([path, document]) => [path, document.cloneNode(true) as Document])),
+      dirtyPartXml: new Set(state.dirtyPartXml),
+      dirtyPartSizes: new Map(state.dirtyPartSizes),
+      mainPath: state.mainPath,
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
     }));
     draft.redoHistory = this.redoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
+      documents: new Map([...state.documents].map(([path, document]) => [path, document.cloneNode(true) as Document])),
+      dirtyPartXml: new Set(state.dirtyPartXml),
+      dirtyPartSizes: new Map(state.dirtyPartSizes),
+      mainPath: state.mainPath,
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
@@ -9248,12 +9283,20 @@ export class DocxDocument {
     draft.revisionAuthor = this.revisionAuthor;
     draft.undoHistory = this.undoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
+      documents: new Map([...state.documents].map(([path, document]) => [path, document.cloneNode(true) as Document])),
+      dirtyPartXml: new Set(state.dirtyPartXml),
+      dirtyPartSizes: new Map(state.dirtyPartSizes),
+      mainPath: state.mainPath,
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
     }));
     draft.redoHistory = this.redoHistory.map((state) => ({
       parts: draft.cloneParts(state.parts),
+      documents: new Map([...state.documents].map(([path, document]) => [path, document.cloneNode(true) as Document])),
+      dirtyPartXml: new Set(state.dirtyPartXml),
+      dirtyPartSizes: new Map(state.dirtyPartSizes),
+      mainPath: state.mainPath,
       bytes: state.bytes,
       entry: { ...state.entry },
       action: state.action,
