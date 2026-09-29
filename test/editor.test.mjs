@@ -1164,6 +1164,207 @@ test('appendRun writes data-docx-run for runs without revisions', () => {
   assert.equal('docxRevisionIds' in runSpan.dataset, false);
 });
 
+test('field runs retain roles, hide instruction text, and shade results only when enabled', () => {
+  for (const showFieldShading of [undefined, false]) {
+    const editor = makeRunRenderEditor();
+    editor.options.showFieldShading = showFieldShading;
+    const instruction = appendRunToParagraph(editor, {
+      run: { index: 0, text: 'SHOULD NOT APPEAR', field: { index: 3, role: 'instruction' } },
+    }).runSpan;
+    const result = appendRunToParagraph(editor, {
+      run: { index: 1, text: 'value', field: { index: 3, role: 'result' },
+        revisions: [{ id: 4, kind: 'insertion' }] },
+    }).runSpan;
+    assert.equal(instruction.dataset.docxField, '3');
+    assert.equal(instruction.dataset.docxFieldRole, 'instruction');
+    assert.equal(instruction.childNodes.length, 0);
+    assert.equal(instruction.contentEditable, 'false');
+    assert.equal(result.dataset.docxFieldRole, 'result');
+    assert.equal(result.dataset.docxContent, '1');
+    assert.equal(result.contentEditable, 'false');
+    assert.equal(result.dataset.docxRevisionIds, '4');
+    assert.equal(result.childNodes[0].textContent, 'value');
+    assert.equal(result.className.includes('docx-field-shading'), showFieldShading !== false);
+  }
+});
+
+test('field result keeps comment and revision markers through repeated rendering', () => {
+  const editor = makeRunRenderEditor();
+  editor.commentRunIds.set('0:1', [5]);
+  for (let index = 0; index < 2; index++) {
+    const { runSpan } = appendRunToParagraph(editor, {
+      run: { index: 1, text: 'cached', field: { index: 2, role: 'result' },
+        revisions: [{ id: 10 + index, kind: 'insertion' }] },
+    });
+    assert.equal(runSpan.dataset.docxField, '2');
+    assert.equal(runSpan.dataset.docxCommentIds, '5');
+    assert.equal(runSpan.dataset.docxRevisionIds, String(10 + index));
+  }
+});
+
+test('collapsed backspace/delete at a field boundary is blocked but adjacent text remains editable', () => {
+  const text = (value) => ({ nodeType: 3, textContent: value });
+  const span = (children, role) => ({
+    nodeType: 1, tagName: 'SPAN', childNodes: children,
+    dataset: role ? { docxField: '0', docxFieldRole: role, ...(role === 'result' ? { docxContent: '1' } : {}) } : {},
+    contentEditable: role ? 'false' : 'inherit',
+  });
+  const before = text('before ');
+  const after = text(' after');
+  const content = span([
+    span([before]), span([], 'instruction'), span([], 'instruction'),
+    span([text('7')], 'result'), span([], 'instruction'), span([after]),
+  ]);
+  const attach = (node, parent) => {
+    node.parentNode = parent;
+    for (const child of node.childNodes ?? []) attach(child, node);
+  };
+  attach(content, null);
+  content.contains = (node) => {
+    for (; node; node = node.parentNode) if (node === content) return true;
+    return false;
+  };
+  const range = { startContainer: after, startOffset: 0, collapsed: true };
+  const editor = Object.create(DocxEditor.prototype);
+  editor.root = { ownerDocument: { getSelection: () => ({ rangeCount: 1, getRangeAt: () => range }) } };
+  const event = (inputType) => ({ inputType, prevented: false, preventDefault() { this.prevented = true; } });
+  const backspace = event('deleteContentBackward');
+  assert.equal(editor.preventFieldDeletion(content, backspace), true);
+  assert.equal(backspace.prevented, true);
+  for (const inputType of ['deleteWordBackward', 'deleteSoftLineBackward', 'deleteHardLineBackward']) {
+    const wordDelete = event(inputType);
+    assert.equal(editor.preventFieldDeletion(content, wordDelete), true);
+    assert.equal(wordDelete.prevented, true);
+  }
+  range.startContainer = before;
+  range.startOffset = before.textContent.length;
+  const deleteForward = event('deleteContentForward');
+  assert.equal(editor.preventFieldDeletion(content, deleteForward), true);
+  assert.equal(deleteForward.prevented, true);
+  for (const inputType of ['deleteWordForward', 'deleteSoftLineForward', 'deleteHardLineForward']) {
+    const wordDelete = event(inputType);
+    assert.equal(editor.preventFieldDeletion(content, wordDelete), true);
+    assert.equal(wordDelete.prevented, true);
+  }
+  const safeBackward = event('deleteContentBackward');
+  assert.equal(editor.preventFieldDeletion(content, safeBackward), false);
+  assert.equal(safeBackward.prevented, false);
+  range.startContainer = content;
+  range.startOffset = 4;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), true);
+  range.startOffset = 3;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentForward')), true);
+  range.startContainer = after;
+  range.startOffset = 1;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), false);
+  range.startOffset = 0;
+  range.collapsed = false;
+  assert.equal(editor.preventFieldDeletion(content, event('deleteContentBackward')), false);
+  range.collapsed = true;
+  assert.equal(editor.preventFieldDeletion(content, event('insertText')), false);
+});
+
+test('flush edits ordinary text around complex and simple fields without changing fields', () => {
+  for (const form of ['complex', 'simple']) {
+    const doc = DocxDocument.create();
+    const field = form === 'simple'
+      ? `<w:fldSimple w:instr=" SEQ test "><w:r><w:t>7</w:t></w:r></w:fldSimple>`
+      : `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ test </w:instrText></w:r>` +
+        `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r>` +
+        `<w:r><w:fldChar w:fldCharType="end"/></w:r>`;
+    doc.setPartXml(doc.mainDocumentPath,
+      `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t xml:space="preserve">前 </w:t></w:r>` +
+      field + `<w:r><w:t xml:space="preserve"> 后</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`);
+    const editor = Object.create(DocxEditor.prototype);
+    editor.destroyed = false;
+    editor.document = doc;
+    editor.options = {};
+    const content = { text: '前 7 后' };
+    editor.readText = (node) => node.text;
+    editor.paragraphs = new Map([[0, { content, text: content.text, failed: false }]]);
+    const revision = doc.revision;
+    content.text = '前缀 7 后';
+    editor.flush();
+    content.text = '前缀 7 后续';
+    editor.flush();
+    assert.equal(doc.revision, revision + 2, form);
+    assert.equal(doc.getParagraphs()[0].text, content.text, form);
+    assert.equal(doc.getFields()[0].result, '7', form);
+    assert.equal(doc.getFields()[0].instruction, ' SEQ test ', form);
+    const xml = doc.getPartXml(doc.mainDocumentPath);
+    assert.match(xml, form === 'simple' ? /<w:fldSimple\b/ : /<w:fldChar\b/, form);
+    if (form === 'complex') assert.match(xml, /<w:instrText> SEQ test <\/w:instrText>/);
+  }
+});
+
+test('readText includes read-only field results but not instructions', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const text = (value) => ({ nodeType: 3, textContent: value });
+  const field = (role, value) => ({
+    nodeType: 1, tagName: 'SPAN', contentEditable: 'false',
+    dataset: { docxField: '0', docxFieldRole: role, ...(role === 'result' ? { docxContent: '1' } : {}) },
+    childNodes: [text(value)],
+  });
+  const content = { nodeType: 1, tagName: 'SPAN', dataset: {}, childNodes: [
+    text('before '), field('instruction', ' HIDDEN '), field('result', '1'), text(' after'),
+  ] };
+  assert.equal(editor.readText(content), 'before 1 after');
+});
+
+test('cut and paste on a field result never reach the document mutation APIs', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  editor.selectionTouchesField = () => true;
+  editor.currentDocumentRange = () => { throw new Error('field selection must not become an edit range'); };
+  const event = { prevented: false, preventDefault() { this.prevented = true; } };
+  editor.handleClipboardCut(event, {});
+  assert.equal(event.prevented, true);
+  event.prevented = false;
+  editor.handleClipboardPaste(event, {});
+  assert.equal(event.prevented, true);
+});
+
+test('selection inside a field result expands to all result runs, including repeated selection', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const nodes = [
+    { start: 2, end: 4, dataset: { docxField: '0' } },
+    { start: 4, end: 6, dataset: { docxField: '1' } },
+    { start: 6, end: 8, dataset: { docxField: '0' } },
+  ];
+  editor.root = { querySelectorAll: () => nodes };
+  const range = (start, end) => ({
+    startContainer: 'text', endContainer: 'text', startOffset: start, endOffset: end,
+    collapsed: start === end,
+    intersectsNode: (node) => start >= node.start && start < node.end || end > node.start && end <= node.end,
+    cloneRange() { return range(this.startOffset, this.endOffset); },
+    selectNode(node) { this.startOffset = node.start; this.endOffset = node.end; },
+    compareBoundaryPoints(how, other) { return (how === 0 ? this.startOffset - other.startOffset : this.endOffset - other.endOffset); },
+    setStartBefore(node) { this.startOffset = node.start; },
+    setEndAfter(node) { this.endOffset = node.end; },
+  });
+  const selection = {
+    anchorNode: { nodeType: 3, parentElement: { closest: () => nodes[0] } },
+    current: range(3, 3), rangeCount: 1,
+    getRangeAt() { return this.current; },
+    removeAllRanges() {},
+    addRange(value) { this.current = value; },
+  };
+  const previousRange = globalThis.Range;
+  globalThis.Range = { START_TO_START: 0, END_TO_END: 2 };
+  try {
+    editor.expandFieldSelection(selection);
+    assert.deepEqual([selection.current.startOffset, selection.current.endOffset], [2, 8]);
+    editor.expandFieldSelection(selection);
+    assert.deepEqual([selection.current.startOffset, selection.current.endOffset], [2, 8]);
+    selection.anchorNode.parentElement.closest = () => nodes[1];
+    selection.current = range(5, 5);
+    editor.expandFieldSelection(selection);
+    assert.deepEqual([selection.current.startOffset, selection.current.endOffset], [4, 6]);
+  } finally {
+    if (previousRange === undefined) delete globalThis.Range;
+    else globalThis.Range = previousRange;
+  }
+});
+
 test('appendRun omits data-docx-revision-ids for empty revision arrays', () => {
   const editor = makeRunRenderEditor();
   const { runSpan } = appendRunToParagraph(editor, { run: { index: 1, text: 'plain', revisions: [] } });

@@ -250,6 +250,7 @@ export interface DocxEditorOptions {
   onChange?: (snapshot: DocumentSnapshot) => void;
   onError?: (error: Error, context: { paragraph: number }) => void;
   showFormattingMarks?: boolean;
+  showFieldShading?: boolean;
   reviewFilter?: EditorReviewFilter;
 }
 
@@ -1069,6 +1070,11 @@ export class DocxEditor {
         this.applyHistory('redo');
         return;
       }
+      if (this.selectionTouchesField(content)) {
+        event.preventDefault();
+        return;
+      }
+      if (this.preventFieldDeletion(content, event)) return;
       if (!event.isComposing && ['insertParagraph', 'insertLineBreak'].includes(event.inputType)) {
         event.preventDefault();
         this.insertText(content, '\n');
@@ -1301,6 +1307,15 @@ export class DocxEditor {
     const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
     const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
     runSpan.dataset.docxRun = String(run.index);
+    if (run.field) {
+      runSpan.dataset.docxField = String(run.field.index);
+      runSpan.dataset.docxFieldRole = run.field.role;
+      runSpan.contentEditable = 'false';
+      if (run.field.role === 'result') {
+        runSpan.dataset.docxContent = '1';
+        if (this.options.showFieldShading !== false) runSpan.classList.add('docx-field-shading');
+      }
+    }
     if (run.revisions?.length) runSpan.dataset.docxRevisionIds = run.revisions.map((revision) => revision.id).join(',');
     const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
     if (commentIds.length) {
@@ -1347,7 +1362,7 @@ export class DocxEditor {
       if (description) runSpan.setAttribute('aria-description', description);
       this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
     }
-    const segments = run.text.split(/(\t|\n)/);
+    const segments = (run.field?.role === 'instruction' ? '' : run.text).split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
       if (!segment) continue;
@@ -1516,7 +1531,7 @@ export class DocxEditor {
 
   private insertText(element: HTMLElement, text: string): void {
     const selection = this.root.ownerDocument.getSelection();
-    if (!selection?.rangeCount) return;
+    if (!selection?.rangeCount || this.selectionTouchesField(element)) return;
     const range = selection.getRangeAt(0);
     if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return;
     range.deleteContents();
@@ -1727,6 +1742,10 @@ export class DocxEditor {
   }
 
   private handleClipboardCut(event: ClipboardEvent, content: HTMLElement): void {
+    if (this.selectionTouchesField(content)) {
+      event.preventDefault();
+      return;
+    }
     const range = this.currentDocumentRange();
     if (!range) return;
     if (range.start.paragraph !== range.end.paragraph || range.start.offset === range.end.offset) {
@@ -1754,6 +1773,10 @@ export class DocxEditor {
   }
 
   private handleClipboardPaste(event: ClipboardEvent, content: HTMLElement): void {
+    if (this.selectionTouchesField(content)) {
+      event.preventDefault();
+      return;
+    }
     const data = event.clipboardData;
     if (!data) return;
     const range = this.currentDocumentRange();
@@ -2088,6 +2111,7 @@ export class DocxEditor {
       this.updateRangeSelection(null);
       return;
     }
+    this.expandFieldSelection(selection);
     const element = node.nodeType === 1 ? node as Element : node.parentElement;
     const paragraph = element?.closest<HTMLElement>('[data-paragraph]');
     if (paragraph && this.root.contains(paragraph)) this.selectParagraph(Number(paragraph.dataset.paragraph));
@@ -2095,6 +2119,76 @@ export class DocxEditor {
     if (!image) this.selectImage(null);
     this.updateRangeSelection(this.captureDocumentRange());
   };
+
+  private expandFieldSelection(selection: Selection): void {
+    if (!selection.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    const fields = Array.from(this.root.querySelectorAll<HTMLElement>('[data-docx-field-role="result"]'));
+    const anchor = selection.anchorNode;
+    const anchorElement = anchor?.nodeType === 1 ? anchor as Element : anchor?.parentElement;
+    const touched = fields.filter((node) => range.intersectsNode(node) &&
+      (!range.collapsed || anchorElement?.closest('[data-docx-field-role="result"]') === node));
+    if (!touched.length) return;
+    const ids = new Set(touched.map((node) => node.dataset.docxField));
+    const selected = fields.filter((node) => ids.has(node.dataset.docxField));
+    const expanded = range.cloneRange();
+    const first = selected[0]!;
+    const last = selected[selected.length - 1]!;
+    const bounds = range.cloneRange();
+    bounds.selectNode(first);
+    if (range.compareBoundaryPoints(Range.START_TO_START, bounds) > 0) expanded.setStartBefore(first);
+    bounds.selectNode(last);
+    if (range.compareBoundaryPoints(Range.END_TO_END, bounds) < 0) expanded.setEndAfter(last);
+    if (expanded.startContainer === range.startContainer && expanded.startOffset === range.startOffset &&
+        expanded.endContainer === range.endContainer && expanded.endOffset === range.endOffset) return;
+    selection.removeAllRanges();
+    selection.addRange(expanded);
+  }
+
+  private selectionTouchesField(content: HTMLElement): boolean {
+    const selection = this.root?.ownerDocument.getSelection?.();
+    if (!selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    const anchor = selection.anchorNode;
+    const element = anchor?.nodeType === 1 ? anchor as Element : anchor?.parentElement;
+    return Array.from(content?.querySelectorAll?.<HTMLElement>('[data-docx-field]') ?? [])
+      .some((node) => range.intersectsNode(node) &&
+        (!range.collapsed || element === node || node.contains(element ?? null)));
+  }
+
+  private deletionTouchesField(content: HTMLElement, direction: 'backward' | 'forward'): boolean {
+    const selection = this.root.ownerDocument.getSelection();
+    if (!selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed || !content.contains(range.startContainer)) return false;
+    let node: Node = range.startContainer;
+    let offset = range.startOffset;
+    while (true) {
+      if (node.nodeType === 3) {
+        if (direction === 'backward' ? offset > 0 : offset < (node.textContent ?? '').length) return false;
+      } else if (node.nodeType === 1) {
+        const siblings = node.childNodes;
+        while (direction === 'backward' ? offset > 0 : offset < siblings.length) {
+          const adjacent = siblings[direction === 'backward' ? --offset : offset++]!;
+          if (adjacent.nodeType === 1 && (adjacent as HTMLElement).dataset.docxFieldRole === 'result') return true;
+          if (this.textLength(adjacent) > 0) return false;
+        }
+      }
+      if (node === content || !node.parentNode) return false;
+      const parent = node.parentNode;
+      offset = Array.prototype.indexOf.call(parent.childNodes, node) + (direction === 'forward' ? 1 : 0);
+      node = parent;
+    }
+  }
+
+  private preventFieldDeletion(content: HTMLElement, event: InputEvent): boolean {
+    const direction = /^delete(?:Content|Word|SoftLine|HardLine)(Backward|Forward)$/.exec(event.inputType)?.[1];
+    if (direction && this.deletionTouchesField(content, direction === 'Backward' ? 'backward' : 'forward')) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {
     if (this.handleHistoryShortcut(event)) return;
