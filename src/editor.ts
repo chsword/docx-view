@@ -26,8 +26,8 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { paginate } from './layout.js';
-import type { FlowItem, LineBox, MeasureContext, PageBox } from './layout.js';
+import { columnWidthsPx, paginate } from './layout.js';
+import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -794,35 +794,44 @@ export class DocxEditor {
     if (cell?.textDirection?.toLowerCase().includes('tb') || cell?.textDirection?.toLowerCase().includes('bt')) td.style.writingMode = 'vertical-rl';
   }
 
+  private makeTable(block: LayoutTable, rowIndices: number[], defaultTabStopTwips: number,
+    reviewContext: ReviewRenderContext): HTMLTableElement {
+    const table = this.root.ownerDocument.createElement('table');
+    table.className = 'docx-table';
+    this.applyTableStyle(table, block.format);
+    const body = table.createTBody();
+    for (const rowIndex of rowIndices) {
+      const row = block.rows[rowIndex];
+      if (!row) continue;
+      const tr = body.insertRow();
+      this.applyRowStyle(tr, row);
+      let colIndex = 0;
+      for (const cell of row.cells) {
+        const logicalStart = colIndex;
+        colIndex += Math.max(1, cell.colSpan);
+        if (cell.isMergeContinuation) continue;
+        const td = tr.insertCell();
+        td.dataset.tableCell = 'true';
+        td.dataset.gridStart = String(logicalStart);
+        td.dataset.gridEnd = String(logicalStart + Math.max(1, cell.colSpan));
+        td.dataset.rowStart = String(rowIndex);
+        td.dataset.rowEnd = String(rowIndex + Math.max(1, cell.rowSpan));
+        td.colSpan = Math.max(1, cell.colSpan);
+        if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+        this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart,
+          Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
+        this.appendBlocks(td, cell.blocks, defaultTabStopTwips, reviewContext);
+      }
+    }
+    return table;
+  }
+
   private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number, reviewContext: ReviewRenderContext): void {
     for (const block of blocks) {
       if (block.type === 'paragraph') {
         parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext));
       } else if (block.type === 'table') {
-        const table = this.root.ownerDocument.createElement('table');
-        table.className = 'docx-table';
-        this.applyTableStyle(table, block.format);
-        const body = table.createTBody();
-        for (const [rowIndex, row] of block.rows.entries()) {
-          const tr = body.insertRow();
-          this.applyRowStyle(tr, row);
-          let colIndex = 0;
-          for (const cell of row.cells) {
-            const logicalStart = colIndex;
-            colIndex += Math.max(1, cell.colSpan);
-            if (cell.isMergeContinuation) continue;
-            const td = tr.insertCell();
-            td.dataset.tableCell = 'true';
-            td.dataset.gridStart = String(logicalStart);
-            td.dataset.gridEnd = String(logicalStart + Math.max(1, cell.colSpan));
-            td.dataset.rowStart = String(rowIndex);
-            td.dataset.rowEnd = String(rowIndex + Math.max(1, cell.rowSpan));
-            td.colSpan = Math.max(1, cell.colSpan);
-            if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
-            this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart, Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
-            this.appendBlocks(td, cell.blocks, defaultTabStopTwips, reviewContext);
-          }
-        }
+        const table = this.makeTable(block, block.rows.map((_, index) => index), defaultTabStopTwips, reviewContext);
         parent.appendChild(table);
         if (block.format?.description) {
           const description = this.root.ownerDocument.createElement('div');
@@ -845,16 +854,31 @@ export class DocxEditor {
     }
   }
 
-  private measureParagraphForPagination(paragraph: ParagraphInfo, widthPx: number, context: MeasureContext): LineBox[] {
-    const host = this.root.ownerDocument.createElement('div');
-    host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, widthPx)}px;`;
+  private withMeasuring<T>(render: () => T): T {
+    const previous = this.measuring;
     this.measuring = true;
-    const measured = this.makeParagraph(paragraph, context.defaultTabStopTwips, {
+    try {
+      return render();
+    } finally {
+      this.measuring = previous;
+    }
+  }
+
+  private measureParagraphForPagination(paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext): LineBox[] {
+    const host = this.root.ownerDocument.createElement('div');
+    host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, area.widthPx)}px;`;
+    for (const wrap of area.wraps.filter((candidate) => candidate.carried)) {
+      const spacer = this.root.ownerDocument.createElement('div');
+      spacer.style.width = wrap.wrap === 'topAndBottom' ? '100%' : `${Math.min(area.widthPx, wrap.widthPx)}px`;
+      spacer.style.height = `${wrap.heightPx}px`;
+      if (wrap.wrap !== 'topAndBottom') spacer.style.cssFloat = 'left';
+      host.append(spacer);
+    }
+    const measured = this.withMeasuring(() => this.makeParagraph(paragraph, context.defaultTabStopTwips, {
       authors: undefined,
       deletedTextByRun: new Map(),
       revisionColors: new Map(),
-    });
-    this.measuring = false;
+    }));
     host.append(measured);
     this.root.append(host);
     const textNodes: Array<{ node: Text; start: number }> = [];
@@ -912,6 +936,26 @@ export class DocxEditor {
     return deriveLineBoxes(rects);
   }
 
+  private measureTableRowForPagination(table: LayoutTable, rowIndex: number, widthPx: number, context: MeasureContext): number {
+    const host = this.root.ownerDocument.createElement('div');
+    host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, widthPx)}px;`;
+    const rendered = this.withMeasuring(() => this.makeTable(table, [rowIndex], context.defaultTabStopTwips, {
+      authors: undefined,
+      deletedTextByRun: new Map(),
+      revisionColors: new Map(),
+    }));
+    rendered.style.width = '100%';
+    host.append(rendered);
+    this.root.append(host);
+    const tr = rendered.rows[0];
+    const cellHeight = tr
+      ? Array.from(tr.cells).reduce((height, cell) => Math.max(height, cell.getBoundingClientRect().height), 0)
+      : 0;
+    const height = Math.max(cellHeight, tr?.getBoundingClientRect().height ?? 0);
+    host.remove();
+    return Math.max(0, height);
+  }
+
   private sliceParagraph(paragraph: ParagraphInfo, start: number, end: number): ParagraphInfo {
     let offset = 0;
     const runs = paragraph.runs.flatMap((run) => {
@@ -926,16 +970,61 @@ export class DocxEditor {
     return { ...paragraph, text: paragraph.text.slice(start, end), runs };
   }
 
+  private makePageContent(page: PageBox, section: SectionInfo, blocks: DocumentBlock[], paragraphs: ParagraphInfo[],
+    defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLElement {
+    const body = this.root.ownerDocument.createElement('div');
+    body.className = 'docx-page-content';
+    const gapPx = Math.max(0, section.columns.space * 96 / 1440);
+    const columnWidths = columnWidthsPx(section);
+    body.style.display = 'grid';
+    body.style.gridTemplateColumns = columnWidths.map((value) => `${value}px`).join(' ');
+    body.style.columnGap = `${gapPx}px`;
+    body.style.alignItems = 'start';
+    const columns = columnWidths.map((_, index) => {
+      const column = this.root.ownerDocument.createElement('div');
+      column.className = 'docx-page-column';
+      column.dataset.column = String(index);
+      body.append(column);
+      return column;
+    });
+    const renderedTables = new Set<string>();
+    for (const item of page.items) {
+      const columnIndex = Math.min(item.column ?? 0, columns.length - 1);
+      const column = columns[columnIndex]!;
+      if (item.type === 'line') {
+        const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
+        if (paragraph) {
+          column.append(this.makeParagraph(
+            this.sliceParagraph(paragraph, item.line.startOffset, item.line.endOffset),
+            defaultTabStopTwips,
+            reviewContext,
+          ));
+        }
+      } else if (item.type === 'tableRow' && !renderedTables.has(`${columnIndex}:${item.table}`)) {
+        const block = blocks[item.table];
+        if (block?.type === 'table') {
+          const rowIndices = page.items
+            .filter((candidate): candidate is Extract<FlowItem, { type: 'tableRow' }> =>
+              candidate.type === 'tableRow' && candidate.table === item.table && (candidate.column ?? 0) === columnIndex)
+            .map((candidate) => candidate.row);
+          column.append(this.makeTable(block, rowIndices, defaultTabStopTwips, reviewContext));
+          renderedTables.add(`${columnIndex}:${item.table}`);
+        }
+      }
+    }
+    return body;
+  }
+
   private renderPaginated(parent: Node, reviewContext: ReviewRenderContext, defaultTabStopTwips: number): void {
     const blocks = this.document.getBlocks();
     const sections = this.document.getSections();
     const paragraphs = blocks.filter((block): block is Extract<DocumentBlock, { type: 'paragraph' }> => block.type === 'paragraph')
       .map((block) => block.paragraph);
     const measurer = {
-      measureParagraph: (paragraph: ParagraphInfo, widthPx: number, context: MeasureContext) =>
-        this.measureParagraphForPagination(paragraph, widthPx, context),
-      // A3 will replace this approximation when table rows can split across pages.
-      measureTableRow: (row: TableRowInfo) => Math.max(18, typeof row.format?.height?.value === 'number' ? row.format.height.value : row.cells.length * 18),
+      measureParagraph: (paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext) =>
+        this.measureParagraphForPagination(paragraph, area, context),
+      measureTableRow: (table: LayoutTable, _row: TableRowInfo, rowIndex: number, widthPx: number, context: MeasureContext) =>
+        this.measureTableRowForPagination(table, rowIndex, widthPx, context),
     };
     const pages = paginate(blocks, sections, measurer, { defaultTabStopTwips });
     for (const page of pages) {
@@ -950,21 +1039,7 @@ export class DocxEditor {
       pageElement.style.padding = `${section.margins.top * 96 / 1440}px ${section.margins.right * 96 / 1440}px ${section.margins.bottom * 96 / 1440}px ${section.margins.left * 96 / 1440}px`;
       pageElement.style.boxSizing = 'border-box';
       pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length, firstPhysicalPage));
-      const body = this.root.ownerDocument.createElement('div');
-      body.className = 'docx-page-content';
-      const renderedTables = new Set<number>();
-      for (const item of page.items) {
-        if (item.type === 'line') {
-          const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
-          if (paragraph) body.append(this.makeParagraph(this.sliceParagraph(paragraph, item.line.startOffset, item.line.endOffset), defaultTabStopTwips, reviewContext));
-        } else if (item.type === 'tableRow' && !renderedTables.has(item.table)) {
-          const block = blocks[item.table];
-          if (block) {
-            this.appendBlocks(body, [block], defaultTabStopTwips, reviewContext);
-            renderedTables.add(item.table);
-          }
-        }
-      }
+      const body = this.makePageContent(page, section, blocks, paragraphs, defaultTabStopTwips, reviewContext);
       pageElement.append(body, this.makeHeaderFooter('footer', page.section, page.number, pages.length, firstPhysicalPage));
       (parent as DocumentFragment).append(pageElement);
     }
