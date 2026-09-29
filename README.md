@@ -80,6 +80,8 @@ console.log(reopened.getSnapshot());
 | API | 用途 |
 | --- | --- |
 | `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、修订标记、样式清单、部件列表和修订号 |
+| `getContentControls()` | 读取内容控件类型、标题 / 标签、锁定状态、占位符、列表项、数据绑定及正文段落索引 |
+| `setContentControlText(id, text)` / `setContentControlChecked(id, checked)` / `setContentControlProperties(id, patch)` / `removeContentControl(id, options?)` | 修改内容控件值或属性、移除控件包装；不提供新建内容控件 API |
 | `getStyles()` / `getStyle(id)` | 读取 `styles.xml` 中的段落 / 字符 / 表格 / 编号样式元数据 |
 | `getStyleGallery()` | 读取常用（`qFormat`）样式，按 `uiPriority` 排序，适合工具栏样式面板 |
 | `getEffectiveParagraphFormat(index)` / `getEffectiveRunFormat(paragraph, run)` | 读取 Word 样式层叠后的有效格式 |
@@ -155,6 +157,7 @@ console.log(reopened.getSnapshot());
 
 - `getDocumentProperties().revisionNumber` / `setDocumentProperties({ revisionNumber })` 读写的是 DOCX `cp:revision` 文档属性，**与**实例级 `doc.revision`（内存中的变更计数，不持久化到 DOCX）互不联动。
 - `documentProtection` 只是文档内声明：库会如实读写它，但**不会**因为 `readOnly` / `comments` / `trackedChanges` 而禁用编辑 API；若宿主需要据此调整按钮或 UI，请自行在外层实现。
+- 内容控件的 `w:lock` 同样只是文档内声明；只有 `setContentControlText()` 在 `contentLocked` / `sdtContentLocked` 时拒绝写入。它不会禁用 `setParagraphText()` 等既有编辑 API。
 
 | `getFootnotes()` / `getEndnotes()` / `insertFootnote()` / `insertEndnote()` / `setNoteText()` / `deleteNote()` / `convertNote()` / `getNoteSettings()` / `setNoteSettings()` | 读取和编辑脚注/尾注、转换类型、调整编号设置 |
 | `getComments()` / `addComment()` / `replyComment()` / `setCommentResolved()` / `setCommentText()` / `deleteComment()` | 读取和编辑批注、回复链与解决状态 |
@@ -162,7 +165,7 @@ console.log(reopened.getSnapshot());
 | `canUndo()` / `canRedo()` / `undo()` / `redo()` / `getHistory()` / `clearHistory()` | 访问撤销/重做栈；撤销与重做都会生成新的 `revision` |
 | `beginHistoryGroup(label?)` / `endHistoryGroup()` | 将多次编辑显式合并为一个撤销步（例如格式刷批量操作） |
 
-索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
+索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。内容控件的 `paragraphs` 沿用同一正文索引，嵌套控件各自返回且内层标记 `nested: true`。高层操作只处理主文档，页眉、页脚等部件请使用底层 API。
 注释（脚注/尾注）`blocks` 里的段落 `index` 固定为 `-1`，不属于正文索引命名空间；注释内容请使用 `setNoteText(kind, id, text)` 编辑。`insertFootnote` / `insertEndnote` 为匹配 Word 常见显示，会在标记后以保留空格写入正文文本 run（例如读回 `" 内容"`）。
 批注锚点通过 `CommentInfo.anchor.sourcePartPath` 指明所属部件；`paragraph` / `startParagraph` / `endParagraph` 都是该部件内部的局部顺序，不可直接拿去调用正文 `setParagraphText()` 之类的 API。回复批注会复用父批注锚点；没有正文锚点或没有 `comments.xml` 条目的记录会被标记为 `isOrphan: true`。
 **批注的读写范围**
@@ -291,7 +294,7 @@ const result = doc.applyOperations({
 console.log(tool, result.revision);
 ```
 
-支持的操作类型：`setTrackChanges`、`setRevisionAuthor`、`acceptRevision`、`rejectRevision`、`acceptAllRevisions`、`rejectAllRevisions`、`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`applyParagraphStyle`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`formatRange`、`applyCharacterStyle`、`clearRangeFormat`、`formatDocumentRange`、`setOutlineLevel`、`moveOutlineSection`、`setParagraphTabs`、`setParagraphBorders`、`setParagraphShading`、`insertBreak`、`insertSymbol`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertHyperlink`、`updateHyperlink`、`removeHyperlink`、`insertBookmark`、`deleteBookmark`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`addComment`、`replyComment`、`setCommentResolved`、`setCommentText`、`deleteComment`、`undo`、`redo`。
+支持的操作类型（按 `AGENT_OPERATION_SCHEMA` 顺序，共 66 项）：`setTrackChanges`、`setRevisionAuthor`、`acceptRevision`、`rejectRevision`、`acceptAllRevisions`、`rejectAllRevisions`、`setParagraphText`、`insertParagraph`、`deleteParagraph`、`formatParagraph`、`applyParagraphStyle`、`setParagraphNumbering`、`clearParagraphNumbering`、`setParagraphLevel`、`formatRun`、`formatRange`、`applyCharacterStyle`、`clearRangeFormat`、`formatDocumentRange`、`setOutlineLevel`、`moveOutlineSection`、`setParagraphTabs`、`setParagraphBorders`、`setParagraphShading`、`insertBreak`、`insertSymbol`、`replaceText`、`insertTable`、`insertTableAt`、`insertTableRow`、`deleteTableRow`、`insertTableColumn`、`deleteTableColumn`、`mergeCells`、`splitCell`、`formatTable`、`formatTableRow`、`formatCell`、`setCellText`、`insertHyperlink`、`updateHyperlink`、`removeHyperlink`、`insertBookmark`、`deleteBookmark`、`setContentControlText`、`setContentControlChecked`、`setContentControlProperties`、`removeContentControl`、`insertImage`、`replaceImageBytes`、`resizeImage`、`setImageAlt`、`deleteImage`、`setPartXml`、`insertFootnote`、`insertEndnote`、`setNoteText`、`deleteNote`、`convertNote`、`addComment`、`replyComment`、`setCommentResolved`、`setCommentText`、`deleteComment`、`undo`、`redo`。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。
 - 成功的非空批次只增加一次修订号；空批次不增加。

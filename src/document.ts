@@ -461,6 +461,11 @@ function textOf(element: Element): string {
   return fieldPlaceholder(element) ?? '';
 }
 
+function contentControlText(content: Element): string {
+  const paragraphs = descendants(content, 'p');
+  return paragraphs.length ? paragraphs.map(textOf).join('\n') : textOf(content);
+}
+
 function compactDefined<T extends object>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
@@ -644,6 +649,16 @@ function sdtProperties(control: Element): Element {
     control.insertBefore(properties, children(control, 'sdtContent')[0] ?? control.firstChild);
   }
   return properties;
+}
+
+function contentControlKind(control: Element): ContentControlKind {
+  const properties = children(control, 'sdtPr')[0] ?? control;
+  if (children(properties, 'checkbox', W14_NS).length) return 'checkbox';
+  const types: Array<[string, ContentControlKind]> = [
+    ['text', 'text'], ['richText', 'richText'], ['dropDownList', 'dropDownList'],
+    ['comboBox', 'comboBox'], ['date', 'date'], ['picture', 'picture'], ['group', 'group'],
+  ];
+  return types.find(([name]) => children(properties, name).length > 0)?.[1] ?? 'unknown';
 }
 
 function setSdtText(control: Element, text: string): void {
@@ -3823,18 +3838,13 @@ export class DocxDocument {
       const properties = children(control, 'sdtPr')[0];
       const controlContent = children(control, 'sdtContent')[0];
       const idValue = wordValue(children(properties ?? control, 'id')[0]);
-      const parsedId = idValue === undefined ? undefined : Number(idValue);
+      const parsedId = idValue !== undefined && /^\d+$/.test(idValue) ? Number(idValue) : undefined;
       const id = parsedId !== undefined && Number.isSafeInteger(parsedId) && parsedId >= 0 ? parsedId : undefined;
       const lockValue = wordValue(children(properties ?? control, 'lock')[0]);
       const lock: ContentControlInfo['lock'] = lockValue === 'sdtLocked' || lockValue === 'contentLocked' ||
         lockValue === 'sdtContentLocked' ? lockValue : 'unlocked';
-      const typeNames: Array<[string, ContentControlKind]> = [
-        ['text', 'text'], ['richText', 'richText'], ['dropDownList', 'dropDownList'],
-        ['comboBox', 'comboBox'], ['date', 'date'], ['picture', 'picture'], ['group', 'group'],
-      ];
-      const type = typeNames.find(([name]) => children(properties ?? control, name).length > 0);
       const checkbox = children(properties ?? control, 'checkbox', W14_NS)[0];
-      const kind: ContentControlKind = checkbox ? 'checkbox' : type?.[1] ?? 'unknown';
+      const kind = contentControlKind(control);
       const checkboxChecked = checkbox && children(checkbox, 'checked', W14_NS)[0];
       const checkedValue = checkboxChecked?.getAttributeNS(W14_NS, 'val') ?? undefined;
       const list = children(properties ?? control, kind === 'dropDownList' ? 'dropDownList' : 'comboBox')[0];
@@ -3854,6 +3864,16 @@ export class DocxDocument {
       const showingPlaceholder = children(properties ?? control, 'showingPlcHdr')[0];
       const placeholderValue = wordValue(showingPlaceholder);
       const controlParagraphs = controlContent ? descendants(controlContent, 'p') : [];
+      if (controlContent && controlParagraphs.length === 0) {
+        let ancestor = control.parentNode as Element | null;
+        while (ancestor && ancestor !== body) {
+          if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'p') {
+            controlParagraphs.push(ancestor);
+            break;
+          }
+          ancestor = ancestor.parentNode as Element | null;
+        }
+      }
       let ancestor = control.parentNode as Element | null;
       let nested = false;
       while (ancestor && ancestor !== body) {
@@ -3872,12 +3892,13 @@ export class DocxDocument {
         showingPlaceholder: !!showingPlaceholder && !['0', 'false', 'off'].includes((placeholderValue ?? '1').toLowerCase()),
         placeholderDocPart: wordValue(children(placeholder ?? control, 'docPart')[0]),
         items,
-        checked: checkedValue === undefined ? undefined : ['1', 'true', 'on'].includes(checkedValue.toLowerCase()),
+        checked: checkedValue === undefined || !['1', 'true', 'on', '0', 'false', 'off'].includes(checkedValue.toLowerCase())
+          ? undefined : ['1', 'true', 'on'].includes(checkedValue.toLowerCase()),
         dateFormat,
         dataBinding: bindingValue,
         paragraphs: [...new Set(controlParagraphs.map((paragraph) => paragraphIndexes.get(paragraph)).filter((index): index is number => index !== undefined))],
         nested,
-        text: controlContent ? textOf(controlContent) : '',
+        text: controlContent ? contentControlText(controlContent) : '',
       });
     });
   }
@@ -3893,6 +3914,10 @@ export class DocxDocument {
         return value !== undefined && Number(value) === id;
       });
       if (!control) throw new Error(`Content control ${id} does not exist.`);
+      const kind = contentControlKind(control);
+      if (!['text', 'richText', 'dropDownList', 'comboBox', 'date'].includes(kind)) {
+        throw new Error(`Content control ${id} does not accept text values.`);
+      }
       const properties = children(control, 'sdtPr')[0];
       const lock = wordValue(children(properties ?? control, 'lock')[0]);
       if (lock === 'contentLocked' || lock === 'sdtContentLocked') {
@@ -3901,7 +3926,7 @@ export class DocxDocument {
       const content = children(control, 'sdtContent')[0];
       if (!content) throw new Error('Content control has no w:sdtContent.');
       const showingPlaceholder = children(properties ?? control, 'showingPlcHdr');
-      if (textOf(content) === text && showingPlaceholder.length === 0) return false;
+      if (contentControlText(content) === text && showingPlaceholder.length === 0) return false;
       setSdtText(control, text);
       for (const showing of showingPlaceholder) properties?.removeChild(showing);
       return true;
@@ -3918,6 +3943,9 @@ export class DocxDocument {
         return value !== undefined && Number(value) === id;
       });
       if (!control) throw new Error(`Content control ${id} does not exist.`);
+      if (contentControlKind(control) !== 'checkbox') {
+        throw new Error(`Content control ${id} is not a checkbox.`);
+      }
       ensureW14Namespace(control);
       const properties = sdtProperties(control);
       let checkbox = children(properties, 'checkbox', W14_NS)[0];
