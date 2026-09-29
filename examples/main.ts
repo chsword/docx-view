@@ -19,6 +19,7 @@ import {
   getCommandControlState,
   type CommandContext,
 } from './commands.js';
+import { initializeRibbon } from './ribbon.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -70,6 +71,8 @@ function element<T extends HTMLElement>(id: string): T {
   if (!node) throw new Error(`找不到界面元素：${id}`);
   return node as T;
 }
+
+initializeRibbon(element('ribbon'));
 
 const recentNumbering = new Map<'bullet' | 'decimal', number>();
 

@@ -30,56 +30,60 @@
         <section class="workspace" aria-label="文档工作台">
           <div class="document-panel">
             <div class="document-heading"><div><span class="file-icon">W</span><span id="document-name">产品计划.docx</span></div><span class="local-badge">本地文档</span></div>
-            <div class="toolbar" role="toolbar" aria-label="段落格式工具栏">
-              <div class="tool-group">
-                <button class="tool text-bold" id="format-bold" aria-label="整段加粗" title="整段加粗" aria-pressed="false">B</button>
-                <button class="tool text-italic" id="format-italic" aria-label="整段斜体" title="整段斜体" aria-pressed="false">I</button>
-                <button class="tool text-underline" id="format-underline" aria-label="整段下划线" title="整段下划线" aria-pressed="false">U</button>
-                <button class="tool wide" id="format-painter" aria-label="格式刷（双击锁定）" title="格式刷（双击锁定）" aria-pressed="false">🖌 格式刷</button>
-                <button class="tool wide" id="clear-format" aria-label="清除直接格式" title="清除直接格式">⌫ 清除格式</button>
+            <div id="ribbon" class="ribbon" contenteditable="false">
+              <div class="ribbon-tabs" role="tablist" aria-label="文档功能区" aria-orientation="horizontal">
+                <button id="ribbon-tab-home" class="ribbon-tab active" type="button" role="tab" aria-selected="true" aria-controls="ribbon-panel-home" tabindex="0">开始</button>
+                <button id="ribbon-tab-insert" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-insert" tabindex="-1">插入</button>
+                <button id="ribbon-tab-layout" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-layout" tabindex="-1">布局</button>
+                <button id="ribbon-tab-review" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-review" tabindex="-1">审阅</button>
+                <button id="ribbon-tab-view" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-view" tabindex="-1">视图</button>
               </div>
-              <div class="tool-group"><label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select><label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label></div>
-              <div class="tool-group"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div>
-              <div class="tool-group"><label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option><option value="distribute">分散对齐</option></select></div>
-              <div class="tool-group">
-                <button class="tool wide" id="list-bullet" aria-label="项目符号列表" title="项目符号列表">• 列表</button>
-                <button class="tool wide" id="list-decimal" aria-label="编号列表" title="编号列表">1. 列表</button>
-                <button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button>
-                <button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button>
-              </div>
-              <div class="tool-group insert-tools">
-                <button id="add-paragraph" class="tool wide">＋ 段落</button>
-                <select id="table-rows" aria-label="表格行数"><option value="2">2 行</option><option value="3">3 行</option><option value="4">4 行</option></select>
-                <select id="table-cols" aria-label="表格列数"><option value="2">2 列</option><option value="3">3 列</option><option value="4">4 列</option></select>
-                <button id="add-table" class="tool wide">⊞ 插入表格</button>
-              </div>
-              <div class="tool-group">
-                <button id="insert-row" class="tool wide">＋ 行</button>
-                <button id="delete-row" class="tool wide">－ 行</button>
-                <button id="insert-col" class="tool wide">＋ 列</button>
-                <button id="delete-col" class="tool wide">－ 列</button>
-              </div>
-              <div class="tool-group">
-                <button id="merge-cells" class="tool wide">合并 2×2</button>
-                <button id="split-cell" class="tool wide">拆分</button>
-                <label class="color-control" title="单元格底纹"><span class="sr-only">单元格底纹</span><input type="color" id="cell-fill" value="#f3f6fb" /><span>▧</span></label>
-                <button id="apply-cell-style" class="tool wide">边框/底纹</button>
-              </div>
-              <div class="tool-group"><button id="insert-image" class="tool wide">🖼 插图</button><button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button></div>
-              <div class="tool-group"><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" /></div>
-              <div class="tool-group">
-                <label class="sr-only" for="page-size">纸张</label>
-                <select id="page-size"><option value="A4">A4</option><option value="Letter">Letter</option></select>
-                <label class="sr-only" for="page-orientation">方向</label>
-                <select id="page-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select>
-                <button id="apply-page-setup" class="tool wide">页面设置</button>
-              </div>
-              <div class="tool-group">
-                <button id="insert-section-break" class="tool wide">分节符</button>
-                <button id="insert-page-break" class="tool wide">分页符</button>
-                <label class="sr-only" for="header-kind">页眉类型</label><select id="header-kind"><option value="default">页眉默认</option><option value="first">页眉首页</option><option value="even">页眉偶数</option></select>
-                <label class="sr-only" for="footer-kind">页脚类型</label><select id="footer-kind"><option value="default">页脚默认</option><option value="first">页脚首页</option><option value="even">页脚偶数</option></select>
-              </div>
+              <section id="ribbon-panel-home" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-home" tabindex="0">
+                <div class="ribbon-group"><span class="ribbon-group-label">剪贴板</span><div class="ribbon-group-controls"><button class="tool wide" id="format-painter" aria-label="格式刷（双击锁定）" title="格式刷（双击锁定）" aria-pressed="false">🖌 格式刷</button></div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">字体</span><div class="ribbon-group-controls">
+                  <button class="tool text-bold" id="format-bold" aria-label="整段加粗" title="整段加粗" aria-pressed="false">B</button><button class="tool text-italic" id="format-italic" aria-label="整段斜体" title="整段斜体" aria-pressed="false">I</button><button class="tool text-underline" id="format-underline" aria-label="整段下划线" title="整段下划线" aria-pressed="false">U</button>
+                  <label class="sr-only" for="font-size">整段字号</label><select id="font-size"><option value="">字号</option><option value="10">10 pt</option><option value="12">12 pt</option><option value="14">14 pt</option><option value="18">18 pt</option><option value="24">24 pt</option><option value="30">30 pt</option></select>
+                  <label class="color-control" title="整段文字颜色"><span class="sr-only">文字颜色</span><input type="color" id="font-color" value="#25334a" /><span>A</span></label><button class="tool wide" id="clear-format" aria-label="清除直接格式" title="清除直接格式">⌫ 清除格式</button>
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">段落</span><div class="ribbon-group-controls">
+                  <label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option><option value="distribute">分散对齐</option></select>
+                  <button class="tool wide" id="list-bullet" aria-label="项目符号列表" title="项目符号列表">• 列表</button><button class="tool wide" id="list-decimal" aria-label="编号列表" title="编号列表">1. 列表</button><button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button><button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button><button id="add-paragraph" class="tool wide">＋ 段落</button>
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">样式</span><div class="ribbon-group-controls"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div></div>
+              </section>
+              <section id="ribbon-panel-insert" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-insert" tabindex="0" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">表格</span><div class="ribbon-group-controls">
+                  <select id="table-rows" aria-label="表格行数"><option value="2">2 行</option><option value="3">3 行</option><option value="4">4 行</option></select><select id="table-cols" aria-label="表格列数"><option value="2">2 列</option><option value="3">3 列</option><option value="4">4 列</option></select><button id="add-table" class="tool wide">⊞ 插入表格</button>
+                  <button id="insert-row" class="tool wide">＋ 行</button><button id="delete-row" class="tool wide">－ 行</button><button id="insert-col" class="tool wide">＋ 列</button><button id="delete-col" class="tool wide">－ 列</button><button id="merge-cells" class="tool wide">合并 2×2</button><button id="split-cell" class="tool wide">拆分</button>
+                  <label class="color-control" title="单元格底纹"><span class="sr-only">单元格底纹</span><input type="color" id="cell-fill" value="#f3f6fb" /><span>▧</span></label><button id="apply-cell-style" class="tool wide">边框/底纹</button>
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">插图</span><div class="ribbon-group-controls">
+                  <button id="insert-image" class="tool wide">🖼 插图</button><button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" />
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">分页与页眉页脚</span><div class="ribbon-group-controls">
+                  <button id="insert-page-break" class="tool wide">分页符</button><label class="sr-only" for="header-kind">页眉类型</label><select id="header-kind"><option value="default">页眉默认</option><option value="first">页眉首页</option><option value="even">页眉偶数</option></select><label class="sr-only" for="footer-kind">页脚类型</label><select id="footer-kind"><option value="default">页脚默认</option><option value="first">页脚首页</option><option value="even">页脚偶数</option></select>
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">脚注 / 尾注</span><div class="ribbon-group-controls"><button id="add-footnote" class="tool wide">插入脚注</button><button id="add-endnote" class="tool wide">插入尾注</button></div></div>
+              </section>
+              <section id="ribbon-panel-layout" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-layout" tabindex="0" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">页面设置</span><div class="ribbon-group-controls">
+                  <label class="sr-only" for="page-size">纸张</label><select id="page-size"><option value="A4">A4</option><option value="Letter">Letter</option></select><label class="sr-only" for="page-orientation">方向</label><select id="page-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select><button id="apply-page-setup" class="tool wide">页面设置</button><button id="insert-section-break" class="tool wide">分节符</button>
+                </div></div>
+              </section>
+              <section id="ribbon-panel-review" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-review" tabindex="0" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">修订</span><div class="ribbon-group-controls">
+                  <label class="sr-only" for="review-revision-view">修订视图</label><select id="review-revision-view" aria-label="修订视图"><option value="markup">标记视图</option><option value="final">最终视图</option><option value="original">原始视图</option></select><label><input id="review-show-revisions" type="checkbox" checked /> 显示修订</label><label><input id="review-show-comments" type="checkbox" checked /> 显示批注</label>
+                  <button id="review-prev-revision" type="button" class="button subtle">上一条</button><button id="review-next-revision" type="button" class="button subtle">下一条</button><button id="review-accept-all" type="button" class="button subtle">全部接受</button><button id="review-reject-all" type="button" class="button subtle">全部拒绝</button>
+                </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">批注</span><div class="ribbon-group-controls">
+                  <button id="review-select-all" type="button" class="button subtle">全选作者</button><button id="review-clear-authors" type="button" class="button subtle">清空作者筛选</button><label><input id="toggle-comments" type="checkbox" checked /> 显示高亮</label>
+                  <input id="comment-author-filter" placeholder="按作者筛选" aria-label="按作者筛选批注" /><select id="comment-resolved-filter" aria-label="批注解决状态"><option value="all">全部状态</option><option value="open">未解决</option><option value="resolved">已解决</option></select>
+                  <button id="new-comment" class="button subtle">新建批注</button><button id="reply-comment" class="button subtle">回复</button><button id="resolve-comment" class="button subtle">解决 / 取消</button><button id="delete-comment" class="button subtle">删除</button>
+                </div><ul id="reviewer-list" class="comment-list ribbon-reviewers"></ul></div>
+              </section>
+              <section id="ribbon-panel-view" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-view" tabindex="0" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">显示</span><div class="ribbon-group-controls"><label><input id="toggle-outline" type="checkbox" checked data-ribbon-toggle="outline-panel" aria-controls="outline-panel" /> 显示大纲</label></div></div>
+              </section>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>
             <footer class="document-footer"><span id="selection-label">点击正文选择段落</span><span id="image-selection-label">未选中图片</span><span><span id="paragraph-count">0</span> 段落 <b>·</b> 修订 <span id="revision">0</span></span></footer>
@@ -113,61 +117,21 @@
               <p class="panel-description"><code>getSnapshot()</code> 返回修订号、段落、文本片段、块结构和部件清单。</p>
               <pre id="snapshot-output" class="code-editor snapshot" tabindex="0" aria-label="当前文档 JSON 快照"></pre>
             </section>
-            <section class="outline-panel" aria-label="大纲面板">
+            <section id="outline-panel" class="outline-panel" aria-label="大纲面板">
               <div class="comment-panel-header">
                 <div><strong>大纲</strong><p class="hint">拖拽标题可调整顺序；横向拖拽可改变层级；聚焦后按 Alt + 方向键也可操作。</p></div>
               </div>
               <ul id="outline-list" class="outline-list"></ul>
             </section>
             <section class="comment-panel" aria-label="批注面板">
-              <div class="review-panel">
-                <div class="comment-panel-header">
-                  <div><strong>审阅筛选</strong><p class="hint">作者筛选与视图切换仅影响渲染，不改文档内容。</p></div>
-                </div>
-                <div class="comment-filters">
-                  <label class="sr-only" for="review-revision-view">修订视图</label>
-                  <select id="review-revision-view" aria-label="修订视图">
-                    <option value="markup">标记视图</option>
-                    <option value="final">最终视图</option>
-                    <option value="original">原始视图</option>
-                  </select>
-                  <fieldset>
-                    <legend class="sr-only">审阅显示选项</legend>
-                    <label><input id="review-show-revisions" type="checkbox" checked /> 显示修订</label>
-                    <label><input id="review-show-comments" type="checkbox" checked /> 显示批注</label>
-                  </fieldset>
-                </div>
-                <div class="comment-panel-actions">
-                  <button id="review-select-all" type="button" class="button subtle">全选作者</button>
-                  <button id="review-clear-authors" type="button" class="button subtle">清空作者筛选</button>
-                </div>
-                <ul id="reviewer-list" class="comment-list"></ul>
-                <div class="comment-panel-header">
-                  <div><strong>修订</strong><p class="hint">可在任意视图下接受/拒绝；仅“标记视图”显示下划线/删除线与变更条。</p></div>
-                </div>
-                <div class="comment-panel-actions">
-                  <button id="review-prev-revision" type="button" class="button subtle">上一条</button>
-                  <button id="review-next-revision" type="button" class="button subtle">下一条</button>
-                  <button id="review-accept-all" type="button" class="button subtle">全部接受</button>
-                  <button id="review-reject-all" type="button" class="button subtle">全部拒绝</button>
-                </div>
-                <ul id="revision-list" class="comment-list"></ul>
-              </div>
               <div class="comment-panel-header">
                 <div><strong>批注</strong><p class="hint">点击高亮区域或下面的列表查看；回复与解决状态会写回 DOCX。</p></div>
-                <label><input id="toggle-comments" type="checkbox" checked /> 显示高亮</label>
-              </div>
-              <div class="comment-filters">
-                <input id="comment-author-filter" placeholder="按作者筛选" />
-                <select id="comment-resolved-filter"><option value="all">全部状态</option><option value="open">未解决</option><option value="resolved">已解决</option></select>
-              </div>
-              <div class="comment-panel-actions">
-                <button id="new-comment" class="button subtle">新建批注</button>
-                <button id="reply-comment" class="button subtle">回复</button>
-                <button id="resolve-comment" class="button subtle">解决 / 取消</button>
-                <button id="delete-comment" class="button subtle">删除</button>
               </div>
               <ul id="comment-list" class="comment-list"></ul>
+              <div class="comment-panel-header">
+                <div><strong>修订</strong><p class="hint">可在任意视图下接受/拒绝；仅“标记视图”显示修订标记。</p></div>
+              </div>
+              <ul id="revision-list" class="comment-list"></ul>
             </section>
             <div class="scope-note"><strong>段落有效格式</strong><pre id="effective-format" class="code-editor snapshot" tabindex="0" aria-label="当前段落有效格式"></pre></div>
             <div class="scope-note"><strong>关于渲染范围</strong><p>支持常用段落、文字格式、基础表格、分节页面设置近似，以及图片显示 / 插入 / 替换 / 删除 / 调整尺寸。不是 Word 排版引擎，不模拟精确分页；页码域值与完整分页计算仍为占位，外部链接图片会显示占位框且不会主动联网加载。</p></div>
