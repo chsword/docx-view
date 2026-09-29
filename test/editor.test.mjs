@@ -90,6 +90,9 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
       className: '',
       attributes: new Map(),
       append(child) { this.childNodes.push(child); },
+      appendChild(child) { this.childNodes.push(child); },
+      addEventListener() {},
+      contains() { return false; },
       setAttribute(name, value) { this.attributes.set(name, value); },
     };
     element.classList = {
@@ -110,6 +113,26 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
   };
   return editor;
 }
+
+test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  const paragraph = { index: 0, text: 'text', runs: [{ index: 0, text: 'text' }] };
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+
+  editor.renderShapeInfos = [{ paragraph: 0, run: 0, kind: 'textbox', hasTextContent: false, id: 'shape-1' }];
+  const withShape = editor.makeParagraph(paragraph, 720, reviewContext);
+  assert.equal(withShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), true);
+
+  editor.renderShapeInfos = [];
+  const withoutShape = editor.makeParagraph(paragraph, 720, reviewContext);
+  assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
+});
 
 function appendRunToParagraph(editor, {
   paragraphIndex = 0,
