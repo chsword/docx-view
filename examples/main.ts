@@ -1143,6 +1143,10 @@ const commandContextBuilder = createCommandContextBuilder({
       ? doc.getParagraphs().flatMap((item) => item.runs.flatMap((run) => run.images ?? [])).find((item) => item.id === imageId) ?? null
       : editor.selectedImage ?? null;
   },
+  getShape(target) {
+    const shapeId = target?.closest<HTMLElement>('[data-docx-shape]')?.dataset.docxShape;
+    return shapeId ? doc.getShapes().find((shape) => shape.id === shapeId) ?? null : null;
+  },
   getHyperlink: (target) => target ? hyperlinkAtTarget(target) : null,
   getRevisionsAtPoint(target) {
     const revisionIds = target ? idsAtTarget(target, 'docxRevisionIds') : [];

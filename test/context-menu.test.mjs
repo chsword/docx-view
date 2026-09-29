@@ -15,6 +15,7 @@ function context(overrides = {}) {
     selection: { paragraph: 0, range: null, format: null, collapsed: true },
     table: null,
     image: null,
+    shape: null,
     hyperlink: null,
     revisionsAtPoint: [],
     commentsAtPoint: [],
@@ -66,6 +67,13 @@ test('image menu omits paste and unsupported size commands', () => {
   assert.deepEqual(commands(contextMenuEntries(hit('image'), context())), [
     'clipboard.cut', 'clipboard.copy', 'image.replace', 'image.setAlt', 'image.delete',
   ]);
+});
+
+test('shape menu exposes read-only shape actions', () => {
+  const ids = commands(contextMenuEntries(hit('shape'), context({
+    shape: { id: 'shape-1', paragraph: 0, run: 0, kind: 'textbox', form: 'drawingml', widthPx: 100, heightPx: 60, placement: 'inline', hasTextContent: true },
+  })));
+  assert.deepEqual(ids, ['shape.copyText', 'shape.viewProperties']);
 });
 
 test('image in a table appends the table command group', () => {

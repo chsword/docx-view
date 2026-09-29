@@ -4,8 +4,8 @@ import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
-  SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   TableCellLocation,
 } from './types.js';
 import {
@@ -35,6 +35,7 @@ import {
   isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, sanitizeText, serializeXml, setWordValue, validatePath,
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
+import { readRunShapes, shapeTextElements } from './shapes.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -48,6 +49,7 @@ import {
   validateTabs,
 } from './operations.js';
 import { collectSections, readSections, SECTION_ORDER } from './section.js';
+import { fieldKindFromInstruction, NEVER_EVALUATE, parseFields } from './fields.js';
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
@@ -303,11 +305,49 @@ function relsPath(partPath: string): string {
   return `${directory ? `${directory}/` : ''}_rels/${name}.rels`;
 }
 
+const PARAGRAPH_LOOKUP_CACHE = new WeakMap<Document, Element[]>();
+
 function paragraphAt(document: Document, index: number): Element {
   assertIndex(index);
-  const paragraph = descendants(bodyOf(document), 'p')[index];
-  if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
-  return paragraph;
+  const cached = PARAGRAPH_LOOKUP_CACHE.get(document);
+  if (cached) {
+    const paragraph = cached[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    return paragraph;
+  }
+  let remaining = index;
+  const stack: (Node | null)[] = [bodyOf(document).firstChild];
+  while (stack.length) {
+    const current = stack[stack.length - 1]!;
+    if (!current) {
+      stack.pop();
+      continue;
+    }
+    stack[stack.length - 1] = current.nextSibling;
+    if (current.nodeType === 1) {
+      const element = current as Element;
+      if (element.namespaceURI === WORD_NS && element.localName === 'txbxContent') {
+        continue;
+      }
+      if (element.namespaceURI === WORD_NS && element.localName === 'p') {
+        if (remaining === 0) return element;
+        remaining--;
+      }
+    }
+    if (current.firstChild) stack.push(current.firstChild);
+  }
+  throw new Error(`Paragraph ${index} does not exist.`);
+}
+
+function mainParagraphElements(body: Element): Element[] {
+  return descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
 }
 
 function blockContainerOf(document: Document): Element {
@@ -466,20 +506,63 @@ function elementText(element: Element): string {
   return '\n';
 }
 
-function fieldPlaceholder(root: Element): string | undefined {
-  const instructions = [
-    ...children(root, 'fldSimple').map(node => (node.getAttributeNS(WORD_NS, 'instr') ?? '').toUpperCase()),
-    ...descendants(root, 'instrText').map(node => (node.textContent ?? '').toUpperCase()),
-  ];
-  if (instructions.some(instruction => instruction.includes('NUMPAGES'))) return '?';
-  if (instructions.some(instruction => instruction.includes('PAGE'))) return '1';
-  return undefined;
+function formatFieldNumber(value: number, format?: string): string {
+  switch ((format ?? 'ARABIC').toUpperCase()) {
+    case 'ROMAN': {
+      const values: [number, string][] = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+      let result = ''; let current = Math.max(1, Math.floor(value));
+      for (const [amount, symbol] of values) while (current >= amount) { result += symbol; current -= amount; }
+      return result;
+    }
+    case 'ALPHABETIC': {
+      let result = ''; let current = Math.max(1, Math.floor(value));
+      while (current > 0) { current--; result = String.fromCharCode(65 + current % 26) + result; current = Math.floor(current / 26); }
+      return result;
+    }
+    default: return String(value);
+  }
+}
+
+function formatFieldDate(date: Date, format?: string): string {
+  if (!format) return date.toLocaleDateString('en-US');
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return format.replace(/yyyy|MMMM|MMM|MM|dd|HH|mm|ss/g, token => ({
+    yyyy: String(date.getFullYear()), MM: pad(date.getMonth() + 1), dd: pad(date.getDate()),
+    HH: pad(date.getHours()), mm: pad(date.getMinutes()), ss: pad(date.getSeconds()),
+    MMM: date.toLocaleString('en-US', { month: 'short' }), MMMM: date.toLocaleString('en-US', { month: 'long' }),
+  }[token] ?? token));
 }
 
 function textOf(element: Element): string {
+  if (element.localName === 'r' && descendants(element, 'instrText').length > 0) return '';
   const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
-  if (text) return text;
-  return fieldPlaceholder(element) ?? '';
+  return text;
+}
+
+function bookmarkTexts(document: Document): Map<string, string> {
+  const body = bodyOf(document);
+  const order = preOrderElements(body);
+  const positions = new Map(order.map((element, index) => [element, index]));
+  const ends = new Map<string, Element>();
+  for (const end of descendants(body, 'bookmarkEnd')) {
+    const id = end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id');
+    if (id) ends.set(id, end);
+  }
+  const result = new Map<string, string>();
+  for (const start of descendants(body, 'bookmarkStart')) {
+    const id = start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id');
+    const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name');
+    const end = id ? ends.get(id) : undefined;
+    const startPosition = positions.get(start);
+    const endPosition = end ? positions.get(end) : undefined;
+    if (!name || startPosition === undefined || endPosition === undefined || result.has(name)) continue;
+    result.set(name, order
+      .slice(startPosition + 1, endPosition)
+      .filter(element => ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? ''))
+      .map(elementText)
+      .join(''));
+  }
+  return result;
 }
 
 function contentControlText(content: Element): string {
@@ -1207,7 +1290,7 @@ function sectionSettings(body: Element, base: NoteSettings): Map<number, NoteSet
 
 function referenceRecords(body: Element): NoteReferenceRecord[] {
   const sectionMap = sectionOfParagraphs(body);
-  const paragraphs = descendants(body, 'p');
+  const paragraphs = mainParagraphElements(body);
   const records: NoteReferenceRecord[] = [];
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     for (const [runIndex, run] of ownRuns(paragraph).entries()) {
@@ -1234,7 +1317,8 @@ interface ImageReadContext {
 
 function readRun(run: Element, index: number, styles: StylesContext, paragraph: Element,
   paragraphIndex: number, imageContext?: ImageReadContext,
-  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): RunInfo {
+  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null,
+  field?: RunInfo['field']): RunInfo {
   const direct = readRunProperties(children(run, 'rPr')[0], styles.theme);
   const revisions = readRunRevisionMarks(run, paragraph, styles.theme);
   const images = imageContext
@@ -1245,6 +1329,7 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
   return {
     index,
     text: textOf(run),
+    ...(field ? { field } : {}),
     ...direct,
     revisions: revisions.length ? revisions.map(({ id, kind, author, date, move }) => ({
       id,
@@ -1263,11 +1348,13 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
 
 function readParagraph(paragraph: Element, index: number, styles: StylesContext, numbering?: NumberingInfo,
   imageContext?: ImageReadContext,
-  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): ParagraphInfo {
+  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null,
+  fieldRoles?: Map<Element, { index: number; role: 'instruction' | 'result' }>): ParagraphInfo {
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
   const paragraphRevision = readParagraphRevisionMark(paragraph, styles.theme);
   const runElements = ownRuns(paragraph);
-  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber));
+  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber,
+    fieldRoles?.get(run)));
   return {
     index,
     text: textOf(paragraph),
@@ -3875,8 +3962,10 @@ export class DocxDocument {
     sourcePartPath = this.mainPath,
     noteState?: NoteState,
   ): ParagraphInfo[] {
-    const elements = descendants(blockContainerOf(document), 'p');
+    const container = blockContainerOf(document);
+    const elements = container.localName === 'body' ? mainParagraphElements(container) : descendants(container, 'p');
     const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
+    const parsedFields = sourcePartPath === this.mainPath ? parseFields(elements, ownRuns) : undefined;
     const noteNumber = noteState ? (kind: NoteKind, id: number) => noteState.byKind[kind].get(id) ?? null : undefined;
     const imageContext: ImageReadContext = {
       relationships: this.relationshipsFor(sourcePartPath),
@@ -3884,7 +3973,7 @@ export class DocxDocument {
       sourcePartPath,
     };
     return elements.map((paragraph, index) =>
-      readParagraph(paragraph, index, styles, numberingByParagraph.get(paragraph), imageContext, noteNumber));
+      readParagraph(paragraph, index, styles, numberingByParagraph.get(paragraph), imageContext, noteNumber, parsedFields?.roles));
   }
 
   private pageBreakMarkers(paragraph: Element): { before: number; after: number } {
@@ -3927,7 +4016,7 @@ export class DocxDocument {
 
   private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
     const body = blockContainerOf(document);
-    const paragraphElements = descendants(body, 'p');
+    const paragraphElements = mainParagraphElements(body);
     const paragraphByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, paragraphs[index]!]));
     const paragraphIndexByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, index]));
     const sectionByParagraph = this.sectionBreakByParagraph(document);
@@ -3987,9 +4076,53 @@ export class DocxDocument {
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
   }
 
+  getFields(): FieldInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    return parseFields(mainParagraphElements(bodyOf(document)), ownRuns).fields;
+  }
+
+  getShapes(): ShapeInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const shapes: ShapeInfo[] = [];
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath));
+      }
+    }
+    return shapes;
+  }
+
+  getShapeParagraphs(shapeId: string): ParagraphInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const styles = this.getStylesContext();
+    const imageContext: ImageReadContext = {
+      relationships: this.relationshipsFor(this.mainPath),
+      getContentType: this.createContentTypeResolver(),
+      sourcePartPath: this.mainPath,
+    };
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
+        for (const child of children) {
+          if (!['drawing', 'pict', 'AlternateContent'].includes(child.localName ?? '')) continue;
+          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath);
+          const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
+          if (shapeIndex < 0) continue;
+          const elements = shapeTextElements(child);
+          return elements.map((element, index) => readParagraph(element, index, styles, undefined, imageContext));
+        }
+      }
+    }
+    return [];
+  }
+
   getContentControls(): ContentControlInfo[] {
     const body = bodyOf(this.getCachedPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     return descendants(body, 'sdt').map((control) => {
       const properties = children(control, 'sdtPr')[0];
@@ -4920,7 +5053,7 @@ export class DocxDocument {
   getHyperlinks(): HyperlinkInfo[] {
     const main = this.getPartDocument(this.mainPath);
     const body = bodyOf(main);
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const relationships = this.relationshipsFor(this.mainPath);
     const result: HyperlinkInfo[] = [];
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
@@ -4994,7 +5127,7 @@ export class DocxDocument {
     }
     const body = bodyOf(document);
     const theme = styles.theme;
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const runIndexByParagraph = new Map<Element, Map<Element, number>>();
     const runIndexOf = (paragraph: Element, run: Element): number | undefined => {
@@ -5428,7 +5561,7 @@ export class DocxDocument {
 
   getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const order = preOrderElements(body);
     const paragraphFromNode = (node: Element): number | undefined => {
@@ -5472,7 +5605,7 @@ export class DocxDocument {
 
   getEditableRegions(): EditableRegionInfo[] {
     const body = bodyOf(this.getPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const paragraphInfo = this.getParagraphs();
     const order = preOrderElements(body);
@@ -6903,7 +7036,7 @@ export class DocxDocument {
     }
 
     const document = this.getCachedPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(document), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(document));
     const sourceNumId = target.numbering.numId;
     const level = target.numbering.level;
     const affected: { paragraph: Element; level: number }[] = [];
@@ -6985,7 +7118,7 @@ export class DocxDocument {
     if (previousNumId === undefined || previousNumId === target.numbering.numId) return;
 
     const document = this.getCachedPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(document), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(document));
     for (let paragraphIndex = index; paragraphIndex < paragraphInfos.length; paragraphIndex++) {
       const info = paragraphInfos[paragraphIndex]!;
       if (!info.numbering || info.numbering.numId !== target.numbering.numId ||
@@ -7246,7 +7379,7 @@ export class DocxDocument {
     const size = this.inferImageSize(options.bytes, options.contentType, options.widthEmu, options.heightEmu);
     const partPath = this.nextImagePartPath(options.contentType);
     const main = this.getPartDocument(this.mainPath);
-    const paragraphs = descendants(bodyOf(main), 'p');
+    const paragraphs = mainParagraphElements(bodyOf(main));
     const paragraph = options.paragraph !== undefined
       ? paragraphAt(main, options.paragraph)
       : paragraphs.at(-1) ?? paragraphAt(main, 0);
@@ -7775,6 +7908,99 @@ export class DocxDocument {
     });
   }
 
+  insertField(paragraphIndex: number, instruction: string, result = ''): void {
+    assertIndex(paragraphIndex);
+    assertText(instruction, 'instruction');
+    assertText(result, 'result');
+    if (instruction.length > 4096) throw new Error('Field instruction exceeds 4096 characters.');
+    const kind = fieldKindFromInstruction(instruction);
+    if (NEVER_EVALUATE.has(kind)) throw new Error(`Field type ${kind} is not allowed.`);
+    this.updatePartXmlInternal(this.mainPath, document => {
+      const paragraph = paragraphAt(document, paragraphIndex);
+      const complex = wordElement(document, 'r');
+      const begin = wordElement(document, 'fldChar');
+      begin.setAttributeNS(WORD_NS, 'w:fldCharType', 'begin');
+      complex.appendChild(begin);
+      const instructionRun = wordElement(document, 'r');
+      const instructionText = wordElement(document, 'instrText');
+      instructionText.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+      instructionText.appendChild(document.createTextNode(instruction));
+      instructionRun.appendChild(instructionText);
+      const separate = wordElement(document, 'r');
+      const separateChar = wordElement(document, 'fldChar');
+      separateChar.setAttributeNS(WORD_NS, 'w:fldCharType', 'separate');
+      separate.appendChild(separateChar);
+      const resultRun = wordElement(document, 'r');
+      appendText(resultRun, result);
+      const end = wordElement(document, 'r');
+      const endChar = wordElement(document, 'fldChar');
+      endChar.setAttributeNS(WORD_NS, 'w:fldCharType', 'end');
+      end.appendChild(endChar);
+      for (const run of [complex, instructionRun, separate, resultRun, end]) paragraph.appendChild(run);
+    });
+  }
+
+  updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string } = {}): boolean {
+    if (options.now !== undefined && !(options.now instanceof Date) || options.now && !Number.isFinite(options.now.getTime())) {
+      throw new Error('options.now must be a valid Date.');
+    }
+    if (options.kinds !== undefined && (!Array.isArray(options.kinds) || options.kinds.some(kind => typeof kind !== 'string'))) {
+      throw new Error('options.kinds must be an array of field kinds.');
+    }
+    const allowed = options.kinds ? new Set(options.kinds) : undefined;
+    const snapshot = this.getPartDocument(this.mainPath);
+    const snapshotParagraphs = mainParagraphElements(bodyOf(snapshot));
+    const snapshotFields = parseFields(snapshotParagraphs, ownRuns).fields;
+    const snapshotProperties = this.getDocumentProperties() as Record<string, unknown>;
+    const snapshotBookmarks = bookmarkTexts(snapshot);
+    let updated = false;
+    const sequence = new Map<string, number>();
+    this.updatePartXmlInternal(this.mainPath, document => {
+      const paragraphs = mainParagraphElements(bodyOf(document));
+      for (const field of snapshotFields) {
+        if (!field.evaluable || field.locked || (allowed && !allowed.has(field.kind))) continue;
+        let value: string | undefined;
+        const switches = new Map(field.switches.map(entry => [entry.name.toLowerCase(), entry.value]));
+        if (field.kind === 'SEQ') {
+          const name = field.argument ?? '';
+          let current = sequence.get(name) ?? 0;
+          if (switches.has('r')) current = Number(switches.get('r')) || 0;
+          else if (switches.has('c')) current = current || 1;
+          else current++;
+          sequence.set(name, current);
+          value = formatFieldNumber(current, switches.get('*'));
+        } else if (field.kind === 'DATE' || field.kind === 'TIME') {
+          if (!options.now) continue;
+          value = formatFieldDate(options.now, switches.get('@'));
+        } else if (field.kind === 'FILENAME') {
+          value = options.filename;
+        } else if (field.kind === 'REF') {
+          value = snapshotBookmarks.get(field.argument ?? '');
+        } else {
+          const key = field.kind === 'DOCPROPERTY' ? field.argument : ({
+            AUTHOR: 'creator', TITLE: 'title', SUBJECT: 'subject', KEYWORDS: 'keywords', COMMENTS: 'description',
+            LASTSAVEDBY: 'lastModifiedBy', CREATEDATE: 'created', SAVEDATE: 'modified', PRINTDATE: 'modified',
+          } as Record<string, string>)[field.kind];
+          if (key && snapshotProperties[key] !== undefined) value = String(snapshotProperties[key]);
+        }
+        if (value === undefined || value === field.result) continue;
+        const paragraph = paragraphs[field.paragraph];
+        if (!paragraph) continue;
+        const runs = ownRuns(paragraph);
+        for (const runIndex of field.resultRuns) {
+          const run = runs[runIndex];
+          if (!run) continue;
+          for (const child of [...children(run)]) if (child.localName !== 'rPr') run.removeChild(child);
+        }
+        const first = runs[field.resultRuns[0] ?? -1];
+        if (first) appendText(first, value);
+        updated = true;
+      }
+      return updated;
+    });
+    return updated;
+  }
+
   private enableEvenAndOddHeaders(): void {
     const relationships = this.relationshipTargets(this.mainPath);
     let settingsPath = [...relationships.values()].find(relationship => relationship.type === SETTINGS_REL)?.target;
@@ -8235,7 +8461,7 @@ export class DocxDocument {
     const document = this.getCachedPartDocument(this.mainPath);
     const paragraphs = this.buildParagraphs(document);
     const body = bodyOf(document);
-    const indices = new Map(descendants(body, 'p').map((paragraph, i) => [paragraph, paragraphs[i]!]));
+    const indices = new Map(mainParagraphElements(body).map((paragraph, i) => [paragraph, paragraphs[i]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
       if (child.localName === 'tbl') return [readTable(child, walk)];
@@ -8433,7 +8659,7 @@ export class DocxDocument {
       ensureCellParagraph(cell);
       const paragraph = childrenThroughTransparent(cell, 'p')[0];
       if (!paragraph) throw new Error('Cell paragraph does not exist.');
-      const indices = new Map(descendants(bodyOf(document), 'p').map((item, index) => [item, index]));
+      const indices = new Map(mainParagraphElements(bodyOf(document)).map((item, index) => [item, index]));
       const index = indices.get(paragraph);
       if (index === undefined) throw new Error('Cell paragraph index does not exist.');
       const old = textOf(paragraph);
@@ -9311,8 +9537,18 @@ export class DocxDocument {
     const history = historyOnlyBatch ? undefined : this.beginMutationHistory(this.nextHistoryLabel, { kind: 'transaction' });
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
+    let paragraphDocument: Document | undefined;
     try {
       for (const operation of request.operations) {
+        if (operation.type === 'setParagraphText') {
+          if (!paragraphDocument) {
+            paragraphDocument = draft.getCachedPartDocument(draft.mainPath);
+            PARAGRAPH_LOOKUP_CACHE.set(paragraphDocument, mainParagraphElements(bodyOf(paragraphDocument)));
+          }
+        } else if (paragraphDocument) {
+          PARAGRAPH_LOOKUP_CACHE.delete(paragraphDocument);
+          paragraphDocument = undefined;
+        }
         switch (operation.type) {
         case 'setTrackChanges': draft.setTrackChanges(operation.enabled); break;
         case 'setRevisionAuthor': draft.setRevisionAuthor(operation.author); break;
@@ -9359,6 +9595,12 @@ export class DocxDocument {
         case 'updateHyperlink': draft.updateHyperlink(operation.hyperlink, operation.link); break;
         case 'removeHyperlink': draft.removeHyperlink(operation.hyperlink, operation.options); break;
         case 'insertBookmark': draft.insertBookmark(operation.name, operation.range); break;
+        case 'updateFields': draft.updateFields({
+          kinds: operation.kinds,
+          now: operation.now ? new Date(operation.now) : undefined,
+          filename: operation.filename,
+        }); break;
+        case 'insertField': draft.insertField(operation.paragraph, operation.instruction, operation.result); break;
         case 'deleteBookmark': draft.deleteBookmark(operation.name); break;
         case 'setContentControlText': draft.setContentControlText(operation.id, operation.text); break;
         case 'setContentControlChecked': draft.setContentControlChecked(operation.id, operation.checked); break;
@@ -9426,6 +9668,8 @@ export class DocxDocument {
     } catch (error) {
       this.abortHistoryGroupOnFailure();
       throw error;
+    } finally {
+      if (paragraphDocument) PARAGRAPH_LOOKUP_CACHE.delete(paragraphDocument);
     }
   }
 

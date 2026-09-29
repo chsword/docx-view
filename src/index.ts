@@ -2,6 +2,9 @@ export { DocxDocument } from './document.js';
 export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
+export type { FieldInfo, FieldKind, FieldSwitch } from './types.js';
+export { paginate } from './layout.js';
+export type { FlowItem, LayoutMeasurer, LineBox, MeasureContext, PageBox } from './layout.js';
 export {
   A_NS, EMU_PER_INCH, IMAGE_REL, PIC_NS, PT_PER_INCH, PX_PER_INCH, V_NS, WP_NS,
   contentTypeForExtension, dataUrlForBytes, decodeBase64, detectImageSize, emuToPt, emuToPx,
@@ -9,6 +12,7 @@ export {
   resolveRelationshipsPath, resolveTargetPath,
 } from './drawing.js';
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS } from './xml.js';
+export { readRunShapes } from './shapes.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, CommentAnchor, CommentInfo, ContentControlInfo, ContentControlKind,
   EditableRegionEditorGroup, EditableRegionInfo,
@@ -18,5 +22,5 @@ export type {
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
-  PageSetup, SectionInfo, SectionType,
+  PageSetup, SectionInfo, SectionType, ShapeInfo, ShapeKind,
 } from './types.js';

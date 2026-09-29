@@ -7,7 +7,7 @@ import {
   A_NS, OFFICE_REL_NS, PIC_NS, V_NS, WP_NS,
   dataUrlForBytes, decodeBase64, emuToPx, pxToEmu,
 } from '../dist/index.js';
-import { REL_NS, WORD_NS } from '../dist/xml.js';
+import { REL_NS, WORD_NS, descendants, parseXml } from '../dist/xml.js';
 
 const RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
 const PNG_BYTES = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -177,6 +177,50 @@ test('create, edit, export and reopen a DOCX in Node without browser globals', a
   assert.equal(reopened.getParagraphs()[0].runs[0].fontSize, 14);
   assert.equal((await doc.toBlob()).type, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   assert.equal((await DocxDocument.load(await doc.toBlob())).getParagraphs()[0].text, reopened.getParagraphs()[0].text);
+});
+
+test('isolates textbox paragraphs and exposes shape fallbacks without duplicating AlternateContent', async () => {
+  const drawingMl = `
+    <w:drawing>
+      <wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="7" name="Box" descr="Box alt"/>
+        <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+          <wps:wsp><wps:txbx><w:txbxContent>
+            <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>inside one</w:t></w:r>
+            </w:p><w:p><w:r><w:t>inside two</w:t></w:r></w:p>
+          </w:txbxContent></wps:txbx></wps:wsp>
+        </a:graphicData></a:graphic>
+      </wp:inline>
+    </w:drawing>`;
+  const alternateDrawing = `<mc:AlternateContent><mc:Choice Requires="wps">${drawingMl}</mc:Choice><mc:Fallback><w:pict><v:shape id="fallback"><v:textbox><w:txbxContent><w:p><w:r><w:t>fallback must not duplicate</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent>`;
+  const body = `
+    <w:p><w:r><w:t>before</w:t></w:r></w:p>
+    <w:p><w:r>${alternateDrawing}</w:r></w:p>
+    <w:p><w:r><w:pict><v:shape id="rect" type="#rect" style="width:40pt;height:20pt"/></w:pict></w:r></w:p>
+    <w:p><w:r><w:pict><v:shape id="vml-box" alt="VML alt" style="width:60pt;height:30pt"><v:textbox><w:txbxContent>
+      <w:p><w:r><w:t>VML text</w:t></w:r></w:p>
+    </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+    <w:p><w:r><w:t>after</w:t></w:r></w:p>`;
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="${V_NS}"><w:body>${body}<w:sectPr/></w:body></w:document>`);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['before', '', '', '', 'after']);
+  assert.deepEqual(doc.getBlocks().filter((block) => block.type === 'paragraph').map((block) => block.paragraph.text), ['before', '', '', '', 'after']);
+  const shapes = doc.getShapes();
+  assert.equal(shapes.length, 3);
+  assert.deepEqual(shapes.map((shape) => shape.form), ['drawingml', 'vml', 'vml']);
+  assert.deepEqual(shapes.map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
+  assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
+  assert.deepEqual(doc.getShapeParagraphs(shapes[2].id).map((paragraph) => paragraph.text), ['VML text']);
+  doc.applyOperations({
+    operations: [
+      { type: 'setParagraphText', index: 1, text: 'changed body paragraph' },
+      { type: 'setParagraphText', index: 4, text: 'changed after paragraph' },
+    ],
+  });
+  assert.deepEqual(doc.getShapeParagraphs(shapes[0].id).map((paragraph) => paragraph.text), ['inside one', 'inside two']);
+  assert.equal(doc.getParagraphs()[4].text, 'changed after paragraph');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.match(reopened.getPartXml(reopened.mainDocumentPath), /txbxContent/);
+  assert.deepEqual(reopened.getShapes().map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
 });
 
 test('unmodified binary and XML parts survive an unrelated paragraph edit byte-for-byte', async () => {
@@ -836,6 +880,13 @@ test('OOXML DOM edits are namespace-aware and detached until explicitly committe
   assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
 });
 
+test('descendants returns Word elements in document order without including its root', () => {
+  const xml = parseXml(`<w:p xmlns:w="${WORD_NS}" xmlns:x="urn:other"><w:r/><x:p/><w:wrap><w:p/></w:wrap></w:p>`);
+  assert.deepEqual(descendants(xml.documentElement, 'p').map((element) => element.localName), ['p']);
+  assert.deepEqual(descendants(xml.documentElement, 'r').map((element) => element.localName), ['r']);
+  assert.deepEqual(descendants(xml.documentElement, '*').map((element) => element.localName), ['r', 'wrap', 'p']);
+});
+
 test('agent batches are atomic, revision checked and increment once per transaction', () => {
   const doc = DocxDocument.create();
   const result = doc.applyOperations({ expectedRevision: 0, operations: [
@@ -853,6 +904,17 @@ test('agent batches are atomic, revision checked and increment once per transact
   assert.equal(doc.revision, 1);
   assert.equal(doc.getParagraphs()[0].text, 'agent');
   assert.equal(doc.applyOperations({ operations: [] }).revision, 1);
+});
+
+test('applyOperations refreshes indexed paragraph lookup after structural edits', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'existing');
+  doc.applyOperations({ operations: [
+    { type: 'setParagraphText', index: 0, text: 'updated' },
+    { type: 'insertParagraph', text: 'inserted', before: 0 },
+    { type: 'setParagraphText', index: 0, text: 'new first' },
+  ] });
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.text), ['new first', 'updated']);
 });
 
 test('undo and redo share one stack with monotonic revision', () => {
@@ -1566,12 +1628,12 @@ test('section ranges stay aligned when body contains table paragraphs', () => {
   assert.equal(sections[1].startParagraph, 2);
 });
 
-test('section ranges stay aligned with descendants order including txbxContent paragraphs', () => {
+test('section ranges exclude independent txbxContent paragraphs', () => {
   const doc = withBody('<w:p><w:r><w:pict><w:txbxContent><w:p><w:r><w:t>inside box</w:t></w:r></w:p></w:txbxContent></w:pict><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>B</w:t></w:r></w:p><w:p><w:r><w:t>C</w:t></w:r></w:p>');
   const sections = doc.getSections();
-  assert.equal(doc.getParagraphs().length, 4);
-  assert.equal(sections[0].endParagraph, 2);
-  assert.equal(sections[1].startParagraph, 3);
+  assert.equal(doc.getParagraphs().length, 3);
+  assert.equal(sections[0].endParagraph, 1);
+  assert.equal(sections[1].startParagraph, 2);
 });
 
 test('setPageSetup updates known fields and keeps unknown sectPr children', () => {
@@ -1682,22 +1744,104 @@ test('missing header/footer parts or dangling references do not crash block read
   assert.deepEqual(doc.getHeaderBlocks(0), []);
 });
 
-test('insertPageNumberField writes PAGE placeholder and renders text', () => {
+test('insertPageNumberField writes PAGE field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createHeader(0);
   doc.insertPageNumberField(path);
   assert.match(doc.getPartXml(path), /w:fldSimple[^>]+PAGE/);
   const texts = doc.getHeaderBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('1'));
+  assert.ok(texts.includes(''));
 });
 
-test('insertPageNumberField writes NUMPAGES placeholder and renders text', () => {
+test('insertPageNumberField writes NUMPAGES field without synthetic text', () => {
   const doc = DocxDocument.create();
   const path = doc.createFooter(0);
   doc.insertPageNumberField(path, { total: true, format: 'ROMAN' });
   assert.ok(doc.getPartXml(path).includes('NUMPAGES \\* ROMAN'));
   const texts = doc.getFooterBlocks(0).filter(block => block.type === 'paragraph').map(block => block.paragraph.text);
-  assert.ok(texts.includes('?'));
+  assert.ok(texts.includes(''));
+});
+
+test('getFields parses complex fields and excludes instructions from run text', () => {
+  const doc = withBody(`<w:p><w:r><w:t>前 </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF 锚点A \\h</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t> 后</w:t></w:r></w:p>`);
+  const field = doc.getFields()[0];
+  assert.equal(field.kind, 'PAGEREF');
+  assert.equal(field.result, '7');
+  assert.deepEqual(doc.getParagraphs()[0].runs.map(run => run.text).join(''), doc.getParagraphs()[0].text);
+  assert.equal(doc.getParagraphs()[0].runs[2].text, '');
+});
+
+test('updateFields updates SEQ and DATE but preserves pagination and unsafe fields', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" SEQ 图 \\* ARABIC "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" DATE \\@ &quot;yyyy-MM-dd&quot; "><w:r><w:t>old</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" INCLUDETEXT x "><w:r><w:t>cached</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields({ now: new Date(2026, 0, 2) }), true);
+  assert.deepEqual(doc.getFields().map(field => field.result), ['1', '2026-01-02', '3', 'cached']);
+  assert.equal(doc.updateFields(), false);
+});
+
+test('updateFields resolves REF from a pre-update bookmark snapshot and is repeatable', () => {
+  const doc = withBody(
+    `<w:bookmarkStart w:id="1" w:name="锚点"/><w:p><w:r><w:t>被引用的文字</w:t></w:r></w:p><w:bookmarkEnd w:id="1"/>` +
+    `<w:p><w:fldSimple w:instr=" REF 锚点 "><w:r><w:t>旧值</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields(), true);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+  const revision = doc.revision;
+  assert.equal(doc.updateFields(), false);
+  assert.equal(doc.revision, revision);
+  assert.equal(doc.getParagraphs()[1].text, '被引用的文字');
+});
+
+test('field-only paragraphs have text equal to their run text', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r/></w:fldSimple></w:p>` +
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r/><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  for (const paragraph of doc.getParagraphs()) {
+    assert.equal(paragraph.text, paragraph.runs.map(run => run.text).join(''));
+  }
+});
+
+test('insertField writes a complex field and rejects external-resource fields', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  doc.insertField(0, ' SEQ 图 ', '1');
+  assert.equal(doc.getFields()[0].form, 'complex');
+  assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
+});
+
+test('field enumeration excludes textbox fields and keeps paragraph indices aligned', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:pict><w:txbxContent><w:p><w:fldSimple w:instr=" SEQ 框内 "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p></w:txbxContent></w:pict></w:r></w:p>` +
+    `<w:p><w:fldSimple w:instr=" SEQ 正文 "><w:r><w:t>5</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  const fields = doc.getFields();
+  const paragraphs = doc.getParagraphs();
+  assert.equal(fields.length, 1);
+  assert.equal(fields[0].instruction, ' SEQ 正文 ');
+  assert.equal(paragraphs[fields[0].paragraph].text, '5');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /SEQ 框内/);
+  doc.updateFields();
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:t>9<\/w:t>/);
+});
+
+test('RunInfo.field.index resolves to the matching getFields entry', () => {
+  const doc = withBody(
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> SEQ 正文复杂 </w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>3</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+  );
+  const fields = doc.getFields();
+  assert.equal(fields.length, 1);
+  for (const paragraph of doc.getParagraphs()) {
+    for (const run of paragraph.runs) {
+      if (!run.field) continue;
+      assert.ok(fields[run.field.index]);
+      assert.equal(fields[run.field.index].instruction, ' SEQ 正文复杂 ');
+    }
+  }
 });
 
 test('setParagraphText preserves fldSimple and keeps runs valid', () => {

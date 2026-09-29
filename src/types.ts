@@ -143,6 +143,7 @@ export interface RunInfo extends RunFormat {
   image?: ImageInfo;
   images?: ImageInfo[];
   noteReference?: { kind: 'footnote' | 'endnote'; id: number; number: number; marker: string };
+  field?: { index: number; role: 'instruction' | 'result' };
 }
 
 export interface ParagraphInfo extends ParagraphFormat {
@@ -153,6 +154,37 @@ export interface ParagraphInfo extends ParagraphFormat {
   effective?: ParagraphFormat;
   numbering?: NumberingInfo;
   images: ImageInfo[];
+}
+
+export type FieldKind =
+  | 'SEQ' | 'DATE' | 'TIME' | 'CREATEDATE' | 'SAVEDATE' | 'PRINTDATE'
+  | 'AUTHOR' | 'TITLE' | 'SUBJECT' | 'KEYWORDS' | 'COMMENTS' | 'LASTSAVEDBY'
+  | 'DOCPROPERTY' | 'FILENAME' | 'REF' | 'PAGE' | 'NUMPAGES' | 'PAGEREF'
+  | 'TOC' | 'INDEX' | 'INCLUDETEXT' | 'INCLUDEPICTURE' | 'LINK' | 'DDE' | 'DDEAUTO'
+  | 'MACROBUTTON' | 'GOTOBUTTON' | 'FILLIN' | 'ASK' | 'DATABASE' | 'AUTOTEXT'
+  | 'AUTOTEXTLIST' | 'HYPERLINK' | 'IF' | 'unknown';
+
+export interface FieldSwitch {
+  name: string;
+  value?: string;
+}
+
+export interface FieldInfo {
+  index: number;
+  paragraph: number;
+  runs: number[];
+  resultRuns: number[];
+  form: 'simple' | 'complex';
+  kind: FieldKind;
+  instruction: string;
+  argument?: string;
+  switches: FieldSwitch[];
+  result: string;
+  requiresPagination: boolean;
+  evaluable: boolean;
+  locked: boolean;
+  dirty: boolean;
+  nestedIn?: number;
 }
 
 export interface BorderFormat {
@@ -302,6 +334,25 @@ export interface ImageInfo {
   crop?: { left: number; top: number; right: number; bottom: number };
   isExternal: boolean;
   behindDoc?: boolean;
+}
+
+export type ShapeKind = 'textbox' | 'shape' | 'smartArt' | 'chart' | 'ole' | 'unknown';
+
+export interface ShapeInfo {
+  id: string;
+  paragraph: number;
+  run: number;
+  kind: ShapeKind;
+  form: 'drawingml' | 'vml';
+  name?: string;
+  alt?: string;
+  title?: string;
+  widthPx: number;
+  heightPx: number;
+  placement: 'inline' | 'floating';
+  wrap?: ImageInfo['wrap'];
+  hasTextContent: boolean;
+  geometry?: string;
 }
 
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';
@@ -597,6 +648,8 @@ export type AgentOperation =
   | { type: 'updateHyperlink'; hyperlink: number | { paragraph: number; runs: number[]; text: string }; link: { url?: string; anchor?: string; tooltip?: string } }
   | { type: 'removeHyperlink'; hyperlink: number | { paragraph: number; runs: number[]; text: string }; options?: { keepText?: boolean } }
   | { type: 'insertBookmark'; name: string; range: { startParagraph: number; endParagraph?: number } }
+  | { type: 'updateFields'; kinds?: FieldKind[]; now?: string; filename?: string }
+  | { type: 'insertField'; paragraph: number; instruction: string; result?: string }
   | { type: 'deleteBookmark'; name: string }
   | { type: 'setContentControlText'; id: number; text: string }
   | { type: 'setContentControlChecked'; id: number; checked: boolean }
