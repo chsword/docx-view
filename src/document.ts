@@ -144,18 +144,23 @@ const REVISION_ELEMENT_NAMES = new Set([
 
 type HistoryAction =
   | { kind: 'setParagraphText'; paragraph: number }
+  | { kind: 'paragraphDelta'; target: ParagraphHistoryTarget }
   | { kind: 'transaction' }
   | { kind: 'group' }
   | { kind: 'undo' }
   | { kind: 'redo' }
   | { kind: 'other' };
 
+type ParagraphHistoryTarget =
+  | { kind: 'paragraph'; index: number }
+  | { kind: 'cell'; table: number; row: number; col: number };
+
 interface HistoryState {
   parts: Map<string, Uint8Array>;
   bytes: number;
   entry: HistoryEntry;
   action: HistoryAction;
-  paragraphDelta?: { paragraph: number; restore: Element; redo?: Element };
+  paragraphDelta?: { target: ParagraphHistoryTarget; restore: Element; redo?: Element };
 }
 
 function elementChildren(node: Node, namespace?: string, localName?: string): Element[] {
@@ -2820,14 +2825,14 @@ export class DocxDocument {
     const step = this.undoHistory.pop()!;
     this.undoHistoryBytes -= step.bytes;
     if (step.paragraphDelta) {
-      this.applyParagraphHistoryXml(step.paragraphDelta.paragraph, step.paragraphDelta.restore);
+      this.applyParagraphHistoryXml(step.paragraphDelta.target, step.paragraphDelta.restore);
       this.currentRevision++;
       this.invalidateMutationCaches();
       this.pushRedoState({
         ...step,
         bytes: step.bytes,
         paragraphDelta: {
-          paragraph: step.paragraphDelta.paragraph,
+          target: step.paragraphDelta.target,
           restore: step.paragraphDelta.redo!,
           redo: step.paragraphDelta.restore,
         },
@@ -2851,14 +2856,14 @@ export class DocxDocument {
     const step = this.redoHistory.pop()!;
     this.redoHistoryBytes -= step.bytes;
     if (step.paragraphDelta) {
-      this.applyParagraphHistoryXml(step.paragraphDelta.paragraph, step.paragraphDelta.restore);
+      this.applyParagraphHistoryXml(step.paragraphDelta.target, step.paragraphDelta.restore);
       this.currentRevision++;
       this.invalidateMutationCaches();
       this.pushUndoState({
         ...step,
         bytes: step.bytes,
         paragraphDelta: {
-          paragraph: step.paragraphDelta.paragraph,
+          target: step.paragraphDelta.target,
           restore: step.paragraphDelta.redo!,
           redo: step.paragraphDelta.restore,
         },
@@ -3257,15 +3262,18 @@ export class DocxDocument {
   }
 
   private snapshotHistoryState(revision: number, label: string | undefined, action: HistoryAction): HistoryState {
-    if (action.kind === 'setParagraphText' && !this.historyGroupDepth) {
-      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), action.paragraph);
+    if ((action.kind === 'setParagraphText' || action.kind === 'paragraphDelta') && !this.historyGroupDepth) {
+      const target = action.kind === 'setParagraphText'
+        ? { kind: 'paragraph' as const, index: action.paragraph }
+        : action.target;
+      const paragraph = this.paragraphForHistoryTarget(this.getCachedPartDocument(this.mainPath), target);
       const restore = paragraph.cloneNode(true) as Element;
       return {
         parts: this.cloneParts(this.parts),
         bytes: new XMLSerializer().serializeToString(restore).length,
         entry: { revision, label, at: Date.now() },
         action,
-        paragraphDelta: { paragraph: action.paragraph, restore },
+        paragraphDelta: { target, restore },
       };
     }
     const parts = this.cloneParts(this.parts);
@@ -3371,7 +3379,7 @@ export class DocxDocument {
       action: before.action,
     };
     if (before.paragraphDelta) {
-      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), before.paragraphDelta.paragraph);
+      const paragraph = this.paragraphForHistoryTarget(this.getCachedPartDocument(this.mainPath), before.paragraphDelta.target);
       const redo = paragraph.cloneNode(true) as Element;
       state.bytes = new XMLSerializer().serializeToString(before.paragraphDelta.restore).length +
         new XMLSerializer().serializeToString(redo).length;
@@ -3403,7 +3411,7 @@ export class DocxDocument {
     previous.entry.at = Date.now();
     previous.entry.label = pending.label ?? previous.entry.label;
     if (previous.paragraphDelta) {
-      const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), previous.paragraphDelta.paragraph);
+      const paragraph = this.paragraphForHistoryTarget(this.getCachedPartDocument(this.mainPath), previous.paragraphDelta.target);
       const redo = paragraph.cloneNode(true) as Element;
       previous.paragraphDelta.redo = redo;
       previous.bytes = new XMLSerializer().serializeToString(previous.paragraphDelta.restore).length +
@@ -3420,13 +3428,21 @@ export class DocxDocument {
       this.pendingMergedHistory = { label, action, at };
       return undefined;
     }
-    if (action.kind !== 'setParagraphText' || this.historyGroupDepth) this.materializeAllParts();
+    if (!['setParagraphText', 'paragraphDelta'].includes(action.kind) || this.historyGroupDepth) this.materializeAllParts();
     return this.snapshotHistoryState(this.revision, label, action);
   }
 
-  private applyParagraphHistoryXml(index: number, paragraphSnapshot: Element): void {
+  private paragraphForHistoryTarget(document: Document, target: ParagraphHistoryTarget): Element {
+    if (target.kind === 'paragraph') return paragraphAt(document, target.index);
+    const cell = cellAt(tableAt(document, target.table), target.row, target.col).cell;
+    const paragraph = childrenThroughTransparent(cell, 'p')[0];
+    if (!paragraph) throw new Error('Cell paragraph does not exist.');
+    return paragraph;
+  }
+
+  private applyParagraphHistoryXml(target: ParagraphHistoryTarget, paragraphSnapshot: Element): void {
     const document = this.getCachedPartDocument(this.mainPath);
-    const paragraph = paragraphAt(document, index);
+    const paragraph = this.paragraphForHistoryTarget(document, target);
     const replacement = paragraphSnapshot.cloneNode(true) as Element;
     paragraph.parentNode!.replaceChild(replacement, paragraph);
     this.dirtyPartXml.add(this.mainPath);
@@ -7016,10 +7032,13 @@ export class DocxDocument {
     if (numId < 1) throw new Error('numId must be at least 1. Use clearParagraphNumbering() to remove numbering.');
     if (level > 8) throw new Error('level must be between 0 and 8.');
     this.updatePartXmlInternal(this.mainPath, document => {
-      const props = properties(paragraphAt(document, index), 'pPr');
+      const paragraph = paragraphAt(document, index);
+      const before = new XMLSerializer().serializeToString(paragraph);
+      const props = properties(paragraph, 'pPr');
       const numPr = property(props, 'numPr');
       setWordValue(numberingProperty(numPr, 'ilvl'), String(level));
       setWordValue(numberingProperty(numPr, 'numId'), String(numId));
+      return before !== new XMLSerializer().serializeToString(paragraph);
     });
   }
 
@@ -7042,10 +7061,11 @@ export class DocxDocument {
 
   setParagraphLevel(index: number, delta: number): void {
     if (!Number.isSafeInteger(delta)) throw new Error('delta must be a safe integer.');
-    const paragraph = this.getParagraphs()[index];
-    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
-    if (!paragraph.numbering) throw new Error('Paragraph does not have numbering.');
-    this.setParagraphNumbering(index, paragraph.numbering.numId, Math.max(0, Math.min(8, paragraph.numbering.level + delta)));
+    const paragraph = paragraphAt(this.getCachedPartDocument(this.mainPath), index);
+    const numbering = computeParagraphNumbering([paragraph], this.getNumberingContext().model).get(paragraph);
+    if (!numbering) throw new Error('Paragraph does not have numbering.');
+    this.nextHistoryAction = { kind: 'paragraphDelta', target: { kind: 'paragraph', index } };
+    this.setParagraphNumbering(index, numbering.numId, Math.max(0, Math.min(8, numbering.level + delta)));
   }
 
   restartNumbering(index: number, options: { start?: number } = {}): number {
@@ -8131,23 +8151,34 @@ export class DocxDocument {
     if (options.validateStyle && typeof format.style === 'string' && !this.getStyle(format.style)) {
       throw new Error(`Paragraph style not found: ${format.style} (styles.xml is missing or does not define it).`);
     }
+    paragraphAt(this.getCachedPartDocument(this.mainPath), index);
+    this.nextHistoryAction = { kind: 'paragraphDelta', target: { kind: 'paragraph', index } };
     this.updatePartXmlInternal(this.mainPath, document => {
       const paragraph = paragraphAt(document, index);
+      const before = new XMLSerializer().serializeToString(paragraph);
       if (this.trackChangesEnabled()) this.trackParagraphFormatChange(paragraph);
       const props = properties(paragraph, 'pPr');
       applyParagraphFormatTo(props, format);
+      return before !== new XMLSerializer().serializeToString(paragraph);
     });
   }
 
   formatRun(paragraph: number, run: number, format: RunFormat): void {
     assertIndex(run);
     validateRunFormat(format);
+    if (!ownRuns(paragraphAt(this.getCachedPartDocument(this.mainPath), paragraph))[run]) {
+      throw new Error(`Run ${run} does not exist.`);
+    }
+    this.nextHistoryAction = { kind: 'paragraphDelta', target: { kind: 'paragraph', index: paragraph } };
     this.updatePartXmlInternal(this.mainPath, document => {
-      const element = ownRuns(paragraphAt(document, paragraph))[run];
+      const paragraphElement = paragraphAt(document, paragraph);
+      const element = ownRuns(paragraphElement)[run];
       if (!element) throw new Error(`Run ${run} does not exist.`);
+      const before = new XMLSerializer().serializeToString(paragraphElement);
       if (this.trackChangesEnabled()) this.trackRunFormatChange(element);
       const props = properties(element, 'rPr');
       applyRunFormatTo(props, format);
+      return before !== new XMLSerializer().serializeToString(paragraphElement);
     });
   }
 
@@ -8692,14 +8723,17 @@ export class DocxDocument {
 
   setCellText(table: number, row: number, col: number, text: string): void {
     assertText(text);
+    const preflightDocument = this.getCachedPartDocument(this.mainPath);
+    const preflightCell = cellAt(tableAt(preflightDocument, table), row, col).cell;
+    const preflightParagraph = childrenThroughTransparent(preflightCell, 'p')[0];
+    this.nextHistoryAction = preflightParagraph
+      ? { kind: 'paragraphDelta', target: { kind: 'cell', table, row, col } }
+      : { kind: 'other' };
     this.updatePartXmlInternal(this.mainPath, document => {
-      const cell = cellAt(tableAt(document, table), row, col).cell;
+      const cell = preflightCell;
       ensureCellParagraph(cell);
       const paragraph = childrenThroughTransparent(cell, 'p')[0];
       if (!paragraph) throw new Error('Cell paragraph does not exist.');
-      const indices = new Map(mainParagraphElements(bodyOf(document)).map((item, index) => [item, index]));
-      const index = indices.get(paragraph);
-      if (index === undefined) throw new Error('Cell paragraph index does not exist.');
       const old = textOf(paragraph);
       let start = 0;
       while (start < old.length && start < text.length && old[start] === text[start]) start++;
@@ -8714,7 +8748,6 @@ export class DocxDocument {
         replaceSpan(paragraph, start, end, text.slice(start, replacementEnd));
         return true;
       }
-      readParagraph(paragraph, index, this.getStylesContext());
       return false;
     });
   }
@@ -8730,7 +8763,7 @@ export class DocxDocument {
       entry: { ...state.entry },
       action: state.action,
       paragraphDelta: state.paragraphDelta ? {
-        paragraph: state.paragraphDelta.paragraph,
+        target: { ...state.paragraphDelta.target },
         restore: state.paragraphDelta.restore.cloneNode(true) as Element,
         ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
       } : undefined,
@@ -8741,7 +8774,7 @@ export class DocxDocument {
       entry: { ...state.entry },
       action: state.action,
       paragraphDelta: state.paragraphDelta ? {
-        paragraph: state.paragraphDelta.paragraph,
+        target: { ...state.paragraphDelta.target },
         restore: state.paragraphDelta.restore.cloneNode(true) as Element,
         ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
       } : undefined,
@@ -9557,7 +9590,7 @@ export class DocxDocument {
       entry: { ...state.entry },
       action: state.action,
       paragraphDelta: state.paragraphDelta ? {
-        paragraph: state.paragraphDelta.paragraph,
+        target: { ...state.paragraphDelta.target },
         restore: state.paragraphDelta.restore.cloneNode(true) as Element,
         ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
       } : undefined,
@@ -9568,7 +9601,7 @@ export class DocxDocument {
       entry: { ...state.entry },
       action: state.action,
       paragraphDelta: state.paragraphDelta ? {
-        paragraph: state.paragraphDelta.paragraph,
+        target: { ...state.paragraphDelta.target },
         restore: state.paragraphDelta.restore.cloneNode(true) as Element,
         ...(state.paragraphDelta.redo ? { redo: state.paragraphDelta.redo.cloneNode(true) as Element } : {}),
       } : undefined,

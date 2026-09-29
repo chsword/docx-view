@@ -957,6 +957,91 @@ test('setParagraphText history deltas undo and redo separate paragraphs', () => 
   assert.deepEqual(paragraphTexts(doc), ['A1', 'B1']);
 });
 
+test('paragraph-preserving direct edits undo, redo, and undo again byte-for-byte', () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  doc.insertTable([['cell']]);
+  const numId = doc.createNumbering('decimal');
+  doc.setParagraphNumbering(0, numId);
+  doc.clearHistory();
+  const edits = [
+    () => doc.formatParagraph(0, { alignment: 'center' }),
+    () => doc.formatRun(1, 0, { bold: true }),
+    () => doc.setParagraphLevel(0, 1),
+    () => doc.setCellText(0, 0, 0, 'updated cell'),
+  ];
+
+  for (const edit of edits) {
+    const before = packagePartsSignature(doc);
+    edit();
+    const after = packagePartsSignature(doc);
+    doc.undo();
+    assert.deepEqual(packagePartsSignature(doc), before);
+    doc.redo();
+    assert.deepEqual(packagePartsSignature(doc), after);
+    doc.undo();
+    assert.deepEqual(packagePartsSignature(doc), before);
+    doc.redo();
+  }
+});
+
+test('paragraph delta history composes with structural edits and exports cleanly', async () => {
+  const doc = withBody('<w:p><w:r><w:t>first</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p>');
+  doc.insertTable([['cell']]);
+  const numId = doc.createNumbering('decimal');
+  doc.setParagraphNumbering(0, numId);
+  doc.clearHistory();
+  const before = packagePartsSignature(doc);
+
+  doc.formatParagraph(0, { alignment: 'center' });
+  doc.formatParagraph(0, { alignment: 'right' });
+  doc.formatRun(1, 0, { italic: true });
+  doc.setParagraphLevel(0, 1);
+  doc.setCellText(0, 0, 0, 'edited cell');
+  doc.insertParagraph('inserted', 0);
+  const after = packagePartsSignature(doc);
+  assert.equal(doc.getHistory().undo.length, 6);
+
+  for (let i = 0; i < 6; i++) doc.undo();
+  assert.deepEqual(packagePartsSignature(doc), before);
+  const restored = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(packagePartsSignature(restored), before);
+
+  for (let i = 0; i < 6; i++) doc.redo();
+  assert.deepEqual(packagePartsSignature(doc), after);
+});
+
+test('paragraph delta edits keep setParagraphText history merging intact', () => {
+  const doc = DocxDocument.create();
+  doc.setParagraphText(0, 'A');
+  doc.setParagraphText(0, 'AB');
+  doc.formatParagraph(0, { alignment: 'center' });
+  assert.equal(doc.getHistory().undo.length, 2);
+
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].alignment, undefined);
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].text, '');
+  doc.redo();
+  assert.equal(doc.getParagraphs()[0].text, 'AB');
+  doc.redo();
+  assert.equal(doc.getParagraphs()[0].alignment, 'center');
+});
+
+test('paragraph delta history preserves tracked formatting through undo and redo', () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>tracked</w:t></w:r></w:p>');
+  const before = packagePartsSignature(doc);
+  doc.formatParagraph(0, { alignment: 'center' });
+  doc.formatRun(0, 0, { italic: true });
+  const after = packagePartsSignature(doc);
+
+  doc.undo();
+  doc.undo();
+  assert.deepEqual(packagePartsSignature(doc), before);
+  doc.redo();
+  doc.redo();
+  assert.deepEqual(packagePartsSignature(doc), after);
+});
+
 test('applyOperations batch is one undo step and revision still advances on undo', () => {
   const doc = DocxDocument.create();
   doc.applyOperations({
