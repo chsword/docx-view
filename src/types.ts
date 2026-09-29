@@ -237,6 +237,27 @@ export interface TableInfo {
   grid: number[];
 }
 
+export type ContentControlKind =
+  | 'text' | 'richText' | 'dropDownList' | 'comboBox'
+  | 'date' | 'checkbox' | 'picture' | 'group' | 'unknown';
+
+export interface ContentControlInfo {
+  id?: number;
+  kind: ContentControlKind;
+  alias?: string;
+  tag?: string;
+  lock?: 'sdtLocked' | 'contentLocked' | 'sdtContentLocked' | 'unlocked';
+  showingPlaceholder: boolean;
+  placeholderDocPart?: string;
+  items?: { displayText: string; value: string }[];
+  checked?: boolean;
+  dateFormat?: string;
+  dataBinding?: { prefixMappings?: string; xpath?: string; storeItemId?: string };
+  paragraphs: number[];
+  nested: boolean;
+  text: string;
+}
+
 export interface TableCellLocation {
   table: number;
   row: number;
@@ -544,6 +565,10 @@ export type AgentOperation =
   | { type: 'removeHyperlink'; hyperlink: number | { paragraph: number; runs: number[]; text: string }; options?: { keepText?: boolean } }
   | { type: 'insertBookmark'; name: string; range: { startParagraph: number; endParagraph?: number } }
   | { type: 'deleteBookmark'; name: string }
+  | { type: 'setContentControlText'; id: number; text: string }
+  | { type: 'setContentControlChecked'; id: number; checked: boolean }
+  | { type: 'setContentControlProperties'; id: number; patch: { alias?: string | null; tag?: string | null; lock?: ContentControlInfo['lock'] } }
+  | { type: 'removeContentControl'; id: number; options?: { keepContent?: boolean } }
   | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
   | { type: 'replaceImageBytes'; image: string; bytes: string; contentType?: string }
   | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }

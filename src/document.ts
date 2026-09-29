@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
@@ -617,6 +617,68 @@ const PROPERTY_ORDER = {
   tblCellMar: ['top', 'left', 'bottom', 'right'],
   tcMar: ['top', 'left', 'bottom', 'right'],
 };
+
+const SDT_PROPERTY_ORDER = [
+  'alias', 'lock', 'placeholder', 'showingPlcHdr', 'dataBinding', 'temporary', 'id', 'tag',
+  'docPartObj', 'docPartGallery', 'docPartUnique', 'comboBox', 'date', 'docPartList', 'dropDownList',
+  'picture', 'richText', 'text', 'citation', 'group', 'bibliography', 'equation', 'ocx', 'entityPicker',
+];
+
+function sdtProperty(parent: Element, name: string): Element {
+  const existing = children(parent, name)[0];
+  if (existing) return existing;
+  const element = wordElement(parent.ownerDocument!, name);
+  const position = SDT_PROPERTY_ORDER.indexOf(name);
+  const following = children(parent).find((child) => {
+    const childPosition = SDT_PROPERTY_ORDER.indexOf(child.localName ?? '');
+    return position !== -1 && childPosition > position;
+  });
+  parent.insertBefore(element, following ?? null);
+  return element;
+}
+
+function sdtProperties(control: Element): Element {
+  let properties = children(control, 'sdtPr')[0];
+  if (!properties) {
+    properties = wordElement(control.ownerDocument!, 'sdtPr');
+    control.insertBefore(properties, children(control, 'sdtContent')[0] ?? control.firstChild);
+  }
+  return properties;
+}
+
+function setSdtText(control: Element, text: string): void {
+  const content = children(control, 'sdtContent')[0];
+  if (!content) throw new Error('Content control has no w:sdtContent.');
+  const oldParagraph = descendants(content, 'p')[0];
+  let paragraphAncestor: Element | null = control.parentNode as Element | null;
+  let inline = false;
+  while (paragraphAncestor && paragraphAncestor.namespaceURI === WORD_NS) {
+    if (paragraphAncestor.localName === 'p') { inline = true; break; }
+    if (['body', 'tc'].includes(paragraphAncestor.localName ?? '')) break;
+    paragraphAncestor = paragraphAncestor.parentNode as Element | null;
+  }
+  while (content.firstChild) content.removeChild(content.firstChild);
+  if (!inline) {
+    const paragraph = wordElement(control.ownerDocument!, 'p');
+    const paragraphProperties = oldParagraph && children(oldParagraph, 'pPr')[0];
+    if (paragraphProperties) paragraph.appendChild(paragraphProperties.cloneNode(true));
+    content.appendChild(paragraph);
+    const run = wordElement(control.ownerDocument!, 'r');
+    paragraph.appendChild(run);
+    appendText(run, text);
+    return;
+  }
+  const run = wordElement(control.ownerDocument!, 'r');
+  content.appendChild(run);
+  appendText(run, text);
+}
+
+function ensureW14Namespace(control: Element): void {
+  const root = control.ownerDocument?.documentElement;
+  if (root && root.lookupNamespaceURI('w14') !== W14_NS) {
+    root.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:w14', W14_NS);
+  }
+}
 
 function property(parent: Element, name: string): Element {
   let result = children(parent, name)[0];
@@ -3751,6 +3813,226 @@ export class DocxDocument {
   getParagraphs(): ParagraphInfo[] {
     const document = this.getCachedPartDocument(this.mainPath);
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
+  }
+
+  getContentControls(): ContentControlInfo[] {
+    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
+    const paragraphs = descendants(body, 'p');
+    const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    return descendants(body, 'sdt').map((control) => {
+      const properties = children(control, 'sdtPr')[0];
+      const controlContent = children(control, 'sdtContent')[0];
+      const idValue = wordValue(children(properties ?? control, 'id')[0]);
+      const parsedId = idValue === undefined ? undefined : Number(idValue);
+      const id = parsedId !== undefined && Number.isSafeInteger(parsedId) && parsedId >= 0 ? parsedId : undefined;
+      const lockValue = wordValue(children(properties ?? control, 'lock')[0]);
+      const lock: ContentControlInfo['lock'] = lockValue === 'sdtLocked' || lockValue === 'contentLocked' ||
+        lockValue === 'sdtContentLocked' ? lockValue : 'unlocked';
+      const typeNames: Array<[string, ContentControlKind]> = [
+        ['text', 'text'], ['richText', 'richText'], ['dropDownList', 'dropDownList'],
+        ['comboBox', 'comboBox'], ['date', 'date'], ['picture', 'picture'], ['group', 'group'],
+      ];
+      const type = typeNames.find(([name]) => children(properties ?? control, name).length > 0);
+      const checkbox = children(properties ?? control, 'checkbox', W14_NS)[0];
+      const kind: ContentControlKind = checkbox ? 'checkbox' : type?.[1] ?? 'unknown';
+      const checkboxChecked = checkbox && children(checkbox, 'checked', W14_NS)[0];
+      const checkedValue = checkboxChecked?.getAttributeNS(W14_NS, 'val') ?? undefined;
+      const list = children(properties ?? control, kind === 'dropDownList' ? 'dropDownList' : 'comboBox')[0];
+      const items = list ? children(list, 'listItem').map((item) => ({
+        displayText: item.getAttributeNS(WORD_NS, 'displayText') ?? '',
+        value: item.getAttributeNS(WORD_NS, 'value') ?? '',
+      })) : undefined;
+      const date = children(properties ?? control, 'date')[0];
+      const dateFormat = wordValue(children(date ?? control, 'dateFormat')[0]);
+      const placeholder = children(properties ?? control, 'placeholder')[0];
+      const binding = children(properties ?? control, 'dataBinding')[0];
+      const bindingValue = binding ? compactDefined({
+        prefixMappings: binding.getAttributeNS(WORD_NS, 'prefixMappings') ?? undefined,
+        xpath: binding.getAttributeNS(WORD_NS, 'xpath') ?? undefined,
+        storeItemId: binding.getAttributeNS(WORD_NS, 'storeItemID') ?? undefined,
+      }) : undefined;
+      const showingPlaceholder = children(properties ?? control, 'showingPlcHdr')[0];
+      const placeholderValue = wordValue(showingPlaceholder);
+      const controlParagraphs = controlContent ? descendants(controlContent, 'p') : [];
+      let ancestor = control.parentNode as Element | null;
+      let nested = false;
+      while (ancestor && ancestor !== body) {
+        if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'sdt') {
+          nested = true;
+          break;
+        }
+        ancestor = ancestor.parentNode as Element | null;
+      }
+      return compactDefined({
+        id,
+        kind,
+        alias: wordValue(children(properties ?? control, 'alias')[0]),
+        tag: wordValue(children(properties ?? control, 'tag')[0]),
+        lock,
+        showingPlaceholder: !!showingPlaceholder && !['0', 'false', 'off'].includes((placeholderValue ?? '1').toLowerCase()),
+        placeholderDocPart: wordValue(children(placeholder ?? control, 'docPart')[0]),
+        items,
+        checked: checkedValue === undefined ? undefined : ['1', 'true', 'on'].includes(checkedValue.toLowerCase()),
+        dateFormat,
+        dataBinding: bindingValue,
+        paragraphs: [...new Set(controlParagraphs.map((paragraph) => paragraphIndexes.get(paragraph)).filter((index): index is number => index !== undefined))],
+        nested,
+        text: controlContent ? textOf(controlContent) : '',
+      });
+    });
+  }
+
+  setContentControlText(id: number, text: string): void {
+    assertIndex(id);
+    assertText(text);
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const body = bodyOf(document);
+      const control = descendants(body, 'sdt').find((candidate) => {
+        const properties = children(candidate, 'sdtPr')[0];
+        const value = wordValue(children(properties ?? candidate, 'id')[0]);
+        return value !== undefined && Number(value) === id;
+      });
+      if (!control) throw new Error(`Content control ${id} does not exist.`);
+      const properties = children(control, 'sdtPr')[0];
+      const lock = wordValue(children(properties ?? control, 'lock')[0]);
+      if (lock === 'contentLocked' || lock === 'sdtContentLocked') {
+        throw new Error(`Content control ${id} is locked against content changes.`);
+      }
+      const content = children(control, 'sdtContent')[0];
+      if (!content) throw new Error('Content control has no w:sdtContent.');
+      const showingPlaceholder = children(properties ?? control, 'showingPlcHdr');
+      if (textOf(content) === text && showingPlaceholder.length === 0) return false;
+      setSdtText(control, text);
+      for (const showing of showingPlaceholder) properties?.removeChild(showing);
+      return true;
+    });
+  }
+
+  setContentControlChecked(id: number, checked: boolean): void {
+    assertIndex(id);
+    if (typeof checked !== 'boolean') throw new Error('checked must be boolean.');
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
+        const properties = children(candidate, 'sdtPr')[0];
+        const value = wordValue(children(properties ?? candidate, 'id')[0]);
+        return value !== undefined && Number(value) === id;
+      });
+      if (!control) throw new Error(`Content control ${id} does not exist.`);
+      ensureW14Namespace(control);
+      const properties = sdtProperties(control);
+      let checkbox = children(properties, 'checkbox', W14_NS)[0];
+      if (!checkbox) {
+        checkbox = document.createElementNS(W14_NS, 'w14:checkbox');
+        properties.appendChild(checkbox);
+      }
+      const checkedElement = children(checkbox, 'checked', W14_NS)[0] ??
+        (checkbox.appendChild(document.createElementNS(W14_NS, 'w14:checked')) as Element);
+      const nextValue = checked ? '1' : '0';
+      if (checkedElement.getAttributeNS(W14_NS, 'val') === nextValue) return false;
+      checkedElement.setAttributeNS(W14_NS, 'w14:val', nextValue);
+      return true;
+    });
+  }
+
+  setContentControlProperties(
+    id: number,
+    patch: { alias?: string | null; tag?: string | null; lock?: ContentControlInfo['lock'] },
+  ): void {
+    assertIndex(id);
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch) ||
+        Object.keys(patch).some((key) => !['alias', 'tag', 'lock'].includes(key))) {
+      throw new Error('Content control properties patch must contain only alias, tag, or lock.');
+    }
+    if ('alias' in patch && patch.alias !== null && patch.alias !== undefined) assertText(patch.alias, 'alias');
+    if ('tag' in patch && patch.tag !== null && patch.tag !== undefined) assertText(patch.tag, 'tag');
+    if ('lock' in patch && patch.lock !== undefined &&
+        !['sdtLocked', 'contentLocked', 'sdtContentLocked', 'unlocked'].includes(patch.lock)) {
+      throw new Error('Invalid content control lock.');
+    }
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
+        const properties = children(candidate, 'sdtPr')[0];
+        const value = wordValue(children(properties ?? candidate, 'id')[0]);
+        return value !== undefined && Number(value) === id;
+      });
+      if (!control) throw new Error(`Content control ${id} does not exist.`);
+      let properties = children(control, 'sdtPr')[0];
+      const updateValue = (name: 'alias' | 'tag', value: string | null | undefined): boolean => {
+        if (!(name in patch)) return false;
+        const entries = children(properties ?? control, name);
+        if (value === null) {
+          for (const entry of entries) entry.parentNode?.removeChild(entry);
+          return entries.length > 0;
+        }
+        if (value === undefined) return false;
+        if (entries.length && wordValue(entries[0]) === value && entries.length === 1) return false;
+        properties ??= sdtProperties(control);
+        const propertyElement = entries[0] ?? sdtProperty(properties, name);
+        setWordValue(propertyElement, value);
+        for (const duplicate of entries.slice(1)) duplicate.parentNode?.removeChild(duplicate);
+        return true;
+      };
+      let changed = updateValue('alias', patch.alias);
+      changed = updateValue('tag', patch.tag) || changed;
+      if ('lock' in patch && patch.lock !== undefined) {
+        const locks = children(properties ?? control, 'lock');
+        if (patch.lock === 'unlocked') {
+          for (const entry of locks) entry.parentNode?.removeChild(entry);
+          changed = locks.length > 0 || changed;
+        } else if (locks.length === 1 && wordValue(locks[0]) === patch.lock) {
+          return changed;
+        } else {
+          properties ??= sdtProperties(control);
+          const lock = locks[0] ?? sdtProperty(properties, 'lock');
+          setWordValue(lock, patch.lock);
+          for (const duplicate of locks.slice(1)) duplicate.parentNode?.removeChild(duplicate);
+          changed = true;
+        }
+      }
+      return changed;
+    });
+  }
+
+  removeContentControl(id: number, options: { keepContent?: boolean } = {}): void {
+    assertIndex(id);
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        Object.keys(options).some((key) => key !== 'keepContent') ||
+        ('keepContent' in options && typeof options.keepContent !== 'boolean')) {
+      throw new Error('Invalid content control removal options.');
+    }
+    this.updatePartXmlInternal(this.mainPath, (document) => {
+      const body = bodyOf(document);
+      const control = descendants(body, 'sdt').find((candidate) => {
+        const properties = children(candidate, 'sdtPr')[0];
+        return wordValue(children(properties ?? candidate, 'id')[0]) === String(id);
+      });
+      if (!control) throw new Error(`Content control ${id} does not exist.`);
+      const parent = control.parentNode;
+      if (!parent) throw new Error('Content control is detached.');
+      if (options.keepContent !== false) {
+        const content = children(control, 'sdtContent')[0];
+        if (content) {
+          while (content.firstChild) parent.insertBefore(content.firstChild, control);
+        }
+      }
+      parent.removeChild(control);
+      if (options.keepContent === false) {
+        let structuralContainer: Element | null = parent as Element;
+        while (structuralContainer && structuralContainer !== body && structuralContainer.localName !== 'tc') {
+          structuralContainer = structuralContainer.parentNode as Element | null;
+        }
+        if (structuralContainer?.localName === 'tc' && childrenThroughTransparent(structuralContainer, 'p').length === 0) {
+          const paragraph = wordElement(document, 'p');
+          const properties = children(structuralContainer, 'tcPr')[0];
+          structuralContainer.insertBefore(paragraph, properties?.nextSibling ?? null);
+        } else if (structuralContainer === body && childrenThroughTransparent(body, 'p').length === 0 &&
+            childrenThroughTransparent(body, 'tbl').length === 0) {
+          const paragraph = wordElement(document, 'p');
+          body.insertBefore(paragraph, children(body, 'sectPr')[0] ?? null);
+        }
+      }
+      return true;
+    });
   }
 
   getBlocks(): DocumentBlock[] {
@@ -8472,6 +8754,10 @@ export class DocxDocument {
         case 'removeHyperlink': draft.removeHyperlink(operation.hyperlink, operation.options); break;
         case 'insertBookmark': draft.insertBookmark(operation.name, operation.range); break;
         case 'deleteBookmark': draft.deleteBookmark(operation.name); break;
+        case 'setContentControlText': draft.setContentControlText(operation.id, operation.text); break;
+        case 'setContentControlChecked': draft.setContentControlChecked(operation.id, operation.checked); break;
+        case 'setContentControlProperties': draft.setContentControlProperties(operation.id, operation.patch); break;
+        case 'removeContentControl': draft.removeContentControl(operation.id, operation.options); break;
         case 'insertImage': draft.insertImage({
           bytes: decodeBase64(operation.bytes),
           contentType: operation.contentType,
