@@ -676,7 +676,14 @@ function textSpanWithin(root: Element, scope: Element): { start: number; end: nu
 }
 
 function appendContentControlText(parent: Element, text: string, withinParagraph: boolean): void {
-  const runs = descendants(parent, 'r');
+  const runs = descendants(parent, 'r').filter((run) => {
+    let ancestor: Element | null = run.parentNode as Element | null;
+    while (ancestor && ancestor !== parent) {
+      if (ancestor.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(ancestor.localName ?? '')) return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return ancestor === parent;
+  });
   const run = runs[0] ?? wordElement(parent.ownerDocument!, 'r');
   if (!run.parentNode) {
     if (withinParagraph) {
@@ -719,7 +726,9 @@ function setSdtText(control: Element, text: string): void {
       }
       return;
     }
-    appendContentControlText(content, text, false);
+    const paragraph = wordElement(control.ownerDocument!, 'p');
+    content.appendChild(paragraph);
+    appendContentControlText(paragraph, text, true);
     return;
   }
   if (paragraphs.length === 1) {

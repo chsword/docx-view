@@ -69,6 +69,14 @@ test('setContentControlText clears showing placeholder and keeps sdt properties'
   assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:docPart w:val="Default"\/>/);
 });
 
+test('setting an empty block control creates a paragraph in its content container', () => {
+  const doc = withBody(`<w:sdt><w:sdtPr><w:id w:val="46"/><w:text/></w:sdtPr><w:sdtContent/></w:sdt>`);
+  doc.setContentControlText(46, 'value');
+  assert.deepEqual(doc.getContentControls()[0].paragraphs, [0]);
+  assert.equal(doc.getParagraphs()[0].text, 'value');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:sdtContent><w:p><w:r><w:t(?: xml:space="preserve")?>value<\/w:t><\/w:r><\/w:p><\/w:sdtContent>/);
+});
+
 test('setContentControlText writes inline control content without changing adjacent text', () => {
   const doc = withBody(`<w:p><w:r><w:t>before</w:t></w:r><w:sdt><w:sdtPr><w:id w:val="32"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>old</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>after</w:t></w:r></w:p>`);
   doc.setContentControlText(32, 'new');
