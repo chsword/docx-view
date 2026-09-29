@@ -1,8 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
-import { DocxEditor } from '../dist/editor.js';
+import { DocxEditor, deriveLineBoxes, formatPageNumber } from '../dist/editor.js';
 import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
+
+test('formats paginated page numbers and falls back to decimal', () => {
+  assert.equal(formatPageNumber(4, 'upperRoman'), 'IV');
+  assert.equal(formatPageNumber(27, 'lowerLetter'), 'aa');
+  assert.equal(formatPageNumber(12, 'chineseCounting'), '一二');
+  assert.equal(formatPageNumber(7, 'not-a-format'), '7');
+});
+
+test('groups browser line rectangles into continuous character ranges', () => {
+  assert.deepEqual(deriveLineBoxes([
+    { top: 10, height: 18, start: 0, end: 1 },
+    { top: 10.5, height: 18, start: 1, end: 3 },
+    { top: 29, height: 18, start: 3, end: 5 },
+  ]), [
+    { heightPx: 18, startOffset: 0, endOffset: 3 },
+    { heightPx: 18, startOffset: 3, endOffset: 5 },
+  ]);
+});
 
 function makeFlushEditor({ text, elementText = text, previous = '', options = {}, document = DocxDocument.create() }) {
   const editor = Object.create(DocxEditor.prototype);

@@ -402,6 +402,7 @@ export class DocxEditor {
   setViewMode(mode: 'continuous' | 'paginated'): void {
     if (this.destroyed || mode === this.viewMode) return;
     if (mode === 'paginated') this.flush();
+    else this.paragraphs.clear();
     this.viewMode = mode;
     this.render();
   }
