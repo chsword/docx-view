@@ -53,15 +53,30 @@ export function paginate(
 ): PageBox[] {
   if (blocks.length === 0) return [];
 
+  const layoutSections = sections.length > 0 ? sections : [{
+    index: 0,
+    startParagraph: 0,
+    endParagraph: Number.MAX_SAFE_INTEGER,
+    isImplicit: true,
+    type: 'nextPage',
+    pageWidth: 11906,
+    pageHeight: 16838,
+    orientation: 'portrait',
+    margins: { top: 1440, right: 1440, bottom: 1440, left: 1440, header: 0, footer: 0, gutter: 0 },
+    columns: { count: 1, space: 0, equalWidth: true },
+    pageNumbering: {},
+    titlePage: false,
+    headers: {},
+    footers: {},
+  } satisfies SectionInfo];
   const pages: PageBox[] = [];
-  const firstSection = sections[0];
-  if (!firstSection) return [];
+  const firstSection = layoutSections[0]!;
   let sectionIndex = Math.max(0, firstSection.index);
   let current: PageBox | undefined;
   let nextNumber = firstSection.pageNumbering?.start ?? 1;
 
   const sectionAt = (index: number): SectionInfo => {
-    return sections.find((section) => section.index === index) ?? firstSection;
+    return layoutSections.find((section) => section.index === index) ?? firstSection;
   };
   const sizeFor = (index: number) => usableSize(sectionAt(index));
   const startPage = (index: number, number = nextNumber): PageBox => {
@@ -145,7 +160,7 @@ export function paginate(
   };
 
   const addParagraphGroup = (paragraphs: ParagraphInfo[]) => {
-    if (paragraphs.length === 1 && !paragraphs[0]!.keepNext) {
+    if (paragraphs.length === 1) {
       addParagraph(paragraphs[0]!);
       return;
     }
@@ -154,6 +169,10 @@ export function paginate(
     const page = ensurePage();
     if (measured.some((item) => item.paragraph.pageBreakBefore) && hasContent(page)) newPage();
     if (total > Math.max(0, heightLimit() - page.contentHeightPx) && hasContent(page)) newPage();
+    if (total > heightLimit()) {
+      for (const item of paragraphs) addParagraph(item);
+      return;
+    }
     for (const item of measured) {
       append(item.lines.map((line) => ({ type: 'line', paragraph: item.paragraph.index, line })), item.lines.reduce((n, line) => n + Math.max(0, line.heightPx), 0));
     }
@@ -192,8 +211,8 @@ export function paginate(
       continue;
     }
     append([{ type: 'break', kind: 'section' }], 0);
-    const nextSection = sectionAt(block.section);
-    let target = block.section;
+    const target = block.section + 1;
+    const nextSection = sectionAt(target);
     if (block.breakType !== 'continuous') {
       if (block.breakType === 'evenPage' || block.breakType === 'oddPage') {
         const wanted = block.breakType === 'evenPage' ? 0 : 1;

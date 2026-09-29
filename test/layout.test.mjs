@@ -55,8 +55,17 @@ test('keeps a keepNext chain and keepLines paragraph together', () => {
     paragraph(1, [50], { keepNext: true }),
     paragraph(2, [50]),
     paragraph(3, [60, 60], { keepLines: true }),
-  ), [section()], measurer, { defaultTabStopTwips: 720 });
+  ), [section({ pageHeight: 2250 })], measurer, { defaultTabStopTwips: 720 });
   assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0, 1, 2], [3, 3]]);
+});
+
+test('breaks an oversized keepNext chain into independently paginated paragraphs', () => {
+  const result = paginate(blocks(
+    paragraph(0, [60], { keepNext: true }),
+    paragraph(1, [60], { keepNext: true }),
+    paragraph(2, [60]),
+  ), [section()], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0], [1], [2]]);
 });
 
 test('widow control defaults on but can be disabled', () => {
@@ -67,19 +76,21 @@ test('widow control defaults on but can be disabled', () => {
 });
 
 test('handles section numbering, parity and malformed page sizes without throwing', () => {
-  const sections = [section({ pageNumbering: { start: 7 } }), section({ index: 1, pageHeight: 100, pageNumbering: { start: 20 } })];
+  const sections = [section({ pageNumbering: { start: 5 } }), section({ index: 1, pageHeight: 100, pageNumbering: { start: 20 } })];
   const result = paginate([
     ...blocks(paragraph(0, [100])),
-    { type: 'sectionBreak', section: 1, breakType: 'oddPage' },
+    { type: 'sectionBreak', section: 0, breakType: 'oddPage' },
     ...blocks(paragraph(1, [10])),
   ], sections, measurer, { defaultTabStopTwips: 720 });
-  assert.deepEqual(result.map((page) => page.number), [7, 8, 20]);
+  assert.deepEqual(result.map((page) => page.number), [5, 6, 20]);
+  assert.deepEqual(result.map((page) => page.section), [0, 0, 1]);
   assert.doesNotThrow(() => paginate(blocks(paragraph(0, [1000])), [section({ pageHeight: 0 })], measurer, { defaultTabStopTwips: 720 }));
   assert.deepEqual(paginate([], [section()], measurer, { defaultTabStopTwips: 720 }), []);
-  assert.deepEqual(paginate(blocks(paragraph(0, [10])), [], measurer, { defaultTabStopTwips: 720 }), []);
+  assert.equal(paginate(blocks(paragraph(0, [10])), [], measurer, { defaultTabStopTwips: 720 }).length, 1);
 });
 
 test('layout has no DOM dependencies', () => {
   const source = readFileSync(new URL('../src/layout.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\b(?:document|window)\.|HTMLElement/);
+  assert.deepEqual([...source.matchAll(/from ['"]([^'"]+)['"]/g)].map((match) => match[1]), ['./types.js']);
 });
