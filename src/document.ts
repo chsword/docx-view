@@ -501,7 +501,7 @@ function formatFieldDate(date: Date, format?: string): string {
 }
 
 function textOf(element: Element): string {
-  if (descendants(element, 'instrText').length > 0 && textElements(element).length === 0) return '';
+  if (element.localName === 'r' && descendants(element, 'instrText').length > 0) return '';
   const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
   if (text) return text;
   return fieldPlaceholder(element) ?? '';
