@@ -26,7 +26,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { paginate } from './layout.js';
+import { columnWidthsPx, paginate } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
@@ -966,16 +966,8 @@ export class DocxEditor {
     defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLElement {
     const body = this.root.ownerDocument.createElement('div');
     body.className = 'docx-page-content';
-    const columnCount = Math.max(1, Math.floor(section.columns.count) || 1);
     const gapPx = Math.max(0, section.columns.space * 96 / 1440);
-    const usableWidth = Math.max(0, (section.pageWidth - section.margins.left - section.margins.right) * 96 / 1440);
-    const availableWidth = Math.max(0, usableWidth - gapPx * (columnCount - 1));
-    const explicitWidths = section.columns.equalWidth === false && section.columns.widths?.length === columnCount
-      ? section.columns.widths.map((value) => Math.max(0, value * 96 / 1440))
-      : undefined;
-    const columnWidths = explicitWidths && explicitWidths.some((value) => value > 0)
-      ? explicitWidths
-      : Array.from({ length: columnCount }, () => availableWidth / columnCount);
+    const columnWidths = columnWidthsPx(section);
     body.style.display = 'grid';
     body.style.gridTemplateColumns = columnWidths.map((value) => `${value}px`).join(' ');
     body.style.columnGap = `${gapPx}px`;

@@ -207,6 +207,27 @@ test('passes floating wrap exclusions to paragraph measurement and carries their
   assert.deepEqual(areas[1].wraps.map((wrap) => [wrap.wrap, wrap.heightPx, wrap.carried]), [['square', 30, true]]);
 });
 
+test('does not duplicate an anchored float when its paragraph crosses a column', () => {
+  const areas = [];
+  const wrappingMeasurer = {
+    ...measurer,
+    measureParagraph(p, area) {
+      areas.push({ paragraph: p.index, area });
+      return measurer.measureParagraph(p);
+    },
+  };
+  const image = { placement: 'floating', wrap: 'square', widthPx: 30, heightPx: 200 };
+  const result = paginate(blocks(
+    paragraph(0, [60, 60], { images: [image], widowControl: false }),
+    paragraph(1, [10]),
+  ), [section({ columns: { count: 2, space: 0, equalWidth: true } })],
+  wrappingMeasurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result[0].items.filter((item) => item.type === 'line').map((item) => [item.paragraph, item.column]), [
+    [0, 0], [0, 1], [1, 1],
+  ]);
+  assert.deepEqual(areas.find((entry) => entry.paragraph === 1).area.wraps, []);
+});
+
 test('topAndBottom exclusions occupy the full line and degenerate columns still make progress', () => {
   const areas = [];
   const recordingMeasurer = {
@@ -245,6 +266,19 @@ test('handles section numbering, parity and malformed page sizes without throwin
   assert.doesNotThrow(() => paginate(blocks(paragraph(0, [1000])), [section({ pageHeight: 0 })], measurer, { defaultTabStopTwips: 720 }));
   assert.deepEqual(paginate([], [section()], measurer, { defaultTabStopTwips: 720 }), []);
   assert.equal(paginate(blocks(paragraph(0, [10])), [], measurer, { defaultTabStopTwips: 720 }).length, 1);
+});
+
+test('starts a new page when a continuous section changes column geometry', () => {
+  const result = paginate([
+    ...blocks(paragraph(0, [10])),
+    { type: 'sectionBreak', section: 0, breakType: 'continuous' },
+    ...blocks(paragraph(1, [10])),
+  ], [
+    section(),
+    section({ index: 1, columns: { count: 2, space: 0, equalWidth: true } }),
+  ], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) =>
+    page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0], [1]]);
 });
 
 test('paginates the real block and section shapes from DocxDocument', () => {

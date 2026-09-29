@@ -3,7 +3,7 @@ export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export type { FieldInfo, FieldKind, FieldSwitch } from './types.js';
-export { paginate } from './layout.js';
+export { columnWidthsPx, paginate } from './layout.js';
 export type {
   FlowItem, LayoutMeasurer, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea, WrapExclusion,
 } from './layout.js';

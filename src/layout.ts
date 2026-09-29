@@ -56,7 +56,7 @@ function usableSize(section: SectionInfo): { width: number; height: number } {
   return { width: Math.max(0, width), height: Math.max(0, height) };
 }
 
-function columnWidths(section: SectionInfo): number[] {
+export function columnWidthsPx(section: SectionInfo): number[] {
   const count = Math.max(1, Math.floor(section.columns.count) || 1);
   const total = usableSize(section).width;
   const gap = Math.max(0, section.columns.space * TWIPS_TO_PX);
@@ -114,7 +114,7 @@ export function paginate(
   const sectionAt = (index: number): SectionInfo =>
     layoutSections.find((section) => section.index === index) ?? firstSection;
   const heightLimit = () => usableSize(sectionAt(sectionIndex)).height;
-  const widths = () => columnWidths(sectionAt(sectionIndex));
+  const widths = () => columnWidthsPx(sectionAt(sectionIndex));
   const width = () => widths()[Math.min(currentColumn, widths().length - 1)] ?? 0;
   const usedHeight = () => columnHeights[currentColumn] ?? 0;
   const startPage = (index: number, number = nextNumber): PageBox => {
@@ -128,7 +128,7 @@ export function paginate(
     pages.push(page);
     current = page;
     currentColumn = 0;
-    columnHeights = Array.from({ length: columnWidths(sectionAt(index)).length }, () => 0);
+    columnHeights = Array.from({ length: columnWidthsPx(sectionAt(index)).length }, () => 0);
     wrapsByColumn = columnHeights.map(() => []);
     nextNumber = number + 1;
     return page;
@@ -177,10 +177,10 @@ export function paginate(
       .filter((wrap) => wrap.heightPx > 0) : [];
     wrapsByColumn[currentColumn] = [...carried, ...own];
   };
-  const putLines = (paragraph: ParagraphInfo, lines: LineBox[]) => {
+  const putLines = (paragraph: ParagraphInfo, lines: LineBox[], includeOwn = true) => {
     if (lines.length === 0) return;
     let offset = 0;
-    let includeOwnWraps = true;
+    let includeOwnWraps = includeOwn;
     while (offset < lines.length) {
       const start = offset;
       let used = 0;
@@ -247,7 +247,7 @@ export function paginate(
     append(lines.slice(0, fit).map((line) => ({ type: 'line', paragraph: paragraph.index, line })), used);
     updateWraps(paragraph, used);
     advanceColumn();
-    putLines(paragraph, lines.slice(fit));
+    putLines(paragraph, lines.slice(fit), false);
   };
   const addParagraphGroup = (paragraphs: ParagraphInfo[]) => {
     if (paragraphs.length === 1) {
@@ -359,10 +359,18 @@ export function paginate(
     append([{ type: 'break', kind: 'section' }], 0);
     const target = block.section + 1;
     const nextSection = sectionAt(target);
+    const currentWidths = columnWidthsPx(sectionAt(sectionIndex));
+    const nextWidths = columnWidthsPx(nextSection);
+    const sameColumns = currentWidths.length === nextWidths.length &&
+      currentWidths.every((value, index) => Math.abs(value - nextWidths[index]!) < 0.01);
     if (block.breakType === 'nextColumn') {
       sectionIndex = target;
-      if (current) current.section = target;
-      advanceColumn();
+      if (sameColumns) {
+        if (current) current.section = target;
+        advanceColumn();
+      } else {
+        newPage(target);
+      }
     } else if (block.breakType !== 'continuous') {
       if (block.breakType === 'evenPage' || block.breakType === 'oddPage') {
         const wanted = block.breakType === 'evenPage' ? 0 : 1;
@@ -371,7 +379,11 @@ export function paginate(
       newPage(target);
     } else {
       sectionIndex = target;
-      if (current) current.section = target;
+      if (sameColumns) {
+        if (current) current.section = target;
+      } else {
+        newPage(target);
+      }
     }
     sectionIndex = target;
     if (nextSection.pageNumbering?.start !== undefined && current) {
