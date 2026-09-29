@@ -144,11 +144,15 @@ function chunkedSetParagraphText(totalParagraphs, chunkSize) {
 // 这一档必须开独立进程。同一个进程里，小规模那侧会因为 JIT 越跑越快、又会被大规模那侧
 // 留下的垃圾拖慢 —— 配对交替抵消不了这种工作集大小的不对称：实测同进程的配对比值会在
 // 3.8 到 11.0 之间跳，5 次里有 1 次误报。独立进程测出来则稳定在 3.7 上下。
-function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5) {
+function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5, mode = 'batch') {
   const output = execFileSync(process.execPath,
-    [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds)],
+    [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds), mode],
     { encoding: 'utf8' });
   return JSON.parse(output);
+}
+
+function directEditCostInChildProcess(documentParagraphs, operationCount, rounds = 3) {
+  return perOperationCostInChildProcess(documentParagraphs, operationCount, rounds, 'direct');
 }
 
 function buildTableLookupDoc(tableCount) {
@@ -219,6 +223,18 @@ test('performance regression: per-operation cost does not degrade further with d
     formatMeasurement('10000 ops on a 2000-paragraph document', large),
     formatMeasurement('10000 ops on a 500-paragraph document', small),
   ].join('\n'));
+});
+
+test('performance regression: direct edits stay within the absolute history budget', () => {
+  for (const paragraphs of [500, 2000]) {
+    const direct = directEditCostInChildProcess(paragraphs, 200);
+    const batch = perOperationCostInChildProcess(paragraphs, 200);
+    assert.ok(direct.perOperation < 5, [
+      `direct edits exceeded 5ms per operation at ${paragraphs} paragraphs`,
+      `direct=${JSON.stringify(direct)}`,
+      `batch=${JSON.stringify(batch)}`,
+    ].join('\n'));
+  }
 });
 
 test('performance regression: cached getTableCellAt lookups do not scale linearly with table count', () => {
