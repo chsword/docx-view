@@ -5,6 +5,7 @@ import type {
   DocumentRange,
   DocumentSnapshot,
   HyperlinkInfo,
+  ImageInfo,
   OutlineNode,
   ParagraphFormat,
   ReviewerFilterAuthor,
@@ -110,6 +111,7 @@ let doc = createSample();
 let filename = '产品计划.docx';
 let xmlRevision = -1;
 let imageAction: 'insert' | 'replace' = 'insert';
+let imageActionTarget: ImageInfo | null = null;
 let selectedRange: DocumentRange | null = null;
 let selectedRangeFormat: RunFormat | null = null;
 let selectedCommentId: number | null = null;
@@ -914,23 +916,27 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
     },
     startInsertImage() {
       imageAction = 'insert';
+      imageActionTarget = null;
       element<HTMLInputElement>('image-file-input').click();
     },
-    startReplaceImage() {
-      if (!editor.selectedImage) return;
+    startReplaceImage(image) {
+      imageActionTarget = image ?? editor.selectedImage;
+      if (!imageActionTarget) return;
       imageAction = 'replace';
       element<HTMLInputElement>('image-file-input').click();
     },
-    deleteImage() {
-      if (!editor.selectedImage) throw new Error('请先选择一张图片。');
-      doc.deleteImage(editor.selectedImage);
+    deleteImage(image) {
+      const target = image ?? editor.selectedImage;
+      if (!target) throw new Error('请先选择一张图片。');
+      doc.deleteImage(target);
       editor.render();
       refresh();
       message('已删除图片。');
     },
-    setImageAlt(text) {
-      if (!editor.selectedImage) throw new Error('请先选择一张图片。');
-      doc.setImageAlt(editor.selectedImage, text);
+    setImageAlt(text, image) {
+      const target = image ?? editor.selectedImage;
+      if (!target) throw new Error('请先选择一张图片。');
+      doc.setImageAlt(target, text);
       editor.render();
       refresh();
       message('已更新图片替代文本。');
@@ -1421,8 +1427,9 @@ element<HTMLInputElement>('image-file-input').addEventListener('change', (event)
   if (!contentType.startsWith('image/')) throw new Error('请选择图片文件。');
   editor.flush();
   if (imageAction === 'replace') {
-    if (!editor.selectedImage) throw new Error('请先选择一张图片，再替换。');
-    doc.replaceImageBytes(editor.selectedImage, bytes, contentType);
+    if (!imageActionTarget) throw new Error('请先选择一张图片，再替换。');
+    doc.replaceImageBytes(imageActionTarget, bytes, contentType);
+    imageActionTarget = null;
     message(`已替换图片：${file.name}`);
   } else {
     doc.insertImage({ bytes, contentType, paragraph: editor.selectedParagraph ?? undefined, alt: file.name.replace(/\.[^.]+$/, '') });

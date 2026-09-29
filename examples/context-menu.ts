@@ -212,10 +212,15 @@ function elementTarget(value: EventTarget | null): HTMLElement | null {
 }
 
 function keyboardTarget(root: HTMLElement): HTMLElement {
+  const active = root.ownerDocument.activeElement;
+  if (active instanceof HTMLElement && root.contains(active) &&
+      ['[data-image]', '[data-table-cell="true"]', '[data-docx-link="1"]', '[data-docx-revision-ids]', '[data-docx-comment-ids]']
+        .some((selector) => active.closest(selector))) {
+    return active;
+  }
   const selection = root.ownerDocument.getSelection();
   const target = elementTarget(selection?.anchorNode ?? null);
   if (target && root.contains(target)) return target;
-  const active = root.ownerDocument.activeElement;
   return active instanceof HTMLElement && root.contains(active) ? active : root;
 }
 

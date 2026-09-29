@@ -384,6 +384,30 @@ test('ContextMenu key opens through the same keyboard path', () => {
   assert.equal(sources.at(-1), 'keyboard');
 });
 
+test('keyboard menu prefers a focused image over a stale text selection', () => {
+  const { doc, root } = targetTree({});
+  const image = new FakeElement(doc);
+  image.dataset.image = 'image-2';
+  root.append(image);
+  doc.activeElement = image;
+  let contextTarget = null;
+  const controller = initializeContextMenu({
+    editorRoot: root,
+    registry: {
+      get: (id) => ({ id, title: id, group: 'test', enabled: () => true, run: () => {} }),
+      list: () => [],
+      run: async () => {},
+    },
+    buildContext(_source, target) {
+      contextTarget = target;
+      return context({ image: { id: 'image-2', relationshipId: 'rId2' } });
+    },
+  });
+  root.dispatch('keydown', { target: image, key: 'ContextMenu', shiftKey: false });
+  assert.equal(contextTarget, image);
+  assert.equal(controller.element.children.some((item) => item.dataset.command === 'image.replace'), true);
+});
+
 test('ArrowDown moves focus to the next enabled rendered item', () => {
   const { doc, root, target, controller } = controllerFixture();
   root.dispatch('keydown', { target, key: 'ContextMenu', shiftKey: false });

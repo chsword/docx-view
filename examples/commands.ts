@@ -61,9 +61,9 @@ export interface ExampleCommandActions {
   applyCellStyle(fill: string): void;
   unavailableTableAction(): void;
   startInsertImage(): void;
-  startReplaceImage(): void;
-  deleteImage(): void;
-  setImageAlt(text: string): void;
+  startReplaceImage(image?: ImageInfo | null): void;
+  deleteImage(image?: ImageInfo | null): void;
+  setImageAlt(text: string, image?: ImageInfo | null): void;
   focusPreviousRevision(): void;
   focusNextRevision(): void;
   acceptAllRevisions(): void;
@@ -371,7 +371,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
-      run: () => deps.actions.startReplaceImage(),
+      run: (ctx) => deps.actions.startReplaceImage(ctx.image),
     },
     {
       id: 'image.delete',
@@ -379,7 +379,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
-      run: () => deps.actions.deleteImage(),
+      run: (ctx) => deps.actions.deleteImage(ctx.image),
     },
     {
       id: 'image.setAlt',
@@ -387,7 +387,7 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       group: 'image',
       enabled: (ctx) => ctx.image !== null,
       visibleInMenu: (ctx) => ctx.image !== null,
-      run: () => deps.actions.setImageAlt(deps.getImageAltValue()),
+      run: (ctx) => deps.actions.setImageAlt(deps.getImageAltValue(), ctx.image),
     },
     {
       id: 'review.previousRevision',

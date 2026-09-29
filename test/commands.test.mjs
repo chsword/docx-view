@@ -64,9 +64,9 @@ function makeRegistry(options = {}) {
       splitCell: () => calls.push(['splitCell']),
       applyCellStyle: action('applyCellStyle'),
       startInsertImage: () => calls.push(['startInsertImage']),
-      startReplaceImage: () => calls.push(['startReplaceImage']),
-      deleteImage: () => calls.push(['deleteImage']),
-      setImageAlt: action('setImageAlt'),
+      startReplaceImage: (image) => calls.push(['startReplaceImage', image]),
+      deleteImage: (image) => calls.push(['deleteImage', image]),
+      setImageAlt: (text, image) => calls.push(['setImageAlt', text, image]),
       focusPreviousRevision: () => calls.push(['focusPreviousRevision']),
       focusNextRevision: () => calls.push(['focusNextRevision']),
       acceptAllRevisions: () => calls.push(['acceptAllRevisions']),
@@ -191,6 +191,20 @@ test('command run delegates to the shared action registry', async (t) => {
     const { registry, calls } = makeRegistry({ cellFillValue: '#ABCDEF' });
     await registry.run('table.applyCellStyle', makeContext());
     assert.deepEqual(calls, [['applyCellStyle', '#ABCDEF']]);
+  });
+
+  await t.test('image commands use the image captured in command context', async () => {
+    const { registry, calls } = makeRegistry({ imageAltValue: 'right-click image' });
+    const image = { id: 'image-2', relationshipId: 'rId2' };
+    const ctx = makeContext({ image });
+    await registry.run('image.replace', ctx);
+    await registry.run('image.delete', ctx);
+    await registry.run('image.setAlt', ctx);
+    assert.deepEqual(calls, [
+      ['startReplaceImage', image],
+      ['deleteImage', image],
+      ['setImageAlt', 'right-click image', image],
+    ]);
   });
 
   await t.test('comment.reply uses the selected comment id from context', async () => {
