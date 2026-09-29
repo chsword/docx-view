@@ -144,7 +144,7 @@ function chunkedSetParagraphText(totalParagraphs, chunkSize) {
 // 这一档必须开独立进程。同一个进程里，小规模那侧会因为 JIT 越跑越快、又会被大规模那侧
 // 留下的垃圾拖慢 —— 配对交替抵消不了这种工作集大小的不对称：实测同进程的配对比值会在
 // 3.8 到 11.0 之间跳，5 次里有 1 次误报。独立进程测出来则稳定在 3.7 上下。
-function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 3) {
+function perOperationCostInChildProcess(documentParagraphs, operationCount, rounds = 5) {
   const output = execFileSync(process.execPath,
     [new URL('perf-worker.mjs', import.meta.url).pathname, String(documentParagraphs), String(operationCount), String(rounds)],
     { encoding: 'utf8' });
@@ -205,20 +205,11 @@ test('performance regression: one large batch is no worse than several small one
 
 test('performance regression: per-operation cost does not degrade further with document size', () => {
   // 固定 200 次操作，文档规模 4 倍。理想（下标查找 O(1)）≈ 1.00。
-  //
-  // 当前实测 2.8 ~ 3.7（纯 O(文档规模) 会是 4.0）—— 单次按下标的操作是 O(文档规模)：
-  // paragraphAt() 每次都 getElementsByTagNameNS 整篇，而 xmldom 的 getElementsByTagNameNS
-  // 每次调用都新建一个 LiveNodeList、构造时就走完整棵子树并把每个元素拷进去，
-  // 取完第 index 个之后其余全部丢掉。CPU profile 里这两项合计约占被测区间的 55%。
-  // 跟进见 issue #92。
-  //
-  // 所以这里的阈值是「不得进一步恶化」的护栏，不是「已经线性」的证明。
-  // #92 修掉之后请把阈值收到 1.5 左右，并把这段注释一并删掉。
   const large = perOperationCostInChildProcess(2000, 200);
   const small = perOperationCostInChildProcess(500, 200);
   const ratio = large.perOperation / small.perOperation;
-  assert.ok(ratio < 6, [
-    `per-operation cost ratio across a 4x document-size gap exceeded threshold 6.00 (actual ${ratio.toFixed(2)})`,
+  assert.ok(ratio < 1.5, [
+    `per-operation cost ratio across a 4x document-size gap exceeded threshold 1.50 (actual ${ratio.toFixed(2)})`,
     formatMeasurement('200 ops on a 2000-paragraph document', large),
     formatMeasurement('200 ops on a 500-paragraph document', small),
   ].join('\n'));

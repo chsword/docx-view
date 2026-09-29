@@ -299,11 +299,35 @@ function relsPath(partPath: string): string {
   return `${directory ? `${directory}/` : ''}_rels/${name}.rels`;
 }
 
+const PARAGRAPH_LOOKUP_CACHE = new WeakMap<Document, Element[]>();
+
 function paragraphAt(document: Document, index: number): Element {
   assertIndex(index);
-  const paragraph = descendants(bodyOf(document), 'p')[index];
-  if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
-  return paragraph;
+  const cached = PARAGRAPH_LOOKUP_CACHE.get(document);
+  if (cached) {
+    const paragraph = cached[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    return paragraph;
+  }
+  let remaining = index;
+  const stack: (Node | null)[] = [bodyOf(document).firstChild];
+  while (stack.length) {
+    const current = stack[stack.length - 1]!;
+    if (!current) {
+      stack.pop();
+      continue;
+    }
+    stack[stack.length - 1] = current.nextSibling;
+    if (current.nodeType === 1) {
+      const element = current as Element;
+      if (element.namespaceURI === WORD_NS && element.localName === 'p') {
+        if (remaining === 0) return element;
+        remaining--;
+      }
+    }
+    if (current.firstChild) stack.push(current.firstChild);
+  }
+  throw new Error(`Paragraph ${index} does not exist.`);
 }
 
 function blockContainerOf(document: Document): Element {
@@ -9264,8 +9288,18 @@ export class DocxDocument {
     const history = historyOnlyBatch ? undefined : this.beginMutationHistory(this.nextHistoryLabel, { kind: 'transaction' });
     this.nextHistoryLabel = undefined;
     this.nextHistoryAction = { kind: 'other' };
+    let paragraphDocument: Document | undefined;
     try {
       for (const operation of request.operations) {
+        if (operation.type === 'setParagraphText') {
+          if (!paragraphDocument) {
+            paragraphDocument = draft.getCachedPartDocument(draft.mainPath);
+            PARAGRAPH_LOOKUP_CACHE.set(paragraphDocument, descendants(bodyOf(paragraphDocument), 'p'));
+          }
+        } else if (paragraphDocument) {
+          PARAGRAPH_LOOKUP_CACHE.delete(paragraphDocument);
+          paragraphDocument = undefined;
+        }
         switch (operation.type) {
         case 'setTrackChanges': draft.setTrackChanges(operation.enabled); break;
         case 'setRevisionAuthor': draft.setRevisionAuthor(operation.author); break;
@@ -9379,6 +9413,8 @@ export class DocxDocument {
     } catch (error) {
       this.abortHistoryGroupOnFailure();
       throw error;
+    } finally {
+      if (paragraphDocument) PARAGRAPH_LOOKUP_CACHE.delete(paragraphDocument);
     }
   }
 

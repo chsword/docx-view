@@ -28,11 +28,30 @@ const request = {
 };
 
 const samples = [];
-for (let round = 0; round < rounds; round++) {
-  const doc = seededDocument();
+const originalSetParagraphText = DocxDocument.prototype.setParagraphText;
+let operationTime = 0;
+// Measure the indexed edit itself, not batch setup, serialization, or the returned full-document snapshot.
+DocxDocument.prototype.setParagraphText = function (...args) {
   const start = process.hrtime.bigint();
+  try {
+    return originalSetParagraphText.apply(this, args);
+  } finally {
+    operationTime += Number(process.hrtime.bigint() - start) / 1e6;
+  }
+};
+function runSample() {
+  const doc = seededDocument();
+  operationTime = 0;
   doc.applyOperations(request);
-  samples.push(Number(process.hrtime.bigint() - start) / 1e6);
+  return operationTime;
+}
+try {
+  for (let warmup = 0; warmup < 2; warmup++) runSample();
+  for (let round = 0; round < rounds; round++) {
+    samples.push(runSample());
+  }
+} finally {
+  DocxDocument.prototype.setParagraphText = originalSetParagraphText;
 }
 samples.sort((a, b) => a - b);
 const median = samples.length % 2
