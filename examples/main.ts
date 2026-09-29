@@ -1244,6 +1244,7 @@ element<HTMLInputElement>('toggle-comments').addEventListener('change', (event) 
 element<HTMLSelectElement>('review-revision-view').addEventListener('change', (event) => {
   reviewRevisionView = (event.target as HTMLSelectElement).value as 'final' | 'original' | 'markup';
   applyReviewFilter();
+  syncCommandState();
 });
 element<HTMLInputElement>('review-show-revisions').addEventListener('change', (event) => {
   reviewShowRevisions = (event.target as HTMLInputElement).checked;

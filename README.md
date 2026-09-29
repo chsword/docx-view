@@ -216,6 +216,12 @@ editor.render();
 - 接受/拒绝修订会直接修改文档，因此在 `'final'` / `'original'` 视图下同样可用（与可编辑正文无关）。
 - 当前 `'original'` / `'final'` 视图除插入/删除外，也会对移动修订显示对应一侧（`original` 显示 `moveFrom`，`final` 显示 `moveTo`）；`'original'` 仍不还原 `rPrChange` / `pPrChange` 的格式快照。
 
+**只读预览模式下的界面行为**
+
+- 演示功能区中的正文格式、表格、图片和批注写入命令，以及右键菜单中的写入命令，在 `'final'` / `'original'` 下禁用；审阅筛选、修订导航、复制/打开链接、批注定位等浏览操作仍可用。
+- 接受/拒绝修订在功能区和右键菜单中仍可用；这些操作直接修改文档，而不依赖正文是否可编辑。上下文选项卡仍按选区显示，其写入命令禁用。
+- 切换 `revisionView` 只改变预览与可用控件，不修改文档或触发 `onChange`。
+
 **选区事件**
 
 - `docx-selectionchange` 冒泡事件的 `detail.index` 是当前段落索引；`docx-rangechange` 的 `detail` 包含 `{ range, format }`（跨段落 `DocumentRange` 与 `getDocumentRangeFormat` 结果，可用于三态工具栏）。

@@ -71,6 +71,8 @@ function makeRegistry(options = {}) {
       focusNextRevision: () => calls.push(['focusNextRevision']),
       acceptAllRevisions: () => calls.push(['acceptAllRevisions']),
       rejectAllRevisions: () => calls.push(['rejectAllRevisions']),
+      acceptRevisions: (ctx, paragraph) => calls.push(['acceptRevisions', ctx.revisionsAtPoint[0]?.id, paragraph]),
+      rejectRevisions: (ctx, paragraph) => calls.push(['rejectRevisions', ctx.revisionsAtPoint[0]?.id, paragraph]),
       addComment: () => calls.push(['addComment']),
       replyComment: action('replyComment'),
       toggleCommentResolved: action('toggleCommentResolved'),
@@ -260,5 +262,101 @@ test('comment action controls derive final disabled state from registry only', (
   for (const commandId of ['comment.reply', 'comment.toggleResolved', 'comment.delete']) {
     const state = getCommandControlState(registry.get(commandId), emptyCtx);
     assert.equal(state.disabled, true);
+  }
+});
+
+const readOnlyWriteCommands = [
+  'format.bold', 'format.italic', 'format.underline', 'format.painter',
+  'table.insertRow', 'table.insertRowAbove', 'table.insertRowBelow', 'table.deleteRow',
+  'table.insertColumn', 'table.insertColumnLeft', 'table.insertColumnRight', 'table.deleteColumn',
+  'table.mergeCells', 'table.splitCell', 'table.applyCellStyle', 'table.deleteTable', 'table.applyStyle',
+  'image.insert', 'image.replace', 'image.delete', 'image.setAlt',
+  'comment.new', 'comment.addAtSelection', 'comment.reply', 'comment.replyAtPoint',
+  'comment.toggleResolved', 'comment.toggleResolvedAtPoint', 'comment.delete', 'comment.deleteAtPoint',
+];
+
+function populatedContext(revisionView = 'markup') {
+  return makeContext({
+    revisionView,
+    editable: revisionView === 'markup',
+    selection: {
+      paragraph: 0,
+      range: { start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 1 } },
+      collapsed: false,
+    },
+    table: { table: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1, nested: false },
+    image: { relationshipId: 'rId1' },
+    hyperlink: { url: 'https://example.com', unsafe: false },
+    revisionsAtPoint: [{ id: 1, kind: 'insertion' }],
+    commentsAtPoint: [1],
+    activeCommentId: 1,
+  });
+}
+
+test('all document-writing commands are disabled in both read-only preview views', async (t) => {
+  const { registry } = makeRegistry({ revisionCount: 1 });
+  for (const view of ['final', 'original']) {
+    for (const commandId of readOnlyWriteCommands) {
+      await t.test(`${commandId} is disabled in ${view}`, () => {
+        assert.equal(registry.get(commandId).enabled(populatedContext(view)), false);
+      });
+    }
+  }
+});
+
+test('editable command states recover after switching between markup and preview views', async (t) => {
+  const { registry } = makeRegistry({ revisionCount: 1 });
+  const commandIds = [
+    'format.bold', 'format.painter', 'table.insertRow', 'table.mergeCells',
+    'image.insert', 'image.delete', 'comment.new', 'comment.reply',
+  ];
+  for (const view of ['markup', 'final', 'original', 'markup']) {
+    for (const commandId of commandIds) {
+      await t.test(`${commandId} in ${view}`, () => {
+        assert.equal(registry.get(commandId).enabled(populatedContext(view)), view === 'markup');
+      });
+    }
+  }
+});
+
+test('read-only, navigation, and revision-decision commands remain enabled in preview views', async (t) => {
+  const { registry } = makeRegistry({ revisionCount: 1 });
+  const commandIds = [
+    'clipboard.copy', 'hyperlink.open', 'hyperlink.copyAddress',
+    'review.previousRevision', 'review.nextRevision', 'review.options',
+    'review.acceptAll', 'review.rejectAll', 'revision.acceptAtPoint', 'revision.rejectAtPoint',
+    'revision.acceptParagraph', 'revision.rejectParagraph', 'comment.focus',
+  ];
+  for (const view of ['final', 'original']) {
+    for (const commandId of commandIds) {
+      await t.test(`${commandId} remains enabled in ${view}`, () => {
+        assert.equal(registry.get(commandId).enabled(populatedContext(view)), true);
+      });
+    }
+  }
+});
+
+test('Ribbon and context-menu enabled states match for every registered command and view', async (t) => {
+  const { registry } = makeRegistry({ revisionCount: 1 });
+  assert.equal(registry.list().length, 56);
+  for (const view of ['markup', 'final', 'original']) {
+    const ctx = populatedContext(view);
+    for (const command of registry.list()) {
+      await t.test(`${view}: ${command.id}`, () => {
+        const ribbonDisabled = getCommandControlState(command, ctx).disabled;
+        const contextMenuDisabled = !command.enabled(ctx);
+        assert.equal(ribbonDisabled, contextMenuDisabled);
+      });
+    }
+  }
+});
+
+test('revision acceptance commands still execute in read-only preview views', async (t) => {
+  for (const view of ['final', 'original']) {
+    await t.test(view, async () => {
+      const { registry, calls } = makeRegistry({ revisionCount: 1 });
+      await registry.run('revision.acceptAtPoint', populatedContext(view));
+      assert.deepEqual(calls, [['acceptRevisions', 1, false]]);
+    });
   }
 });
