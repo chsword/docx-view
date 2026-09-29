@@ -63,6 +63,7 @@ export interface PageBoxPx {
 }
 
 export function pageBoxPx(section: Pick<SectionInfo, 'pageWidth' | 'pageHeight' | 'margins'>): PageBoxPx {
+  // Same arithmetic as the page CSS it replaced; `twips * TWIPS_TO_PX` differs in the last ulp for many inputs.
   const toPx = (twips: number) => twips * 96 / 1440;
   return {
     widthPx: toPx(section.pageWidth),
