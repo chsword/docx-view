@@ -276,8 +276,22 @@ export function paginate(
   const addTable = (table: LayoutTable, blockIndex: number) => {
     // A table row is the smallest table FlowItem, so cantSplit rows are always
     // atomic; rowSpan extends that atomic group through every covered row.
-    const rowHeight = (rowIndex: number) =>
-      Math.max(0, measurer.measureTableRow(table, table.rows[rowIndex]!, rowIndex, width(), context) || 0);
+    const heightCache = new Map<number, Map<number, number>>();
+    const rowHeight = (rowIndex: number) => {
+      const widthPx = width();
+      let byWidth = heightCache.get(rowIndex);
+      if (!byWidth) {
+        byWidth = new Map();
+        heightCache.set(rowIndex, byWidth);
+      }
+      const cached = byWidth.get(widthPx);
+      if (cached !== undefined) return cached;
+      const height = Math.max(0, measurer.measureTableRow(
+        table, table.rows[rowIndex]!, rowIndex, widthPx, context,
+      ) || 0);
+      byWidth.set(widthPx, height);
+      return height;
+    };
     let headerCount = 0;
     while (headerCount < table.rows.length && table.rows[headerCount]!.format?.header) headerCount++;
     const appendHeaders = () => {

@@ -854,6 +854,16 @@ export class DocxEditor {
     }
   }
 
+  private withMeasuring<T>(render: () => T): T {
+    const previous = this.measuring;
+    this.measuring = true;
+    try {
+      return render();
+    } finally {
+      this.measuring = previous;
+    }
+  }
+
   private measureParagraphForPagination(paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext): LineBox[] {
     const host = this.root.ownerDocument.createElement('div');
     host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, area.widthPx)}px;`;
@@ -864,13 +874,11 @@ export class DocxEditor {
       if (wrap.wrap !== 'topAndBottom') spacer.style.cssFloat = 'left';
       host.append(spacer);
     }
-    this.measuring = true;
-    const measured = this.makeParagraph(paragraph, context.defaultTabStopTwips, {
+    const measured = this.withMeasuring(() => this.makeParagraph(paragraph, context.defaultTabStopTwips, {
       authors: undefined,
       deletedTextByRun: new Map(),
       revisionColors: new Map(),
-    });
-    this.measuring = false;
+    }));
     host.append(measured);
     this.root.append(host);
     const textNodes: Array<{ node: Text; start: number }> = [];
@@ -931,11 +939,11 @@ export class DocxEditor {
   private measureTableRowForPagination(table: LayoutTable, rowIndex: number, widthPx: number, context: MeasureContext): number {
     const host = this.root.ownerDocument.createElement('div');
     host.style.cssText = `position:absolute;visibility:hidden;left:-100000px;width:${Math.max(1, widthPx)}px;`;
-    const rendered = this.makeTable(table, [rowIndex], context.defaultTabStopTwips, {
+    const rendered = this.withMeasuring(() => this.makeTable(table, [rowIndex], context.defaultTabStopTwips, {
       authors: undefined,
       deletedTextByRun: new Map(),
       revisionColors: new Map(),
-    });
+    }));
     rendered.style.width = '100%';
     host.append(rendered);
     this.root.append(host);

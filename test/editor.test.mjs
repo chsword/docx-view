@@ -80,6 +80,7 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
   editor.commentParagraphIds = new Map();
   editor.commentRunIds = new Map();
   editor.revisionRunIds = new Map();
+  editor.revisionParagraphIds = new Map();
   const createElement = (tagName) => {
     const element = {
       nodeType: 1,
@@ -224,6 +225,49 @@ test('pagination table row measurement uses the tallest rendered cell', () => {
     grid: [1000, 1000],
   };
   assert.equal(editor.measureTableRowForPagination(table, 0, 100, { defaultTabStopTwips: 720 }), 27);
+});
+
+test('pagination table row measurement does not register temporary render state', () => {
+  const editor = makeRunRenderEditor();
+  editor.measuring = false;
+  editor.paragraphs = new Map();
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = {
+    index: 7,
+    text: 'tracked',
+    images: [],
+    paragraphRevision: { id: 8, kind: 'insertion', author: 'Alice' },
+    runs: [{ index: 0, text: 'tracked', images: [], revisions: [{ id: 9, kind: 'insertion', author: 'Alice' }] }],
+  };
+  const table = {
+    type: 'table',
+    rows: [{
+      cells: [{ blocks: [{ type: 'paragraph', paragraph }], colSpan: 1, rowSpan: 1, isMergeContinuation: false }],
+    }],
+    grid: [1000],
+  };
+  assert.equal(editor.measureTableRowForPagination(table, 0, 100, { defaultTabStopTwips: 720 }), 27);
+  assert.equal(editor.measuring, false);
+  assert.equal(editor.paragraphs.size, 0);
+  assert.equal(editor.revisionParagraphIds.size, 0);
+  assert.equal(editor.revisionRunIds.size, 0);
+});
+
+test('withMeasuring restores nested state when temporary rendering throws', () => {
+  const editor = makeRunRenderEditor();
+  editor.measuring = false;
+  assert.throws(() => editor.withMeasuring(() => {
+    assert.equal(editor.measuring, true);
+    throw new Error('render failed');
+  }), /render failed/);
+  assert.equal(editor.measuring, false);
+  editor.measuring = true;
+  assert.equal(editor.withMeasuring(() => editor.measuring), true);
+  assert.equal(editor.measuring, true);
 });
 
 function appendRunToParagraph(editor, {

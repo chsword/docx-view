@@ -167,10 +167,12 @@ test('uses explicit unequal column widths and nextColumn stays on the page', () 
 
 test('remeasures split table fragments at the destination column width', () => {
   const measuredWidths = [];
+  const measuredKeys = [];
   const tableMeasurer = {
     ...measurer,
-    measureTableRow(_table, row, _rowIndex, widthPx) {
+    measureTableRow(_table, row, rowIndex, widthPx) {
       measuredWidths.push(widthPx);
+      measuredKeys.push(`${rowIndex}:${widthPx}`);
       return row.height;
     },
   };
@@ -184,6 +186,7 @@ test('remeasures split table fragments at the destination column width', () => {
   ]);
   assert.ok(measuredWidths.includes(20));
   assert.ok(measuredWidths.includes(40));
+  assert.equal(new Set(measuredKeys).size, measuredKeys.length);
 });
 
 test('passes floating wrap exclusions to paragraph measurement and carries their remaining height', () => {
