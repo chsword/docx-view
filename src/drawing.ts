@@ -1,5 +1,5 @@
 import type { Element } from '@xmldom/xmldom';
-import { validatePath } from './xml.js';
+import { MC_NS, selectAlternateContentBranch, validatePath } from './xml.js';
 import type { ImageInfo } from './types.js';
 
 export const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -295,9 +295,22 @@ export function readRunImages(
   sourcePartPath = '',
 ): ImageInfo[] {
   const images: ImageInfo[] = [];
+  const elements: Element[] = [];
   for (let child = runElement.firstChild; child; child = child.nextSibling) {
     if (child.nodeType !== 1) continue;
     const element = child as Element;
+    if (element.namespaceURI === MC_NS && element.localName === 'AlternateContent') {
+      const branch = selectAlternateContentBranch(element);
+      if (branch) {
+        for (let branchChild = branch.firstChild; branchChild; branchChild = branchChild.nextSibling) {
+          if (branchChild.nodeType === 1) elements.push(branchChild as Element);
+        }
+      }
+      continue;
+    }
+    elements.push(element);
+  }
+  for (const element of elements) {
     if (element.namespaceURI === 'http://schemas.openxmlformats.org/wordprocessingml/2006/main' && element.localName === 'drawing') {
       images.push(...readDrawingImage(element, paragraph, run, relationships, getContentType));
     }
