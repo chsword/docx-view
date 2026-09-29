@@ -137,7 +137,11 @@ test('Ribbon view toggle only changes its target visibility', () => {
 test('contextual Ribbon tabs stay hidden until shown and navigation skips hidden tabs', () => {
   const { root, tabs, panels } = makeRibbon(0, true);
   const manualActivations = [];
-  const ribbon = initializeRibbon(root, { onManualActivate: (tabId) => manualActivations.push(tabId) });
+  const contextActivations = [];
+  const ribbon = initializeRibbon(root, {
+    onManualActivate: (tabId) => manualActivations.push(tabId),
+    onContextActivate: (tabId) => contextActivations.push(tabId),
+  });
   const tableTab = tabs[5];
 
   assert.equal(tableTab.hidden, true);
@@ -145,6 +149,8 @@ test('contextual Ribbon tabs stay hidden until shown and navigation skips hidden
   ribbon.activate(tableTab.id);
   assert.equal(tableTab.getAttribute('aria-selected'), 'true');
   assert.equal(panels[5].hidden, false);
+  tableTab.dispatch('click');
+  assert.deepEqual(contextActivations, ['ribbon-tab-table']);
 
   tableTab.dispatch('keydown', { key: 'ArrowRight' });
   assert.equal(tabs[0].getAttribute('aria-selected'), 'true');

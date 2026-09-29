@@ -62,6 +62,14 @@ test('context tab activation and restoration rules', async (t) => {
       state.manualActivate('image');
       assert.equal(state.activeTabId, 'table');
     }],
+    ['activating a visible context updates active tab without changing the last manual tab', (state) => {
+      state.manualActivate('review');
+      state.setContextVisible('table', true);
+      state.manualActivate('insert');
+      state.activateContext('table');
+      assert.equal(state.activeTabId, 'table');
+      assert.equal(state.lastManualTabId, 'insert');
+    }],
     ['repeated visible notifications do not steal focus back from a manually selected tab', (state) => {
       state.setContextVisible('table', true);
       state.manualActivate('insert');

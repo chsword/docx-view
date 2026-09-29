@@ -80,6 +80,7 @@ const ribbonContextState = new RibbonContextState(
 );
 const ribbon = initializeRibbon(element('ribbon'), {
   onManualActivate: (tabId) => ribbonContextState.manualActivate(tabId),
+  onContextActivate: (tabId) => ribbonContextState.activateContext(tabId),
 });
 
 const recentNumbering = new Map<'bullet' | 'decimal', number>();

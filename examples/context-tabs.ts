@@ -21,6 +21,10 @@ export class RibbonContextState {
     this.lastManualTabId = tabId;
   }
 
+  activateContext(tabId: string): void {
+    if (this.contextTabs.get(tabId) === true) this.activeTabId = tabId;
+  }
+
   setContextVisible(tabId: string, visible: boolean): string | null {
     const previous = this.contextTabs.get(tabId);
     if (previous === undefined || previous === visible) return null;

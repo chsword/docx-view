@@ -14,7 +14,10 @@ export interface RibbonController {
 
 export function initializeRibbon(
   root: HTMLElement,
-  options: { onManualActivate?: (tabId: string) => void } = {},
+  options: {
+    onManualActivate?: (tabId: string) => void;
+    onContextActivate?: (tabId: string) => void;
+  } = {},
 ): RibbonController {
   root.setAttribute('contenteditable', 'false');
   const tabs = Array.from(root.querySelectorAll<HTMLElement>('[role="tab"]'));
@@ -55,6 +58,7 @@ export function initializeRibbon(
     tab.addEventListener('click', () => {
       activate(tab.id);
       if (tab.dataset.contextualTab === undefined) options.onManualActivate?.(tab.id);
+      else options.onContextActivate?.(tab.id);
     });
     tab.addEventListener('keydown', (event) => {
       const availableTabs = visibleTabs();
@@ -65,6 +69,7 @@ export function initializeRibbon(
       const next = availableTabs[target]!;
       activate(next.id, true);
       if (next.dataset.contextualTab === undefined) options.onManualActivate?.(next.id);
+      else options.onContextActivate?.(next.id);
     });
   });
 
