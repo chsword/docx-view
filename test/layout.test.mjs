@@ -110,6 +110,8 @@ test('splits tables by row and repeats all leading header rows', () => {
     [0, 1, 4],
   ]);
   assert.deepEqual(result.map((page) => page.contentHeightPx), [80, 80, 220]);
+  assert.deepEqual(result.flatMap((page) =>
+    page.items.filter((item) => item.type === 'tableRow' && item.row >= 2).map((item) => item.row)), [2, 3, 4]);
 });
 
 test('moves all rows covered by a rowSpan to the same page', () => {
@@ -161,6 +163,27 @@ test('uses explicit unequal column widths and nextColumn stays on the page', () 
   assert.equal(result.length, 1);
   assert.deepEqual(result[0].items.filter((item) => item.type === 'line').map((item) => item.column), [0, 1]);
   assert.deepEqual(measuredWidths, [20, 40]);
+});
+
+test('remeasures split table fragments at the destination column width', () => {
+  const measuredWidths = [];
+  const tableMeasurer = {
+    ...measurer,
+    measureTableRow(_table, row, _rowIndex, widthPx) {
+      measuredWidths.push(widthPx);
+      return row.height;
+    },
+  };
+  const result = paginate([
+    table(row(10, { header: true }), row(60), row(60)),
+  ], [section({ columns: { count: 2, space: 0, equalWidth: false, widths: [300, 600] } })],
+  tableMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0].items.filter((item) => item.type === 'tableRow').map((item) => [item.row, item.column]), [
+    [0, 0], [1, 0], [0, 1], [2, 1],
+  ]);
+  assert.ok(measuredWidths.includes(20));
+  assert.ok(measuredWidths.includes(40));
 });
 
 test('passes floating wrap exclusions to paragraph measurement and carries their remaining height', () => {

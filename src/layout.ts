@@ -163,23 +163,24 @@ export function paginate(
     }));
     return measurer.measureParagraph(paragraph, { widthPx: width(), wraps: [...carried, ...own] }, context) ?? [];
   };
-  const updateWraps = (paragraph: ParagraphInfo, consumedHeight: number) => {
+  const updateWraps = (paragraph: ParagraphInfo, consumedHeight: number, includeOwn = true) => {
     const carried = (wrapsByColumn[currentColumn] ?? [])
       .map((wrap) => ({ ...wrap, heightPx: wrap.heightPx - consumedHeight, carried: true }))
       .filter((wrap) => wrap.heightPx > 0);
-    const own = wrappingImages(paragraph)
+    const own = includeOwn ? wrappingImages(paragraph)
       .map((image): WrapExclusion => ({
         widthPx: Math.max(0, image.widthPx),
         heightPx: Math.max(0, image.heightPx - consumedHeight),
         wrap: image.wrap as WrapExclusion['wrap'],
         carried: true,
       }))
-      .filter((wrap) => wrap.heightPx > 0);
+      .filter((wrap) => wrap.heightPx > 0) : [];
     wrapsByColumn[currentColumn] = [...carried, ...own];
   };
   const putLines = (paragraph: ParagraphInfo, lines: LineBox[]) => {
     if (lines.length === 0) return;
     let offset = 0;
+    let includeOwnWraps = true;
     while (offset < lines.length) {
       const start = offset;
       let used = 0;
@@ -194,7 +195,8 @@ export function paginate(
           paragraph: paragraph.index,
           line,
         })), used);
-        updateWraps(paragraph, used);
+        updateWraps(paragraph, used, includeOwnWraps);
+        includeOwnWraps = false;
       }
       // A line taller than a column is still progress: place it alone.
       if (offset === start) {
@@ -205,7 +207,8 @@ export function paginate(
         const line = lines[offset++]!;
         const height = Math.max(0, line.heightPx);
         append([{ type: 'line', paragraph: paragraph.index, line }], height);
-        updateWraps(paragraph, height);
+        updateWraps(paragraph, height, includeOwnWraps);
+        includeOwnWraps = false;
       }
       if (offset < lines.length) advanceColumn();
     }
@@ -271,16 +274,16 @@ export function paginate(
     }
   };
   const addTable = (table: LayoutTable, blockIndex: number) => {
-    const measuredRows = table.rows.map((row, rowIndex) => ({
-      rowIndex,
-      height: Math.max(0, measurer.measureTableRow(table, row, rowIndex, width(), context) || 0),
-    }));
+    // A table row is the smallest table FlowItem, so cantSplit rows are always
+    // atomic; rowSpan extends that atomic group through every covered row.
+    const rowHeight = (rowIndex: number) =>
+      Math.max(0, measurer.measureTableRow(table, table.rows[rowIndex]!, rowIndex, width(), context) || 0);
     let headerCount = 0;
     while (headerCount < table.rows.length && table.rows[headerCount]!.format?.header) headerCount++;
     const appendHeaders = () => {
       for (let index = 0; index < headerCount; index++) {
-        const measured = measuredRows[index]!;
-        append([{ type: 'tableRow', table: blockIndex, row: index, heightPx: measured.height }], measured.height);
+        const height = rowHeight(index);
+        append([{ type: 'tableRow', table: blockIndex, row: index, heightPx: height }], height);
       }
     };
     if (headerCount === table.rows.length) {
@@ -295,13 +298,22 @@ export function paginate(
         const span = Math.max(1, ...table.rows[scan]!.cells.map((cell) => Math.max(1, cell.rowSpan)));
         end = Math.max(end, Math.min(table.rows.length, scan + span));
       }
-      const group = measuredRows.slice(index, end);
-      const groupHeight = group.reduce((sum, row) => sum + row.height, 0);
-      const headerHeight = measuredRows.slice(0, headerCount).reduce((sum, row) => sum + row.height, 0);
+      let group = Array.from({ length: end - index }, (_, offset) => ({
+        rowIndex: index + offset,
+        height: rowHeight(index + offset),
+      }));
+      let groupHeight = group.reduce((sum, row) => sum + row.height, 0);
+      let headerHeight = Array.from({ length: headerCount }, (_, headerIndex) => rowHeight(headerIndex))
+        .reduce((sum, height) => sum + height, 0);
       if ((!fragmentStarted && headerHeight + groupHeight > remainingHeight() && hasContent(ensurePage(), currentColumn)) ||
           (fragmentStarted && groupHeight > remainingHeight())) {
         advanceColumn();
         fragmentStarted = false;
+        group = Array.from({ length: end - index }, (_, offset) => ({
+          rowIndex: index + offset,
+          height: rowHeight(index + offset),
+        }));
+        groupHeight = group.reduce((sum, row) => sum + row.height, 0);
       }
       if (!fragmentStarted) {
         appendHeaders();
