@@ -56,7 +56,22 @@ export function childrenThroughTransparent(node: Node, localName: string, namesp
 }
 
 export function descendants(node: Element | Document, localName: string): Element[] {
-  return Array.from(node.getElementsByTagNameNS(WORD_NS, localName));
+  const result: Element[] = [];
+  const stack: (Node | null)[] = [node.firstChild];
+  while (stack.length) {
+    const current = stack[stack.length - 1]!;
+    if (!current) {
+      stack.pop();
+      continue;
+    }
+    stack[stack.length - 1] = current.nextSibling;
+    if (current.nodeType === 1) {
+      const element = current as Element;
+      if (element.namespaceURI === WORD_NS && (localName === '*' || element.localName === localName)) result.push(element);
+    }
+    if (current.firstChild) stack.push(current.firstChild);
+  }
+  return result;
 }
 
 export function wordElement(document: Document, name: string): Element {
