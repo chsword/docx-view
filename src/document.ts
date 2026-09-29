@@ -3996,7 +3996,7 @@ export class DocxDocument {
       for (const [runIndex, run] of ownRuns(paragraph).entries()) {
         const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
         for (const child of children) {
-          if (!['drawing', 'pict'].includes(child.localName ?? '')) continue;
+          if (!['drawing', 'pict', 'AlternateContent'].includes(child.localName ?? '')) continue;
           const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath);
           const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
           if (shapeIndex < 0) continue;

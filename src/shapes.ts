@@ -105,9 +105,25 @@ function readVmlShape(node: Element, paragraph: number, run: number, ordinal: nu
 
 export function readRunShapes(runElement: Element, paragraph: number, run: number, sourcePartPath = ''): ShapeInfo[] {
   const result: ShapeInfo[] = [];
+  const elements: Element[] = [];
   for (let child = runElement.firstChild; child; child = child.nextSibling) {
     if (child.nodeType !== 1) continue;
     const element = child as Element;
+    if (element.namespaceURI === MC_NS && element.localName === 'AlternateContent') {
+      const choices = descendants(element, MC_NS, 'Choice');
+      const choice = choices.find((candidate) => (candidate.getAttribute('Requires') ?? '').split(/\s+/).includes('wps'))
+        ?? choices[0];
+      const branch = choice ?? first(element, MC_NS, 'Fallback');
+      if (branch) {
+        for (let branchChild = branch.firstChild; branchChild; branchChild = branchChild.nextSibling) {
+          if (branchChild.nodeType === 1) elements.push(branchChild as Element);
+        }
+      }
+      continue;
+    }
+    elements.push(element);
+  }
+  for (const element of elements) {
     if (element.namespaceURI === WORD_NS && element.localName === 'drawing') {
       result.push(...readDrawingShape(element, paragraph, run, result.length));
     } else if (element.namespaceURI === WORD_NS && element.localName === 'pict') {

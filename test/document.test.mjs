@@ -184,21 +184,17 @@ test('isolates textbox paragraphs and exposes shape fallbacks without duplicatin
     <w:drawing>
       <wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="7" name="Box" descr="Box alt"/>
         <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
-          <mc:AlternateContent>
-            <mc:Choice Requires="wps"><wps:wsp><wps:txbx><w:txbxContent>
-              <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>inside one</w:t></w:r>
-              </w:p><w:p><w:r><w:t>inside two</w:t></w:r></w:p>
-            </w:txbxContent></wps:txbx></wps:wsp></mc:Choice>
-            <mc:Fallback><w:pict><v:shape id="fallback"><v:textbox><w:txbxContent>
-              <w:p><w:r><w:t>fallback must not duplicate</w:t></w:r></w:p>
-            </w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback>
-          </mc:AlternateContent>
+          <wps:wsp><wps:txbx><w:txbxContent>
+            <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>inside one</w:t></w:r>
+            </w:p><w:p><w:r><w:t>inside two</w:t></w:r></w:p>
+          </w:txbxContent></wps:txbx></wps:wsp>
         </a:graphicData></a:graphic>
       </wp:inline>
     </w:drawing>`;
+  const alternateDrawing = `<mc:AlternateContent><mc:Choice Requires="wps">${drawingMl}</mc:Choice><mc:Fallback><w:pict><v:shape id="fallback"><v:textbox><w:txbxContent><w:p><w:r><w:t>fallback must not duplicate</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent>`;
   const body = `
     <w:p><w:r><w:t>before</w:t></w:r></w:p>
-    <w:p><w:r>${drawingMl}</w:r></w:p>
+    <w:p><w:r>${alternateDrawing}</w:r></w:p>
     <w:p><w:r><w:pict><v:shape id="rect" type="#rect" style="width:40pt;height:20pt"/></w:pict></w:r></w:p>
     <w:p><w:r><w:pict><v:shape id="vml-box" alt="VML alt" style="width:60pt;height:30pt"><v:textbox><w:txbxContent>
       <w:p><w:r><w:t>VML text</w:t></w:r></w:p>
