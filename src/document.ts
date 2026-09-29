@@ -44,6 +44,7 @@ import {
   validateRequest,
   validateRows,
   validateRunFormat,
+  validateTableFormat,
   validateTabs,
 } from './operations.js';
 import { collectSections, readSections, SECTION_ORDER } from './section.js';
@@ -1379,10 +1380,21 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     ['widowControl', 'widowControl'],
     ['suppressLineNumbers', 'suppressLineNumbers'],
     ['suppressAutoHyphens', 'suppressAutoHyphens'],
+    ['kinsoku', 'kinsoku'],
+    ['wordWrap', 'wordWrap'],
+    ['overflowPunct', 'overflowPunct'],
+    ['topLinePunct', 'topLinePunct'],
+    ['autoSpaceDE', 'autoSpaceDE'],
+    ['autoSpaceDN', 'autoSpaceDN'],
+    ['bidi', 'bidi'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
     else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
+  }
+  if ('textDirection' in format) {
+    if (format.textDirection === null) removeProperty(props, 'textDirection');
+    else if (format.textDirection !== undefined) setWordValue(property(props, 'textDirection'), format.textDirection);
   }
   if ('tabs' in format) {
     if (format.tabs === null || (Array.isArray(format.tabs) && format.tabs.length === 0)) {
@@ -1470,6 +1482,7 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     if (format.outlineLevel === null) removeProperty(props, 'outlineLvl');
     else if (format.outlineLevel !== undefined) setWordValue(property(props, 'outlineLvl'), String(format.outlineLevel));
   }
+  removeIfEmpty(props);
 }
 
 function applyRunFormatTo(props: Element, format: RunFormat): void {
@@ -1484,6 +1497,8 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     ['doubleStrike', 'dstrike'],
     ['smallCaps', 'smallCaps'],
     ['allCaps', 'caps'],
+    ['rtl', 'rtl'],
+    ['complexScript', 'cs'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
@@ -1798,6 +1813,7 @@ function setMargins(parent: Element, name: 'tblCellMar' | 'tcMar', margin: Table
 
 function setTableFormat(tbl: Element, format: TableFormat): void {
   const props = tableProperty(tbl, 'tblPr');
+  if (format.bidiVisual !== undefined) boolValue(props, 'bidiVisual', format.bidiVisual ?? undefined);
   if (format.width !== undefined) widthValue(props, 'tblW', format.width);
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
   if (format.indent !== undefined) {
@@ -2099,12 +2115,13 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-  'highlight', 'characterSpacing', 'border', 'shading',
+  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
   'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
+  'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   'outlineLevel', 'tabs', 'borders', 'shading',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
@@ -8201,6 +8218,11 @@ export class DocxDocument {
   }
 
   formatTable(table: number, format: TableFormat): void {
+    validateTableFormat(format);
+    if (Object.keys(format).length === 1 && format.bidiVisual === null) {
+      const tableElement = tableAt(this.getCachedPartDocument(this.mainPath), table);
+      if (!children(children(tableElement, 'tblPr')[0] ?? tableElement, 'bidiVisual').length) return;
+    }
     this.updatePartXmlInternal(this.mainPath, document => setTableFormat(tableAt(document, table), format));
   }
 

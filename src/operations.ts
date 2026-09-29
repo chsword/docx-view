@@ -25,7 +25,7 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-  'highlight', 'characterSpacing', 'border', 'shading',
+  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const;
 
 function validateTextRange(value: unknown): asserts value is { paragraph: number; start: number; end: number } {
@@ -80,9 +80,9 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   keys(value, [
     'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-    'highlight', 'characterSpacing', 'border', 'shading',
+    'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
   ]);
-  for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps']) {
+  for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl', 'complexScript']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
@@ -115,6 +115,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
     'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
     'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
     'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens',
+    'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   ]);
   if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
@@ -137,9 +138,13 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   if ('lineSpacingRule' in value && value.lineSpacingRule !== null && !['auto', 'atLeast', 'exact'].includes(String(value.lineSpacingRule))) {
     throw new Error('Invalid lineSpacingRule.');
   }
-  for (const key of ['keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens']) {
+  for (const key of [
+    'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
+    'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi',
+  ]) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
+  if ('textDirection' in value) maybeNull(value.textDirection as string | null | undefined, (entry) => assertText(entry, 'textDirection'));
   if ('tabs' in value) maybeNull(value.tabs as TabStop[] | null | undefined, (entry) => validateTabs(entry));
   if ('borders' in value) maybeNull(value.borders as ParagraphFormat['borders'] | null | undefined, (entry) => validateParagraphBorders(entry));
   if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry, 'shading'));
@@ -253,7 +258,7 @@ function validateMargins(value: unknown, name: string): void {
 
 export function validateTableFormat(value: unknown): asserts value is TableFormat {
   object(value);
-  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look', 'caption', 'description']);
+  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look', 'caption', 'description', 'bidiVisual']);
   if ('width' in value) validateWidth(value.width, 'width');
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
   if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
@@ -261,6 +266,7 @@ export function validateTableFormat(value: unknown): asserts value is TableForma
   if ('shading' in value) validateShading(value.shading, 'shading');
   if ('cellMargin' in value) validateMargins(value.cellMargin, 'cellMargin');
   if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
+  if ('bidiVisual' in value && value.bidiVisual !== null && typeof value.bidiVisual !== 'boolean') throw new Error('bidiVisual must be boolean.');
   for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
 }
 
@@ -791,7 +797,7 @@ const margins = shape({ top: width, right: width, bottom: width, left: width }, 
 const tableFormat = shape({
   width, alignment: { enum: ['left', 'center', 'right'] }, indent: { type: 'number', minimum: 0 },
   borders, shading, cellMargin: margins, layout: { enum: ['fixed', 'autofit'] },
-  style: text, look: text, caption: text, description: text,
+  style: text, look: text, caption: text, description: text, bidiVisual: nullable({ type: 'boolean' }),
 }, []);
 const rowFormat = shape({
   height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
@@ -842,6 +848,14 @@ export const AGENT_OPERATION_SCHEMA = {
             widowControl: nullable({ type: 'boolean' }),
             suppressLineNumbers: nullable({ type: 'boolean' }),
             suppressAutoHyphens: nullable({ type: 'boolean' }),
+            kinsoku: nullable({ type: 'boolean' }),
+            wordWrap: nullable({ type: 'boolean' }),
+            overflowPunct: nullable({ type: 'boolean' }),
+            topLinePunct: nullable({ type: 'boolean' }),
+            autoSpaceDE: nullable({ type: 'boolean' }),
+            autoSpaceDN: nullable({ type: 'boolean' }),
+            bidi: nullable({ type: 'boolean' }),
+            textDirection: nullable(text),
             outlineLevel: nullable(outlineLevel),
             tabs: nullable(docTabs),
             borders: nullable(shape({
@@ -871,6 +885,8 @@ export const AGENT_OPERATION_SCHEMA = {
             color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
             strike: nullable({ type: 'boolean' }),
             doubleStrike: nullable({ type: 'boolean' }),
+            rtl: nullable({ type: 'boolean' }),
+            complexScript: nullable({ type: 'boolean' }),
             verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
             smallCaps: nullable({ type: 'boolean' }),
             allCaps: nullable({ type: 'boolean' }),
@@ -894,6 +910,8 @@ export const AGENT_OPERATION_SCHEMA = {
               color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
               strike: nullable({ type: 'boolean' }),
               doubleStrike: nullable({ type: 'boolean' }),
+              rtl: nullable({ type: 'boolean' }),
+              complexScript: nullable({ type: 'boolean' }),
               verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
               smallCaps: nullable({ type: 'boolean' }),
               allCaps: nullable({ type: 'boolean' }),
@@ -923,6 +941,8 @@ export const AGENT_OPERATION_SCHEMA = {
               color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
               strike: nullable({ type: 'boolean' }),
               doubleStrike: nullable({ type: 'boolean' }),
+              rtl: nullable({ type: 'boolean' }),
+              complexScript: nullable({ type: 'boolean' }),
               verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
               smallCaps: nullable({ type: 'boolean' }),
               allCaps: nullable({ type: 'boolean' }),

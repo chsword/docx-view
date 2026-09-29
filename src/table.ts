@@ -122,6 +122,7 @@ export function parseTableFormat(tblPr: Element | undefined): TableFormat | unde
     look: wordValue(children(tblPr, 'tblLook')[0]) ?? undefined,
     caption: wordValue(children(tblPr, 'tblCaption')[0]) ?? undefined,
     description: wordValue(children(tblPr, 'tblDescription')[0]) ?? undefined,
+    bidiVisual: boolValue(children(tblPr, 'bidiVisual')[0]),
   };
   return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }
