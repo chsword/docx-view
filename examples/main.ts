@@ -10,9 +10,11 @@ import type {
   ReviewerInfo,
   RunFormat,
   StyleInfo,
+  TableCellLocation,
 } from '../src/index.js';
 import { reviewerBucketKey, reviewerBucketLabel, reviewerBucketOf } from '../src/revisions.js';
 import { findReusableNumberingId } from '../src/numbering.js';
+import { RibbonContextState } from './context-tabs.js';
 import {
   createCommandRegistry,
   createExampleCommandDescriptors,
@@ -72,7 +74,14 @@ function element<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
-initializeRibbon(element('ribbon'));
+const ribbonContextState = new RibbonContextState(
+  ['ribbon-tab-home', 'ribbon-tab-insert', 'ribbon-tab-layout', 'ribbon-tab-review', 'ribbon-tab-view'],
+  ['ribbon-tab-table', 'ribbon-tab-image'],
+);
+const ribbon = initializeRibbon(element('ribbon'), {
+  onManualActivate: (tabId) => ribbonContextState.manualActivate(tabId),
+  onContextActivate: (tabId) => ribbonContextState.activateContext(tabId),
+});
 
 const recentNumbering = new Map<'bullet' | 'decimal', number>();
 
@@ -434,14 +443,28 @@ function updateSelection(): void {
   style.value = currentStyle?.id ?? '';
   alignment.value = paragraph?.effective?.alignment ?? paragraph?.alignment ?? 'left';
   element('effective-format').textContent = paragraph ? JSON.stringify(paragraph.effective ?? {}, null, 2) : '点击正文选择段落';
+  updateTableSelection(editor.selectedTableCell, false);
   syncCommandState();
 }
 
 function updateImageSelection(): void {
   const image = editor.selectedImage;
+  setContextTabVisible('ribbon-tab-image', image !== null);
   element('image-selection-label').textContent = image ? `已选择图片 · ${image.alt ?? image.name ?? image.relationshipId}` : '未选中图片';
   element<HTMLInputElement>('image-alt').value = image?.alt ?? '';
   syncCommandState();
+}
+
+function setContextTabVisible(tabId: string, visible: boolean): void {
+  const activateTabId = ribbonContextState.setContextVisible(tabId, visible);
+  ribbon.setTabVisible(tabId, visible);
+  if (activateTabId) ribbon.activate(activateTabId);
+}
+
+function updateTableSelection(cell: TableCellLocation | null = editor.selectedTableCell, syncCommands = true): void {
+  setContextTabVisible('ribbon-tab-table', cell !== null);
+  element<HTMLElement>('table-context-hint').hidden = !cell?.nested;
+  if (syncCommands) syncCommandState();
 }
 
 function refreshComments(snapshot: DocumentSnapshot = doc.getSnapshot()): void {
@@ -608,42 +631,17 @@ function selectedCommentRange() {
   return { paragraph: index, start: 0, end: text.length };
 }
 
-function selectedCell(): { table: number; row: number; col: number; rowSpan: number; colSpan: number } {
-  editor.flush();
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
+function selectedCell(): TableCellLocation {
+  const cell = editor.selectedTableCell;
   if (!cell) throw new Error('请先把光标放进一个表格单元格，再使用表格工具。');
-  const tableElement = cell.closest('.docx-table');
-  if (!tableElement) throw new Error('未找到当前表格。');
-  if (tableElement.parentElement?.closest('.docx-table')) {
+  if (cell.nested) {
     throw new Error('当前演示的结构化表格工具仅支持正文顶层表格，不支持嵌套表格。');
   }
-  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
-  if (table < 0) throw new Error('未找到当前表格。');
-  return {
-    table,
-    row: Number(cell.dataset.rowStart ?? 0),
-    col: Number(cell.dataset.gridStart ?? 0),
-    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
-    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
-  };
+  return cell;
 }
 
-function currentTableContext(): ReturnType<typeof selectedCell> | null {
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const cell = active?.closest<HTMLTableCellElement>('td[data-table-cell="true"]');
-  if (!cell) return null;
-  const tableElement = cell.closest('.docx-table');
-  if (!tableElement || tableElement.parentElement?.closest('.docx-table')) return null;
-  const table = Array.from(host.querySelectorAll('.docx-editor > .docx-table')).indexOf(tableElement);
-  if (table < 0) return null;
-  return {
-    table,
-    row: Number(cell.dataset.rowStart ?? 0),
-    col: Number(cell.dataset.gridStart ?? 0),
-    rowSpan: Math.max(1, Number(cell.getAttribute('rowspan') ?? 1)),
-    colSpan: Math.max(1, Number(cell.getAttribute('colspan') ?? 1)),
-  };
+function currentTableContext(): TableCellLocation | null {
+  return editor.selectedTableCell;
 }
 
 function currentSelectionElement(): HTMLElement | null {
@@ -1080,6 +1078,10 @@ host.addEventListener('docx-rangechange', (event) => {
   updateSelection();
 });
 host.addEventListener('docx-imageselectionchange', updateImageSelection);
+host.addEventListener('docx-tablecellchange', (event) => {
+  const detail = (event as CustomEvent<{ cell: TableCellLocation } | null>).detail;
+  updateTableSelection(detail?.cell ?? null);
+});
 host.addEventListener('docx-commentclick', (event) => {
   const ids = (event as CustomEvent<{ ids: number[] }>).detail?.ids ?? [];
   selectedCommentId = ids[0] ?? null;

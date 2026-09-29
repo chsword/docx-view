@@ -37,6 +37,8 @@
                 <button id="ribbon-tab-layout" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-layout" tabindex="-1">布局</button>
                 <button id="ribbon-tab-review" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-review" tabindex="-1">审阅</button>
                 <button id="ribbon-tab-view" class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-panel-view" tabindex="-1">视图</button>
+                <button id="ribbon-tab-table" class="ribbon-tab" type="button" role="tab" data-contextual-tab contenteditable="false" aria-selected="false" aria-controls="ribbon-panel-table" tabindex="-1" hidden>表格工具</button>
+                <button id="ribbon-tab-image" class="ribbon-tab" type="button" role="tab" data-contextual-tab contenteditable="false" aria-selected="false" aria-controls="ribbon-panel-image" tabindex="-1" hidden>图片工具</button>
               </div>
               <section id="ribbon-panel-home" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-home" tabindex="0">
                 <div class="ribbon-group"><span class="ribbon-group-label">剪贴板</span><div class="ribbon-group-controls"><button class="tool wide" id="format-painter" aria-label="格式刷（双击锁定）" title="格式刷（双击锁定）" aria-pressed="false">🖌 格式刷</button></div></div>
@@ -54,11 +56,9 @@
               <section id="ribbon-panel-insert" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-insert" tabindex="0" hidden>
                 <div class="ribbon-group"><span class="ribbon-group-label">表格</span><div class="ribbon-group-controls">
                   <select id="table-rows" aria-label="表格行数"><option value="2">2 行</option><option value="3">3 行</option><option value="4">4 行</option></select><select id="table-cols" aria-label="表格列数"><option value="2">2 列</option><option value="3">3 列</option><option value="4">4 列</option></select><button id="add-table" class="tool wide">⊞ 插入表格</button>
-                  <button id="insert-row" class="tool wide">＋ 行</button><button id="delete-row" class="tool wide">－ 行</button><button id="insert-col" class="tool wide">＋ 列</button><button id="delete-col" class="tool wide">－ 列</button><button id="merge-cells" class="tool wide">合并 2×2</button><button id="split-cell" class="tool wide">拆分</button>
-                  <label class="color-control" title="单元格底纹"><span class="sr-only">单元格底纹</span><input type="color" id="cell-fill" value="#f3f6fb" /><span>▧</span></label><button id="apply-cell-style" class="tool wide">边框/底纹</button>
                 </div></div>
                 <div class="ribbon-group"><span class="ribbon-group-label">插图</span><div class="ribbon-group-controls">
-                  <button id="insert-image" class="tool wide">🖼 插图</button><button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" />
+                  <button id="insert-image" class="tool wide">🖼 插图</button>
                 </div></div>
                 <div class="ribbon-group"><span class="ribbon-group-label">分页与页眉页脚</span><div class="ribbon-group-controls">
                   <button id="insert-page-break" class="tool wide">分页符</button><label class="sr-only" for="header-kind">页眉类型</label><select id="header-kind"><option value="default">页眉默认</option><option value="first">页眉首页</option><option value="even">页眉偶数</option></select><label class="sr-only" for="footer-kind">页脚类型</label><select id="footer-kind"><option value="default">页脚默认</option><option value="first">页脚首页</option><option value="even">页脚偶数</option></select>
@@ -83,6 +83,18 @@
               </section>
               <section id="ribbon-panel-view" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-view" tabindex="0" hidden>
                 <div class="ribbon-group"><span class="ribbon-group-label">显示</span><div class="ribbon-group-controls"><label><input id="toggle-outline" type="checkbox" checked data-ribbon-toggle="outline-panel" aria-controls="outline-panel" /> 显示大纲</label></div></div>
+              </section>
+              <section id="ribbon-panel-table" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-table" tabindex="0" contenteditable="false" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">表格结构</span><div class="ribbon-group-controls">
+                  <button id="insert-row" class="tool wide">＋ 行</button><button id="delete-row" class="tool wide">－ 行</button><button id="insert-col" class="tool wide">＋ 列</button><button id="delete-col" class="tool wide">－ 列</button><button id="merge-cells" class="tool wide">合并 2×2</button><button id="split-cell" class="tool wide">拆分</button>
+                  <label class="color-control" title="单元格底纹"><span class="sr-only">单元格底纹</span><input type="color" id="cell-fill" value="#f3f6fb" /><span>▧</span></label><button id="apply-cell-style" class="tool wide">边框/底纹</button>
+                  <span id="table-context-hint" role="status" contenteditable="false" hidden>当前演示的结构化表格工具仅支持正文顶层表格，不支持嵌套表格。</span>
+                </div></div>
+              </section>
+              <section id="ribbon-panel-image" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-image" tabindex="0" contenteditable="false" hidden>
+                <div class="ribbon-group"><span class="ribbon-group-label">图片工具</span><div class="ribbon-group-controls">
+                  <button id="replace-image" class="tool wide">⇄ 替换图</button><button id="delete-image" class="tool wide">⌫ 删图</button><label class="sr-only" for="image-alt">图片替代文本</label><input id="image-alt" placeholder="图片 alt 文本" />
+                </div></div>
               </section>
             </div>
             <div class="paper-stage"><div class="paper"><div id="editor"></div></div></div>

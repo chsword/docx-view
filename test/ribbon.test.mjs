@@ -48,12 +48,23 @@ class FakeElement {
   }
 }
 
-function makeRibbon(selectedIndex = 0) {
+function makeRibbon(selectedIndex = 0, includeContexts = false) {
   const tabs = Array.from({ length: 5 }, (_, index) => new FakeElement(`ribbon-tab-${index}`, {
     'aria-controls': `ribbon-panel-${index}`,
     'aria-selected': String(index === selectedIndex),
   }));
-  const panels = tabs.map((tab, index) => new FakeElement(`ribbon-panel-${index}`));
+  if (includeContexts) {
+    for (const id of ['table', 'image']) {
+      const tab = new FakeElement(`ribbon-tab-${id}`, {
+        'aria-controls': `ribbon-panel-${id}`,
+        'aria-selected': 'false',
+      });
+      tab.dataset.contextualTab = '';
+      tab.hidden = true;
+      tabs.push(tab);
+    }
+  }
+  const panels = tabs.map((tab) => new FakeElement(tab.getAttribute('aria-controls')));
   const outline = new FakeElement('outline-panel');
   const toggle = new FakeElement('toggle-outline');
   toggle.dataset.ribbonToggle = 'outline-panel';
@@ -123,6 +134,33 @@ test('Ribbon view toggle only changes its target visibility', () => {
   assert.equal(outline.hidden, false);
 });
 
+test('contextual Ribbon tabs stay hidden until shown and navigation skips hidden tabs', () => {
+  const { root, tabs, panels } = makeRibbon(0, true);
+  const manualActivations = [];
+  const contextActivations = [];
+  const ribbon = initializeRibbon(root, {
+    onManualActivate: (tabId) => manualActivations.push(tabId),
+    onContextActivate: (tabId) => contextActivations.push(tabId),
+  });
+  const tableTab = tabs[5];
+
+  assert.equal(tableTab.hidden, true);
+  ribbon.setTabVisible(tableTab.id, true);
+  ribbon.activate(tableTab.id);
+  assert.equal(tableTab.getAttribute('aria-selected'), 'true');
+  assert.equal(panels[5].hidden, false);
+  tableTab.dispatch('click');
+  assert.deepEqual(contextActivations, ['ribbon-tab-table']);
+
+  tableTab.dispatch('keydown', { key: 'ArrowRight' });
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+  assert.deepEqual(manualActivations, ['ribbon-tab-0']);
+
+  ribbon.setTabVisible(tableTab.id, false);
+  assert.equal(tableTab.hidden, true);
+  assert.equal(panels[5].hidden, true);
+});
+
 test('Ribbon panels contain every migrated control once and keep developer tabs separate', () => {
   const html = readFileSync(new URL('../examples/index.html', import.meta.url), 'utf8');
   const ribbon = html.slice(html.indexOf('id="ribbon"'), html.indexOf('<div class="paper-stage"'));
@@ -137,12 +175,15 @@ test('Ribbon panels contain every migrated control once and keep developer tabs 
     'comment-resolved-filter', 'new-comment', 'reply-comment', 'resolve-comment', 'delete-comment',
   ];
   const tabs = [...ribbon.matchAll(/<button\b[^>]*role="tab"[^>]*>(.*?)<\/button>/g)].map((match) => match[1]);
-  assert.deepEqual(tabs, ['开始', '插入', '布局', '审阅', '视图']);
+  assert.deepEqual(tabs, ['开始', '插入', '布局', '审阅', '视图', '表格工具', '图片工具']);
   assert.doesNotMatch(ribbon, /引用/);
   for (const id of controls) {
     assert.equal((ribbon.match(new RegExp(`id="${id}"`, 'g')) ?? []).length, 1, `${id} occurs once in Ribbon`);
   }
   assert.match(ribbon, /id="add-footnote"[\s\S]*id="add-endnote"/);
+  assert.match(ribbon, /id="ribbon-tab-table"[^>]*contenteditable="false"[^>]*hidden/);
+  assert.match(ribbon, /id="ribbon-tab-image"[^>]*contenteditable="false"[^>]*hidden/);
+  assert.match(ribbon, /id="ribbon-panel-image"[\s\S]*id="image-alt"/);
   assert.match(html, /class="tabs" role="tablist" aria-label="开发者工具"/);
   assert.doesNotMatch(ribbon, /tab-agent|tab-xml|tab-snapshot/);
 });
