@@ -82,7 +82,9 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
     const runIndexes = runElements.map(run => paragraphRuns.indexOf(run)).filter(run => run >= 0).sort((a, b) => a - b);
     const resultIndexes = resultRuns.map(run => paragraphRuns.indexOf(run)).filter(run => run >= 0).sort((a, b) => a - b);
     const result = resultRuns.map(visibleText).join('');
-    for (const run of runElements) roles.set(run, { index, role: resultRuns.includes(run) ? 'result' : 'instruction' });
+    for (const run of runElements) {
+      if (!roles.has(run)) roles.set(run, { index, role: resultRuns.includes(run) ? 'result' : 'instruction' });
+    }
     fields.push({
       index, paragraph: paragraphIndex, runs: [...new Set(runIndexes)], resultRuns: [...new Set(resultIndexes)], form,
       kind: parsed.kind, instruction, ...(parsed.argument !== undefined ? { argument: parsed.argument } : {}),
