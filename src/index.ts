@@ -2,6 +2,7 @@ export { DocxDocument } from './document.js';
 export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
+export type { FieldInfo, FieldKind, FieldSwitch } from './types.js';
 export {
   A_NS, EMU_PER_INCH, IMAGE_REL, PIC_NS, PT_PER_INCH, PX_PER_INCH, V_NS, WP_NS,
   contentTypeForExtension, dataUrlForBytes, decodeBase64, detectImageSize, emuToPt, emuToPx,

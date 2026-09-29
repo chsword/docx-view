@@ -4,7 +4,7 @@ import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
+  FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   TableCellLocation,
 } from './types.js';
@@ -48,6 +48,7 @@ import {
   validateTabs,
 } from './operations.js';
 import { collectSections, readSections, SECTION_ORDER } from './section.js';
+import { fieldKindFromInstruction, NEVER_EVALUATE, parseFields } from './fields.js';
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
@@ -467,12 +468,40 @@ function fieldPlaceholder(root: Element): string | undefined {
     ...children(root, 'fldSimple').map(node => (node.getAttributeNS(WORD_NS, 'instr') ?? '').toUpperCase()),
     ...descendants(root, 'instrText').map(node => (node.textContent ?? '').toUpperCase()),
   ];
-  if (instructions.some(instruction => instruction.includes('NUMPAGES'))) return '?';
-  if (instructions.some(instruction => instruction.includes('PAGE'))) return '1';
+  if (instructions.some(instruction => /^\s*NUMPAGES(?:\s|$)/.test(instruction))) return '?';
+  if (instructions.some(instruction => /^\s*PAGE(?:\s|$)/.test(instruction))) return '1';
   return undefined;
 }
 
+function formatFieldNumber(value: number, format?: string): string {
+  switch ((format ?? 'ARABIC').toUpperCase()) {
+    case 'ROMAN': {
+      const values: [number, string][] = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+      let result = ''; let current = Math.max(1, Math.floor(value));
+      for (const [amount, symbol] of values) while (current >= amount) { result += symbol; current -= amount; }
+      return result;
+    }
+    case 'ALPHABETIC': {
+      let result = ''; let current = Math.max(1, Math.floor(value));
+      while (current > 0) { current--; result = String.fromCharCode(65 + current % 26) + result; current = Math.floor(current / 26); }
+      return result;
+    }
+    default: return String(value);
+  }
+}
+
+function formatFieldDate(date: Date, format?: string): string {
+  if (!format) return date.toLocaleDateString('en-US');
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return format.replace(/yyyy|MMMM|MMM|MM|dd|HH|mm|ss/g, token => ({
+    yyyy: String(date.getFullYear()), MM: pad(date.getMonth() + 1), dd: pad(date.getDate()),
+    HH: pad(date.getHours()), mm: pad(date.getMinutes()), ss: pad(date.getSeconds()),
+    MMM: date.toLocaleString('en-US', { month: 'short' }), MMMM: date.toLocaleString('en-US', { month: 'long' }),
+  }[token] ?? token));
+}
+
 function textOf(element: Element): string {
+  if (descendants(element, 'instrText').length > 0 && textElements(element).length === 0) return '';
   const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
   if (text) return text;
   return fieldPlaceholder(element) ?? '';
@@ -1230,7 +1259,8 @@ interface ImageReadContext {
 
 function readRun(run: Element, index: number, styles: StylesContext, paragraph: Element,
   paragraphIndex: number, imageContext?: ImageReadContext,
-  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): RunInfo {
+  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null,
+  field?: RunInfo['field']): RunInfo {
   const direct = readRunProperties(children(run, 'rPr')[0], styles.theme);
   const revisions = readRunRevisionMarks(run, paragraph, styles.theme);
   const images = imageContext
@@ -1241,6 +1271,7 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
   return {
     index,
     text: textOf(run),
+    ...(field ? { field } : {}),
     ...direct,
     revisions: revisions.length ? revisions.map(({ id, kind, author, date, move }) => ({
       id,
@@ -1259,11 +1290,13 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
 
 function readParagraph(paragraph: Element, index: number, styles: StylesContext, numbering?: NumberingInfo,
   imageContext?: ImageReadContext,
-  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null): ParagraphInfo {
+  noteNumber?: (kind: NoteKind, id: number) => { number: number; marker: string } | null,
+  fieldRoles?: Map<Element, { index: number; role: 'instruction' | 'result' }>): ParagraphInfo {
   const direct = readParagraphProperties(children(paragraph, 'pPr')[0]);
   const paragraphRevision = readParagraphRevisionMark(paragraph, styles.theme);
   const runElements = ownRuns(paragraph);
-  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber));
+  const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber,
+    fieldRoles?.get(run)));
   return {
     index,
     text: textOf(paragraph),
@@ -3846,6 +3879,7 @@ export class DocxDocument {
   ): ParagraphInfo[] {
     const elements = descendants(blockContainerOf(document), 'p');
     const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
+    const parsedFields = sourcePartPath === this.mainPath ? parseFields(elements, ownRuns) : undefined;
     const noteNumber = noteState ? (kind: NoteKind, id: number) => noteState.byKind[kind].get(id) ?? null : undefined;
     const imageContext: ImageReadContext = {
       relationships: this.relationshipsFor(sourcePartPath),
@@ -3853,7 +3887,7 @@ export class DocxDocument {
       sourcePartPath,
     };
     return elements.map((paragraph, index) =>
-      readParagraph(paragraph, index, styles, numberingByParagraph.get(paragraph), imageContext, noteNumber));
+      readParagraph(paragraph, index, styles, numberingByParagraph.get(paragraph), imageContext, noteNumber, parsedFields?.roles));
   }
 
   private pageBreakMarkers(paragraph: Element): { before: number; after: number } {
@@ -3954,6 +3988,11 @@ export class DocxDocument {
   getParagraphs(): ParagraphInfo[] {
     const document = this.getCachedPartDocument(this.mainPath);
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
+  }
+
+  getFields(): FieldInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    return parseFields(descendants(blockContainerOf(document), 'p'), ownRuns).fields;
   }
 
   getContentControls(): ContentControlInfo[] {
@@ -7744,6 +7783,97 @@ export class DocxDocument {
     });
   }
 
+  insertField(paragraphIndex: number, instruction: string, result = ''): void {
+    assertIndex(paragraphIndex);
+    assertText(instruction, 'instruction');
+    assertText(result, 'result');
+    if (instruction.length > 4096) throw new Error('Field instruction exceeds 4096 characters.');
+    const kind = fieldKindFromInstruction(instruction);
+    if (NEVER_EVALUATE.has(kind)) throw new Error(`Field type ${kind} is not allowed.`);
+    this.updatePartXmlInternal(this.mainPath, document => {
+      const paragraph = paragraphAt(document, paragraphIndex);
+      const complex = wordElement(document, 'r');
+      const begin = wordElement(document, 'fldChar');
+      begin.setAttributeNS(WORD_NS, 'w:fldCharType', 'begin');
+      complex.appendChild(begin);
+      const instructionRun = wordElement(document, 'r');
+      const instructionText = wordElement(document, 'instrText');
+      instructionText.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+      instructionText.appendChild(document.createTextNode(instruction));
+      instructionRun.appendChild(instructionText);
+      const separate = wordElement(document, 'r');
+      const separateChar = wordElement(document, 'fldChar');
+      separateChar.setAttributeNS(WORD_NS, 'w:fldCharType', 'separate');
+      separate.appendChild(separateChar);
+      const resultRun = wordElement(document, 'r');
+      appendText(resultRun, result);
+      const end = wordElement(document, 'r');
+      const endChar = wordElement(document, 'fldChar');
+      endChar.setAttributeNS(WORD_NS, 'w:fldCharType', 'end');
+      end.appendChild(endChar);
+      for (const run of [complex, instructionRun, separate, resultRun, end]) paragraph.appendChild(run);
+    });
+  }
+
+  updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string } = {}): boolean {
+    if (options.now !== undefined && !(options.now instanceof Date) || options.now && !Number.isFinite(options.now.getTime())) {
+      throw new Error('options.now must be a valid Date.');
+    }
+    if (options.kinds !== undefined && (!Array.isArray(options.kinds) || options.kinds.some(kind => typeof kind !== 'string'))) {
+      throw new Error('options.kinds must be an array of field kinds.');
+    }
+    const allowed = options.kinds ? new Set(options.kinds) : undefined;
+    let updated = false;
+    const sequence = new Map<string, number>();
+    this.updatePartXmlInternal(this.mainPath, document => {
+      const paragraphs = descendants(blockContainerOf(document), 'p');
+      const parsed = parseFields(paragraphs, ownRuns);
+      for (const field of parsed.fields) {
+        if (!field.evaluable || field.locked || (allowed && !allowed.has(field.kind))) continue;
+        let value: string | undefined;
+        const switches = new Map(field.switches.map(entry => [entry.name.toLowerCase(), entry.value]));
+        if (field.kind === 'SEQ') {
+          const name = field.argument ?? '';
+          let current = sequence.get(name) ?? 0;
+          if (switches.has('r')) current = Number(switches.get('r')) || 0;
+          else if (switches.has('c')) current = current || 1;
+          else current++;
+          sequence.set(name, current);
+          value = formatFieldNumber(current, switches.get('*'));
+        } else if (field.kind === 'DATE' || field.kind === 'TIME') {
+          if (!options.now) continue;
+          value = formatFieldDate(options.now, switches.get('@'));
+        } else if (field.kind === 'FILENAME') {
+          value = options.filename;
+        } else if (field.kind === 'REF') {
+          const bookmark = this.getBookmarks({ includeInternal: true }).find(entry => entry.name === field.argument);
+          if (bookmark) value = this.getParagraphs().slice(bookmark.startParagraph, bookmark.endParagraph + 1).map(entry => entry.text).join('\n');
+        } else {
+          const properties = this.getDocumentProperties() as Record<string, unknown>;
+          const key = field.kind === 'DOCPROPERTY' ? field.argument : ({
+            AUTHOR: 'creator', TITLE: 'title', SUBJECT: 'subject', KEYWORDS: 'keywords', COMMENTS: 'description',
+            LASTSAVEDBY: 'lastModifiedBy', CREATEDATE: 'created', SAVEDATE: 'modified', PRINTDATE: 'modified',
+          } as Record<string, string>)[field.kind];
+          if (key && properties[key] !== undefined) value = String(properties[key]);
+        }
+        if (value === undefined || value === field.result) continue;
+        const paragraph = paragraphs[field.paragraph];
+        if (!paragraph) continue;
+        const runs = ownRuns(paragraph);
+        for (const runIndex of field.resultRuns) {
+          const run = runs[runIndex];
+          if (!run) continue;
+          for (const child of [...children(run)]) if (child.localName !== 'rPr') run.removeChild(child);
+        }
+        const first = runs[field.resultRuns[0] ?? -1];
+        if (first) appendText(first, value);
+        updated = true;
+      }
+      return updated;
+    });
+    return updated;
+  }
+
   private enableEvenAndOddHeaders(): void {
     const relationships = this.relationshipTargets(this.mainPath);
     let settingsPath = [...relationships.values()].find(relationship => relationship.type === SETTINGS_REL)?.target;
@@ -9312,6 +9442,12 @@ export class DocxDocument {
         case 'updateHyperlink': draft.updateHyperlink(operation.hyperlink, operation.link); break;
         case 'removeHyperlink': draft.removeHyperlink(operation.hyperlink, operation.options); break;
         case 'insertBookmark': draft.insertBookmark(operation.name, operation.range); break;
+        case 'updateFields': draft.updateFields({
+          kinds: operation.kinds,
+          now: operation.now ? new Date(operation.now) : undefined,
+          filename: operation.filename,
+        }); break;
+        case 'insertField': draft.insertField(operation.paragraph, operation.instruction, operation.result); break;
         case 'deleteBookmark': draft.deleteBookmark(operation.name); break;
         case 'setContentControlText': draft.setContentControlText(operation.id, operation.text); break;
         case 'setContentControlChecked': draft.setContentControlChecked(operation.id, operation.checked); break;

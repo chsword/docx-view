@@ -1674,6 +1674,34 @@ test('insertPageNumberField writes NUMPAGES placeholder and renders text', () =>
   assert.ok(texts.includes('?'));
 });
 
+test('getFields parses complex fields and excludes instructions from run text', () => {
+  const doc = withBody(`<w:p><w:r><w:t>前 </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF 锚点A \\h</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t> 后</w:t></w:r></w:p>`);
+  const field = doc.getFields()[0];
+  assert.equal(field.kind, 'PAGEREF');
+  assert.equal(field.result, '7');
+  assert.deepEqual(doc.getParagraphs()[0].runs.map(run => run.text).join(''), doc.getParagraphs()[0].text);
+  assert.equal(doc.getParagraphs()[0].runs[2].text, '');
+});
+
+test('updateFields updates SEQ and DATE but preserves pagination and unsafe fields', () => {
+  const doc = withBody(
+    `<w:p><w:fldSimple w:instr=" SEQ 图 \\* ARABIC "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" DATE \\@ &quot;yyyy-MM-dd&quot; "><w:r><w:t>old</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p>` +
+    `<w:p><w:fldSimple w:instr=" INCLUDETEXT x "><w:r><w:t>cached</w:t></w:r></w:fldSimple></w:p>`,
+  );
+  assert.equal(doc.updateFields({ now: new Date(2026, 0, 2) }), true);
+  assert.deepEqual(doc.getFields().map(field => field.result), ['1', '2026-01-02', '3', 'cached']);
+  assert.equal(doc.updateFields(), false);
+});
+
+test('insertField writes a complex field and rejects external-resource fields', () => {
+  const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  doc.insertField(0, ' SEQ 图 ', '1');
+  assert.equal(doc.getFields()[0].form, 'complex');
+  assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
+});
+
 test('setParagraphText preserves fldSimple and keeps runs valid', () => {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath,
