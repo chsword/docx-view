@@ -1101,7 +1101,7 @@ test('merged setParagraphText edits skip repeated history snapshot materializati
   assert.equal(doc.getParagraphs()[0].text, '');
 });
 
-test('separate setParagraphText edits defer history snapshot materialization', () => {
+test('separate setParagraphText edits defer history snapshot materialization', async () => {
   const doc = DocxDocument.create();
   doc.insertParagraph('second');
   const original = doc.materializeAllParts;
@@ -1112,7 +1112,7 @@ test('separate setParagraphText edits defer history snapshot materialization', (
   };
   doc.setParagraphText(1, 'updated');
   assert.equal(calls, 0);
-  doc.getPartBytes(doc.mainDocumentPath);
+  await doc.toUint8Array();
   assert.equal(calls, 1);
 });
 

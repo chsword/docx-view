@@ -3274,6 +3274,10 @@ export class DocxDocument {
     }
     this.pushUndoState({
       parts: before.parts,
+      documents: before.documents,
+      dirtyPartXml: before.dirtyPartXml,
+      dirtyPartSizes: before.dirtyPartSizes,
+      mainPath: before.mainPath,
       bytes: before.bytes,
       entry: { revision: this.revision, label: before.entry.label, at: Date.now() },
       action: before.action,
