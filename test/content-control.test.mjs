@@ -187,7 +187,11 @@ test('Agent operations support all content control mutations atomically', () => 
   assert.equal(result.paragraphs[0].text, 'updated');
   assert.equal(result.revision, doc.revision);
   assert.equal(doc.getContentControls()[0].alias, 'Title');
-  assert.equal(AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf.length, 66);
+  const operationTypes = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .map((entry) => entry.properties.type.const);
+  for (const type of ['setContentControlText', 'setContentControlChecked', 'setContentControlProperties', 'removeContentControl']) {
+    assert.ok(operationTypes.includes(type));
+  }
   const revision = doc.revision;
   assert.throws(() => doc.applyOperations({ operations: [
     { type: 'setContentControlText', id: 42, text: 'partial' },

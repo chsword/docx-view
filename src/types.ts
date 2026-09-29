@@ -349,6 +349,26 @@ export interface BookmarkInfo {
   isInternal: boolean;
 }
 
+export type EditableRegionEditorGroup =
+  | 'none'
+  | 'everyone'
+  | 'administrators'
+  | 'contributors'
+  | 'editors'
+  | 'owners'
+  | 'current';
+
+export interface EditableRegionInfo {
+  id: number;
+  editorGroup?: EditableRegionEditorGroup;
+  editorId?: string;
+  rawEditorGroup?: string;
+  start: { paragraph: number; offset: number };
+  end: { paragraph: number; offset: number };
+  unpaired?: 'startOnly' | 'endOnly';
+  text: string;
+}
+
 export interface DocumentSnapshot {
   revision: number;
   paragraphs: ParagraphInfo[];
@@ -569,6 +589,8 @@ export type AgentOperation =
   | { type: 'setContentControlChecked'; id: number; checked: boolean }
   | { type: 'setContentControlProperties'; id: number; patch: { alias?: string | null; tag?: string | null; lock?: ContentControlInfo['lock'] } }
   | { type: 'removeContentControl'; id: number; options?: { keepContent?: boolean } }
+  | { type: 'addEditableRegion'; range: DocumentRange; options: { editorGroup?: EditableRegionEditorGroup; editorId?: string } }
+  | { type: 'removeEditableRegion'; id: number }
   | { type: 'insertImage'; bytes: string; contentType: string; paragraph?: number; run?: number; widthEmu?: number; heightEmu?: number; alt?: string; placement?: 'inline' | 'floating' }
   | { type: 'replaceImageBytes'; image: string; bytes: string; contentType?: string }
   | { type: 'resizeImage'; image: string; size: { widthEmu?: number; heightEmu?: number; keepAspect?: boolean } }

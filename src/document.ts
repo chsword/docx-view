@@ -3,7 +3,7 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
-  DocumentProperties, DocumentProtection, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
+  DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   TableCellLocation,
@@ -340,8 +340,24 @@ function paragraphContainer(paragraph: Element): Element {
 }
 
 function clearParagraphContent(paragraph: Element): void {
+  const retainAnchors = (parent: Element): boolean => {
+    if (parent !== paragraph && parent.namespaceURI === WORD_NS && parent.localName === 'p') return false;
+    let retained = false;
+    for (const child of [...children(parent)]) {
+      if (isParagraphAnchorMarker(child)) {
+        retained = true;
+      } else if (child.localName !== 'pPr' && retainAnchors(child)) {
+        retained = true;
+      } else if (child.localName !== 'pPr') {
+        parent.removeChild(child);
+      }
+    }
+    return retained;
+  };
   for (const child of [...children(paragraph)]) {
-    if (child.localName !== 'pPr') paragraph.removeChild(child);
+    if (child.localName !== 'pPr' && !isParagraphAnchorMarker(child) && !retainAnchors(child)) {
+      paragraph.removeChild(child);
+    }
   }
 }
 
@@ -823,6 +839,29 @@ function ownRuns(paragraph: Element): Element[] {
     }
     return true;
   });
+}
+
+function textOffsetsInParagraph(paragraph: Element): Map<Element, number> {
+  let offset = 0;
+  const offsets = new Map<Element, number>();
+  const visit = (parent: Node): void => {
+    for (let child = parent.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      if (element.namespaceURI === WORD_NS && ['permStart', 'permEnd'].includes(element.localName ?? '')) {
+        offsets.set(element, offset);
+        continue;
+      }
+      if (element.namespaceURI === WORD_NS && ['pPr', 'p'].includes(element.localName ?? '')) continue;
+      if (element.namespaceURI === WORD_NS && element.localName === 'r') {
+        offset += textOf(element).length;
+        continue;
+      }
+      visit(element);
+    }
+  };
+  visit(paragraph);
+  return offsets;
 }
 
 function relationshipIdOf(hyperlink: Element): string | undefined {
@@ -5383,6 +5422,247 @@ export class DocxDocument {
       .filter(bookmark => options.includeInternal || !bookmark.isInternal);
   }
 
+  getEditableRegions(): EditableRegionInfo[] {
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    const paragraphs = descendants(body, 'p');
+    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
+    const paragraphInfo = this.getParagraphs();
+    const order = preOrderElements(body);
+    const inlinePositions = new Map<Element, { paragraph: number; offset: number }>();
+    paragraphs.forEach((paragraph, index) => {
+      for (const [marker, offset] of textOffsetsInParagraph(paragraph)) {
+        inlinePositions.set(marker, { paragraph: index, offset });
+      }
+    });
+    const editorGroups = new Set<EditableRegionEditorGroup>([
+      'none', 'everyone', 'administrators', 'contributors', 'editors', 'owners', 'current',
+    ]);
+    const attribute = (element: Element, name: string): string | undefined =>
+      element.hasAttributeNS(WORD_NS, name) ? element.getAttributeNS(WORD_NS, name) ?? undefined :
+        element.hasAttribute(`w:${name}`) ? element.getAttribute(`w:${name}`) ?? undefined : undefined;
+    const position = (marker: Element): { paragraph: number; offset: number } | undefined => {
+      const inlinePosition = inlinePositions.get(marker);
+      if (inlinePosition) return inlinePosition;
+      const containingParagraph = nearestParagraph(marker);
+      const containingIndex = containingParagraph ? paragraphIndex.get(containingParagraph) : undefined;
+      if (containingParagraph && containingIndex !== undefined) {
+        return { paragraph: containingIndex, offset: 0 };
+      }
+      const markerOrder = order.indexOf(marker);
+      if (markerOrder < 0) return undefined;
+      for (let index = markerOrder + 1; index < order.length; index++) {
+        const next = order[index]!;
+        if (next.namespaceURI === WORD_NS && next.localName === 'p') {
+          const paragraph = paragraphIndex.get(next);
+          if (paragraph !== undefined) return { paragraph, offset: 0 };
+        }
+      }
+      for (let index = markerOrder - 1; index >= 0; index--) {
+        const previous = order[index]!;
+        if (previous.namespaceURI === WORD_NS && previous.localName === 'p') {
+          const paragraph = paragraphIndex.get(previous);
+          if (paragraph !== undefined) return { paragraph, offset: paragraphInfo[paragraph]?.text.length ?? 0 };
+        }
+      }
+      return undefined;
+    };
+    const textBetween = (
+      start: { paragraph: number; offset: number },
+      end: { paragraph: number; offset: number },
+    ): string => {
+      if (start.paragraph > end.paragraph ||
+          (start.paragraph === end.paragraph && start.offset > end.offset)) return '';
+      const pieces: string[] = [];
+      for (let index = start.paragraph; index <= end.paragraph; index++) {
+        const text = paragraphInfo[index]?.text;
+        if (text === undefined) return '';
+        const from = index === start.paragraph ? start.offset : 0;
+        const to = index === end.paragraph ? end.offset : text.length;
+        pieces.push(text.slice(from, to));
+      }
+      return pieces.join('\n');
+    };
+    const authorization = (marker: Element): Pick<EditableRegionInfo, 'editorGroup' | 'editorId' | 'rawEditorGroup'> => {
+      const rawEditorGroup = attribute(marker, 'edGrp');
+      const editorId = attribute(marker, 'ed');
+      const editorGroup = editorGroups.has(rawEditorGroup as EditableRegionEditorGroup)
+        ? rawEditorGroup as EditableRegionEditorGroup
+        : undefined;
+      return {
+        ...(editorGroup !== undefined ? { editorGroup } : {}),
+        ...(editorId !== undefined ? { editorId } : {}),
+        ...(rawEditorGroup !== undefined && editorGroup === undefined ? { rawEditorGroup } : {}),
+      };
+    };
+    const events = order.flatMap((marker, index) => {
+      if (marker.namespaceURI !== WORD_NS || !['permStart', 'permEnd'].includes(marker.localName ?? '')) return [];
+      const rawId = attribute(marker, 'id');
+      if (!rawId || !/^\d+$/.test(rawId)) return [];
+      const id = Number(rawId);
+      const markerPosition = position(marker);
+      if (!Number.isSafeInteger(id) || markerPosition === undefined) return [];
+      return [{ marker, id, kind: marker.localName as 'permStart' | 'permEnd', position: markerPosition, order: index }];
+    });
+    const unmatchedStarts = new Map<number, typeof events>();
+    const regions: { order: number; region: EditableRegionInfo }[] = [];
+    for (const event of events) {
+      if (event.kind === 'permStart') {
+        const starts = unmatchedStarts.get(event.id) ?? [];
+        starts.push(event);
+        unmatchedStarts.set(event.id, starts);
+        continue;
+      }
+      const start = unmatchedStarts.get(event.id)?.shift();
+      if (!start) {
+        regions.push({
+          order: event.order,
+          region: {
+            id: event.id,
+            ...authorization(event.marker),
+            start: event.position,
+            end: event.position,
+            unpaired: 'endOnly',
+            text: '',
+          },
+        });
+        continue;
+      }
+      regions.push({
+        order: start.order,
+        region: {
+          id: event.id,
+          ...authorization(start.marker),
+          start: start.position,
+          end: event.position,
+          text: textBetween(start.position, event.position),
+        },
+      });
+    }
+    for (const [id, starts] of unmatchedStarts) {
+      for (const start of starts) {
+        regions.push({
+          order: start.order,
+          region: {
+            id,
+            ...authorization(start.marker),
+            start: start.position,
+            end: start.position,
+            unpaired: 'startOnly',
+            text: '',
+          },
+        });
+      }
+    }
+    return regions.sort((a, b) => a.order - b.order).map(({ region }) => region);
+  }
+
+  addEditableRegion(
+    range: DocumentRange,
+    options: { editorGroup?: EditableRegionEditorGroup; editorId?: string },
+  ): number {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      throw new Error('options must specify exactly one of editorGroup or editorId.');
+    }
+    const { editorGroup, editorId } = options;
+    const validGroups: EditableRegionEditorGroup[] = [
+      'none', 'everyone', 'administrators', 'contributors', 'editors', 'owners', 'current',
+    ];
+    if (editorGroup !== undefined && !validGroups.includes(editorGroup)) {
+      throw new Error('editorGroup must be a supported editor group.');
+    }
+    if (editorId !== undefined) assertText(editorId, 'editorId');
+    if ((editorGroup !== undefined) === (editorId !== undefined)) {
+      throw new Error('Specify exactly one of editorGroup or editorId.');
+    }
+    return this.withDraft(draft => draft.addEditableRegionDirect(range, { editorGroup, editorId }));
+  }
+
+  private addEditableRegionDirect(
+    range: DocumentRange,
+    options: { editorGroup?: EditableRegionEditorGroup; editorId?: string },
+  ): number {
+    const document = this.getPartDocument(this.mainPath);
+    const normalized = this.normalizeDocumentRange(document, range);
+    const body = bodyOf(document);
+    const usedIds = new Set<number>();
+    let maximumId = -1;
+    for (const marker of [...descendants(body, 'permStart'), ...descendants(body, 'permEnd')]) {
+      const rawId = marker.getAttributeNS(WORD_NS, 'id') ?? marker.getAttribute('w:id');
+      if (!rawId || !/^\d+$/.test(rawId)) continue;
+      const id = Number(rawId);
+      if (!Number.isSafeInteger(id)) continue;
+      usedIds.add(id);
+      maximumId = Math.max(maximumId, id);
+    }
+    let id = maximumId < Number.MAX_SAFE_INTEGER ? maximumId + 1 : 0;
+    while (usedIds.has(id)) id++;
+    if (!Number.isSafeInteger(id)) throw new Error('No available editable-region id.');
+    this.updatePartXml(this.mainPath, current => {
+      const startParagraph = paragraphAt(current, normalized.start.paragraph);
+      const endParagraph = paragraphAt(current, normalized.end.paragraph);
+      this.splitRunAtOffset(endParagraph, normalized.end.offset);
+      this.splitRunAtOffset(startParagraph, normalized.start.offset);
+      const endMarker = wordElement(current, 'permEnd');
+      endMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
+      const startMarker = wordElement(current, 'permStart');
+      startMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
+      if (options.editorGroup !== undefined) startMarker.setAttributeNS(WORD_NS, 'w:edGrp', options.editorGroup);
+      else startMarker.setAttributeNS(WORD_NS, 'w:ed', options.editorId!);
+      const collapsed = normalized.start.paragraph === normalized.end.paragraph &&
+        normalized.start.offset === normalized.end.offset;
+      if (collapsed) {
+        this.insertEditableRegionMarker(startParagraph, normalized.start.offset, startMarker);
+        const parent = startMarker.parentNode;
+        if (!parent) throw new Error('Editable-region start marker parent is missing.');
+        parent.insertBefore(endMarker, startMarker.nextSibling);
+      } else {
+        this.insertEditableRegionMarker(endParagraph, normalized.end.offset, endMarker);
+        this.insertEditableRegionMarker(startParagraph, normalized.start.offset, startMarker);
+      }
+    });
+    return id;
+  }
+
+  removeEditableRegion(id: number): void {
+    assertIndex(id);
+    this.withDraft(draft => draft.removeEditableRegionDirect(id));
+  }
+
+  private removeEditableRegionDirect(id: number): void {
+    const body = bodyOf(this.getPartDocument(this.mainPath));
+    const markerId = (marker: Element): number | undefined => {
+      const rawId = marker.getAttributeNS(WORD_NS, 'id') ?? marker.getAttribute('w:id');
+      if (!rawId || !/^\d+$/.test(rawId)) return undefined;
+      const value = Number(rawId);
+      return Number.isSafeInteger(value) ? value : undefined;
+    };
+    const matching = [...descendants(body, 'permStart'), ...descendants(body, 'permEnd')]
+      .filter(marker => markerId(marker) === id);
+    if (!matching.length) return;
+    this.updatePartXml(this.mainPath, document => {
+      const currentBody = bodyOf(document);
+      for (const marker of [...descendants(currentBody, 'permStart'), ...descendants(currentBody, 'permEnd')]) {
+        if (markerId(marker) === id) marker.parentNode?.removeChild(marker);
+      }
+    });
+  }
+
+  private insertEditableRegionMarker(paragraph: Element, offset: number, marker: Element): void {
+    const boundary = this.boundaryRun(paragraph, offset);
+    if (boundary?.parentNode) {
+      boundary.parentNode.insertBefore(marker, boundary);
+      return;
+    }
+    const runs = ownRuns(paragraph);
+    const lastRun = runs[runs.length - 1];
+    if (lastRun?.parentNode) {
+      lastRun.parentNode.insertBefore(marker, lastRun.nextSibling);
+      return;
+    }
+    const paragraphProperties = children(paragraph, 'pPr')[0];
+    paragraph.insertBefore(marker, paragraphProperties?.nextSibling ?? paragraph.firstChild);
+  }
+
   private hyperlinkNode(hyperlink: HyperlinkInfo, document: Document): Element {
     const paragraph = paragraphAt(document, hyperlink.paragraph);
     const run = ownRuns(paragraph)[hyperlink.runs[0]!] ?? null;
@@ -8856,6 +9136,8 @@ export class DocxDocument {
         case 'setContentControlChecked': draft.setContentControlChecked(operation.id, operation.checked); break;
         case 'setContentControlProperties': draft.setContentControlProperties(operation.id, operation.patch); break;
         case 'removeContentControl': draft.removeContentControl(operation.id, operation.options); break;
+        case 'addEditableRegion': draft.addEditableRegion(operation.range, operation.options); break;
+        case 'removeEditableRegion': draft.removeEditableRegion(operation.id); break;
         case 'insertImage': draft.insertImage({
           bytes: decodeBase64(operation.bytes),
           contentType: operation.contentType,
