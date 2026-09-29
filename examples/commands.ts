@@ -5,15 +5,8 @@ import type {
   ParagraphInfo,
   RevisionMark,
   RunFormat,
+  TableCellLocation,
 } from '../src/index.js';
-
-export interface TableCellLocation {
-  table: number;
-  row: number;
-  col: number;
-  rowSpan: number;
-  colSpan: number;
-}
 
 export interface CommandContext {
   revisionView: 'markup' | 'final' | 'original';
@@ -113,6 +106,7 @@ function firstCommentId(ctx: CommandContext): number {
 
 export function createExampleCommandDescriptors(deps: ExampleCommandDeps): CommandDescriptor[] {
   const paragraph = (ctx: CommandContext) => deps.getParagraphInfo(ctx.selection.paragraph);
+  const tableIsAddressable = (ctx: CommandContext) => ctx.table !== null && !ctx.table.nested;
   return [
     {
       id: 'format.bold',
@@ -230,49 +224,49 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       id: 'table.insertRow',
       title: '插入行',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.insertTableRow(),
     },
     {
       id: 'table.deleteRow',
       title: '删除行',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.deleteTableRow(),
     },
     {
       id: 'table.insertColumn',
       title: '插入列',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.insertTableColumn(),
     },
     {
       id: 'table.deleteColumn',
       title: '删除列',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.deleteTableColumn(),
     },
     {
       id: 'table.mergeCells',
       title: '合并单元格',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.mergeCells(),
     },
     {
       id: 'table.splitCell',
       title: '拆分单元格',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.splitCell(),
     },
     {
       id: 'table.applyCellStyle',
       title: '单元格边框与底纹',
       group: 'table',
-      enabled: (ctx) => ctx.table !== null,
+      enabled: tableIsAddressable,
       run: () => deps.actions.applyCellStyle(deps.getCellFillValue()),
     },
     {
