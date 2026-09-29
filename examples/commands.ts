@@ -6,6 +6,7 @@ import type {
   ParagraphInfo,
   RevisionMark,
   RunFormat,
+  ShapeInfo,
   TableCellLocation,
 } from '../src/index.js';
 
@@ -20,6 +21,7 @@ export interface CommandContext {
   };
   table: TableCellLocation | null;
   image: ImageInfo | null;
+  shape: ShapeInfo | null;
   hyperlink: HyperlinkInfo | null;
   revisionsAtPoint: RevisionMark[];
   commentsAtPoint: number[];
@@ -33,6 +35,7 @@ export interface CommandContextBuilderDependencies {
   getSelection(target: HTMLElement | null): CommandContext['selection'];
   getTable(target: HTMLElement | null, paragraph: number | null): TableCellLocation | null;
   getImage(target: HTMLElement | null): ImageInfo | null;
+  getShape(target: HTMLElement | null): ShapeInfo | null;
   getHyperlink(target: HTMLElement | null): HyperlinkInfo | null;
   getRevisionsAtPoint(target: HTMLElement | null): RevisionMark[];
   getCommentsAtPoint(target: HTMLElement | null): number[];
@@ -53,6 +56,7 @@ export function createCommandContextBuilder(deps: CommandContextBuilderDependenc
       selection,
       table: deps.getTable(target, selection.paragraph),
       image: deps.getImage(target),
+      shape: deps.getShape(target),
       hyperlink: deps.getHyperlink(target),
       revisionsAtPoint: deps.getRevisionsAtPoint(target),
       commentsAtPoint: deps.getCommentsAtPoint(target),
@@ -181,6 +185,20 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       group: 'clipboard',
       enabled: (ctx) => ctx.editable && ctx.clipboard !== 'empty',
       run: () => deps.actions.clipboard('paste'),
+    },
+    {
+      id: 'shape.copyText',
+      title: '复制替换文本',
+      group: 'shape',
+      enabled: (ctx) => ctx.shape !== null,
+      run: () => undefined,
+    },
+    {
+      id: 'shape.viewProperties',
+      title: '查看属性',
+      group: 'shape',
+      enabled: (ctx) => ctx.shape !== null,
+      run: () => undefined,
     },
     {
       id: 'format.bold',

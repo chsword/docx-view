@@ -5,7 +5,7 @@ import type {
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
-  SectionType, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   TableCellLocation,
 } from './types.js';
 import {
@@ -35,6 +35,7 @@ import {
   isValidXmlCharCode, OFFICE_DOCUMENT_REL, parseXml, REL_NS, sanitizeText, serializeXml, setWordValue, validatePath,
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
+import { readRunShapes, shapeTextElements } from './shapes.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -301,9 +302,20 @@ function relsPath(partPath: string): string {
 
 function paragraphAt(document: Document, index: number): Element {
   assertIndex(index);
-  const paragraph = descendants(bodyOf(document), 'p')[index];
+  const paragraph = mainParagraphElements(bodyOf(document))[index];
   if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
   return paragraph;
+}
+
+function mainParagraphElements(body: Element): Element[] {
+  return descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
 }
 
 function blockContainerOf(document: Document): Element {
@@ -1203,7 +1215,7 @@ function sectionSettings(body: Element, base: NoteSettings): Map<number, NoteSet
 
 function referenceRecords(body: Element): NoteReferenceRecord[] {
   const sectionMap = sectionOfParagraphs(body);
-  const paragraphs = descendants(body, 'p');
+  const paragraphs = mainParagraphElements(body);
   const records: NoteReferenceRecord[] = [];
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     for (const [runIndex, run] of ownRuns(paragraph).entries()) {
@@ -3844,7 +3856,8 @@ export class DocxDocument {
     sourcePartPath = this.mainPath,
     noteState?: NoteState,
   ): ParagraphInfo[] {
-    const elements = descendants(blockContainerOf(document), 'p');
+    const container = blockContainerOf(document);
+    const elements = container.localName === 'body' ? mainParagraphElements(container) : descendants(container, 'p');
     const numberingByParagraph = computeParagraphNumbering(elements, numbering.model);
     const noteNumber = noteState ? (kind: NoteKind, id: number) => noteState.byKind[kind].get(id) ?? null : undefined;
     const imageContext: ImageReadContext = {
@@ -3896,7 +3909,7 @@ export class DocxDocument {
 
   private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
     const body = blockContainerOf(document);
-    const paragraphElements = descendants(body, 'p');
+    const paragraphElements = mainParagraphElements(body);
     const paragraphByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, paragraphs[index]!]));
     const paragraphIndexByElement = new Map(paragraphElements.map((paragraph, index) => [paragraph, index]));
     const sectionByParagraph = this.sectionBreakByParagraph(document);
@@ -3956,9 +3969,48 @@ export class DocxDocument {
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
   }
 
+  getShapes(): ShapeInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const shapes: ShapeInfo[] = [];
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath));
+      }
+    }
+    return shapes;
+  }
+
+  getShapeParagraphs(shapeId: string): ParagraphInfo[] {
+    const document = this.getCachedPartDocument(this.mainPath);
+    const body = bodyOf(document);
+    const paragraphs = mainParagraphElements(body);
+    const styles = this.getStylesContext();
+    const imageContext: ImageReadContext = {
+      relationships: this.relationshipsFor(this.mainPath),
+      getContentType: this.createContentTypeResolver(),
+      sourcePartPath: this.mainPath,
+    };
+    for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+      for (const [runIndex, run] of ownRuns(paragraph).entries()) {
+        const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
+        for (const child of children) {
+          if (!['drawing', 'pict'].includes(child.localName ?? '')) continue;
+          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath);
+          const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
+          if (shapeIndex < 0) continue;
+          const elements = shapeTextElements(child);
+          return elements.map((element, index) => readParagraph(element, index, styles, undefined, imageContext));
+        }
+      }
+    }
+    return [];
+  }
+
   getContentControls(): ContentControlInfo[] {
     const body = bodyOf(this.getCachedPartDocument(this.mainPath));
-    const paragraphs = descendants(body, 'p');
+    const paragraphs = mainParagraphElements(body);
     const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     return descendants(body, 'sdt').map((control) => {
       const properties = children(control, 'sdtPr')[0];
