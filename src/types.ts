@@ -551,6 +551,8 @@ export type AgentOperation =
   | { type: 'setParagraphNumbering'; index: number; numId: number; level?: number }
   | { type: 'clearParagraphNumbering'; index: number }
   | { type: 'setParagraphLevel'; index: number; delta: number }
+  | { type: 'restartNumbering'; index: number; options?: { start?: number } }
+  | { type: 'continueNumbering'; index: number }
   | { type: 'formatRun'; paragraph: number; run: number; format: RunFormat }
   | { type: 'formatRange'; range: TextRange; format: RunFormat }
   | { type: 'applyCharacterStyle'; range: TextRange; styleId: string; options?: { clearDirectFormat?: boolean } }

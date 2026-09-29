@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { findReusableNumberingId } from '../dist/numbering.js';
-import { REL_NS, WORD_NS } from '../dist/xml.js';
+import { parseXml, REL_NS, WORD_NS } from '../dist/xml.js';
 import { AGENT_OPERATION_SCHEMA } from '../dist/operations.js';
 
 const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
@@ -19,6 +19,18 @@ function attachNumbering(doc, numberingXml, stylesXml) {
   doc.addPart('word/numbering.xml', encoder.encode(numberingXml), NUMBERING_TYPE);
   doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`), RELS_TYPE);
   if (stylesXml) doc.addPart('word/styles.xml', encoder.encode(stylesXml), 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml');
+}
+
+function numberedDocument(levels, numberingXml = `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`) {
+  const paragraphs = levels.map((level, index) =>
+    `<w:p><w:pPr><w:numPr><w:ilvl w:val="${level}"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${index}</w:t></w:r></w:p>`);
+  const doc = withBody(paragraphs.join(''));
+  attachNumbering(doc, numberingXml);
+  return doc;
+}
+
+function elementNames(element) {
+  return [...element.childNodes].filter((node) => node.nodeType === 1).map((node) => node.localName);
 }
 
 test('paragraphs with numPr but no numbering.xml degrade without throwing', () => {
@@ -69,6 +81,153 @@ test('startOverride changes the initial value for an instance level', () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p>');
   attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="4"/></w:lvlOverride></w:num></w:numbering>`);
   assert.deepEqual(doc.getParagraphs().map(paragraph => paragraph.numbering?.text), ['4.', '5.']);
+});
+
+test('restartNumbering restarts this and following same-list items without changing earlier references', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  const oldRevision = doc.revision;
+  const newNumId = doc.restartNumbering(1);
+  const paragraphs = doc.getParagraphs();
+  assert.deepEqual(paragraphs.map((paragraph) => paragraph.numbering?.text), ['1.', '1.', '2.']);
+  assert.deepEqual(paragraphs.map((paragraph) => paragraph.numbering?.numId), [1, newNumId, newNumId]);
+  assert.equal(doc.revision, oldRevision + 1);
+});
+
+test('restartNumbering honors a positive custom start', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  doc.restartNumbering(1, { start: 5 });
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '5.', '6.']);
+});
+
+test('restartNumbering of a nested item leaves parent numbering unchanged', () => {
+  const doc = numberedDocument([0, 1, 1, 0], `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  const before = doc.getParagraphs().map((paragraph) => paragraph.numbering?.text);
+  doc.restartNumbering(2);
+  const paragraphs = doc.getParagraphs();
+  assert.deepEqual(paragraphs.map((paragraph) => paragraph.numbering?.text), ['1.', '1.1.', '1.1.', '2.']);
+  assert.equal(paragraphs[0].numbering.numId, 1);
+  assert.equal(paragraphs[3].numbering.numId, 1);
+  assert.equal(paragraphs[0].numbering.text, before[0]);
+  assert.equal(paragraphs[3].numbering.text, before[3]);
+});
+
+test('restartNumbering keeps deeper child items in the restarted segment', () => {
+  const doc = numberedDocument([0, 1, 2, 2, 1], `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl><w:lvl w:ilvl="2"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2.%3."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  const newNumId = doc.restartNumbering(1);
+  const paragraphs = doc.getParagraphs();
+  assert.deepEqual(paragraphs.map((paragraph) => paragraph.numbering?.text), ['1.', '1.1.', '1.1.1.', '1.1.2.', '1.2.']);
+  assert.deepEqual(paragraphs.map((paragraph) => paragraph.numbering?.numId), [1, newNumId, newNumId, newNumId, newNumId]);
+});
+
+test('restartNumbering stops before a different numbering instance', () => {
+  const xml = `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>`;
+  const doc = numberedDocument([0, 0], xml);
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:p><w:p><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr></w:p><w:sectPr/></w:body></w:document>`);
+  const newNumId = doc.restartNumbering(1);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.numId), [1, newNumId, 2]);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '1.', '1.']);
+});
+
+test('restartNumbering stops when a shallower list level begins', () => {
+  const doc = numberedDocument([0, 1, 1, 0, 1], `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  const newNumId = doc.restartNumbering(2);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.numId), [1, 1, newNumId, 1, 1]);
+});
+
+test('a repeated restart creates a fresh numbering instance and replaces its start value', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  const firstNumId = doc.restartNumbering(1, { start: 4 });
+  const secondNumId = doc.restartNumbering(1, { start: 7 });
+  assert.notEqual(secondNumId, firstNumId);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.numId), [1, secondNumId, secondNumId]);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '7.', '8.']);
+});
+
+test('continueNumbering restores the previous instance and its continuous sequence', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  doc.restartNumbering(1, { start: 5 });
+  doc.continueNumbering(1);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.numId), [1, 1, 1]);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '2.', '3.']);
+});
+
+test('continueNumbering without a preceding same-level item is a true no-op', () => {
+  const doc = numberedDocument([0, 0]);
+  const revision = doc.revision;
+  doc.continueNumbering(0);
+  assert.equal(doc.revision, revision);
+});
+
+test('continueNumbering without a restart does not mutate an already continuous list', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  const revision = doc.revision;
+  doc.continueNumbering(1);
+  assert.equal(doc.revision, revision);
+});
+
+test('numbering mutations reject paragraphs outside a list and invalid indices', () => {
+  const doc = withBody('<w:p><w:r><w:t>Plain</w:t></w:r></w:p>');
+  assert.throws(() => doc.restartNumbering(0), /does not have numbering/);
+  assert.throws(() => doc.continueNumbering(0), /does not have numbering/);
+  assert.throws(() => doc.restartNumbering(1), /does not exist/);
+  assert.throws(() => doc.continueNumbering(1), /does not exist/);
+  assert.throws(() => doc.restartNumbering(-1), /non-negative safe integer/);
+});
+
+test('restartNumbering validates options.start before changing the document', () => {
+  const doc = numberedDocument([0, 0]);
+  const revision = doc.revision;
+  for (const start of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '5', null]) {
+    assert.throws(() => doc.restartNumbering(1, { start }), /start|safe integer/i);
+    assert.equal(doc.revision, revision);
+  }
+  assert.throws(() => doc.restartNumbering(1, { start: 2, extra: true }), /options/);
+});
+
+test('restartNumbering preserves resolved numbering part paths and repairs package links', () => {
+  const doc = numberedDocument([0, 0]);
+  const relationshipsPath = 'word/_rels/document.xml.rels';
+  const relationships = doc.getPartXml(relationshipsPath).replace(/<Relationship[^>]*numbering[^>]*\/>/, '');
+  doc.setPartXml(relationshipsPath, relationships);
+  const contentTypes = doc.getPartXml('[Content_Types].xml').replace(/<Override[^>]*numbering\.xml[^>]*\/>/, '');
+  doc.setPartXml('[Content_Types].xml', contentTypes);
+  doc.restartNumbering(1);
+  assert.match(doc.getPartXml(relationshipsPath), /relationships\/numbering/);
+  assert.match(doc.getPartXml('[Content_Types].xml'), /word\/numbering\.xml/);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '1.']);
+});
+
+test('restartNumbering writes CT_Num and CT_NumLvl children in schema order', () => {
+  const xml = `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:lvl w:ilvl="0"><w:start w:val="2"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:lvlOverride></w:num></w:numbering>`;
+  const doc = numberedDocument([0, 0], xml);
+  const numId = doc.restartNumbering(1);
+  const numbering = parseXml(doc.getPartXml('word/numbering.xml')).documentElement;
+  const num = [...numbering.getElementsByTagNameNS(WORD_NS, 'num')]
+    .find((item) => Number(item.getAttributeNS(WORD_NS, 'numId')) === numId);
+  assert.deepEqual(elementNames(num), ['abstractNumId', 'lvlOverride']);
+  const override = [...num.getElementsByTagNameNS(WORD_NS, 'lvlOverride')].find((item) =>
+    Number(item.getAttributeNS(WORD_NS, 'ilvl')) === 0);
+  const names = elementNames(override);
+  assert.deepEqual(names, ['startOverride', 'lvl']);
+  assert.ok(names.indexOf('startOverride') < names.indexOf('lvl'));
+});
+
+test('restartNumbering and continueNumbering are supported by atomic Agent operations', () => {
+  const doc = numberedDocument([0, 0, 0]);
+  const operationTypes = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
+    .map((entry) => entry.properties.type.const);
+  assert.ok(operationTypes.includes('restartNumbering'));
+  assert.ok(operationTypes.includes('continueNumbering'));
+  const revision = doc.revision;
+  doc.applyOperations({ operations: [
+    { type: 'restartNumbering', index: 1, options: { start: 4 } },
+    { type: 'continueNumbering', index: 1 },
+  ] });
+  assert.equal(doc.revision, revision + 1);
+  assert.deepEqual(doc.getParagraphs().map((paragraph) => paragraph.numbering?.text), ['1.', '2.', '3.']);
+  assert.throws(() => doc.applyOperations({ operations: [
+    { type: 'restartNumbering', index: 1, options: { start: 0 } },
+  ] }), /positive integer/);
 });
 
 test('legal numbering forces placeholder output to decimal', () => {

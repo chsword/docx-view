@@ -6829,6 +6829,163 @@ export class DocxDocument {
     this.setParagraphNumbering(index, paragraph.numbering.numId, Math.max(0, Math.min(8, paragraph.numbering.level + delta)));
   }
 
+  restartNumbering(index: number, options: { start?: number } = {}): number {
+    assertIndex(index);
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        Object.keys(options).some((key) => key !== 'start')) {
+      throw new Error('options must contain only a positive integer start value.');
+    }
+    const start = options.start === undefined ? 1 : options.start;
+    assertIndex(start);
+    if (start < 1) throw new Error('options.start must be a positive integer.');
+    return this.withDraft((draft) => draft.restartNumberingDirect(index, start));
+  }
+
+  private restartNumberingDirect(index: number, start: number): number {
+    const paragraphInfos = this.getParagraphs();
+    const target = paragraphInfos[index];
+    if (!target) throw new Error(`Paragraph ${index} does not exist.`);
+    if (!target.numbering) throw new Error(`Paragraph ${index} does not have numbering.`);
+    const context = this.getNumberingContext();
+    const definition = context.model.resolveNumbering(target.numbering.numId);
+    if (!definition) throw new Error(`Numbering definition ${target.numbering.numId} does not exist.`);
+    const numberingPath = context.numberingPath;
+    if (!numberingPath || !this.parts.has(numberingPath)) {
+      throw new Error('The paragraph numbering part is missing or unavailable.');
+    }
+
+    const document = this.getCachedPartDocument(this.mainPath);
+    const paragraphs = descendants(bodyOf(document), 'p');
+    const sourceNumId = target.numbering.numId;
+    const level = target.numbering.level;
+    const affected: { paragraph: Element; level: number }[] = [];
+    for (let paragraphIndex = index; paragraphIndex < paragraphInfos.length; paragraphIndex++) {
+      const info = paragraphInfos[paragraphIndex]!;
+      if (!info.numbering || info.numbering.numId !== sourceNumId || info.numbering.level < level) break;
+      affected.push({ paragraph: paragraphs[paragraphIndex]!, level: info.numbering.level });
+    }
+    if (!affected.length) throw new Error(`Paragraph ${index} does not have numbering.`);
+
+    const numberingDocument = this.getCachedPartDocument(numberingPath);
+    const numberingRoot = numberingDocument.documentElement!;
+    const sourceNum = children(numberingRoot, 'num').find((num) =>
+      Number(num.getAttributeNS(WORD_NS, 'numId')) === sourceNumId);
+    if (!sourceNum) throw new Error(`Numbering instance ${sourceNumId} does not exist.`);
+    const usedIds = children(numberingRoot, 'num')
+      .map((num) => Number(num.getAttributeNS(WORD_NS, 'numId')))
+      .filter((numId) => Number.isSafeInteger(numId) && numId >= 0);
+    const nextNumId = (usedIds.length ? Math.max(...usedIds) : 0) + 1;
+    if (!Number.isSafeInteger(nextNumId)) throw new Error('No safe numbering instance ID is available.');
+
+    const newNum = sourceNum.cloneNode(true) as Element;
+    setWordAttr(newNum, 'numId', nextNumId);
+    let override = children(newNum, 'lvlOverride').find((item) =>
+      Number(item.getAttributeNS(WORD_NS, 'ilvl')) === level);
+    if (!override) {
+      override = wordElement(numberingDocument, 'lvlOverride');
+      setWordAttr(override, 'ilvl', level);
+      newNum.appendChild(override);
+    }
+    const startOverrides = children(override, 'startOverride');
+    let startOverride = startOverrides[0];
+    for (const duplicate of startOverrides.slice(1)) override.removeChild(duplicate);
+    if (!startOverride) startOverride = wordElement(numberingDocument, 'startOverride');
+    setWordValue(startOverride, String(start));
+    const firstLevel = children(override, 'lvl')[0];
+    if (firstLevel) override.insertBefore(startOverride, firstLevel);
+    else if (startOverride.parentNode !== override) override.appendChild(startOverride);
+    insertNumberingNode(numberingRoot, newNum);
+
+    for (const entry of affected) {
+      const props = properties(entry.paragraph, 'pPr');
+      const numPr = property(props, 'numPr');
+      setWordValue(numberingProperty(numPr, 'ilvl'), String(entry.level));
+      setWordValue(numberingProperty(numPr, 'numId'), String(nextNumId));
+    }
+
+    this.ensureNumberingRelationship(numberingPath);
+    this.ensureNumberingContentType(numberingPath);
+    this.setPartXml(numberingPath, serializeXml(numberingDocument));
+    this.setPartXml(this.mainPath, serializeXml(document));
+    return nextNumId;
+  }
+
+  continueNumbering(index: number): void {
+    assertIndex(index);
+    this.withDraft((draft) => draft.continueNumberingDirect(index));
+  }
+
+  private continueNumberingDirect(index: number): void {
+    const paragraphInfos = this.getParagraphs();
+    const target = paragraphInfos[index];
+    if (!target) throw new Error(`Paragraph ${index} does not exist.`);
+    if (!target.numbering) throw new Error(`Paragraph ${index} does not have numbering.`);
+    const targetDefinition = this.getNumberingContext().model.resolveNumbering(target.numbering.numId);
+    if (!targetDefinition) throw new Error(`Numbering definition ${target.numbering.numId} does not exist.`);
+    const sameAbstractAtLevel = (info: ParagraphInfo | undefined): boolean => {
+      if (!info?.numbering || info.numbering.level !== target.numbering!.level) return false;
+      return this.getNumberingContext().model.resolveNumbering(info.numbering.numId)?.abstractNumId === targetDefinition.abstractNumId;
+    };
+    let previousNumId: number | undefined;
+    for (let paragraphIndex = index - 1; paragraphIndex >= 0; paragraphIndex--) {
+      const info = paragraphInfos[paragraphIndex]!;
+      if (sameAbstractAtLevel(info)) {
+        previousNumId = info.numbering!.numId;
+        break;
+      }
+    }
+    if (previousNumId === undefined || previousNumId === target.numbering.numId) return;
+
+    const document = this.getCachedPartDocument(this.mainPath);
+    const paragraphs = descendants(bodyOf(document), 'p');
+    for (let paragraphIndex = index; paragraphIndex < paragraphInfos.length; paragraphIndex++) {
+      const info = paragraphInfos[paragraphIndex]!;
+      if (!info.numbering || info.numbering.numId !== target.numbering.numId ||
+          info.numbering.level < target.numbering.level) break;
+      const props = properties(paragraphs[paragraphIndex]!, 'pPr');
+      const numPr = property(props, 'numPr');
+      setWordValue(numberingProperty(numPr, 'ilvl'), String(info.numbering.level));
+      setWordValue(numberingProperty(numPr, 'numId'), String(previousNumId));
+    }
+    this.setPartXml(this.mainPath, serializeXml(document));
+  }
+
+  private ensureNumberingRelationship(numberingPath: string): void {
+    const path = relsPath(this.mainPath);
+    const relationships = this.parts.has(path)
+      ? this.getCachedPartDocument(path)
+      : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const relationship = children(relationships.documentElement!, 'Relationship', REL_NS)
+      .find((item) => item.getAttribute('Type') === NUMBERING_REL);
+    const target = relativeTarget(this.mainPath, numberingPath);
+    if (relationship) {
+      if (relationship.getAttribute('Target') !== target || relationship.getAttribute('TargetMode') === 'External') {
+        relationship.setAttribute('Target', target);
+        relationship.removeAttribute('TargetMode');
+        this.setPartXml(path, serializeXml(relationships));
+      }
+      return;
+    }
+    const created = relationships.createElementNS(REL_NS, 'Relationship');
+    created.setAttribute('Id', nextRelationshipId(relationships.documentElement!));
+    created.setAttribute('Type', NUMBERING_REL);
+    created.setAttribute('Target', target);
+    relationships.documentElement!.appendChild(created);
+    this.setPartXml(path, serializeXml(relationships));
+  }
+
+  private ensureNumberingContentType(numberingPath: string): void {
+    const types = this.getCachedPartDocument('[Content_Types].xml');
+    const exists = children(types.documentElement!, 'Override', CONTENT_TYPES_NS)
+      .some((override) => override.getAttribute('PartName') === `/${numberingPath}`);
+    if (exists) return;
+    const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+    override.setAttribute('PartName', `/${numberingPath}`);
+    override.setAttribute('ContentType', NUMBERING_TYPE);
+    types.documentElement!.appendChild(override);
+    this.setPartXml('[Content_Types].xml', serializeXml(types));
+  }
+
   createNumbering(kind: 'bullet' | 'decimal' | 'multilevel' | NumberingDefinition): number {
     const definition = typeof kind === 'string' ? defaultNumberingDefinition(kind) : kind;
     const levels = [...(definition.levels.length ? definition.levels : defaultNumberingDefinition('decimal').levels)];
@@ -9102,6 +9259,8 @@ export class DocxDocument {
         case 'setParagraphNumbering': draft.setParagraphNumbering(operation.index, operation.numId, operation.level); break;
         case 'clearParagraphNumbering': draft.clearParagraphNumbering(operation.index); break;
         case 'setParagraphLevel': draft.setParagraphLevel(operation.index, operation.delta); break;
+        case 'restartNumbering': draft.restartNumbering(operation.index, operation.options); break;
+        case 'continueNumbering': draft.continueNumbering(operation.index); break;
         case 'formatRun': draft.formatRun(operation.paragraph, operation.run, operation.format); break;
         case 'formatRange': draft.formatRange(operation.range, operation.format); break;
         case 'applyCharacterStyle': draft.applyCharacterStyle(operation.range, operation.styleId, operation.options); break;
