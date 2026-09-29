@@ -632,6 +632,7 @@ function selectedCommentRange() {
 }
 
 function selectedCell(): TableCellLocation {
+  editor.flush();
   const cell = editor.selectedTableCell;
   if (!cell) throw new Error('请先把光标放进一个表格单元格，再使用表格工具。');
   if (cell.nested) {
