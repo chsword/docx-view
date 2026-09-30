@@ -2251,6 +2251,49 @@ test('appendRun renders each emphasis mark with native text-emphasis on repeated
   assert.equal(runSpan.style.textEmphasisPosition, undefined);
 });
 
+test('appendRun renders supported run text effects and leaves read-only effects unstyled', () => {
+  const position = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'raised', position: 12 },
+  }).runSpan;
+  assert.equal(position.style.verticalAlign, '6pt');
+
+  const outline = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'outlined', textOutline: true, color: '2468AC' },
+  }).runSpan;
+  assert.equal(outline.style.webkitTextStroke, '1px currentColor');
+  assert.equal(outline.style.webkitTextStrokeColor, '#2468AC');
+  assert.equal(outline.style.color, 'transparent');
+
+  const shadow = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'shadow', textShadow: true },
+  }).runSpan;
+  assert.equal(shadow.style.textShadow, '1px 1px 2px rgba(0, 0, 0, 0.45)');
+
+  const emboss = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'emboss', emboss: true },
+  }).runSpan;
+  assert.equal(emboss.style.textShadow, '-1px -1px 1px rgba(255, 255, 255, 0.9), 1px 1px 1px rgba(0, 0, 0, 0.65)');
+
+  const imprint = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'imprint', imprint: true },
+  }).runSpan;
+  assert.equal(imprint.style.textShadow, '1px 1px 1px rgba(255, 255, 255, 0.9), -1px -1px 1px rgba(0, 0, 0, 0.65)');
+
+  const aboveThreshold = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'kerned', fontSize: 12, kerning: 24 },
+  }).runSpan;
+  const belowThreshold = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'not kerned', fontSize: 11, kerning: 24 },
+  }).runSpan;
+  assert.equal(aboveThreshold.style.fontKerning, 'normal');
+  assert.equal(belowThreshold.style.fontKerning, 'none');
+
+  const readOnly = appendRunToParagraph(makeRunRenderEditor(), {
+    run: { index: 0, text: 'unchanged', characterScale: 150, fitTextWidth: 720, textEffect: 'sparkle' },
+  }).runSpan;
+  assert.deepEqual(readOnly.style, {});
+});
+
 test('paginated paragraph rendering uses snapped line height for its page fragment', () => {
   const section = {
     pageWidth: 1500,
@@ -2286,6 +2329,45 @@ test('paginated paragraph rendering uses snapped line height for its page fragme
     assert.equal(runSpan.style.textEmphasisStyle, 'dot');
     assert.equal(runSpan.style.textEmphasisPosition, 'under right');
     assert.equal(runSpan.dataset.docxRevisionIds, '8');
+  }
+});
+
+test('pagination renders run effects consistently across repeated revision-marked renders', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = {
+    index: 0,
+    text: 'raised',
+    runs: [{
+      index: 0, text: 'raised', position: 8, textOutline: true, color: '13579B',
+      revisions: [{ id: 31, kind: 'insertion' }],
+    }],
+    images: [],
+  };
+  for (let render = 0; render < 2; render++) {
+    const page = editor.makePageContent(
+      { items: [{ type: 'line', paragraph: 0, line: { heightPx: 15, startOffset: 0, endOffset: 6 } }] },
+      {
+        pageWidth: 1500, pageHeight: 1500,
+        margins: { top: 0, right: 0, bottom: 0, left: 0 },
+        columns: { count: 1, space: 0, equalWidth: true },
+      },
+      [], [paragraph], 720, { deletedTextByRun: new Map(), revisionColors: new Map() },
+    );
+    const pageParagraph = page.childNodes[0].childNodes[0];
+    const content = pageParagraph.childNodes.find((node) => node.className === 'docx-paragraph-content');
+    const runSpan = content.childNodes.find((node) => node.dataset.docxRun === '0');
+    assert.equal(runSpan.style.verticalAlign, '4pt');
+    assert.equal(runSpan.style.webkitTextStroke, '1px currentColor');
+    assert.equal(runSpan.style.webkitTextStrokeColor, '#13579B');
+    assert.equal(runSpan.style.color, 'transparent');
+    assert.equal(runSpan.dataset.docxRevisionIds, '31');
   }
 });
 

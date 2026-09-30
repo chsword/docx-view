@@ -1527,6 +1527,10 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     ['allCaps', 'caps'],
     ['rtl', 'rtl'],
     ['complexScript', 'cs'],
+    ['textOutline', 'outline'],
+    ['textShadow', 'shadow'],
+    ['emboss', 'emboss'],
+    ['imprint', 'imprint'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
@@ -1594,6 +1598,21 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
   if ('characterSpacing' in format) {
     if (format.characterSpacing === null) removeProperty(props, 'spacing');
     else if (format.characterSpacing !== undefined) setWordValue(property(props, 'spacing'), String(format.characterSpacing));
+  }
+  for (const [key, tag] of [
+    ['position', 'position'],
+    ['characterScale', 'w'],
+    ['kerning', 'kern'],
+    ['fitTextWidth', 'fitText'],
+  ] as const) {
+    const value = format[key];
+    if (!(key in format)) continue;
+    if (value === null) removeProperty(props, tag);
+    else if (value !== undefined) setWordValue(property(props, tag), String(value));
+  }
+  if ('textEffect' in format) {
+    if (format.textEffect === null) removeProperty(props, 'effect');
+    else if (format.textEffect !== undefined) setWordValue(property(props, 'effect'), format.textEffect);
   }
   if ('border' in format) {
     if (format.border === null) removeProperty(props, 'bdr');
@@ -1669,6 +1688,27 @@ function appendRunProperties(parent: Element, format: RunFormat | undefined): vo
     appendWordValueElement(props, 'szCs', format.fontSize * 2);
   }
   if (format.underline !== undefined) appendWordValueElement(props, 'u', format.underline ? 'single' : 'none');
+  for (const [key, tag] of [
+    ['textOutline', 'outline'],
+    ['textShadow', 'shadow'],
+    ['emboss', 'emboss'],
+    ['imprint', 'imprint'],
+  ] as const) {
+    const value = format[key];
+    if (value !== undefined && value !== null) setOnOff(props, tag, value);
+  }
+  for (const [key, tag] of [
+    ['characterScale', 'w'],
+    ['kerning', 'kern'],
+    ['position', 'position'],
+    ['fitTextWidth', 'fitText'],
+  ] as const) {
+    const value = format[key];
+    if (value !== undefined && value !== null) setWordValue(property(props, tag), String(value));
+  }
+  if (format.textEffect !== undefined && format.textEffect !== null) {
+    setWordValue(property(props, 'effect'), format.textEffect);
+  }
   if (props.childNodes.length) parent.appendChild(props);
 }
 
@@ -2136,7 +2176,8 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
-  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
+  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
+  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',

@@ -21,6 +21,15 @@ export interface RunFormat {
   allCaps?: boolean | null;
   highlight?: string | null;
   characterSpacing?: number | null;
+  position?: number | null;
+  characterScale?: number | null;
+  kerning?: number | null;
+  fitTextWidth?: number | null;
+  textEffect?: string | null;
+  textOutline?: boolean | null;
+  textShadow?: boolean | null;
+  emboss?: boolean | null;
+  imprint?: boolean | null;
   border?: BorderSide | null;
   shading?: Shading | null;
 }
