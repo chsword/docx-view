@@ -6,7 +6,7 @@ import type {
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
-  FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
+  FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   TableCellLocation,
 } from './types.js';
 import {
@@ -50,7 +50,7 @@ import {
   validateTabs,
 } from './operations.js';
 import { collectSections, readSections, SECTION_ORDER } from './section.js';
-import { fieldKindFromInstruction, NEVER_EVALUATE, parseFields } from './fields.js';
+import { fieldKindFromInstruction, formatPageNumber, NEVER_EVALUATE, pageFieldResult, parseFields } from './fields.js';
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
@@ -564,6 +564,33 @@ function bookmarkTexts(document: Document): Map<string, string> {
       .filter(element => ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(element.localName ?? ''))
       .map(elementText)
       .join(''));
+  }
+  return result;
+}
+
+function bookmarkParagraphIndices(document: Document, paragraphs: Element[]): Map<string, number> {
+  const body = bodyOf(document);
+  const order = preOrderElements(body);
+  const positions = new Map(order.map((element, index) => [element, index]));
+  const paragraphPositions = paragraphs.map(paragraph => positions.get(paragraph) ?? -1);
+  const result = new Map<string, number>();
+  for (const start of descendants(body, 'bookmarkStart')) {
+    const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name');
+    if (!name || result.has(name)) continue;
+    let ancestor = start.parentNode;
+    while (ancestor && ancestor !== body &&
+        !(ancestor.nodeType === 1 && (ancestor as Element).namespaceURI === WORD_NS && (ancestor as Element).localName === 'p')) {
+      ancestor = ancestor.parentNode;
+    }
+    const ownIndex = ancestor && ancestor !== body ? paragraphs.indexOf(ancestor as Element) : -1;
+    if (ownIndex >= 0) {
+      result.set(name, ownIndex);
+      continue;
+    }
+    const position = positions.get(start);
+    if (position === undefined) continue;
+    const nextIndex = paragraphPositions.findIndex(paragraphPosition => paragraphPosition > position);
+    if (nextIndex >= 0) result.set(name, nextIndex);
   }
   return result;
 }
@@ -4130,9 +4157,13 @@ export class DocxDocument {
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
   }
 
-  getFields(): FieldInfo[] {
-    const document = this.getCachedPartDocument(this.mainPath);
-    return parseFields(mainParagraphElements(bodyOf(document)), ownRuns).fields;
+  getFields(partPath = this.mainPath): FieldInfo[] {
+    validatePath(partPath);
+    const document = this.getCachedPartDocument(partPath);
+    const paragraphs = partPath === this.mainPath
+      ? mainParagraphElements(bodyOf(document))
+      : mainParagraphElements(blockContainerOf(document));
+    return parseFields(paragraphs, ownRuns).fields;
   }
 
   getShapes(): ShapeInfo[] {
@@ -7998,28 +8029,213 @@ export class DocxDocument {
     });
   }
 
-  updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string } = {}): boolean {
+  private ensureTocBookmark(document: Document, paragraphIndex: number, namesByParagraph: Map<number, string>,
+    usedNames: Set<string>, nextId: { value: number }): string | undefined {
+    const existing = namesByParagraph.get(paragraphIndex);
+    if (existing) return existing;
+    const paragraph = mainParagraphElements(bodyOf(document))[paragraphIndex];
+    if (!paragraph) return undefined;
+    let name = `_Toc${paragraphIndex + 1}`;
+    let suffix = 1;
+    while (usedNames.has(name)) name = `_Toc${paragraphIndex + 1}_${suffix++}`;
+    usedNames.add(name);
+    namesByParagraph.set(paragraphIndex, name);
+    const start = wordElement(document, 'bookmarkStart');
+    const end = wordElement(document, 'bookmarkEnd');
+    const id = String(nextId.value++);
+    start.setAttributeNS(WORD_NS, 'w:id', id);
+    start.setAttributeNS(WORD_NS, 'w:name', name);
+    end.setAttributeNS(WORD_NS, 'w:id', id);
+    const properties = children(paragraph, 'pPr')[0];
+    paragraph.insertBefore(start, properties?.nextSibling ?? paragraph.firstChild);
+    paragraph.appendChild(end);
+    return name;
+  }
+
+  private writeTocResult(document: Document, paragraph: Element, field: FieldInfo,
+    entries: Array<{ text: string; page: string; anchor?: string }>): boolean {
+    const runs = ownRuns(paragraph);
+    const resultRuns = field.resultRuns.map(index => runs[index]).filter((run): run is Element => !!run);
+    let parent: Element;
+    let reference: Node | null;
+    let remove: Node[] = [];
+    if (field.form === 'simple') {
+      const simpleField = descendants(paragraph, 'fldSimple').find(element =>
+        (element.getAttributeNS(WORD_NS, 'instr') ?? element.getAttribute('w:instr') ?? '') === field.instruction &&
+        (!resultRuns.length || resultRuns.some(run => {
+          for (let current = run.parentNode; current && current !== paragraph; current = current.parentNode) {
+            if (current === element) return true;
+          }
+          return false;
+        })));
+      if (!simpleField) return false;
+      parent = simpleField;
+      reference = null;
+      remove = children(parent);
+    } else {
+      const fieldRuns = field.runs.map(index => runs[index]).filter((run): run is Element => !!run);
+      const markerRun = (kind: string) => fieldRuns.find(run =>
+        children(run, 'fldChar').some(marker =>
+          (marker.getAttributeNS(WORD_NS, 'fldCharType') ?? marker.getAttribute('w:fldCharType')) === kind));
+      const separate = markerRun('separate');
+      const end = markerRun('end');
+      if (!separate?.parentNode || separate.parentNode !== end?.parentNode || !end) return false;
+      parent = separate.parentNode as Element;
+      reference = end;
+      let current = separate.nextSibling;
+      while (current && current !== end) {
+        remove.push(current);
+        current = current.nextSibling;
+      }
+      if (current !== end) return false;
+    }
+    const templateProperties = resultRuns.map(run => children(run, 'rPr')[0]).find(Boolean);
+    const makeRun = (text: string, lineBreak = false): Element => {
+      const run = wordElement(document, 'r');
+      if (templateProperties) run.appendChild(templateProperties.cloneNode(true));
+      if (lineBreak) run.appendChild(wordElement(document, 'br'));
+      else appendText(run, text);
+      return run;
+    };
+    const generated: Element[] = [];
+    for (const [index, entry] of entries.entries()) {
+      if (index) generated.push(makeRun('', true));
+      const titleRun = makeRun(entry.text);
+      if (entry.anchor) {
+        const hyperlink = wordElement(document, 'hyperlink');
+        hyperlink.setAttributeNS(WORD_NS, 'w:anchor', entry.anchor);
+        hyperlink.appendChild(titleRun);
+        generated.push(hyperlink);
+      } else generated.push(titleRun);
+      generated.push(makeRun('\t'), makeRun(entry.page));
+    }
+    for (const element of generated) parent.insertBefore(element, reference);
+    for (const node of remove) if (node.parentNode === parent) parent.removeChild(node);
+    return true;
+  }
+
+  updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string; pagination?: PaginationInfo } = {}): boolean {
     if (options.now !== undefined && !(options.now instanceof Date) || options.now && !Number.isFinite(options.now.getTime())) {
       throw new Error('options.now must be a valid Date.');
     }
     if (options.kinds !== undefined && (!Array.isArray(options.kinds) || options.kinds.some(kind => typeof kind !== 'string'))) {
       throw new Error('options.kinds must be an array of field kinds.');
     }
+    const pagination = options.pagination;
+    if (pagination !== undefined &&
+        (!pagination || !Number.isSafeInteger(pagination.pageCount) || pagination.pageCount < 0 ||
+          typeof pagination.pageOfParagraph !== 'function' || typeof pagination.numberOfPage !== 'function')) {
+      throw new Error('options.pagination must contain a non-negative pageCount and page lookup functions.');
+    }
     const allowed = options.kinds ? new Set(options.kinds) : undefined;
-    const snapshot = this.getPartDocument(this.mainPath);
-    const snapshotParagraphs = mainParagraphElements(bodyOf(snapshot));
-    const snapshotFields = parseFields(snapshotParagraphs, ownRuns).fields;
+    const sections = this.getSections();
+    const mainDocument = this.getPartDocument(this.mainPath);
+    const mainBody = bodyOf(mainDocument);
+    const mainParagraphs = mainParagraphElements(mainBody);
+    const snapshotBookmarks = bookmarkTexts(mainDocument);
+    const bookmarkParagraphs = bookmarkParagraphIndices(mainDocument, mainParagraphs);
+    const outline = pagination ? this.flattenOutline(this.getOutline()) : [];
     const snapshotProperties = this.getDocumentProperties() as Record<string, unknown>;
-    const snapshotBookmarks = bookmarkTexts(snapshot);
-    let updated = false;
-    const sequence = new Map<string, number>();
-    this.updatePartXmlInternal(this.mainPath, document => {
-      const paragraphs = mainParagraphElements(bodyOf(document));
-      for (const field of snapshotFields) {
-        if (!field.evaluable || field.locked || (allowed && !allowed.has(field.kind))) continue;
-        let value: string | undefined;
+    const partSections = new Map<string, number>();
+    sections.forEach((section, index) => {
+      for (const path of [...Object.values(section.headers), ...Object.values(section.footers)]) {
+        if (path && this.parts.has(path) && !partSections.has(path)) partSections.set(path, index);
+      }
+    });
+    const paths = [this.mainPath, ...partSections.keys()];
+    const partDocuments = new Map<string, { document: Document; paragraphs: Element[]; fields: FieldInfo[]; section?: SectionInfo }>();
+    for (const path of paths) {
+      try {
+        const document = path === this.mainPath ? mainDocument : this.getPartDocument(path);
+        const paragraphs = path === this.mainPath
+          ? mainParagraphs
+          : mainParagraphElements(blockContainerOf(document));
+        partDocuments.set(path, {
+          document,
+          paragraphs,
+          fields: parseFields(paragraphs, ownRuns).fields,
+          ...(partSections.has(path) ? { section: sections[partSections.get(path)!] } : {}),
+        });
+      } catch (error) {
+        if (path === this.mainPath) throw error;
+      }
+    }
+    const outlineNames = new Map<number, string>();
+    for (const [name, paragraph] of bookmarkParagraphs) {
+      if (!outlineNames.has(paragraph)) outlineNames.set(paragraph, name);
+    }
+    const usedBookmarkNames = new Set(descendants(mainBody, 'bookmarkStart').map(start =>
+      start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name')).filter((name): name is string => !!name));
+    const nextBookmarkId = { value: descendants(mainBody, 'bookmarkStart').reduce((max, start) =>
+      Math.max(max, Number(start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id')) || 0), 0) + 1 };
+    const staged = new Map<string, Uint8Array>();
+    for (const [path, part] of partDocuments) {
+      const sequence = new Map<string, number>();
+      let partChanged = false;
+      for (const field of part.fields) {
+        if (field.locked || (allowed && !allowed.has(field.kind)) || field.kind === 'INDEX') continue;
+        const paragraph = part.paragraphs[field.paragraph];
+        if (!paragraph) continue;
         const switches = new Map(field.switches.map(entry => [entry.name.toLowerCase(), entry.value]));
-        if (field.kind === 'SEQ') {
+        const fieldSection = part.section ?? sections.find(section =>
+          field.paragraph >= section.startParagraph && field.paragraph <= section.endParagraph) ?? sections[0];
+        const format = fieldSection?.pageNumbering?.format;
+        const formatAt = (paragraphIndex: number) =>
+          sections.find(section => paragraphIndex >= section.startParagraph && paragraphIndex <= section.endParagraph)
+            ?.pageNumbering?.format;
+        const numberAt = (paragraphIndex: number): number | undefined => {
+          if (!pagination) return undefined;
+          const pageIndex = pagination.pageOfParagraph(paragraphIndex);
+          if (!Number.isSafeInteger(pageIndex) || pageIndex! < 0) return undefined;
+          const number = pagination.numberOfPage(pageIndex!);
+          return Number.isFinite(number) ? number : undefined;
+        };
+        const pageAt = (paragraphIndex: number, overrideFormat?: string): string | undefined => {
+          const number = numberAt(paragraphIndex);
+          return number === undefined ? undefined : formatPageNumber(number, overrideFormat ?? formatAt(paragraphIndex));
+        };
+        let value: string | undefined;
+        let tocEntries: Array<{ text: string; page: string; anchor?: string }> | undefined;
+        if (field.kind === 'PAGE' || field.kind === 'NUMPAGES') {
+          if (!pagination) continue;
+          const paragraphIndex = part.section ? part.section.startParagraph : field.paragraph;
+          const pageNumber = field.kind === 'PAGE' ? numberAt(paragraphIndex) : 0;
+          const pageFormat = part.section?.pageNumbering?.format ?? formatAt(paragraphIndex);
+          const page = pageNumber === undefined ? undefined :
+            pageFieldResult(field.kind, pageNumber, pagination.pageCount, pageFormat);
+          value = page;
+        } else if (field.kind === 'PAGEREF') {
+          const target = bookmarkParagraphs.get(field.argument ?? '');
+          if (target === undefined) continue;
+          value = pageAt(target);
+        } else if (field.kind === 'TOC') {
+          if (!pagination || path !== this.mainPath) continue;
+          const unsupported = field.switches.some(entry =>
+            !['o', 'h'].includes(entry.name.toLowerCase()) ||
+            (entry.name.toLowerCase() === 'h' && entry.value !== undefined));
+          const range = switches.get('o') ?? '1-3';
+          const levels = /^\s*(\d+)-(\d+)\s*$/.exec(range);
+          if (unsupported || !levels) continue;
+          const minimum = Number(levels[1]);
+          const maximum = Number(levels[2]);
+          if (minimum < 1 || maximum < minimum || maximum > 9) continue;
+          tocEntries = [];
+          for (const node of outline) {
+            const level = node.level + 1;
+            if (level < minimum || level > maximum) continue;
+            const page = pageAt(node.paragraph);
+            if (page === undefined) continue;
+            const entry: { text: string; page: string; anchor?: string } = { text: node.text, page };
+            if (switches.has('h')) {
+              const anchor = this.ensureTocBookmark(mainDocument, node.paragraph, outlineNames, usedBookmarkNames, nextBookmarkId);
+              if (anchor) entry.anchor = anchor;
+            }
+            tocEntries.push(entry);
+          }
+          if (!tocEntries.length) continue;
+          value = tocEntries.map(entry => `${entry.text}\t${entry.page}`).join('\n');
+        } else if (!field.evaluable) continue;
+        else if (field.kind === 'SEQ') {
           const name = field.argument ?? '';
           let current = sequence.get(name) ?? 0;
           if (switches.has('r')) current = Number(switches.get('r')) || 0;
@@ -8041,9 +8257,22 @@ export class DocxDocument {
           } as Record<string, string>)[field.kind];
           if (key && snapshotProperties[key] !== undefined) value = String(snapshotProperties[key]);
         }
-        if (value === undefined || value === field.result) continue;
-        const paragraph = paragraphs[field.paragraph];
-        if (!paragraph) continue;
+        const fieldRunsInParagraph = ownRuns(paragraph);
+        const hasExpectedTocLinks = field.kind !== 'TOC' || !switches.has('h') ||
+          field.resultRuns.filter(index => {
+            let parent: Node | null = fieldRunsInParagraph[index]?.parentNode ?? null;
+            while (parent && parent !== paragraph) {
+              if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS &&
+                  (parent as Element).localName === 'hyperlink') return true;
+              parent = parent.parentNode;
+            }
+            return false;
+          }).length === (tocEntries?.length ?? 0);
+        if (value === undefined || (value === field.result && hasExpectedTocLinks)) continue;
+        if (field.kind === 'TOC' && tocEntries) {
+          partChanged = this.writeTocResult(part.document, paragraph, field, tocEntries) || partChanged;
+          continue;
+        }
         const runs = ownRuns(paragraph);
         for (const runIndex of field.resultRuns) {
           const run = runs[runIndex];
@@ -8051,12 +8280,31 @@ export class DocxDocument {
           for (const child of [...children(run)]) if (child.localName !== 'rPr') run.removeChild(child);
         }
         const first = runs[field.resultRuns[0] ?? -1];
-        if (first) appendText(first, value);
-        updated = true;
+        if (first) {
+          appendText(first, value);
+          partChanged = true;
+        }
       }
-      return updated;
-    });
-    return updated;
+      if (partChanged) staged.set(path, encodeXml(serializeXml(part.document)));
+    }
+    const changed = [...staged].filter(([path, bytes]) => !equalBytes(bytes, this.getPartBytes(path)));
+    if (!changed.length) return false;
+    if (changed.some(([, bytes]) => bytes.byteLength > MAX_PART)) throw new Error('XML part exceeds size limit.');
+    const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
+    this.nextHistoryLabel = undefined;
+    this.nextHistoryAction = { kind: 'other' };
+    const previous = this.captureState();
+    try {
+      for (const [path, bytes] of changed) this.replacePartBytes(path, bytes);
+      this.finalizeMutation(this.mainPath);
+      if (history) this.recordHistory(history);
+      else this.applyPendingMergedHistory();
+    } catch (error) {
+      this.restoreState(previous);
+      this.abortHistoryGroupOnFailure();
+      throw error;
+    }
+    return true;
   }
 
   private enableEvenAndOddHeaders(): void {

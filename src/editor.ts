@@ -8,8 +8,10 @@ import type {
   DocumentRange,
   DocumentBlock,
   DocumentSnapshot,
+  FieldKind,
   ImageInfo,
   ParagraphInfo,
+  PaginationInfo,
   ShapeInfo,
   ReviewerFilterAuthor,
   RunFormat,
@@ -28,6 +30,52 @@ import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './t
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 import { columnWidthsPx, pageBoxPx, paginate } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
+import { formatPageNumber, pageFieldResult } from './fields.js';
+
+export { formatPageNumber };
+
+export const MAX_FIELD_UPDATE_ITERATIONS = 5;
+
+export function updateFieldsUntilStable(update: (iteration: number) => boolean,
+  maxIterations = MAX_FIELD_UPDATE_ITERATIONS): { updated: boolean; iterations: number } {
+  let updated = false;
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const changed = update(iteration);
+    updated ||= changed;
+    if (!changed) return { updated, iterations: iteration + 1 };
+  }
+  return { updated, iterations: maxIterations };
+}
+
+export function paginationInfoFromPages(pages: PageBox[], blocks: DocumentBlock[]): PaginationInfo {
+  const pageByParagraph = new Map<number, number>();
+  const addBlocks = (items: DocumentBlock[], pageIndex: number): void => {
+    for (const block of items) {
+      if (block.type === 'paragraph') {
+        if (!pageByParagraph.has(block.paragraph.index)) pageByParagraph.set(block.paragraph.index, pageIndex);
+      } else if (block.type === 'table') {
+        for (const row of block.rows) for (const cell of row.cells) addBlocks(cell.blocks, pageIndex);
+      }
+    }
+  };
+  const addRowParagraphs = (block: DocumentBlock | undefined, rowIndex: number, pageIndex: number): void => {
+    if (block?.type !== 'table') return;
+    const row = block.rows[rowIndex];
+    if (row) for (const cell of row.cells) addBlocks(cell.blocks, pageIndex);
+  };
+  for (const page of pages) {
+    for (const item of page.items) {
+      if (item.type === 'line') {
+        if (!pageByParagraph.has(item.paragraph)) pageByParagraph.set(item.paragraph, page.index);
+      } else if (item.type === 'tableRow') addRowParagraphs(blocks[item.table], item.row, page.index);
+    }
+  }
+  return {
+    pageCount: pages.length,
+    pageOfParagraph: paragraph => pageByParagraph.get(paragraph),
+    numberOfPage: pageIndex => pages[pageIndex]?.number ?? 0,
+  };
+}
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
   return value !== undefined && value !== null ? `${value / 20}pt` : undefined;
@@ -177,29 +225,6 @@ function reviewFilterEqual(a: NormalizedReviewFilter, b: NormalizedReviewFilter)
   authorsA.every((value, index) => reviewerBucketKey(value) === reviewerBucketKey(authorsB[index]!));
 }
 
-export function formatPageNumber(number: number, format = 'decimal'): string {
-  if (!Number.isFinite(number) || number < 1) return '0';
-  const value = Math.trunc(number);
-  if (format === 'upperRoman' || format === 'lowerRoman') {
-    const digits: Array<[number, string]> = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
-    let result = '';
-    let rest = value;
-    for (const [unit, glyph] of digits) while (rest >= unit) { result += glyph; rest -= unit; }
-    return format === 'lowerRoman' ? result.toLowerCase() : result;
-  }
-  if (format === 'upperLetter' || format === 'lowerLetter') {
-    let result = '';
-    let rest = value;
-    while (rest > 0) { rest--; result = String.fromCharCode(65 + (rest % 26)) + result; rest = Math.floor(rest / 26); }
-    return format === 'lowerLetter' ? result.toLowerCase() : result;
-  }
-  if (format === 'chineseCounting') {
-    const digits = '〇一二三四五六七八九';
-    return String(value).split('').map((digit) => digits[Number(digit)] ?? digit).join('');
-  }
-  return String(value);
-}
-
 type HeaderFooterKind = keyof SectionInfo['headers'];
 
 /**
@@ -227,8 +252,9 @@ export function replacePageFields(blocks: DocumentBlock[], pageNumber: number, p
         ...block.paragraph,
         runs: block.paragraph.runs.map((run) => {
           const kind = run.field?.role === 'result' ? run.field.kind : undefined;
-          return kind === 'PAGE' || kind === 'NUMPAGES'
-            ? { ...run, text: formatPageNumber(kind === 'PAGE' ? pageNumber : pageCount ?? 0, format) }
+          const result = kind ? pageFieldResult(kind, pageNumber, pageCount ?? 0, format) : undefined;
+          return result !== undefined
+            ? { ...run, text: result }
             : run;
         }),
       },
@@ -627,6 +653,26 @@ export class DocxEditor {
     target?.focus();
     target?.scrollIntoView({ block: 'nearest' });
     return true;
+  }
+
+  updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string } = {}): boolean {
+    const result = updateFieldsUntilStable(() => {
+      const blocks = this.document.getBlocks();
+      const sections = this.document.getSections();
+      let defaultTabStopTwips = 720;
+      try {
+        defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+      } catch {
+        defaultTabStopTwips = 720;
+      }
+      const pages = this.paginateDocument(blocks, sections, defaultTabStopTwips);
+      return this.document.updateFields({
+        ...options,
+        pagination: paginationInfoFromPages(pages, blocks),
+      });
+    });
+    if (result.updated) this.render();
+    return result.updated;
   }
 
   render(): void {
@@ -1051,18 +1097,22 @@ export class DocxEditor {
     return body;
   }
 
-  private renderPaginated(parent: Node, reviewContext: ReviewRenderContext, defaultTabStopTwips: number): void {
-    const blocks = this.document.getBlocks();
-    const sections = this.document.getSections();
-    const paragraphs = blocks.filter((block): block is Extract<DocumentBlock, { type: 'paragraph' }> => block.type === 'paragraph')
-      .map((block) => block.paragraph);
+  private paginateDocument(blocks: DocumentBlock[], sections: SectionInfo[], defaultTabStopTwips: number): PageBox[] {
     const measurer = {
       measureParagraph: (paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext) =>
         this.measureParagraphForPagination(paragraph, area, context),
       measureTableRow: (table: LayoutTable, _row: TableRowInfo, rowIndex: number, widthPx: number, context: MeasureContext) =>
         this.measureTableRowForPagination(table, rowIndex, widthPx, context),
     };
-    const pages = paginate(blocks, sections, measurer, { defaultTabStopTwips });
+    return paginate(blocks, sections, measurer, { defaultTabStopTwips });
+  }
+
+  private renderPaginated(parent: Node, reviewContext: ReviewRenderContext, defaultTabStopTwips: number): void {
+    const blocks = this.document.getBlocks();
+    const sections = this.document.getSections();
+    const paragraphs = blocks.filter((block): block is Extract<DocumentBlock, { type: 'paragraph' }> => block.type === 'paragraph')
+      .map((block) => block.paragraph);
+    const pages = this.paginateDocument(blocks, sections, defaultTabStopTwips);
     for (const page of pages) {
       const section = this.document.getSection(page.section);
       const firstPhysicalPage = page.index === 0 || pages[page.index - 1]?.section !== page.section;

@@ -13,6 +13,35 @@ export interface ParsedFields {
   roles: Map<Element, { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string }>;
 }
 
+export function formatPageNumber(number: number, format = 'decimal'): string {
+  if (!Number.isFinite(number) || number < 1) return '0';
+  const value = Math.trunc(number);
+  if (format === 'upperRoman' || format === 'lowerRoman') {
+    const digits: Array<[number, string]> = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+    let result = '';
+    let rest = value;
+    for (const [unit, glyph] of digits) while (rest >= unit) { result += glyph; rest -= unit; }
+    return format === 'lowerRoman' ? result.toLowerCase() : result;
+  }
+  if (format === 'upperLetter' || format === 'lowerLetter') {
+    let result = '';
+    let rest = value;
+    while (rest > 0) { rest--; result = String.fromCharCode(65 + (rest % 26)) + result; rest = Math.floor(rest / 26); }
+    return format === 'lowerLetter' ? result.toLowerCase() : result;
+  }
+  if (format === 'chineseCounting') {
+    const digits = '〇一二三四五六七八九';
+    return String(value).split('').map((digit) => digits[Number(digit)] ?? digit).join('');
+  }
+  return String(value);
+}
+
+export function pageFieldResult(kind: FieldKind, pageNumber: number, pageCount: number, format?: string): string | undefined {
+  if (kind === 'PAGE') return formatPageNumber(pageNumber, format);
+  if (kind === 'NUMPAGES') return formatPageNumber(pageCount, format);
+  return undefined;
+}
+
 function visibleText(element: Element): string {
   const values: string[] = [];
   const walk = (node: Node): void => {

@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
-import { DocxEditor, deriveLineBoxes, formatPageNumber, replacePageFields, selectHeaderFooter } from '../dist/editor.js';
+import {
+  DocxEditor, deriveLineBoxes, formatPageNumber, paginationInfoFromPages, replacePageFields,
+  selectHeaderFooter, updateFieldsUntilStable,
+} from '../dist/editor.js';
 import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
 
 test('formats paginated page numbers and falls back to decimal', () => {
@@ -9,6 +12,59 @@ test('formats paginated page numbers and falls back to decimal', () => {
   assert.equal(formatPageNumber(27, 'lowerLetter'), 'aa');
   assert.equal(formatPageNumber(12, 'chineseCounting'), '一二');
   assert.equal(formatPageNumber(7, 'not-a-format'), '7');
+});
+
+test('field pagination adapter maps body and table paragraphs to displayed page numbers', () => {
+  const paragraph = index => ({ type: 'paragraph', paragraph: { index } });
+  const table = {
+    type: 'table',
+    rows: [{ cells: [{ blocks: [paragraph(2)] }] }],
+    grid: [],
+  };
+  const pages = [
+    { index: 0, number: 4, section: 0, items: [{ type: 'line', paragraph: 0 }] },
+    { index: 1, number: 5, section: 0, items: [{ type: 'tableRow', table: 1, row: 0 }] },
+  ];
+  const pagination = paginationInfoFromPages(pages, [paragraph(0), table]);
+  assert.equal(pagination.pageCount, 2);
+  assert.equal(pagination.pageOfParagraph(0), 0);
+  assert.equal(pagination.pageOfParagraph(2), 1);
+  assert.equal(pagination.numberOfPage(pagination.pageOfParagraph(2)), 5);
+  assert.equal(pagination.pageOfParagraph(1), undefined);
+});
+
+test('DocxEditor.updateFields passes computed pagination through to document writeback', () => {
+  const block = { type: 'paragraph', paragraph: { index: 0 } };
+  const pages = [{ index: 0, number: 8, section: 0, items: [{ type: 'line', paragraph: 0 }] }];
+  const calls = [];
+  const editor = Object.create(DocxEditor.prototype);
+  editor.document = {
+    getBlocks: () => [block],
+    getSections: () => [],
+    getSettings: () => ({ defaultTabStop: 720 }),
+    updateFields: ({ pagination }) => {
+      calls.push(pagination);
+      return calls.length === 1;
+    },
+  };
+  editor.paginateDocument = () => pages;
+  let renders = 0;
+  editor.render = () => { renders++; };
+  assert.equal(editor.updateFields(), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].pageCount, 1);
+  assert.equal(calls[0].pageOfParagraph(0), 0);
+  assert.equal(calls[0].numberOfPage(0), 8);
+  assert.equal(renders, 1);
+});
+
+test('field update iteration stops when stable and caps non-convergent updates', () => {
+  let stableCalls = 0;
+  assert.deepEqual(updateFieldsUntilStable(() => ++stableCalls === 1), { updated: true, iterations: 2 });
+  let changingCalls = 0;
+  assert.deepEqual(updateFieldsUntilStable(() => { changingCalls++; return true; }),
+    { updated: true, iterations: 5 });
+  assert.equal(changingCalls, 5);
 });
 
 test('groups browser line rectangles into continuous character ranges', () => {
