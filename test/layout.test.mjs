@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -66,6 +66,41 @@ test('snaps line heights to a valid section document grid', () => {
     assert.equal(snapLineHeightPx(20, { ...grid, linePitch: 0 }), 20);
     assert.equal(snapLineHeightPx(20, { ...grid, linePitch: -300 }), 20);
   }
+});
+
+test('numbers paginated lines with restart, suppression, and countBy rules', () => {
+  const pages = [
+    { index: 0, number: 1, section: 0, items: [
+      { type: 'line', paragraph: 0 }, { type: 'line', paragraph: 1 }, { type: 'tableRow', table: 0, row: 0 },
+    ] },
+    { index: 1, number: 2, section: 0, items: [{ type: 'line', paragraph: 2 }] },
+    { index: 2, number: 3, section: 1, items: [{ type: 'line', paragraph: 3 }] },
+  ];
+  const paragraphs = [
+    { index: 0, effective: {} }, { index: 1, effective: { suppressLineNumbers: true } },
+    { index: 2, effective: {} }, { index: 3, effective: {} },
+  ];
+  const sections = [
+    section({ lineNumbering: { start: 1, countBy: 2, restart: 'newPage' } }),
+    section({ index: 1, lineNumbering: { start: 5, restart: 'newSection' } }),
+  ];
+  assert.deepEqual(lineNumbersFor(pages, paragraphs, sections), [[null, null, null], [null], [5]]);
+  assert.deepEqual(lineNumbersFor(
+    pages.slice(0, 2), paragraphs, [section({ lineNumbering: { start: 0, countBy: 0, restart: 'continuous' } })],
+  ), [[1, null, null], [2]]);
+  assert.deepEqual(lineNumbersFor(
+    pages.slice(0, 2), paragraphs, [section({ lineNumbering: { start: 1, restart: 'newSection' } })],
+  ), [[1, null, null], [2]]);
+});
+
+test('line numbering advances in column and page item order and tolerates negative settings', () => {
+  const pages = [{ index: 0, number: 1, section: 0, items: [
+    { type: 'line', paragraph: 0, column: 1 }, { type: 'line', paragraph: 1, column: 0 },
+  ] }];
+  const paragraphs = [{ index: 0, effective: {} }, { index: 1, effective: {} }];
+  assert.deepEqual(lineNumbersFor(pages, paragraphs, [
+    section({ columns: { count: 2, space: 0, equalWidth: true }, lineNumbering: { start: -2, countBy: -1 } }),
+  ]), [[1, 2]]);
 });
 
 test('uses collapsed paragraph spacing and contextual spacing consistently', () => {

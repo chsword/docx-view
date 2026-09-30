@@ -91,7 +91,7 @@ console.log(reopened.getSnapshot());
 | `formatParagraph(index, format, options?)` | 设置段落直接格式；`options.validateStyle` 可在写入前校验样式 ID；将某个字段设为 `null` 可清除该直接格式 |
 | `applyParagraphStyle(index, styleId, options?)` | 严格应用段落样式；样式不存在时报错，`clearDirectFormat` 可清除与样式冲突的段落 / run 直接格式 |
 
-分页与连续视图使用同一套段落间距计算：相邻段落的 `before` / `after` 取较大值（首段的 `before` 和末段的 `after` 仍保留）。`contextualSpacing` 在相邻段落样式相同处抑制该间距；`beforeLines` / `afterLines` 和 `autospacing` 会无损读取并写回，但当前不参与排版（行单位需要实际行高，autospacing 的 Word 算法也不在布局度量器中）。
+分页与连续视图使用同一套段落间距计算：相邻段落的 `before` / `after` 取较大值（首段的 `before` 和末段的 `after` 仍保留）。`contextualSpacing` 在相邻段落样式相同处抑制该间距；`beforeLines` / `afterLines` 和 `autospacing` 会无损读取并写回，但当前不参与排版（行单位需要实际行高，autospacing 的 Word 算法也不在布局度量器中）。分页视图读取节级行号和页面边框；行号按分页后的行顺序（跨栏按流项目顺序）计算，`suppressLineNumbers` 的段落跳过且不占号，连续视图不显示行号。节的 `vAlign` 支持 `top`、`center`、`bottom`；`both` 当前退化为 `top`。
 | `getNumberingDefinitions()` | 读取 `word/numbering.xml` 中已解析的编号定义 |
 | `setParagraphNumbering(index, numId, level?)` | 为段落绑定指定编号定义与级别（默认 0） |
 | `clearParagraphNumbering(index)` | 清除段落上的直接编号绑定 |
