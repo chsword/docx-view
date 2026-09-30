@@ -152,6 +152,16 @@ function chartSeriesAppearance(ser: Element, index: number, theme: ThemeInfo, re
   return color ? { ...appearance, fill: { type: 'solid', color: color.startsWith('#') ? color : `#${color}` } } : appearance;
 }
 
+function chartPointFills(ser: Element, count: number, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): Array<ShapeInfo['fill'] | undefined> {
+  return Array.from({ length: count }, (_, index) => {
+    const point = descendants(ser, CHART_NS, 'dPt').find((candidate) => Number(direct(candidate, CHART_NS, 'idx')?.getAttribute('val') ?? candidate.getAttribute('idx')) === index);
+    const appearance = point ? chartSeriesFill(point, theme, relationships) : {};
+    if (appearance.fill) return appearance.fill;
+    const color = resolveDrawingThemeColor(theme, `accent${(index % 6) + 1}`);
+    return color ? { type: 'solid' as const, color: color.startsWith('#') ? color : `#${color}` } : undefined;
+  });
+}
+
 function readChartInfo(
   graphicData: Element | undefined,
   relationships: Map<string, RelationshipTarget>,
@@ -202,7 +212,11 @@ function readChartInfo(
     const xValues = xCache ? cacheValues(xCache, true) as Array<number | null> : undefined;
     const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
     const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined : undefined;
-    return [{ name, values, ...(xValues ? { xValues } : {}), ...chartSeriesAppearance(ser, index, theme, relationships) }];
+    const appearance = chartSeriesAppearance(ser, index, theme, relationships);
+    const pointFills = (localName === 'pieChart' || localName === 'doughnutChart')
+      ? chartPointFills(ser, values.length, theme, relationships)
+      : undefined;
+    return [{ name, values, ...(xValues ? { xValues } : {}), ...(pointFills ? { pointFills } : {}), ...appearance }];
   }));
   const grouping = direct(chartType, CHART_NS, 'grouping')?.getAttribute('val') as ChartInfo['grouping'] | null;
   const barDirection = localName === 'barChart'

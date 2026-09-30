@@ -1639,18 +1639,23 @@ export class DocxEditor {
       for (const [index, value] of (chart.series[0]?.values ?? []).entries()) {
         const amount = value !== null && value > 0 ? value : 0;
         const next = angle + (total ? amount / total : 0) * Math.PI * 2;
-        const path = add('path', { d: pieSlicePath(angle, next, plot.x + plot.width / 2, plot.y + plot.height / 2, radius, chart.kind === 'doughnut' ? radius * 0.5 : 0), fill: chart.series[0]?.fill?.color ?? 'none', stroke: '#fff', 'stroke-width': '1' });
+        const fill = chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none';
+        const path = add('path', { d: pieSlicePath(angle, next, plot.x + plot.width / 2, plot.y + plot.height / 2, radius, chart.kind === 'doughnut' ? radius * 0.5 : 0), fill, stroke: '#fff', 'stroke-width': '1' });
         path.setAttribute('data-docx-chart-series', '0');
         angle = next;
       }
       chart.categories.forEach((category, index) => {
         if (!category) return;
         add('text', { x: String(plot.x + index * 70 + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = category;
-        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: chart.series[0]?.fill?.color ?? 'none' });
+        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none' });
       });
       return;
     }
     const zeroY = plot.y + plot.height - valueToPx(0, scale, plot.height);
+    const allXValues = chart.series.flatMap((series) => series.xValues?.filter((value): value is number => value !== null && Number.isFinite(value)) ?? []);
+    const xScale = chart.kind === 'scatter' && allXValues.length
+      ? axisTicks(Math.min(...allXValues), Math.max(...allXValues), 5)
+      : undefined;
     const categoryCount = Math.max(chart.categories.length, ...chart.series.map((series) => series.values.length), 0);
     if (chart.kind !== 'scatter' && chart.axes?.category?.visible !== false) {
       chart.categories.forEach((category, index) => {
@@ -1681,8 +1686,6 @@ export class DocxEditor {
         let path = '';
         let started = false;
         const xValues = series.xValues;
-        const finiteX = xValues?.filter((value): value is number => value !== null && Number.isFinite(value)) ?? [];
-        const xScale = finiteX.length ? axisTicks(Math.min(...finiteX), Math.max(...finiteX), 5) : undefined;
         series.values.forEach((value, index) => {
           if (value === null || !Number.isFinite(value)) { started = false; return; }
           const firstSeriesLength = chart.series[0]?.values.length ?? 0;
