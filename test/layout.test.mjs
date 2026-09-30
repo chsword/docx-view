@@ -86,6 +86,15 @@ test('contextual spacing treats two default-style paragraphs as matching', () =>
   assert.equal(paragraphSpacingPx(previous, current).beforePx, 100 * 96 / 1440);
 });
 
+test('contextual spacing only suppresses spacing between matching styles', () => {
+  // 前一段是另一种样式时，它的段后距不能被本段的 contextualSpacing 吞掉
+  const otherStyle = paragraph(0, [10], { style: 'Body', spacingAfter: 300 });
+  const listItem = paragraph(1, [10], { style: 'List', contextualSpacing: true, spacingBefore: 100 });
+  assert.equal(paragraphSpacingPx(otherStyle, listItem).beforePx, 300 * 96 / 1440);
+  const sameStyle = paragraph(0, [10], { style: 'List', spacingAfter: 300 });
+  assert.equal(paragraphSpacingPx(sameStyle, listItem).beforePx, 100 * 96 / 1440);
+});
+
 test('keepNext groups count the following paragraph spacing once', () => {
   const first = paragraph(0, [20], { keepNext: true, spacingAfter: 200 });
   const second = paragraph(1, [20], { spacingAfter: 200 });
