@@ -1682,6 +1682,10 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     if (format[key] === null) removeProperty(props, tag);
     else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
   }
+  if ('emphasisMark' in format) {
+    if (format.emphasisMark === null) removeProperty(props, 'em');
+    else if (format.emphasisMark !== undefined) setWordValue(property(props, 'em'), format.emphasisMark);
+  }
   if ('underline' in format || 'underlineStyle' in format || 'underlineColor' in format) {
     if (format.underline === null || (format.underlineStyle === null &&
         format.underline === undefined && format.underlineColor === undefined)) {
@@ -2291,7 +2295,7 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 }
 
 const RUN_FORMAT_FIELDS = [
-  'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+  'style', 'bold', 'italic', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];

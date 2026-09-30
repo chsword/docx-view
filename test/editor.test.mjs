@@ -2191,6 +2191,68 @@ test('appendRun writes data-docx-run for runs without revisions', () => {
   assert.equal('docxRevisionIds' in runSpan.dataset, false);
 });
 
+test('appendRun renders each emphasis mark with native text-emphasis on repeated revisions', () => {
+  const expected = [
+    ['dot', 'dot', 'over right'],
+    ['comma', 'sesame', 'over right'],
+    ['circle', 'circle', 'over right'],
+    ['underDot', 'dot', 'under right'],
+  ];
+  for (const [mark, cssStyle, position] of expected) {
+    for (let render = 0; render < 2; render++) {
+      const editor = makeRunRenderEditor();
+      const { runSpan } = appendRunToParagraph(editor, {
+        run: { index: render, text: '字', emphasisMark: mark, revisions: [{ id: 8 + render, kind: 'insertion' }] },
+      });
+      assert.equal(runSpan.style.textEmphasisStyle, cssStyle, `${mark} render ${render}`);
+      assert.equal(runSpan.style.textEmphasisPosition, position, `${mark} render ${render}`);
+      assert.equal(runSpan.dataset.docxRevisionIds, String(8 + render));
+    }
+  }
+  const editor = makeRunRenderEditor();
+  const { runSpan } = appendRunToParagraph(editor, { run: { index: 0, text: '字', emphasisMark: 'none' } });
+  assert.equal(runSpan.style.textEmphasisStyle, undefined);
+  assert.equal(runSpan.style.textEmphasisPosition, undefined);
+});
+
+test('paginated paragraph rendering uses snapped line height for its page fragment', () => {
+  const section = {
+    pageWidth: 1500,
+    pageHeight: 1500,
+    margins: { top: 0, right: 0, bottom: 0, left: 0 },
+    columns: { count: 1, space: 0, equalWidth: true },
+    docGrid: { type: 'linesAndChars', linePitch: 300 },
+  };
+  for (let render = 0; render < 2; render++) {
+    const editor = makeRunRenderEditor();
+    editor.paragraphs = new Map();
+    editor.measuring = false;
+    editor.composing = false;
+    editor.renderAfterComposition = false;
+    editor.readText = (content) => content.textContent ?? '';
+    editor.document = { getShapeParagraphs: () => [] };
+    editor.renderShapeInfos = [];
+    const paragraph = {
+      index: 0,
+      text: '字',
+      runs: [{ index: 0, text: '字', emphasisMark: 'underDot', revisions: [{ id: 8, kind: 'insertion' }] }],
+      images: [],
+    };
+    const rendered = editor.makePageContent(
+      { items: [{ type: 'line', paragraph: 0, line: { heightPx: 15, startOffset: 0, endOffset: 1 } }] },
+      section, [], [paragraph], 720, { deletedTextByRun: new Map(), revisionColors: new Map() },
+    );
+    const pageParagraph = rendered.childNodes[0].childNodes[0];
+    const content = pageParagraph.childNodes.find((node) => node.className === 'docx-paragraph-content');
+    const runSpan = content.childNodes.find((node) => node.dataset.docxRun === '0');
+    assert.equal(pageParagraph.style.lineHeight, '20px');
+    assert.equal(pageParagraph.style.minHeight, '20px');
+    assert.equal(runSpan.style.textEmphasisStyle, 'dot');
+    assert.equal(runSpan.style.textEmphasisPosition, 'under right');
+    assert.equal(runSpan.dataset.docxRevisionIds, '8');
+  }
+});
+
 test('appendRun hides hidden text by default and marks it with dashed underline when enabled', () => {
   for (const key of ['hidden', 'webHidden']) {
     for (const showHiddenText of [undefined, false, true]) {

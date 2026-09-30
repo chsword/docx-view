@@ -346,6 +346,8 @@ console.log(tool, result.revision);
 - 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；分页预览是只读的，分页位置在常见文档上尽量贴近 Word，但**不承诺像素级一致**。
 - OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、矩阵、对齐数组及盒 / phantom 等常见元素；`sPre`（前置上下标）按 `msubsup` 近似，**上下标会画在基字符之后而不是之前**——忠实的映射需要 `mmultiscripts` + `mprescripts`，本期未实现；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内公式目前不纳入 `getMath()`，也不在形状文字渲染中显示。
 - 分页预览按栏宽重新度量内容，支持等宽 / 指定宽度分栏与 `nextColumn`，并按表格行跨页 / 跨栏拆分；连续的 `w:tblHeader` 标题行会在每个片段重复，`cantSplit` 行保持完整。
+- run 着重号支持 `w:em` 的 `dot`、`comma`、`circle`、`underDot`（分别使用浏览器原生 `text-emphasis`）；显式 `none` 可关闭继承的着重号。不按竖排文字方向调整着重号位置。
+- 读取节的 `w:docGrid` `type`、`linePitch` 与 `charSpace`；`lines`、`linesAndChars`、`snapToChars` 的 `linePitch` 用于分页行高吸附，`default` 不吸附。`charSpace` 目前只读取并保留，不参与字符宽度计算。
 - 分页预览按节套用页面设置：每一页使用所在节的纸张宽度、页边距、方向、分栏与页眉页脚。连续视图（`viewMode: 'continuous'`，默认）是一条不分页的滚动流，整篇文档**只套用第一节**（`getSection(0)`）的纸张宽度、页边距、方向与分栏数 / 栏间距，页眉页脚也只显示第一节的，其余节的页面设置不会反映在连续视图中——例如「纵向正文 + 一节横向宽表格」的文档，横向那节会按第一节的宽度渲染，分栏数不同的节也按第一节的栏数排。查看多节文档的真实版式请切换到分页视图（`setViewMode('paginated')`）；文档中各节的页面设置本身不受影响，导出时原样保留。
 
 **列表与表格**

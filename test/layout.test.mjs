@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, pageBoxPx, paginate } from '../dist/layout.js';
+import { columnWidthsPx, pageBoxPx, paginate, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -53,6 +53,30 @@ test('paginates lines and honors explicit and paragraph page breaks', () => {
   assert.equal(result.length, 2);
   assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0, 0], [1]]);
   assert.equal(paginate([{ type: 'pageBreak' }, ...blocks(paragraph(2, [10]))], [section()], measurer, { defaultTabStopTwips: 720 }).length, 2);
+});
+
+test('snaps line heights to a valid section document grid', () => {
+  assert.equal(snapLineHeightPx(13, undefined), 13);
+  assert.equal(snapLineHeightPx(13, { type: 'default', linePitch: 300 }), 13);
+  for (const type of ['lines', 'linesAndChars', 'snapToChars']) {
+    const grid = { type, linePitch: 300 };
+    assert.equal(snapLineHeightPx(10, grid), 20);
+    assert.equal(snapLineHeightPx(20, grid), 20);
+    assert.equal(snapLineHeightPx(20.01, grid), 40);
+    assert.equal(snapLineHeightPx(20, { ...grid, linePitch: 0 }), 20);
+    assert.equal(snapLineHeightPx(20, { ...grid, linePitch: -300 }), 20);
+  }
+});
+
+test('paginates split paragraph lines using snapped heights', () => {
+  const lines = Array.from({ length: 12 }, () => 15);
+  const result = paginate(blocks(paragraph(0, lines)), [
+    section({ pageHeight: 1500, docGrid: { type: 'linesAndChars', linePitch: 300, charSpace: 0 } }),
+  ], measurer, { defaultTabStopTwips: 720 });
+  assert.deepEqual(result.map((page) => page.items.filter((item) => item.type === 'line').length), [5, 5, 2]);
+  assert.deepEqual(result.map((page) => page.contentHeightPx), [100, 100, 40]);
+  assert.ok(result.flatMap((page) => page.items).filter((item) => item.type === 'line')
+    .every((item) => item.line.heightPx === 20));
 });
 
 test('keeps a keepNext chain and keepLines paragraph together', () => {

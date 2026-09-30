@@ -4,6 +4,7 @@ export interface RunFormat {
   italic?: boolean | null;
   hidden?: boolean | null;
   webHidden?: boolean | null;
+  emphasisMark?: 'dot' | 'comma' | 'circle' | 'underDot' | 'none' | null;
   underline?: boolean | null;
   underlineStyle?: string | null;
   underlineColor?: string | null;
@@ -446,6 +447,11 @@ export interface SectionInfo {
   orientation: 'portrait' | 'landscape';
   margins: { top: number; right: number; bottom: number; left: number; header: number; footer: number; gutter: number };
   columns: { count: number; space: number; equalWidth: boolean; widths?: number[] };
+  docGrid?: {
+    type: 'default' | 'lines' | 'linesAndChars' | 'snapToChars';
+    linePitch?: number;
+    charSpace?: number;
+  };
   pageNumbering?: { start?: number; format?: string };
   titlePage: boolean;
   headers: Partial<Record<'default' | 'first' | 'even', string>>;

@@ -9,6 +9,9 @@ export const SECTION_ORDER = [
 ] as const;
 
 const SECTION_TYPES = new Set<SectionType>(['nextPage', 'continuous', 'evenPage', 'oddPage', 'nextColumn']);
+const DOC_GRID_TYPES = new Set<NonNullable<SectionInfo['docGrid']>['type']>([
+  'default', 'lines', 'linesAndChars', 'snapToChars',
+]);
 
 function wordNumber(element: Element, name: string): number | undefined {
   const raw = element.getAttributeNS(WORD_NS, name);
@@ -59,6 +62,22 @@ function pageNumbering(sectPr: Element): SectionInfo['pageNumbering'] {
   const start = wordNumber(node, 'start');
   const format = node.getAttributeNS(WORD_NS, 'fmt') ?? undefined;
   return start === undefined && !format ? undefined : { start, format };
+}
+
+function docGrid(sectPr: Element): SectionInfo['docGrid'] {
+  const grid = children(sectPr, 'docGrid')[0];
+  if (!grid) return undefined;
+  const rawType = grid.getAttributeNS(WORD_NS, 'type') || 'default';
+  const type = DOC_GRID_TYPES.has(rawType as NonNullable<SectionInfo['docGrid']>['type'])
+    ? rawType as NonNullable<SectionInfo['docGrid']>['type']
+    : 'default';
+  const linePitch = wordNumber(grid, 'linePitch');
+  const charSpace = wordNumber(grid, 'charSpace');
+  return {
+    type,
+    ...(linePitch !== undefined ? { linePitch } : {}),
+    ...(charSpace !== undefined ? { charSpace } : {}),
+  };
 }
 
 function references(sectPr: Element, name: 'headerReference' | 'footerReference', resolveRelationship: (id: string) => string | undefined):
@@ -137,15 +156,19 @@ export function collectSections(mainDocument: Document): SectionDescriptor[] {
 }
 
 export function readSections(mainDocument: Document, resolveRelationship: (id: string) => string | undefined): SectionInfo[] {
-  return collectSections(mainDocument).map((section, index) => ({
-    index,
-    startParagraph: section.startParagraph,
-    endParagraph: section.endParagraph,
-    type: sectionType(section.sectPr),
-    ...pageSetup(section.sectPr),
-    pageNumbering: pageNumbering(section.sectPr),
-    titlePage: !!children(section.sectPr, 'titlePg')[0],
-    headers: references(section.sectPr, 'headerReference', resolveRelationship),
-    footers: references(section.sectPr, 'footerReference', resolveRelationship),
-  }));
+  return collectSections(mainDocument).map((section, index) => {
+    const grid = docGrid(section.sectPr);
+    return {
+      index,
+      startParagraph: section.startParagraph,
+      endParagraph: section.endParagraph,
+      type: sectionType(section.sectPr),
+      ...pageSetup(section.sectPr),
+      ...(grid ? { docGrid: grid } : {}),
+      pageNumbering: pageNumbering(section.sectPr),
+      titlePage: !!children(section.sectPr, 'titlePg')[0],
+      headers: references(section.sectPr, 'headerReference', resolveRelationship),
+      footers: references(section.sectPr, 'footerReference', resolveRelationship),
+    };
+  });
 }
