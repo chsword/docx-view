@@ -26,7 +26,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, paginate } from './layout.js';
+import { columnWidthsPx, pageBoxPx, paginate } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 
 function twipsToPoints(value: number | null | undefined): string | undefined {
@@ -198,6 +198,42 @@ export function formatPageNumber(number: number, format = 'decimal'): string {
     return String(value).split('').map((digit) => digits[Number(digit)] ?? digit).join('');
   }
   return String(value);
+}
+
+type HeaderFooterKind = keyof SectionInfo['headers'];
+
+/**
+ * Choose which header/footer variant a physical page shows and which part
+ * backs it. Without a page number (continuous view) the caller's selected
+ * kind is kept; a missing variant falls back to the default part.
+ */
+export function selectHeaderFooter(
+  parts: SectionInfo['headers'],
+  options: { selectedKind: HeaderFooterKind; pageNumber?: number; firstPhysicalPage?: boolean; titlePage?: boolean },
+): { kind: HeaderFooterKind; part: string | undefined } {
+  const kind: HeaderFooterKind = options.pageNumber === undefined
+    ? options.selectedKind
+    : options.firstPhysicalPage && options.titlePage ? 'first' : options.pageNumber % 2 === 0 ? 'even' : 'default';
+  return { kind, part: parts[kind] ?? parts.default };
+}
+
+/** Replace the result runs of PAGE / NUMPAGES fields with the physical page values; other runs are untouched. */
+export function replacePageFields(blocks: DocumentBlock[], pageNumber: number, pageCount: number | undefined, format?: string): DocumentBlock[] {
+  return blocks.map((block) => {
+    if (block.type !== 'paragraph') return block;
+    return {
+      ...block,
+      paragraph: {
+        ...block.paragraph,
+        runs: block.paragraph.runs.map((run) => {
+          const kind = run.field?.role === 'result' ? run.field.kind : undefined;
+          return kind === 'PAGE' || kind === 'NUMPAGES'
+            ? { ...run, text: formatPageNumber(kind === 'PAGE' ? pageNumber : pageCount ?? 0, format) }
+            : run;
+        }),
+      },
+    };
+  });
 }
 
 export function deriveLineBoxes(rects: Array<{ top: number; height: number; start: number; end: number }>): LineBox[] {
@@ -1034,9 +1070,10 @@ export class DocxEditor {
       pageElement.className = 'docx-page';
       pageElement.contentEditable = 'false';
       pageElement.dataset.page = String(page.number);
-      pageElement.style.width = `${section.pageWidth * 96 / 1440}px`;
-      pageElement.style.minHeight = `${section.pageHeight * 96 / 1440}px`;
-      pageElement.style.padding = `${section.margins.top * 96 / 1440}px ${section.margins.right * 96 / 1440}px ${section.margins.bottom * 96 / 1440}px ${section.margins.left * 96 / 1440}px`;
+      const box = pageBoxPx(section);
+      pageElement.style.width = `${box.widthPx}px`;
+      pageElement.style.minHeight = `${box.heightPx}px`;
+      pageElement.style.padding = `${box.padding.top}px ${box.padding.right}px ${box.padding.bottom}px ${box.padding.left}px`;
       pageElement.style.boxSizing = 'border-box';
       pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length, firstPhysicalPage));
       const body = this.makePageContent(page, section, blocks, paragraphs, defaultTabStopTwips, reviewContext);
@@ -1079,39 +1116,23 @@ export class DocxEditor {
   }
 
   private makeHeaderFooter(type: 'header' | 'footer', sectionIndex = 0, pageNumber?: number, pageCount?: number, firstPhysicalPage = false): HTMLElement {
-    let kind = type === 'header' ? this.headerKind : this.footerKind;
-    let map: Partial<Record<'default' | 'first' | 'even', string>> = {};
+    const selectedKind = type === 'header' ? this.headerKind : this.footerKind;
+    let kind = selectedKind;
+    let part: string | undefined;
+    let format: string | undefined;
     try {
       const section = this.document.getSection(sectionIndex);
-      if (pageNumber !== undefined) {
-        kind = firstPhysicalPage && section.titlePage ? 'first' : pageNumber % 2 === 0 ? 'even' : 'default';
-      }
-      map = type === 'header' ? section.headers : section.footers;
+      ({ kind, part } = selectHeaderFooter(type === 'header' ? section.headers : section.footers, {
+        selectedKind, pageNumber, firstPhysicalPage, titlePage: section.titlePage,
+      }));
+      format = section.pageNumbering?.format;
     } catch {
-      map = {};
+      part = undefined;
     }
-    const part = map[kind] ?? map.default;
     let blocks = type === 'header'
       ? this.document.getHeaderBlocks(sectionIndex, kind)
       : this.document.getFooterBlocks(sectionIndex, kind);
-    if (pageNumber !== undefined) {
-      const replaceFields = (block: DocumentBlock): DocumentBlock => {
-        if (block.type !== 'paragraph') return block;
-        return {
-          ...block,
-          paragraph: {
-            ...block.paragraph,
-            runs: block.paragraph.runs.map((run) => {
-              const kind = run.field?.role === 'result' ? run.field.kind : undefined;
-              return kind === 'PAGE' || kind === 'NUMPAGES'
-                ? { ...run, text: formatPageNumber(kind === 'PAGE' ? pageNumber : pageCount ?? 0, this.document.getSection(sectionIndex).pageNumbering?.format) }
-                : run;
-            }),
-          },
-        };
-      };
-      blocks = blocks.map(replaceFields);
-    }
+    if (pageNumber !== undefined) blocks = replacePageFields(blocks, pageNumber, pageCount, format);
     const partXml = part ? this.document.getPartXml(part) : '';
     const plainEditable = !!part && !/<w:(tbl|fldSimple|fldChar|drawing|hyperlink|object|pict|sdt|customXml|smartTag|ins|del)\b/.test(partXml);
     const area = this.root.ownerDocument.createElement('div');
