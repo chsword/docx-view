@@ -2555,6 +2555,70 @@ test('theme fonts and shaded theme colors are resolved from theme1.xml', () => {
   assert.equal(run.effective.color, '800000');
 });
 
+test('settings clrSchemeMapping overrides the default theme color slots', () => {
+  const body = '<w:p><w:r><w:rPr><w:color w:themeColor="background1"/></w:rPr><w:t>background</w:t></w:r><w:r><w:rPr><w:u w:themeColor="text1"/></w:rPr><w:t>underline</w:t></w:r></w:p>';
+  const styles = `<w:styles xmlns:w="${WORD_NS}"/>`;
+  const theme = `<a:theme xmlns:a="${A_NS}"><a:themeElements><a:clrScheme><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1></a:clrScheme></a:themeElements></a:theme>`;
+  const defaults = withStyles(body, styles, theme);
+  const mapped = withStyles(body, styles, theme);
+  mapped.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:clrSchemeMapping w:bg1="dark1" w:t1="light1"/></w:settings>`), SETTINGS_TYPE);
+
+  assert.equal(defaults.getParagraphs()[0].runs[0].effective.color, 'FFFFFF');
+  assert.equal(defaults.getParagraphs()[0].runs[1].underlineColor, '000000');
+  assert.equal(mapped.getParagraphs()[0].runs[0].effective.color, '000000');
+  assert.equal(mapped.getParagraphs()[0].runs[1].underlineColor, 'FFFFFF');
+  assert.deepEqual(mapped.getThemeSettings().clrSchemeMapping, { bg1: 'dark1', t1: 'light1' });
+});
+
+test('theme metadata is exposed without changing theme font resolution or styles', () => {
+  const body = '<w:p><w:pPr><w:pStyle w:val="ThemeStyle"/></w:pPr><w:r><w:t>Theme</w:t></w:r></w:p>';
+  const plainStyles = `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="ThemeStyle"><w:name w:val="Theme Style"/><w:rPr><w:rFonts w:eastAsiaTheme="minorEastAsia"/><w:color w:themeColor="accent1"/></w:rPr></w:style></w:styles>`;
+  const latentStyles = `<w:styles xmlns:w="${WORD_NS}"><w:latentStyles w:defLockedState="0" w:defUIPriority="99" w:defSemiHidden="1" w:defUnhideWhenUsed="0" w:defQFormat="1" w:count="1"><w:lsdException w:name="Heading1" w:locked="0" w:uiPriority="1" w:semiHidden="1" w:unhideWhenUsed="0" w:qFormat="1"/></w:latentStyles><w:style w:type="paragraph" w:styleId="ThemeStyle"><w:name w:val="Theme Style"/><w:rPr><w:rFonts w:eastAsiaTheme="minorEastAsia"/><w:color w:themeColor="accent1"/></w:rPr></w:style></w:styles>`;
+  const theme = `<a:theme xmlns:a="${A_NS}"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="123456"/></a:accent1></a:clrScheme><a:fontScheme><a:minorFont><a:latin typeface="Minor Latin"/><a:ea typeface="Minor East Asia"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>`;
+  const baseline = withStyles(body, plainStyles, theme);
+  const doc = withStyles(body, latentStyles, theme);
+  const settingsXml = `<w:settings xmlns:w="${WORD_NS}"><w:themeFontLang w:val="en-US" w:eastAsia="ja-JP" w:bidi="ar-SA"/></w:settings>`;
+  doc.addPart('word/settings.xml', encoder.encode(settingsXml), SETTINGS_TYPE);
+  const stylesBefore = doc.getPartXml('word/styles.xml');
+  const settingsBefore = doc.getPartXml('word/settings.xml');
+
+  assert.deepEqual(doc.getThemeSettings(), {
+    themeFontLang: { val: 'en-US', eastAsia: 'ja-JP', bidi: 'ar-SA' },
+    latentStyles: {
+      defaultLockedState: false,
+      defaultUiPriority: 99,
+      defaultSemiHidden: true,
+      defaultUnhideWhenUsed: false,
+      defaultQFormat: true,
+      count: 1,
+      exceptions: [{
+        name: 'Heading1',
+        locked: false,
+        uiPriority: 1,
+        semiHidden: true,
+        unhideWhenUsed: false,
+        qFormat: true,
+      }],
+    },
+  });
+  assert.deepEqual(doc.getParagraphs()[0].effective, baseline.getParagraphs()[0].effective);
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.fontFamilyEastAsia, 'Minor East Asia');
+  assert.equal(baseline.getParagraphs()[0].runs[0].effective.fontFamilyEastAsia, 'Minor East Asia');
+  assert.equal(doc.getPartXml('word/styles.xml'), stylesBefore);
+  assert.equal(doc.getPartXml('word/settings.xml'), settingsBefore);
+
+  const exposed = doc.getThemeSettings();
+  exposed.latentStyles.exceptions[0].name = 'Changed';
+  assert.equal(doc.getThemeSettings().latentStyles.exceptions[0].name, 'Heading1');
+});
+
+test('theme settings read safely when settings and metadata elements are absent', () => {
+  assert.deepEqual(DocxDocument.create().getThemeSettings(), {});
+  const doc = withStyles('<w:p><w:r><w:t>plain</w:t></w:r></w:p>', `<w:styles xmlns:w="${WORD_NS}"/>`);
+  doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"/>`), SETTINGS_TYPE);
+  assert.deepEqual(doc.getThemeSettings(), {});
+});
+
 test('theme tint moves colors toward white with Word-compatible math', () => {
   const doc = withStyles(
     '<w:p><w:pPr><w:pStyle w:val="Tinted"/></w:pPr><w:r><w:t>Tint</w:t></w:r></w:p>',

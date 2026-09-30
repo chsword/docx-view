@@ -94,6 +94,8 @@ console.log(reopened.getSnapshot());
 分页与连续视图使用同一套段落间距计算：相邻段落的 `before` / `after` 取较大值（首段的 `before` 和末段的 `after` 仍保留）。`contextualSpacing` 在相邻段落样式相同处抑制该间距；`beforeLines` / `afterLines` 和 `autospacing` 会无损读取并写回，但当前不参与排版（行单位需要实际行高，autospacing 的 Word 算法也不在布局度量器中）。分页视图读取节级行号和页面边框；行号按分页后的行顺序（跨栏按流项目顺序）计算，`suppressLineNumbers` 的段落跳过且不占号，连续视图不显示行号。节的 `vAlign` 支持 `top`、`center`、`bottom`；`both` 当前退化为 `top`。
 
 `getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
+
+`getThemeSettings()` 读取 `settings.xml` 的 `w:clrSchemeMapping` 和 `w:themeFontLang`，以及 `styles.xml` 的 `w:latentStyles`。颜色槽位映射参与主题色解析；替换主题关系指向的主题部件（通常名为 `theme1.xml`）即可切换当前主题。`themeFontLang` 与 `latentStyles` 只暴露为元数据，不参与字体选择或排版；主题字体仍按主题中声明的脚本槽位解析。
 | `getNumberingDefinitions()` | 读取 `word/numbering.xml` 中已解析的编号定义 |
 | `setParagraphNumbering(index, numId, level?)` | 为段落绑定指定编号定义与级别（默认 0） |
 | `clearParagraphNumbering(index)` | 清除段落上的直接编号绑定 |

@@ -1,5 +1,5 @@
 import type { Element } from '@xmldom/xmldom';
-import type { BorderSide, CompatibilitySettings, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop } from './types.js';
+import type { BorderSide, CompatibilitySettings, ColorSchemeMapping, LatentStyles, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop, ThemeFontLanguages, ThemeSettings } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
@@ -36,6 +36,7 @@ type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol' | 'band1Ho
 export interface ThemeInfo {
   colors: Record<string, string>;
   fonts: Record<string, string>;
+  colorSchemeMapping?: ColorSchemeMapping;
 }
 
 interface TableStyleLayer {
@@ -78,6 +79,7 @@ export interface StylesContext {
   defaults: Partial<Record<StyleType, string>>;
   theme: ThemeInfo;
   compatibilitySettings?: CompatibilitySettings;
+  themeSettings: ThemeSettings;
   _tableMeta?: WeakMap<Element, TableMeta>;
   _tableContext?: WeakMap<Element, TableContext>;
   _paragraphContext?: WeakMap<Element, ParagraphContext>;
@@ -238,13 +240,42 @@ function applyShadeTint(hex: string | undefined, shade: string | undefined, tint
 }
 
 const THEME_COLOR_ALIASES: Record<string, string> = {
-  text1: 'dk1', background1: 'lt1', text2: 'dk2', background2: 'lt2',
-  tx1: 'dk1', bg1: 'lt1', tx2: 'dk2', bg2: 'lt2',
+  text1: 't1', tx1: 't1', background1: 'bg1', bg1: 'bg1',
+  text2: 't2', tx2: 't2', background2: 'bg2', bg2: 'bg2',
 };
 
+const DEFAULT_THEME_COLOR_MAPPING: Record<string, string> = {
+  t1: 'dk1',
+  bg1: 'lt1',
+  t2: 'dk2',
+  bg2: 'lt2',
+  accent1: 'accent1',
+  accent2: 'accent2',
+  accent3: 'accent3',
+  accent4: 'accent4',
+  accent5: 'accent5',
+  accent6: 'accent6',
+  hyperlink: 'hlink',
+  followedHyperlink: 'folHlink',
+};
+
+const THEME_COLOR_NAMES: Record<string, string> = {
+  dark1: 'dk1',
+  light1: 'lt1',
+  dark2: 'dk2',
+  light2: 'lt2',
+  followedHyperlink: 'folHlink',
+  hyperlink: 'hlink',
+};
+
+function resolveThemeColorName(theme: ThemeInfo, name: string | undefined): string {
+  const slot = THEME_COLOR_ALIASES[name ?? ''] ?? name ?? '';
+  const mapped = theme.colorSchemeMapping?.[slot] ?? DEFAULT_THEME_COLOR_MAPPING[slot] ?? slot;
+  return THEME_COLOR_NAMES[mapped] ?? mapped;
+}
+
 function resolveThemeValue(theme: ThemeInfo, name: string | undefined, shade: string | undefined, tint: string | undefined, percentageValues = false): string | undefined {
-  const key = THEME_COLOR_ALIASES[name ?? ''] ?? name ?? '';
-  return applyShadeTint(theme.colors[key], shade, tint, percentageValues);
+  return applyShadeTint(theme.colors[resolveThemeColorName(theme, name)], shade, tint, percentageValues);
 }
 
 function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
@@ -272,13 +303,7 @@ function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): 
   if (!element) return undefined;
   const direct = normalizeHex(wordAttr(element, 'color'));
   if (direct && direct.toLowerCase() !== 'auto') return direct;
-  const themeColor = {
-    text1: 'dk1',
-    background1: 'lt1',
-    text2: 'dk2',
-    background2: 'lt2',
-  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
-  return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
+  return resolveThemeValue(theme, wordAttr(element, 'themeColor'), wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
 }
 
 function resolveThemeFont(theme: ThemeInfo, value: string | undefined, fallback?: string): string | undefined {
@@ -406,8 +431,8 @@ function themeColorValue(node: Element | undefined): string | undefined {
     ?? normalizeHex(node.getAttribute('lastClr') ?? undefined);
 }
 
-function parseTheme(themeElement: Element | undefined): ThemeInfo {
-  if (!themeElement) return { colors: { ...DEFAULT_THEME_COLORS }, fonts: { ...DEFAULT_THEME_FONTS } };
+function parseTheme(themeElement: Element | undefined, colorSchemeMapping?: ColorSchemeMapping): ThemeInfo {
+  if (!themeElement) return { colors: { ...DEFAULT_THEME_COLORS }, fonts: { ...DEFAULT_THEME_FONTS }, colorSchemeMapping };
   const colorScheme = Array.from(themeElement.getElementsByTagNameNS(DRAWINGML_NS, 'clrScheme'))[0];
   const fontScheme = Array.from(themeElement.getElementsByTagNameNS(DRAWINGML_NS, 'fontScheme'))[0];
   const colors = { ...DEFAULT_THEME_COLORS };
@@ -439,17 +464,102 @@ function parseTheme(themeElement: Element | undefined): ThemeInfo {
     fonts[`${prefix}EastAsia`] = ea?.getAttribute('typeface') || latinTypeface;
     fonts[`${prefix}Bidi`] = cs?.getAttribute('typeface') || fonts[`${prefix}Bidi`] || latinTypeface;
   }
-  return { colors, fonts };
+  return { colors, fonts, colorSchemeMapping };
 }
 
 function parseStyleType(value: string | undefined): StyleType | undefined {
   return ['paragraph', 'character', 'table', 'numbering'].includes(value ?? '') ? value as StyleType : undefined;
 }
 
-export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element, compatibilitySettings?: CompatibilitySettings): StylesContext {
-  const theme = parseTheme(themeRoot);
+const COLOR_SCHEME_SLOTS = [
+  'bg1', 't1', 'bg2', 't2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6',
+  'hyperlink', 'followedHyperlink',
+] as const;
+
+function readColorSchemeMapping(settingsRoot: Element | undefined): ColorSchemeMapping | undefined {
+  if (!settingsRoot) return undefined;
+  const mappingElement = children(settingsRoot, 'clrSchemeMapping')[0];
+  if (!mappingElement) return undefined;
+  const mapping: ColorSchemeMapping = {};
+  for (const slot of COLOR_SCHEME_SLOTS) {
+    const value = wordAttr(mappingElement, slot);
+    if (value !== undefined) mapping[slot] = value;
+  }
+  return Object.keys(mapping).length ? mapping : undefined;
+}
+
+function readThemeFontLanguages(settingsRoot: Element | undefined): ThemeFontLanguages | undefined {
+  if (!settingsRoot) return undefined;
+  const element = children(settingsRoot, 'themeFontLang')[0];
+  if (!element) return undefined;
+  const languages: ThemeFontLanguages = {};
+  const val = wordAttr(element, 'val');
+  const eastAsia = wordAttr(element, 'eastAsia');
+  const bidi = wordAttr(element, 'bidi');
+  if (val !== undefined) languages.val = val;
+  if (eastAsia !== undefined) languages.eastAsia = eastAsia;
+  if (bidi !== undefined) languages.bidi = bidi;
+  return Object.keys(languages).length ? languages : undefined;
+}
+
+function readLatentStyles(stylesRoot: Element | undefined): LatentStyles | undefined {
+  if (!stylesRoot) return undefined;
+  const element = children(stylesRoot, 'latentStyles')[0];
+  if (!element) return undefined;
+  const number = (name: string): number | undefined => {
+    const result = readNumber(wordAttr(element, name));
+    return result !== undefined && result >= 0 ? result : undefined;
+  };
+  const bool = (node: Element, name: string): boolean | undefined => {
+    const value = wordAttr(node, name);
+    return value === undefined ? undefined : readOnOffValue(value);
+  };
+  const result: LatentStyles = {
+    exceptions: children(element, 'lsdException').flatMap((exception) => {
+      const name = wordAttr(exception, 'name');
+      if (name === undefined) return [];
+      const uiPriority = readNumber(wordAttr(exception, 'uiPriority'));
+      return [{
+        name,
+        ...(bool(exception, 'locked') !== undefined ? { locked: bool(exception, 'locked') } : {}),
+        ...(uiPriority !== undefined && uiPriority >= 0 ? { uiPriority } : {}),
+        ...(bool(exception, 'semiHidden') !== undefined ? { semiHidden: bool(exception, 'semiHidden') } : {}),
+        ...(bool(exception, 'unhideWhenUsed') !== undefined ? { unhideWhenUsed: bool(exception, 'unhideWhenUsed') } : {}),
+        ...(bool(exception, 'qFormat') !== undefined ? { qFormat: bool(exception, 'qFormat') } : {}),
+      }];
+    }),
+  };
+  const defaultLockedState = bool(element, 'defLockedState');
+  const defaultUiPriority = number('defUIPriority');
+  const defaultSemiHidden = bool(element, 'defSemiHidden');
+  const defaultUnhideWhenUsed = bool(element, 'defUnhideWhenUsed');
+  const defaultQFormat = bool(element, 'defQFormat');
+  const count = number('count');
+  if (defaultLockedState !== undefined) result.defaultLockedState = defaultLockedState;
+  if (defaultUiPriority !== undefined) result.defaultUiPriority = defaultUiPriority;
+  if (defaultSemiHidden !== undefined) result.defaultSemiHidden = defaultSemiHidden;
+  if (defaultUnhideWhenUsed !== undefined) result.defaultUnhideWhenUsed = defaultUnhideWhenUsed;
+  if (defaultQFormat !== undefined) result.defaultQFormat = defaultQFormat;
+  if (count !== undefined) result.count = count;
+  return result;
+}
+
+function readThemeSettings(settingsRoot: Element | undefined, stylesRoot: Element | undefined): ThemeSettings {
+  const clrSchemeMapping = readColorSchemeMapping(settingsRoot);
+  const themeFontLang = readThemeFontLanguages(settingsRoot);
+  const latentStyles = readLatentStyles(stylesRoot);
+  return {
+    ...(clrSchemeMapping ? { clrSchemeMapping } : {}),
+    ...(themeFontLang ? { themeFontLang } : {}),
+    ...(latentStyles ? { latentStyles } : {}),
+  };
+}
+
+export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element, compatibilitySettings?: CompatibilitySettings, settingsRoot?: Element): StylesContext {
+  const themeSettings = readThemeSettings(settingsRoot, stylesRoot);
+  const theme = parseTheme(themeRoot, themeSettings.clrSchemeMapping);
   if (!stylesRoot || stylesRoot.namespaceURI !== WORD_NS || stylesRoot.localName !== 'styles') {
-    return { docDefaults: { paragraph: {}, run: {} }, styles: [], byId: new Map(), defaults: {}, theme, compatibilitySettings };
+    return { docDefaults: { paragraph: {}, run: {} }, styles: [], byId: new Map(), defaults: {}, theme, compatibilitySettings, themeSettings };
   }
   const docDefaults = children(stylesRoot, 'docDefaults')[0];
   const paragraphDefault = readParagraphProperties(children(children(docDefaults ?? stylesRoot, 'pPrDefault')[0] ?? stylesRoot, 'pPr')[0]);
@@ -494,6 +604,7 @@ export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element
     defaults,
     theme,
     compatibilitySettings,
+    themeSettings,
   };
 }
 

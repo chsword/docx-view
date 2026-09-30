@@ -644,6 +644,41 @@ export interface CompatibilitySettings {
   other?: Record<string, boolean>;
 }
 
+export interface ColorSchemeMapping {
+  [slot: string]: string;
+}
+
+export interface ThemeFontLanguages {
+  val?: string;
+  eastAsia?: string;
+  bidi?: string;
+}
+
+export interface LatentStyleException {
+  name: string;
+  locked?: boolean;
+  uiPriority?: number;
+  semiHidden?: boolean;
+  unhideWhenUsed?: boolean;
+  qFormat?: boolean;
+}
+
+export interface LatentStyles {
+  defaultLockedState?: boolean;
+  defaultUiPriority?: number;
+  defaultSemiHidden?: boolean;
+  defaultUnhideWhenUsed?: boolean;
+  defaultQFormat?: boolean;
+  count?: number;
+  exceptions: LatentStyleException[];
+}
+
+export interface ThemeSettings {
+  clrSchemeMapping?: ColorSchemeMapping;
+  themeFontLang?: ThemeFontLanguages;
+  latentStyles?: LatentStyles;
+}
+
 export interface NoteInfo {
   id: number;
   kind: 'footnote' | 'endnote';
