@@ -18,3 +18,19 @@ test('the bookmark module stays a leaf with only its declared dependencies', () 
   assert.match(text, /interface BookmarkContext extends Pick<PartAccess, 'mainPath' \| 'getPartDocument' \| 'updatePartXml'>/);
   assert.match(text, /getBookmarks: Bound<typeof getBookmarks>/);
 });
+
+test('the content-control module stays a leaf with only its declared dependencies', () => {
+  const text = source('../src/content-control.ts');
+  assert.deepEqual(imports(text), [
+    '@xmldom/xmldom',
+    './types.js',
+    './internal/context.js',
+    './operations.js',
+    './xml.js',
+    './internal/elements.js',
+    './revisions.js',
+  ]);
+  assert.match(text, /interface ContentControlContext extends Pick<PartAccess, 'mainPath'>/);
+  assert.match(text, /getCachedPartDocument\(path: string\): Document/);
+  assert.match(text, /updatePartXmlInternal\(path: string/);
+});

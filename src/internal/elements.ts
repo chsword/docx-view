@@ -53,6 +53,10 @@ export function mainParagraphElements(body: Element): Element[] {
   });
 }
 
+export function compactDefined<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
 export function partDirectory(path: string): string {
   const index = path.lastIndexOf('/');
   return index === -1 ? '' : path.slice(0, index);
