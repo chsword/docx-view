@@ -211,7 +211,10 @@ function linear(node: MathMlNode): string {
     case 'msup': return `${c[0] ?? ''}^${c[1] ?? ''}`;
     case 'msub': return `${c[0] ?? ''}_${c[1] ?? ''}`;
     case 'msubsup': return `${c[0] ?? ''}_${c[1] ?? ''}^${c[2] ?? ''}`;
-    case 'mmultiscripts': return `_${c[2] ?? ''}^${c[3] ?? ''}${c[0] ?? ''}`;
+    case 'mmultiscripts': {
+      const pre = `${c[2] ? `_${c[2]}` : ''}${c[3] ? `^${c[3]}` : ''}`;
+      return `${pre}${c[0] ?? ''}`;
+    }
     case 'msqrt': return `√(${c[0] ?? ''})`;
     case 'mroot': return `${c[1] ?? ''}√(${c[0] ?? ''})`;
     case 'munderover': return `${c[0] ?? ''}_(${c[1] ?? ''})^(${c[2] ?? ''})`;

@@ -51,6 +51,8 @@ test('renders sPre with preceding scripts and preserves empty placeholders', () 
 
   const missing = ommlToMathMl(parse('<m:sPre><m:e><m:r><m:t>U</m:t></m:r></m:e></m:sPre>')).children[0];
   assert.deepEqual(missing.children.map((child) => child.tag), ['mi', 'mprescripts', 'mrow', 'mrow']);
+  assert.equal(ommlToLinearText(parse('<m:sPre><m:e><m:r><m:t>X</m:t></m:r></m:e><m:sub><m:r><m:t>a</m:t></m:r></m:sub></m:sPre>')), '_aX');
+  assert.equal(ommlToLinearText(parse('<m:sPre><m:e><m:r><m:t>X</m:t></m:r></m:e><m:sup><m:r><m:t>b</m:t></m:r></m:sup></m:sPre>')), '^bX');
 });
 
 test('converts block, scripts, functions, limits, accents, tables, and boxes', () => {
