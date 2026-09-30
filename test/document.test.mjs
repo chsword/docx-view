@@ -2180,6 +2180,41 @@ test('getFields parses complex fields and excludes instructions from run text', 
   assert.equal(doc.getParagraphs()[0].runs[2].text, '');
 });
 
+test('fields classify merge and legacy form fields and preserve user values on update', () => {
+  const complexField = (instruction, ffData, result) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin">${ffData}</w:fldChar></w:r>` +
+    `<w:r><w:instrText>${instruction}</w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>${result}</w:t></w:r>` +
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>';
+  const doc = withBody([
+    complexField(' MERGEFIELD 姓名 \\* MERGEFORMAT ', '', '«姓名»'),
+    complexField(' FORMTEXT ', '<w:ffData><w:name w:val="name"/><w:enabled w:val="0"/><w:helpText w:val="Help"/><w:statusText w:val="Status"/><w:entryMacro w:val="EnterMacro"/><w:exitMacro w:val="ExitMacro"/><w:textInput><w:type w:val="text"/><w:default w:val="Default name"/><w:maxLength w:val="40"/><w:format w:val="0"/></w:textInput></w:ffData>', 'User name'),
+    complexField(' FORMCHECKBOX ', '<w:ffData><w:name w:val="terms"/><w:checkBox><w:sizeAuto/><w:size w:val="20"/><w:default w:val="0"/><w:checked w:val="1"/></w:checkBox></w:ffData>', ''),
+    complexField(' FORMDROPDOWN ', '<w:ffData><w:name w:val="choice"/><w:ddList w:default="1" w:result="0"><w:listEntry w:val="First"/><w:listEntry w:val="Second"/></w:ddList></w:ffData>', 'First'),
+  ].join(''));
+  const fields = doc.getFields();
+  assert.deepEqual(fields.map(field => field.kind), ['MERGEFIELD', 'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN']);
+  assert.equal(fields[0].mergeFieldName, '姓名');
+  assert.ok(fields.every(field => !field.evaluable));
+  assert.deepEqual(fields[1].formField, {
+    kind: 'text', name: 'name', enabled: false, helpText: 'Help', statusText: 'Status',
+    entryMacro: 'EnterMacro', exitMacro: 'ExitMacro',
+    text: { type: 'text', default: 'Default name', maxLength: 40, format: '0' },
+  });
+  assert.deepEqual(fields[2].formField, {
+    kind: 'checkBox', name: 'terms', checkBox: { sizeAuto: true, sizePt: 10, default: false, checked: true },
+  });
+  assert.deepEqual(fields[3].formField, {
+    kind: 'dropDown', name: 'choice', dropDown: { entries: ['First', 'Second'], default: 1, result: 0 },
+  });
+  const before = fields.map(field => field.result);
+  assert.equal(doc.updateFields(), false);
+  assert.deepEqual(doc.getFields().map(field => field.result), before);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /w:entryMacro w:val="EnterMacro"/);
+  assert.match(xml, /w:exitMacro w:val="ExitMacro"/);
+});
+
 test('updateFields updates SEQ and DATE but preserves pagination and unsafe fields', () => {
   const doc = withBody(
     `<w:p><w:fldSimple w:instr=" SEQ 图 \\* ARABIC "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p>` +

@@ -65,6 +65,40 @@ test('bullet numbering parses marker font and visible bullet text', () => {
   assert.equal(numbering.runFormat.fontFamily, 'Symbol');
 });
 
+test('picture bullets resolve their own image relationship and survive package roundtrip', async () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Item</w:t></w:r></w:p>');
+  const numberingXml = `<w:numbering xmlns:w="${WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml"><w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rBullet"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="▪"/><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`;
+  attachNumbering(doc, numberingXml);
+  doc.addPart('word/media/bullet.png', Uint8Array.of(1, 2, 3), 'image/png');
+  doc.addPart('word/_rels/numbering.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.png"/></Relationships>`), RELS_TYPE);
+  const image = doc.getParagraphs()[0].numbering.image;
+  assert.equal(image.relationshipId, 'rBullet');
+  assert.equal(image.partPath, 'word/media/bullet.png');
+  assert.equal(image.sourcePartPath, 'word/numbering.xml');
+  assert.equal(image.isExternal, false);
+  assert.equal(doc.getImageDataUrl(image), 'data:image/png;base64,AQID');
+  const xml = doc.getPartXml('word/numbering.xml');
+  const reloaded = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reloaded.getPartXml('word/numbering.xml'), xml);
+  assert.match(reloaded.getPartXml('word/numbering.xml'), /w:numPicBulletId="5"/);
+  assert.match(reloaded.getPartXml('word/numbering.xml'), /w:lvlPicBulletId w:val="5"/);
+});
+
+test('external picture bullets are placeholders and missing pictures fall back to marker text', () => {
+  const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Item</w:t></w:r></w:p>');
+  const numberingXml = `<w:numbering xmlns:w="${WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml"><w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rBullet"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="▪"/><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`;
+  attachNumbering(doc, numberingXml);
+  doc.addPart('word/_rels/numbering.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/bullet.png" TargetMode="External"/></Relationships>`), RELS_TYPE);
+  const image = doc.getParagraphs()[0].numbering.image;
+  assert.equal(image.isExternal, true);
+  assert.match(doc.getImageDataUrl(image), /^data:image\/svg\+xml;base64,/);
+
+  const missing = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Item</w:t></w:r></w:p>');
+  attachNumbering(missing, numberingXml);
+  assert.equal(missing.getParagraphs()[0].numbering.text, '▪');
+  assert.equal(missing.getParagraphs()[0].numbering.image, undefined);
+});
+
 test('numbering counts main-body paragraphs including table cells', () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>C</w:t></w:r></w:p>');
   attachNumbering(doc, `<w:numbering xmlns:w="${WORD_NS}"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);

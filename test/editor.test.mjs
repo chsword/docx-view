@@ -2521,6 +2521,108 @@ test('field runs retain roles, hide instruction text, and shade results only whe
   }
 });
 
+test('legacy form fields render checkbox states and fallback values as non-editable marks', () => {
+  for (const [checked, glyph] of [[true, '☑'], [false, '☐']]) {
+    const editor = makeRunRenderEditor();
+    editor.renderFieldInfos = new Map([[4, {
+      index: 4, result: '', resultRuns: [1],
+      formField: { kind: 'checkBox', checkBox: { checked } },
+    }]]);
+    const { runSpan } = appendRunToParagraph(editor, {
+      run: { index: 1, text: '', field: { index: 4, role: 'result', kind: 'FORMCHECKBOX' } },
+    });
+    const checkbox = runSpan.childNodes[0];
+    assert.equal(checkbox.className, 'docx-form-checkbox');
+    assert.equal(checkbox.contentEditable, 'false');
+    assert.equal(checkbox.attributes.get('data-docx-mark'), '1');
+    assert.equal(checkbox.textContent, glyph);
+    assert.equal(editor.readText(runSpan), '');
+  }
+
+  const editor = makeRunRenderEditor();
+  editor.renderFieldInfos = new Map([[5, {
+    index: 5, result: '', resultRuns: [2],
+    formField: { kind: 'text', text: { default: 'Enter value' } },
+  }]]);
+  const { runSpan } = appendRunToParagraph(editor, {
+    run: { index: 2, text: '', field: { index: 5, role: 'result', kind: 'FORMTEXT' } },
+  });
+  assert.equal(runSpan.childNodes[0].textContent, 'Enter value');
+  assert.equal(runSpan.childNodes[0].attributes.get('data-docx-mark'), '1');
+  assert.equal(editor.readText(runSpan), '');
+
+  editor.renderFieldInfos = new Map([[6, {
+    index: 6, result: '', resultRuns: [3],
+    formField: { kind: 'dropDown', dropDown: { default: 1, entries: ['First', 'Second'] } },
+  }]]);
+  const dropdown = appendRunToParagraph(editor, {
+    run: { index: 3, text: '', field: { index: 6, role: 'result', kind: 'FORMDROPDOWN' } },
+  }).runSpan;
+  assert.equal(dropdown.childNodes[0].textContent, 'Second');
+  assert.equal(dropdown.childNodes[0].attributes.get('data-docx-mark'), '1');
+});
+
+test('picture bullet markers render safe images and fall back to their text', () => {
+  const image = {
+    id: 'numbering:1', paragraph: -1, run: -1, relationshipId: 'rBullet',
+    widthEmu: 152400, heightEmu: 152400, widthPx: 16, heightPx: 16,
+    placement: 'inline', isExternal: true,
+  };
+  const document = DocxDocument.create();
+  const externalPlaceholder = document.getImageDataUrl(image);
+  const makeNumberedParagraph = getImageDataUrl => {
+    const editor = makeRunRenderEditor();
+    editor.document = { getImageDataUrl };
+    editor.measuring = true;
+    editor.compatibilitySettings = {};
+    editor.reviewScopedRun = (_paragraph, run) => run;
+    editor.runIsHidden = () => false;
+    editor.commentParagraphIds = new Map();
+    const paragraph = {
+      index: 0, text: '', runs: [], images: [],
+      numbering: { level: 0, format: 'bullet', text: '▪', isBullet: true, suffix: 'space', image },
+    };
+    return editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  };
+  for (let render = 0; render < 2; render++) {
+    const paragraph = makeNumberedParagraph(() => externalPlaceholder);
+    const marker = paragraph.childNodes[0];
+    assert.equal(marker.className, 'docx-numbering');
+    assert.equal(marker.contentEditable, 'false');
+    assert.equal(marker.attributes.get('data-docx-mark'), '1');
+    assert.equal(marker.childNodes.filter(child => child.tagName === 'IMG').length, 1);
+    assert.equal(marker.childNodes[0].src, externalPlaceholder);
+  }
+  const fallback = makeNumberedParagraph(() => { throw new Error('missing image'); });
+  assert.equal(fallback.childNodes[0].textContent, '▪');
+});
+
+test('editing text beside a rendered checkbox never writes the checkbox glyph to XML', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}"><w:body><w:p><w:r><w:t>before</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked w:val="1"/></w:checkBox></w:ffData></w:fldChar></w:r><w:r><w:instrText> FORMCHECKBOX </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t/></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  const text = value => ({ nodeType: 3, textContent: value });
+  const content = {
+    nodeType: 1, tagName: 'SPAN', dataset: {}, contentEditable: 'true',
+    childNodes: [
+      text('edited'),
+      {
+        nodeType: 1, tagName: 'SPAN', dataset: { docxMark: '1' }, contentEditable: 'false',
+        childNodes: [text('☑')],
+      },
+    ],
+  };
+  const editor = Object.create(DocxEditor.prototype);
+  editor.destroyed = false;
+  editor.viewMode = 'continuous';
+  editor.document = doc;
+  editor.options = {};
+  editor.paragraphs = new Map([[0, { content, text: 'before', failed: false }]]);
+  editor.isMarkupReviewView = () => true;
+  editor.flush();
+  assert.equal(doc.getParagraphs()[0].text, 'edited');
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /☑|☐/);
+});
+
 test('field result keeps comment and revision markers through repeated rendering', () => {
   const editor = makeRunRenderEditor();
   editor.commentRunIds.set('0:1', [5]);

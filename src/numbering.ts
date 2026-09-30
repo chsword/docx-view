@@ -1,6 +1,15 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphInfo, RunFormat } from './types.js';
+import type { ImageInfo, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphInfo, RunFormat } from './types.js';
+import type { RelationshipTarget } from './drawing.js';
+import { IMAGE_REL, OFFICE_REL_NS, V_NS } from './drawing.js';
 import { children, wordValue, WORD_NS } from './xml.js';
+
+export interface NumberingImageContext {
+  sourcePartPath: string;
+  relationships: Map<string, RelationshipTarget>;
+  getContentType: (partPath: string) => string | undefined;
+  hasPart: (partPath: string) => boolean;
+}
 
 interface StyleNumberingReference {
   numId: number;
@@ -112,12 +121,17 @@ function defaultLevelText(level: number, format: string): string {
   return format === 'bullet' ? '•' : format === 'none' ? '' : `%${level + 1}.`;
 }
 
-function parseLevel(level: Element, explicitLevel?: number): NumberingLevelDefinition | undefined {
+function parseLevel(
+  level: Element,
+  explicitLevel?: number,
+  pictureBullets: Map<number, ImageInfo> = new Map(),
+): NumberingLevelDefinition | undefined {
   const parsedLevel = explicitLevel ?? parseInteger(level.getAttributeNS(WORD_NS, 'ilvl'));
   if (parsedLevel === undefined || parsedLevel < 0 || parsedLevel > 8) return undefined;
   const props = children(level, 'pPr')[0];
   const ind = props ? children(props, 'ind')[0] : undefined;
   const format = wordValue(children(level, 'numFmt')[0]) ?? 'decimal';
+  const pictureId = parseInteger(wordValue(children(level, 'lvlPicBulletId')[0]));
   return {
     level: parsedLevel,
     start: parseInteger(wordValue(children(level, 'start')[0])) ?? 1,
@@ -131,6 +145,7 @@ function parseLevel(level: Element, explicitLevel?: number): NumberingLevelDefin
     indentLeft: parseTwips(ind?.getAttributeNS(WORD_NS, 'left') ?? ind?.getAttributeNS(WORD_NS, 'start')),
     indentHanging: parseTwips(ind?.getAttributeNS(WORD_NS, 'hanging')),
     runFormat: parseRunFormat(children(level, 'rPr')[0]),
+    ...(pictureId !== undefined && pictureBullets.has(pictureId) ? { image: pictureBullets.get(pictureId)! } : {}),
   };
 }
 
@@ -157,7 +172,44 @@ export function parseStyleNumberingReferences(stylesDocument?: Document): Parsed
   return { paragraph, numbering };
 }
 
-function parseAbstracts(numberingDocument?: Document): Map<number, RawAbstractNumbering> {
+function parsePictureBullets(
+  numberingDocument: Document | undefined,
+  imageContext?: NumberingImageContext,
+): Map<number, ImageInfo> {
+  const result = new Map<number, ImageInfo>();
+  const root = numberingDocument?.documentElement;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'numbering' || !imageContext) return result;
+  for (const picture of children(root, 'numPicBullet')) {
+    const id = parseInteger(picture.getAttributeNS(WORD_NS, 'numPicBulletId'));
+    if (id === undefined) continue;
+    const imageData = Array.from(picture.getElementsByTagNameNS(V_NS, 'imagedata'))[0];
+    const relationshipId = imageData?.getAttributeNS(OFFICE_REL_NS, 'id')
+      ?? imageData?.getAttribute('r:id') ?? undefined;
+    if (!relationshipId) continue;
+    const relationship = imageContext.relationships.get(relationshipId);
+    if (!relationship || (relationship.type && relationship.type !== IMAGE_REL)) continue;
+    if (relationship.mode !== 'External' && (!relationship.partPath || !imageContext.hasPart(relationship.partPath))) continue;
+    const partPath = relationship.mode === 'External' ? undefined : relationship.partPath;
+    result.set(id, {
+      id: `numbering:${imageContext.sourcePartPath}:${id}`,
+      paragraph: -1,
+      run: -1,
+      sourcePartPath: imageContext.sourcePartPath,
+      relationshipId,
+      ...(partPath ? { partPath, contentType: imageContext.getContentType(partPath) } : {}),
+      widthEmu: 152400,
+      heightEmu: 152400,
+      widthPx: 16,
+      heightPx: 16,
+      name: `Bullet ${id}`,
+      placement: 'inline',
+      isExternal: relationship.mode === 'External',
+    });
+  }
+  return result;
+}
+
+function parseAbstracts(numberingDocument?: Document, pictureBullets = new Map<number, ImageInfo>()): Map<number, RawAbstractNumbering> {
   const result = new Map<number, RawAbstractNumbering>();
   const root = numberingDocument?.documentElement;
   if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'numbering') return result;
@@ -166,7 +218,7 @@ function parseAbstracts(numberingDocument?: Document): Map<number, RawAbstractNu
     if (abstractNumId === undefined) continue;
     const levels = new Map<number, NumberingLevelDefinition>();
     for (const level of children(abstract, 'lvl')) {
-      const parsed = parseLevel(level);
+      const parsed = parseLevel(level, undefined, pictureBullets);
       if (parsed) levels.set(parsed.level, parsed);
     }
     result.set(abstractNumId, {
@@ -182,7 +234,10 @@ function parseAbstracts(numberingDocument?: Document): Map<number, RawAbstractNu
   return result;
 }
 
-function parseNums(numberingDocument?: Document): Map<number, RawNumberingInstance> {
+function parseNums(
+  numberingDocument?: Document,
+  pictureBullets = new Map<number, ImageInfo>(),
+): Map<number, RawNumberingInstance> {
   const result = new Map<number, RawNumberingInstance>();
   const root = numberingDocument?.documentElement;
   if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'numbering') return result;
@@ -197,7 +252,7 @@ function parseNums(numberingDocument?: Document): Map<number, RawNumberingInstan
       const levelElement = children(override, 'lvl')[0];
       overrides.set(level, {
         startOverride: parseInteger(wordValue(children(override, 'startOverride')[0])),
-        level: levelElement ? parseLevel(levelElement, level) : undefined,
+        level: levelElement ? parseLevel(levelElement, level, pictureBullets) : undefined,
       });
     }
     result.set(numId, { numId, abstractNumId, overrides });
@@ -220,13 +275,19 @@ function mergeLevel(base: NumberingLevelDefinition | undefined, override: Number
     indentLeft: override?.indentLeft ?? base?.indentLeft,
     indentHanging: override?.indentHanging ?? base?.indentHanging,
     runFormat: override?.runFormat ?? base?.runFormat,
+    image: override?.image ?? base?.image,
   };
 }
 
-export function parseNumberingModel(numberingDocument?: Document, stylesDocument?: Document): NumberingModel {
+export function parseNumberingModel(
+  numberingDocument?: Document,
+  stylesDocument?: Document,
+  imageContext?: NumberingImageContext,
+): NumberingModel {
   const styles = parseStyleNumberingReferences(stylesDocument);
-  const abstracts = parseAbstracts(numberingDocument);
-  const nums = parseNums(numberingDocument);
+  const pictureBullets = parsePictureBullets(numberingDocument, imageContext);
+  const abstracts = parseAbstracts(numberingDocument, pictureBullets);
+  const nums = parseNums(numberingDocument, pictureBullets);
   const abstractMemo = new Map<number, ResolvedAbstractNumbering | null>();
   const numMemo = new Map<number, ResolvedNumberingInstance | null>();
 
@@ -530,6 +591,7 @@ export function computeParagraphNumbering(paragraphs: Element[], model: Numberin
       indentHanging: levelDefinition.indentHanging,
       suffix: levelDefinition.suffix,
       runFormat: levelDefinition.runFormat,
+      image: levelDefinition.image,
     });
   }
   return result;

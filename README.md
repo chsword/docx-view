@@ -328,6 +328,8 @@ console.log(tool, result.revision);
 
 `getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 重算安全的 `SEQ`、日期/时间、文档属性、`REF` 等域；提供 `pagination` 时也会写回 `PAGE`、`NUMPAGES` 和可解析到已存在书签的 `PAGEREF`，结果按所在节的页码格式化。页眉/页脚可用 `getFields(partPath)` 按部件读取，页码域也会随正文域一并写回；由于一个页眉/页脚部件由整节共享，持久化的 `PAGE` 缓存使用该节首段所在页的显示页码，分页预览仍会按实际页面单独显示。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
 
+`MERGEFIELD` 会分类并读取合并域名称，但不访问外部数据源或求值。旧式 `FORMTEXT`、`FORMCHECKBOX`、`FORMDROPDOWN` 读取 `w:ffData` 元数据，不提供填写交互；缓存结果缺失时显示默认值，复选框显示只读渲染方框。表单域的 `entryMacro` / `exitMacro` 仅作为文档声明读取，文档里的宏名声明不会被执行，也不会改变任何行为。上述用户填写或外部数据提供的域值都不会由 `updateFields()` 重算。
+
 `TOC` 域仅实现 `\o "1-3"` 层级过滤与 `\h` 条目超链接；其他开关（包括 `\z`、`\u`）会保留缓存结果并跳过更新。`DocxEditor.updateFields()` 最多执行 5 轮「分页→更新域→重排」；达到上限时不报错，并保留最后一轮的结果。`INDEX` 域本期不更新，始终保留缓存结果。
 
 域指令不会生成合成文本；没有缓存结果的 `PAGE` / `NUMPAGES` 域仍读作空字符串。文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
@@ -348,6 +350,7 @@ console.log(tool, result.revision);
 **视图支持范围**
 
 - 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；分页预览是只读的，分页位置在常见文档上尽量贴近 Word，但**不承诺像素级一致**。
+- 图片项目符号使用包内图片渲染；外部图片只显示占位图、不联网，图片不可用时退回编号级别中的文字标记。
 - OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、矩阵、对齐数组、前置上下标（`mmultiscripts` / `mprescripts`）及盒 / phantom 等常见元素；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内公式目前不纳入 `getMath()`，也不在形状文字渲染中显示。
 - 分页预览按栏宽重新度量内容，支持等宽 / 指定宽度分栏与 `nextColumn`，并按表格行跨页 / 跨栏拆分；连续的 `w:tblHeader` 标题行会在每个片段重复，`cantSplit` 行保持完整。
 - run 着重号支持 `w:em` 的 `dot`、`comma`、`circle`、`underDot`（分别使用浏览器原生 `text-emphasis`）；显式 `none` 可关闭继承的着重号。不按竖排文字方向调整着重号位置。

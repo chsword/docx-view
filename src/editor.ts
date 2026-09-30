@@ -9,6 +9,7 @@ import type {
   DocumentRange,
   DocumentBlock,
   DocumentSnapshot,
+  FieldInfo,
   FieldKind,
   ImageInfo,
   MathInfo,
@@ -419,6 +420,7 @@ export class DocxEditor {
   private revisionRunIds = new Map<string, HTMLElement[]>();
   private revisionParagraphIds = new Map<number, HTMLElement[]>();
   private renderShapeInfos: ShapeInfo[] = [];
+  private renderFieldInfos = new Map<number, FieldInfo>();
   private activeRevisionId: number | null = null;
   private viewMode: 'continuous' | 'paginated';
   private measuring = false;
@@ -741,6 +743,11 @@ export class DocxEditor {
       ?? this.selectedImageInfo?.id
       ?? null;
     this.flush();
+    try {
+      this.renderFieldInfos = new Map(this.document.getFields().map((field) => [field.index, field]));
+    } catch {
+      this.renderFieldInfos.clear();
+    }
     if (this.viewMode === 'continuous') this.applyPageSetup();
     this.paragraphs.clear();
     this.commentRunIds ??= new Map();
@@ -1404,7 +1411,23 @@ export class DocxEditor {
       marker.contentEditable = 'false';
       marker.setAttribute('data-docx-mark', '1');
       marker.setAttribute('aria-hidden', 'true');
-      marker.textContent = paragraph.numbering.text;
+      marker.style.userSelect = 'none';
+      marker.style.pointerEvents = 'none';
+      let bulletImage: HTMLImageElement | undefined;
+      if (paragraph.numbering.image) {
+        try {
+          bulletImage = this.root.ownerDocument.createElement('img');
+          bulletImage.src = this.document.getImageDataUrl(paragraph.numbering.image);
+          bulletImage.alt = '';
+          bulletImage.setAttribute('aria-hidden', 'true');
+          bulletImage.style.width = `${paragraph.numbering.image.widthPx}px`;
+          bulletImage.style.height = `${paragraph.numbering.image.heightPx}px`;
+        } catch {
+          bulletImage = undefined;
+        }
+      }
+      if (bulletImage) marker.append(bulletImage);
+      else marker.textContent = paragraph.numbering.text;
       marker.dataset.suffix = paragraph.numbering.suffix;
       if (paragraph.numbering.runFormat?.fontFamily) marker.style.fontFamily = paragraph.numbering.runFormat.fontFamily;
       if (paragraph.numbering.runFormat?.bold !== undefined) marker.style.fontWeight = paragraph.numbering.runFormat.bold ? '700' : '400';
@@ -2158,6 +2181,7 @@ export class DocxEditor {
         if (this.options.showFieldShading !== false) runSpan.classList.add('docx-field-shading');
       }
     }
+    const fieldInfo = run.field ? this.renderFieldInfos?.get(run.field.index) : undefined;
     if (run.revisions?.length) runSpan.dataset.docxRevisionIds = run.revisions.map((revision) => revision.id).join(',');
     const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
     if (commentIds.length) {
@@ -2245,6 +2269,34 @@ export class DocxEditor {
     if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup' &&
         run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'to')) {
       runSpan.append(this.makeMark('↦', '移动目标'));
+    }
+    if (run.field?.role === 'result' && fieldInfo?.result === '' &&
+        fieldInfo.resultRuns[0] === run.index && fieldInfo.formField) {
+      const formField = fieldInfo.formField;
+      if (formField.kind === 'checkBox') {
+        const checkbox = this.root.ownerDocument.createElement('span');
+        checkbox.className = 'docx-form-checkbox';
+        checkbox.contentEditable = 'false';
+        checkbox.setAttribute('data-docx-mark', '1');
+        checkbox.setAttribute('aria-hidden', 'true');
+        checkbox.style.userSelect = 'none';
+        checkbox.style.pointerEvents = 'none';
+        if (formField.checkBox?.sizePt) checkbox.style.fontSize = `${formField.checkBox.sizePt}pt`;
+        checkbox.textContent = formField.checkBox?.checked ? '☑' : '☐';
+        runSpan.append(checkbox);
+      } else {
+        const fallback = formField.kind === 'text'
+          ? formField.text?.default
+          : formField.dropDown?.entries[formField.dropDown.default ?? -1];
+        if (fallback) {
+          const placeholder = this.root.ownerDocument.createElement('span');
+          placeholder.className = 'docx-form-field-default';
+          placeholder.contentEditable = 'false';
+          placeholder.setAttribute('data-docx-mark', '1');
+          placeholder.textContent = fallback;
+          runSpan.append(placeholder);
+        }
+      }
     }
     paragraphElement.append(runSpan);
     return currentLineOffsetPx;
