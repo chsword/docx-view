@@ -1,6 +1,7 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import type { SectionInfo, SectionType } from './types.js';
 import { WORD_NS, children, descendants } from './xml.js';
+import { readBorderSide } from './styles.js';
 
 export const SECTION_ORDER = [
   'headerReference', 'footerReference', 'footnotePr', 'endnotePr', 'type', 'pgSz', 'pgMar', 'paperSrc',
@@ -78,6 +79,51 @@ function docGrid(sectPr: Element): SectionInfo['docGrid'] {
     ...(linePitch !== undefined ? { linePitch } : {}),
     ...(charSpace !== undefined ? { charSpace } : {}),
   };
+}
+
+function lineNumbering(sectPr: Element): SectionInfo['lineNumbering'] {
+  const node = children(sectPr, 'lnNumType')[0];
+  if (!node) return undefined;
+  const countBy = wordNumber(node, 'countBy');
+  const start = wordNumber(node, 'start');
+  const distance = wordNumber(node, 'distance');
+  const rawRestart = node.getAttributeNS(WORD_NS, 'restart') ?? '';
+  const restart = ['continuous', 'newPage', 'newSection'].includes(rawRestart)
+    ? rawRestart as NonNullable<SectionInfo['lineNumbering']>['restart'] : undefined;
+  return {
+    ...(countBy !== undefined ? { countBy } : {}),
+    ...(start !== undefined ? { start } : {}),
+    ...(distance !== undefined ? { distance } : {}),
+    ...(restart !== undefined ? { restart } : {}),
+  };
+}
+
+function pageBorders(sectPr: Element): SectionInfo['pageBorders'] {
+  const node = children(sectPr, 'pgBorders')[0];
+  if (!node) return undefined;
+  const rawDisplay = node.getAttributeNS(WORD_NS, 'display') ?? '';
+  const rawOffset = node.getAttributeNS(WORD_NS, 'offsetFrom') ?? '';
+  const display = ['allPages', 'firstPage', 'notFirstPage'].includes(rawDisplay)
+    ? rawDisplay as NonNullable<SectionInfo['pageBorders']>['display'] : undefined;
+  const offsetFrom = ['page', 'text'].includes(rawOffset)
+    ? rawOffset as NonNullable<SectionInfo['pageBorders']>['offsetFrom'] : undefined;
+  const sides = {
+    top: readBorderSide(children(node, 'top')[0]),
+    left: readBorderSide(children(node, 'left')[0]),
+    bottom: readBorderSide(children(node, 'bottom')[0]),
+    right: readBorderSide(children(node, 'right')[0]),
+  };
+  return {
+    ...(display !== undefined ? { display } : {}),
+    ...(offsetFrom !== undefined ? { offsetFrom } : {}),
+    ...Object.fromEntries(Object.entries(sides).filter(([, value]) => value !== undefined)),
+  } as SectionInfo['pageBorders'];
+}
+
+function verticalAlignment(sectPr: Element): SectionInfo['verticalAlignment'] {
+  const value = children(sectPr, 'vAlign')[0]?.getAttributeNS(WORD_NS, 'val') ?? '';
+  return ['top', 'center', 'both', 'bottom'].includes(value)
+    ? value as SectionInfo['verticalAlignment'] : undefined;
 }
 
 function references(sectPr: Element, name: 'headerReference' | 'footerReference', resolveRelationship: (id: string) => string | undefined):
@@ -166,6 +212,9 @@ export function readSections(mainDocument: Document, resolveRelationship: (id: s
       ...pageSetup(section.sectPr),
       ...(grid ? { docGrid: grid } : {}),
       pageNumbering: pageNumbering(section.sectPr),
+      ...(lineNumbering(section.sectPr) ? { lineNumbering: lineNumbering(section.sectPr) } : {}),
+      ...(pageBorders(section.sectPr) ? { pageBorders: pageBorders(section.sectPr) } : {}),
+      ...(verticalAlignment(section.sectPr) ? { verticalAlignment: verticalAlignment(section.sectPr) } : {}),
       titlePage: !!children(section.sectPr, 'titlePg')[0],
       headers: references(section.sectPr, 'headerReference', resolveRelationship),
       footers: references(section.sectPr, 'footerReference', resolveRelationship),

@@ -81,9 +81,54 @@ export function snapLineHeightPx(naturalHeightPx: number, docGrid: SectionInfo['
       !Number.isFinite(docGrid.linePitch) || (docGrid.linePitch ?? 0) <= 0) {
     return naturalHeightPx;
   }
+
   const pitchPx = docGrid.linePitch! * TWIPS_TO_PX;
   if (!Number.isFinite(pitchPx) || pitchPx <= 0 || !Number.isFinite(naturalHeightPx)) return naturalHeightPx;
   return Math.ceil(Math.max(0, naturalHeightPx) / pitchPx) * pitchPx;
+}
+
+/** 给已分页的行列表编号。返回与输入等长的数组，null 表示该行不显示行号。 */
+export function lineNumbersFor(
+  pages: PageBox[],
+  paragraphs: ParagraphInfo[],
+  sections: SectionInfo[],
+): Array<Array<number | null>> {
+  const paragraphByIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+  let count = 0;
+  let numberBase = 1;
+  let previousSection: number | undefined;
+  return pages.map((page) => {
+    const section = sections.find((entry) => entry.index === page.section) ?? sections[0];
+    const numbering = section?.lineNumbering;
+    const restart = numbering?.restart ?? 'newPage';
+    const start = Number.isFinite(numbering?.start) && (numbering?.start ?? 0) > 0 ? numbering!.start! : 1;
+    const countBy = Number.isFinite(numbering?.countBy) && (numbering?.countBy ?? 0) > 0
+      ? numbering!.countBy! : 1;
+    const resetHere = previousSection === undefined ||
+      restart === 'newPage' ||
+      (restart === 'newSection' && previousSection !== page.section);
+    if (resetHere) {
+      count = 0;
+      numberBase = start;
+    }
+    previousSection = page.section;
+    const result: Array<number | null> = [];
+    for (const item of page.items) {
+      if (item.type !== 'line') {
+        result.push(null);
+        continue;
+      }
+      const paragraph = paragraphByIndex.get(item.paragraph);
+      if (!numbering || paragraph?.effective?.suppressLineNumbers === true) {
+        result.push(null);
+        continue;
+      }
+      const number = numberBase + count;
+      result.push(number % countBy === 0 ? number : null);
+      count++;
+    }
+    return result;
+  });
 }
 
 function usableSize(section: SectionInfo): { width: number; height: number } {

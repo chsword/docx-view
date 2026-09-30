@@ -33,7 +33,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, effectiveKinsoku, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -1138,7 +1138,7 @@ export class DocxEditor {
   }
 
   private makePageContent(page: PageBox, section: SectionInfo, blocks: DocumentBlock[], paragraphs: ParagraphInfo[],
-    defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLElement {
+    defaultTabStopTwips: number, reviewContext: ReviewRenderContext, lineNumbers: Array<number | null> = []): HTMLElement {
     const body = this.root.ownerDocument.createElement('div');
     body.className = 'docx-page-content';
     const gapPx = Math.max(0, section.columns.space * 96 / 1440);
@@ -1147,6 +1147,10 @@ export class DocxEditor {
     body.style.gridTemplateColumns = columnWidths.map((value) => `${value}px`).join(' ');
     body.style.columnGap = `${gapPx}px`;
     body.style.alignItems = 'start';
+    if (section.verticalAlignment === 'center' || section.verticalAlignment === 'bottom') {
+      body.style.minHeight = `${Math.max(0, pageBoxPx(section).heightPx - pageBoxPx(section).padding.top - pageBoxPx(section).padding.bottom)}px`;
+      body.style.alignContent = section.verticalAlignment === 'center' ? 'center' : 'end';
+    }
     const columns = columnWidths.map((_, index) => {
       const column = this.root.ownerDocument.createElement('div');
       column.className = 'docx-page-column';
@@ -1180,14 +1184,33 @@ export class DocxEditor {
               },
             } : {}),
           };
-          column.append(this.makeParagraph(
+          const paragraphElement = this.makeParagraph(
             this.sliceParagraph(fragment, item.line.startOffset, item.line.endOffset),
             defaultTabStopTwips,
             reviewContext,
             lineHeightPx,
             firstLine ? previousByColumn.get(columnIndex) : undefined,
             lastLine && !hasFollowingParagraph,
-          ));
+          );
+          const lineNumber = lineNumbers[itemIndex];
+          if (lineNumber !== null && lineNumber !== undefined) {
+            const marker = this.root.ownerDocument.createElement('span');
+            marker.className = 'docx-line-number';
+            marker.contentEditable = 'false';
+            marker.setAttribute('data-docx-mark', '1');
+            marker.dataset.docxLineNumber = String(lineNumber);
+            marker.setAttribute('aria-hidden', 'true');
+            marker.textContent = String(lineNumber);
+            marker.style.position = 'absolute';
+            marker.style.top = '0';
+            marker.style.whiteSpace = 'nowrap';
+            const distance = Math.max(0, section.lineNumbering?.distance ?? 0) * 96 / 1440;
+            const rtl = paragraph.effective?.bidi === true;
+            marker.style[rtl ? 'right' : 'left'] = `-${distance + 2}px`;
+            paragraphElement.style.position = 'relative';
+            paragraphElement.append(marker);
+          }
+          column.append(paragraphElement);
           if (lastLine) previousByColumn.set(columnIndex, paragraph);
         }
       } else if (item.type === 'tableRow' && !renderedTables.has(`${columnIndex}:${item.table}`)) {
@@ -1222,6 +1245,7 @@ export class DocxEditor {
     const paragraphs = blocks.filter((block): block is Extract<DocumentBlock, { type: 'paragraph' }> => block.type === 'paragraph')
       .map((block) => block.paragraph);
     const pages = this.paginateDocument(blocks, sections, defaultTabStopTwips);
+    const lineNumbers = lineNumbersFor(pages, paragraphs, sections);
     for (const page of pages) {
       const section = this.document.getSection(page.section);
       const firstPhysicalPage = page.index === 0 || pages[page.index - 1]?.section !== page.section;
@@ -1234,8 +1258,35 @@ export class DocxEditor {
       pageElement.style.minHeight = `${box.heightPx}px`;
       pageElement.style.padding = `${box.padding.top}px ${box.padding.right}px ${box.padding.bottom}px ${box.padding.left}px`;
       pageElement.style.boxSizing = 'border-box';
+      const borders = section.pageBorders;
+      const borderProperties = {
+        top: 'borderTop',
+        right: 'borderRight',
+        bottom: 'borderBottom',
+        left: 'borderLeft',
+      } as const;
+      const showBorder = borders && (borders.display === undefined || borders.display === 'allPages' ||
+        (borders.display === 'firstPage' ? firstPhysicalPage : !firstPhysicalPage));
+      if (showBorder && borders?.offsetFrom !== 'text') {
+        for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+          const border = borders?.[side];
+          if (!border || border.style === 'none' || border.style === 'nil') continue;
+          const width = Math.max(0, border.size) * 96 / 5760;
+          pageElement.style[borderProperties[side]] =
+            `${Math.max(1, width)}px ${border.style === 'single' ? 'solid' : border.style} ${border.color === 'auto' ? 'currentColor' : `#${border.color}`}`;
+        }
+      }
       pageElement.append(this.makeHeaderFooter('header', page.section, page.number, pages.length, firstPhysicalPage));
-      const body = this.makePageContent(page, section, blocks, paragraphs, defaultTabStopTwips, reviewContext);
+      const body = this.makePageContent(page, section, blocks, paragraphs, defaultTabStopTwips, reviewContext, lineNumbers[page.index] ?? []);
+      if (showBorder && borders?.offsetFrom === 'text') {
+        for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+          const border = borders[side];
+          if (!border || border.style === 'none' || border.style === 'nil') continue;
+          const width = Math.max(0, border.size) * 96 / 5760;
+          body.style[borderProperties[side]] =
+            `${Math.max(1, width)}px ${border.style === 'single' ? 'solid' : border.style} ${border.color === 'auto' ? 'currentColor' : `#${border.color}`}`;
+        }
+      }
       pageElement.append(body, this.makeHeaderFooter('footer', page.section, page.number, pages.length, firstPhysicalPage));
       (parent as DocumentFragment).append(pageElement);
     }

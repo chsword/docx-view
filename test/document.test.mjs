@@ -1952,6 +1952,24 @@ test('getSections returns basic page setup from body sectPr', () => {
   assert.equal(Object.hasOwn(section, 'docGrid'), false);
 });
 
+test('reads section line numbering, page borders, and vertical alignment', () => {
+  const doc = withBody(
+    '<w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr>' +
+    '<w:lnNumType w:countBy="2" w:start="4" w:distance="360" w:restart="newSection"/>' +
+    '<w:pgBorders w:display="firstPage" w:offsetFrom="text">' +
+    '<w:top w:val="single" w:sz="8" w:space="4" w:color="FF0000" w:shadow="0"/>' +
+    '<w:right w:val="nil"/>' +
+    '</w:pgBorders><w:vAlign w:val="center"/></w:sectPr>',
+  );
+  assert.deepEqual(doc.getSection(0).lineNumbering, { countBy: 2, start: 4, distance: 360, restart: 'newSection' });
+  assert.deepEqual(doc.getSection(0).pageBorders, {
+    display: 'firstPage', offsetFrom: 'text',
+    top: { style: 'single', size: 8, space: 4, color: 'FF0000', shadow: false },
+    right: { style: 'nil', size: 0, space: 0, color: 'auto' },
+  });
+  assert.equal(doc.getSection(0).verticalAlignment, 'center');
+});
+
 test('reads all emphasis marks and docGrid fields, and formatRun can override and clear emphasis', async () => {
   const doc = withStyles(
     '<w:p><w:r><w:rPr><w:rStyle w:val="Emphasis"/><w:em w:val="none"/></w:rPr><w:t>A</w:t></w:r>' +
