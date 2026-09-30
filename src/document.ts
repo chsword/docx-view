@@ -115,6 +115,27 @@ import {
 } from './comments.js';
 import type { CacheBundle } from './internal/context.js';
 import {
+  PARAGRAPH_LOOKUP_CACHE,
+  PROPERTY_ORDER,
+  appendText,
+  basename,
+  blockContainerOf,
+  bodyOf,
+  decodeXml,
+  dirname,
+  encodeXml,
+  nearestParagraph,
+  normalizeReviewerFilterAuthors,
+  ownRuns,
+  paragraphAt,
+  partDirectory,
+  preOrderElements,
+  properties,
+  property,
+  relsPath,
+  reviewerFilterKeyOf,
+} from './internal/elements.js';
+import {
   createRevisionWrapper,
   deletedTextOf,
   hasRevisionMarkup,
@@ -159,7 +180,6 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
-const REVIEWER_FILTER_BUCKET_KEYS = new Set(['unattributed', 'empty', 'blank']);
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const COMPARE_MAX_PARAGRAPHS = 1_000;
 const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
@@ -208,16 +228,6 @@ interface NumberingContext {
   model: NumberingModel;
 }
 
-function decodeXml(bytes: Uint8Array): string {
-  const utf16le = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0);
-  const utf16be = (bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0 && bytes[1] === 0x3c);
-  return new TextDecoder(utf16le ? 'utf-16le' : utf16be ? 'utf-16be' : 'utf-8', { fatal: true }).decode(bytes);
-}
-
-function encodeXml(xml: string): Uint8Array {
-  return encoder.encode(xml.replace(/^(<\?xml\b[^?]*\bencoding\s*=\s*)(["'])[^"']*\2/i, '$1"UTF-8"'));
-}
-
 function encodeBase64(bytes: Uint8Array): string {
   const NodeBuffer = (globalThis as { Buffer?: { from(bytes: ArrayBufferLike, byteOffset?: number, length?: number): { toString(encoding: 'base64'): string } } }).Buffer;
   if (NodeBuffer) {
@@ -254,35 +264,11 @@ function cloneTableCellLocation(location: TableCellLocation): TableCellLocation 
   return { ...location };
 }
 
-function dirname(path: string): string {
-  const slash = path.lastIndexOf('/');
-  return slash === -1 ? '' : path.slice(0, slash);
-}
-
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1);
-}
-
 function nextRelationshipId(root: Element): string {
   const used = new Set(children(root, 'Relationship', REL_NS).map((relation) => relation.getAttribute('Id')).filter(Boolean));
   let index = 1;
   while (used.has(`rId${index}`)) index++;
   return `rId${index}`;
-}
-
-function bodyOf(document: Document): Element {
-  const root = document.documentElement;
-  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'document') {
-    throw new Error('Only transitional WordprocessingML documents are supported.');
-  }
-  const body = children(root, 'body');
-  if (body.length !== 1) throw new Error('Main document must have exactly one w:body.');
-  return body[0]!;
-}
-
-function partDirectory(path: string): string {
-  const index = path.lastIndexOf('/');
-  return index === -1 ? '' : path.slice(0, index);
 }
 
 function normalizePath(path: string): string {
@@ -327,46 +313,6 @@ function relativeTarget(fromPart: string, toPart: string): string {
   return `${'../'.repeat(from.length)}${to.join('/')}` || toPart;
 }
 
-function relsPath(partPath: string): string {
-  const directory = partDirectory(partPath);
-  const name = partPath.slice(partPath.lastIndexOf('/') + 1);
-  return `${directory ? `${directory}/` : ''}_rels/${name}.rels`;
-}
-
-const PARAGRAPH_LOOKUP_CACHE = new WeakMap<Document, Element[]>();
-
-function paragraphAt(document: Document, index: number): Element {
-  assertIndex(index);
-  const cached = PARAGRAPH_LOOKUP_CACHE.get(document);
-  if (cached) {
-    const paragraph = cached[index];
-    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
-    return paragraph;
-  }
-  let remaining = index;
-  const stack: (Node | null)[] = [bodyOf(document).firstChild];
-  while (stack.length) {
-    const current = stack[stack.length - 1]!;
-    if (!current) {
-      stack.pop();
-      continue;
-    }
-    stack[stack.length - 1] = current.nextSibling;
-    if (current.nodeType === 1) {
-      const element = current as Element;
-      if (element.namespaceURI === WORD_NS && element.localName === 'txbxContent') {
-        continue;
-      }
-      if (element.namespaceURI === WORD_NS && element.localName === 'p') {
-        if (remaining === 0) return element;
-        remaining--;
-      }
-    }
-    if (current.firstChild) stack.push(current.firstChild);
-  }
-  throw new Error(`Paragraph ${index} does not exist.`);
-}
-
 function mainParagraphElements(body: Element): Element[] {
   return descendants(body, 'p').filter((paragraph) => {
     let ancestor = paragraph.parentNode as Element | null;
@@ -376,14 +322,6 @@ function mainParagraphElements(body: Element): Element[] {
     }
     return true;
   });
-}
-
-function blockContainerOf(document: Document): Element {
-  const root = document.documentElement;
-  if (!root || root.namespaceURI !== WORD_NS) throw new Error('Unsupported WordprocessingML part.');
-  if (root.localName === 'document') return bodyOf(document);
-  if (['hdr', 'ftr', 'footnotes', 'endnotes'].includes(root.localName ?? '')) return root;
-  throw new Error('Part does not contain block-level WordprocessingML content.');
 }
 
 function isTransparentWrapper(element: Element): boolean {
@@ -629,19 +567,6 @@ function compactDefined<T extends object>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
 
-function appendText(parent: Element, text: string, before: Node | null = null): void {
-  const document = parent.ownerDocument!;
-  for (const chunk of text.split(/(\t|\r\n|\r|\n)/)) {
-    if (!chunk) continue;
-    const element = wordElement(document, chunk === '\t' ? 'tab' : /^[\r\n]+$/.test(chunk) ? 'br' : 't');
-    if (element.localName === 't') {
-      element.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
-      element.appendChild(document.createTextNode(chunk));
-    }
-    parent.insertBefore(element, before);
-  }
-}
-
 function newParagraph(document: Document, text: string): Element {
   const paragraph = wordElement(document, 'p');
   const run = wordElement(document, 'r');
@@ -743,44 +668,6 @@ function wrapRunsWithRevision(
     for (const run of runs) revisionTextElement(run, 'delText');
   }
 }
-
-function properties(element: Element, name: 'pPr' | 'rPr'): Element {
-  let result = children(element, name)[0];
-  if (!result) {
-    result = wordElement(element.ownerDocument!, name);
-    element.insertBefore(result, element.firstChild);
-  }
-  return result;
-}
-
-// Known property order keeps generated pPr/rPr conformant without dropping unknown properties.
-const PROPERTY_ORDER = {
-  pPr: ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
-    'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
-    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
-    'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap',
-    'jc', 'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId',
-    'cnfStyle', 'rPr', 'sectPr', 'pPrChange'],
-  rPr: ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
-    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
-    'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
-    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout',
-    'specVanish', 'oMath', 'rPrChange'],
-  style: ['name', 'aliases', 'basedOn', 'next', 'link', 'autoRedefine', 'hidden', 'uiPriority',
-    'semiHidden', 'unhideWhenUsed', 'qFormat', 'locked', 'personal', 'personalCompose',
-    'personalReply', 'rsid', 'pPr', 'rPr', 'tblPr', 'trPr', 'tcPr', 'tblStylePr', 'extLst'],
-  tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
-    'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
-    'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
-  trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight',
-    'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
-  tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
-    'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
-  tblBorders: ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'],
-  tcBorders: ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl'],
-  tblCellMar: ['top', 'left', 'bottom', 'right'],
-  tcMar: ['top', 'left', 'bottom', 'right'],
-};
 
 const SDT_PROPERTY_ORDER = [
   'alias', 'lock', 'placeholder', 'showingPlcHdr', 'dataBinding', 'temporary', 'id', 'tag',
@@ -924,21 +811,6 @@ function ensureW14Namespace(control: Element): void {
   }
 }
 
-function property(parent: Element, name: string): Element {
-  let result = children(parent, name)[0];
-  if (!result) {
-    result = wordElement(parent.ownerDocument!, name);
-    const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER] ?? [];
-    const position = order.indexOf(name);
-    const following = position === -1 ? undefined : children(parent).find(child => {
-      const childPosition = order.indexOf(child.localName!);
-      return childPosition > position;
-    });
-    parent.insertBefore(result, following ?? null);
-  }
-  return result;
-}
-
 function insertPropertyChild(parent: Element, child: Element): void {
   const order = PROPERTY_ORDER[parent.localName as keyof typeof PROPERTY_ORDER] ?? [];
   const position = order.indexOf(child.localName ?? '');
@@ -970,19 +842,6 @@ function sectionProperty(parent: Element, name: string): Element {
     parent.insertBefore(result, following ?? null);
   }
   return result;
-}
-
-function ownRuns(paragraph: Element): Element[] {
-  return descendants(paragraph, 'r').filter(run => {
-    let parent = run.parentNode;
-    while (parent && parent !== paragraph) {
-      if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS &&
-          (parent as Element).localName === 'p') return false;
-      parent = parent.parentNode;
-    }
-
-    return true;
-  });
 }
 
 function allElements(node: Element): Element[] {
@@ -1066,15 +925,6 @@ function revisionNameOf(element: Element): string | undefined {
   const value = element.getAttributeNS(WORD_NS, 'name') ?? element.getAttribute('w:name') ?? undefined;
   const name = value?.trim();
   return name ? name : undefined;
-}
-
-function reviewerFilterKeyOf(author: string): string {
-  if (REVIEWER_FILTER_BUCKET_KEYS.has(author) || author.startsWith('named:')) return author;
-  return reviewerBucketKey(reviewerBucketOf(author));
-}
-
-function normalizeReviewerFilterAuthors(authors: string[]): Set<string> {
-  return new Set(authors.map((author) => reviewerFilterKeyOf(author)));
 }
 
 function moveRevisionSideOf(element: Element): 'from' | 'to' | undefined {
@@ -2276,17 +2126,6 @@ function isolateRunChild(run: Element, child: Element): Element {
   return isolated;
 }
 
-function nearestParagraph(node: Node | null): Element | null {
-  let current = node;
-  while (current) {
-    if (current.nodeType === 1 && (current as Element).namespaceURI === WORD_NS && (current as Element).localName === 'p') {
-      return current as Element;
-    }
-    current = current.parentNode;
-  }
-  return null;
-}
-
 function textRangeLength(paragraph: Element, start: number, end: number): void {
   const size = textOf(paragraph).length;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > size) {
@@ -2557,20 +2396,6 @@ function fieldInstruction(link: { url?: string; anchor?: string }): string {
   if (link.url) chunks.push(`"${escapeFieldText(link.url)}"`);
   if (link.anchor) chunks.push(`\\l "${escapeFieldText(link.anchor)}"`);
   return chunks.join(' ');
-}
-
-function preOrderElements(root: Element): Element[] {
-  const result: Element[] = [];
-  const walk = (node: Node): void => {
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType !== 1) continue;
-      const element = child as Element;
-      result.push(element);
-      walk(element);
-    }
-  };
-  walk(root);
-  return result;
 }
 
 function cloneReviewerInfo(reviewer: ReviewerInfo): ReviewerInfo {
@@ -2856,20 +2681,6 @@ export class DocxDocument {
       normalizeRangeOn: (...args) => owner.normalizeRangeOn(...args),
       normalizeDocumentRange: (...args) => owner.normalizeDocumentRange(...args),
       splitRunAtOffset: (...args) => owner.splitRunAtOffset(...args),
-      blockContainerOf,
-      preOrderElements,
-      ownRuns,
-      nearestParagraph,
-      paragraphAt,
-      properties,
-      property,
-      appendText,
-      basename,
-      dirname,
-      relsPath,
-      encodeXml,
-      decodeXml,
-      normalizeReviewerFilterAuthors,
     };
   }
 

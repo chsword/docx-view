@@ -1,7 +1,10 @@
 import type { Document, Element, Node } from '@xmldom/xmldom';
-import type { ParagraphFormat, RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, RunFormat } from './types.js';
+import type { ParagraphFormat, RevisionInfo, RevisionMark, ReviewerAuthorKind, RunFormat } from './types.js';
 import { readParagraphProperties, readRunProperties } from './styles.js';
 import { WORD_NS, assertText, children, descendants, wordElement } from './xml.js';
+import { PROPERTY_ORDER, reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
+
+export { reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
 
 const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel'] as const;
 const VISIBLE_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
@@ -25,30 +28,6 @@ const REVIEWER_PLACEHOLDERS: Record<Exclude<ReviewerAuthorKind, 'named'>, string
   empty: '(empty author)',
   blank: '(blank author)',
 };
-const PARENT_PROPERTY_ORDER = {
-  pPr: ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl', 'numPr',
-    'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
-    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd',
-    'snapToGrid', 'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap',
-    'jc', 'textDirection', 'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId',
-    'cnfStyle', 'rPr', 'sectPr', 'pPrChange'],
-  rPr: ['rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
-    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
-    'color', 'spacing', 'w', 'kern', 'position', 'sz', 'szCs', 'highlight', 'u', 'effect',
-    'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
-  paraRPr: ['ins', 'del', 'moveFrom', 'moveTo', 'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs',
-    'caps', 'smallCaps', 'strike', 'dstrike', 'outline', 'shadow', 'emboss', 'imprint',
-    'noProof', 'snapToGrid', 'vanish', 'webHidden', 'color', 'spacing', 'w', 'kern', 'position',
-    'sz', 'szCs', 'highlight', 'u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs',
-    'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath', 'rPrChange'],
-  tblPr: ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
-    'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
-    'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
-  trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight', 'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
-  tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
-    'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
-} as const;
-
 function revisionAttribute(element: Element, name: string): string | undefined {
   return element.getAttributeNS(WORD_NS, name) ?? element.getAttribute(`w:${name}`) ?? undefined;
 }
@@ -141,11 +120,11 @@ function previousFormatOf(element: Element, theme: Parameters<typeof readRunProp
   }
 }
 
-function orderedRevisionChild(parent: Element, name: string, orderName = parent.localName as keyof typeof PARENT_PROPERTY_ORDER): Element {
+function orderedRevisionChild(parent: Element, name: string, orderName = parent.localName as keyof typeof PROPERTY_ORDER): Element {
   let result = children(parent, name)[0];
   if (result) return result;
   result = wordElement(parent.ownerDocument!, name);
-  const order: string[] = [...(PARENT_PROPERTY_ORDER[orderName] ?? [])];
+  const order: string[] = [...(PROPERTY_ORDER[orderName] ?? [])];
   const position = order.indexOf(name);
   const following = position === -1 ? undefined : children(parent).find((child) => order.indexOf(child.localName ?? '') > position);
   parent.insertBefore(result, following ?? null);
@@ -162,18 +141,6 @@ export function visibleTextOf(element: Element, excludedRuns?: ReadonlySet<Eleme
 
 export function deletedTextOf(element: Element): string {
   return collectTextElements(element, 'deleted').map(elementText).join('');
-}
-
-export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {
-  if (author === undefined) return { kind: 'unattributed' };
-  if (author === '') return { kind: 'empty', author: '' };
-  const normalized = author.trim();
-  if (!normalized) return { kind: 'blank', author };
-  return { kind: 'named', author: normalized };
-}
-
-export function reviewerBucketKey(author: { kind: ReviewerAuthorKind; author?: string }): string {
-  return author.kind === 'named' ? `named:${author.author ?? ''}` : author.kind;
 }
 
 export function reviewerBucketLabel(author: { kind: ReviewerAuthorKind; author?: string }): string {
@@ -237,7 +204,7 @@ export function markRevision(
   kind: 'ins' | 'del' | 'cellIns' | 'cellDel' | 'cellMerge',
   author?: string,
   date?: string,
-  orderName?: keyof typeof PARENT_PROPERTY_ORDER,
+  orderName?: keyof typeof PROPERTY_ORDER,
 ): Element {
   const marker = orderedRevisionChild(parent, kind, orderName);
   return applyRevisionMetadata(marker, author, date);

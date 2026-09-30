@@ -1,4 +1,4 @@
-import type { Document, Element, Node } from '@xmldom/xmldom';
+import type { Document, Element } from '@xmldom/xmldom';
 import type { CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, TextRange } from './types.js';
 import type { NoteKind } from './notes.js';
 import type { StylesContext } from './styles.js';
@@ -7,6 +7,22 @@ import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { resolveTargetPath } from './drawing.js';
 import { assertIndex } from './operations.js';
 import { WORD_NS, REL_NS, CONTENT_TYPES_NS, assertText, children, descendants, setWordValue, wordElement } from './xml.js';
+import {
+  appendText,
+  basename,
+  blockContainerOf,
+  decodeXml,
+  dirname,
+  encodeXml,
+  nearestParagraph,
+  normalizeReviewerFilterAuthors,
+  ownRuns,
+  paragraphAt,
+  preOrderElements,
+  properties,
+  property,
+  relsPath,
+} from './internal/elements.js';
 
 export interface CommentLocation {
   sourcePartPath: string;
@@ -63,20 +79,6 @@ export interface CommentContext extends PartAccess, HistoryRecorder<CommentConte
   normalizeRangeOn(document: Document, range: TextRange): { paragraph: Element; start: number; end: number };
   normalizeDocumentRange(document: Document, range: DocumentRange): DocumentRange;
   splitRunAtOffset(paragraph: Element, offset: number): void;
-  blockContainerOf(document: Document): Element;
-  preOrderElements(root: Element): Element[];
-  ownRuns(paragraph: Element): Element[];
-  nearestParagraph(node: Node | null): Element | null;
-  paragraphAt(document: Document, index: number): Element;
-  properties(parent: Element, name: string): Element;
-  property(parent: Element, name: string): Element;
-  appendText(parent: Element, text: string, before?: Node | null): void;
-  basename(path: string): string;
-  dirname(path: string): string;
-  relsPath(path: string): string;
-  encodeXml(xml: string): Uint8Array;
-  decodeXml(bytes: Uint8Array): string;
-  normalizeReviewerFilterAuthors(authors: string[]): Set<string>;
 }
 
 function commentReferenceInRun(run: Element): number | null {
@@ -186,7 +188,7 @@ export function mayContainComments(ctx: CommentContext, path: string): boolean {
     const bytes = ctx.readPart(path);
     if (!bytes) return false;
     try {
-      const xml = ctx.decodeXml(bytes);
+      const xml = decodeXml(bytes);
       return /commentRange(Start|End)|commentReference|<w:comment\b/i.test(xml);
     } catch {
       return false;
@@ -211,13 +213,13 @@ export function collectCommentLocations(ctx: CommentContext, sourcePartPath: str
     if (!document) return new Map();
     let container: Element;
     try {
-      container = ctx.blockContainerOf(document);
+      container = blockContainerOf(document);
     } catch {
       return new Map();
     }
     const paragraphs = descendants(container, 'p');
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    const order = ctx.preOrderElements(container);
+    const order = preOrderElements(container);
     const orderIndex = new Map(order.map((element, index) => [element, index]));
     const starts = new Map<number, Element>();
     const ends = new Map<number, Element>();
@@ -231,7 +233,7 @@ export function collectCommentLocations(ctx: CommentContext, sourcePartPath: str
       if (Number.isSafeInteger(id) && id >= 0) ends.set(id, end);
     }
     for (const [paragraph, paragraphNumber] of paragraphIndex.entries()) {
-      for (const [runNumber, run] of ctx.ownRuns(paragraph).entries()) {
+      for (const [runNumber, run] of ownRuns(paragraph).entries()) {
         const id = commentReferenceInRun(run);
         if (id === null) continue;
         const list = refs.get(id) ?? [];
@@ -245,15 +247,15 @@ export function collectCommentLocations(ctx: CommentContext, sourcePartPath: str
       const start = starts.get(id);
       const end = ends.get(id);
       if (start && end) {
-        const startParagraph = ctx.nearestParagraph(start);
-        const endParagraph = ctx.nearestParagraph(end);
+        const startParagraph = nearestParagraph(start);
+        const endParagraph = nearestParagraph(end);
         const startParagraphNumber = startParagraph ? paragraphIndex.get(startParagraph) : undefined;
         const endParagraphNumber = endParagraph ? paragraphIndex.get(endParagraph) : undefined;
         const startOrder = orderIndex.get(start) ?? Number.MAX_SAFE_INTEGER;
         const endOrder = orderIndex.get(end) ?? Number.MAX_SAFE_INTEGER;
         if (startParagraph && endParagraph && startParagraphNumber !== undefined && endParagraphNumber !== undefined) {
           if (startParagraph === endParagraph) {
-            const runs = ctx.ownRuns(startParagraph).flatMap((run, runIndex) => {
+            const runs = ownRuns(startParagraph).flatMap((run, runIndex) => {
               const position = orderIndex.get(run) ?? -1;
               return position > startOrder && position < endOrder ? [runIndex] : [];
             });
@@ -382,12 +384,12 @@ export function getAllComments(ctx: CommentContext): CommentInfo[] {
 }
 
 export function getCommentsPartPath(ctx: CommentContext, sourcePartPath = ctx.mainPath): string | undefined {
-    const conventional = `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}comments.xml`;
+    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`;
     return ctx.relatedPartPathFor(sourcePartPath, COMMENTS_REL) ?? (ctx.hasPart(conventional) ? conventional : undefined);
 }
 
 export function getCommentsExtendedPartPath(ctx: CommentContext, sourcePartPath = ctx.mainPath): string | undefined {
-    const conventional = `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}commentsExtended.xml`;
+    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`;
     return ctx.relatedPartPathFor(sourcePartPath, COMMENTS_EXTENDED_REL) ?? (ctx.hasPart(conventional) ? conventional : undefined);
 }
 
@@ -402,7 +404,7 @@ export function getComments(ctx: CommentContext, filter: { authors?: string[]; r
     }
     let comments = ctx.getAllComments();
     if (filter.authors?.length) {
-      const authors = ctx.normalizeReviewerFilterAuthors(filter.authors);
+      const authors = normalizeReviewerFilterAuthors(filter.authors);
       comments = comments.filter((comment) => authors.has(reviewerBucketKey(reviewerBucketOf(comment.author))));
     }
     if (filter.resolved !== undefined) comments = comments.filter((comment) => comment.resolved === filter.resolved);
@@ -410,27 +412,27 @@ export function getComments(ctx: CommentContext, filter: { authors?: string[]; r
 }
 
 export function ensureCommentsParts(ctx: CommentContext, sourcePartPath: string, includeExtended = false): { commentsPath: string; commentsExtendedPath?: string } {
-    const sourceBase = ctx.basename(sourcePartPath).replace(/\.xml$/i, '');
+    const sourceBase = basename(sourcePartPath).replace(/\.xml$/i, '');
     let commentsPath = ctx.getCommentsPartPath(sourcePartPath);
     if (!commentsPath) {
       // Keep new comment parts next to the source part; non-main fallback names stay source-specific
       // so future cleanup/interoperability logic can reconstruct the relationship target deterministically.
       commentsPath = sourcePartPath === ctx.mainPath
-        ? `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}comments.xml`
-        : `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}${sourceBase}-comments.xml`;
+        ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`
+        : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-comments.xml`;
     }
-    if (!ctx.hasPart(commentsPath)) ctx.addPart(commentsPath, ctx.encodeXml(defaultCommentsXml()), COMMENTS_TYPE);
+    if (!ctx.hasPart(commentsPath)) ctx.addPart(commentsPath, encodeXml(defaultCommentsXml()), COMMENTS_TYPE);
     ctx.ensurePartRelationship(sourcePartPath, COMMENTS_REL, commentsPath);
     let commentsExtendedPath: string | undefined;
     if (includeExtended) {
       commentsExtendedPath = ctx.getCommentsExtendedPartPath(sourcePartPath);
       if (!commentsExtendedPath) {
         commentsExtendedPath = sourcePartPath === ctx.mainPath
-          ? `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}commentsExtended.xml`
-          : `${ctx.dirname(sourcePartPath) ? `${ctx.dirname(sourcePartPath)}/` : ''}${sourceBase}-commentsExtended.xml`;
+          ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`
+          : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-commentsExtended.xml`;
       }
       if (!ctx.hasPart(commentsExtendedPath)) {
-        ctx.addPart(commentsExtendedPath, ctx.encodeXml(defaultCommentsExtendedXml()), COMMENTS_EXTENDED_TYPE);
+        ctx.addPart(commentsExtendedPath, encodeXml(defaultCommentsExtendedXml()), COMMENTS_EXTENDED_TYPE);
       }
       ctx.ensurePartRelationship(sourcePartPath, COMMENTS_EXTENDED_REL, commentsExtendedPath);
     }
@@ -497,14 +499,14 @@ export function writeCommentBody(ctx: CommentContext, commentElement: Element, p
     while (commentElement.firstChild) commentElement.removeChild(commentElement.firstChild);
     const paragraph = wordElement(document, 'p');
     ensureCommentParagraphParaId(paragraph, paraId);
-    const paragraphProps = ctx.properties(paragraph, 'pPr');
-    setWordValue(ctx.property(paragraphProps, 'pStyle'), commentParagraphStyle());
+    const paragraphProps = properties(paragraph, 'pPr');
+    setWordValue(property(paragraphProps, 'pStyle'), commentParagraphStyle());
     paragraph.appendChild(makeCommentAnnotationRun(document));
     if (text) {
       const run = wordElement(document, 'r');
-      const props = ctx.properties(run, 'rPr');
-      setWordValue(ctx.property(props, 'rStyle'), commentParagraphStyle());
-      ctx.appendText(run, text);
+      const props = properties(run, 'rPr');
+      setWordValue(property(props, 'rStyle'), commentParagraphStyle());
+      appendText(run, text);
       paragraph.appendChild(run);
     }
     commentElement.appendChild(paragraph);
@@ -530,7 +532,7 @@ export function upsertCommentEx(ctx: CommentContext, commentsExtendedPath: strin
 }
 
 export function removeRelationshipTarget(ctx: CommentContext, sourcePartPath: string, relationType: string, targetPath: string): void {
-    const relationshipPath = ctx.relsPath(sourcePartPath);
+    const relationshipPath = relsPath(sourcePartPath);
     if (!ctx.hasPart(relationshipPath)) return;
     ctx.updatePartXml(relationshipPath, (document) => {
       for (const relation of children(document.documentElement!, 'Relationship', REL_NS)) {
@@ -551,7 +553,7 @@ export function removeRelationshipTarget(ctx: CommentContext, sourcePartPath: st
 export function relationshipCount(ctx: CommentContext, targetPath: string, relationType: string): number {
     let count = 0;
     for (const sourcePartPath of ctx.contentPartPaths()) {
-      const relationshipPath = ctx.relsPath(sourcePartPath);
+      const relationshipPath = relsPath(sourcePartPath);
       if (!ctx.hasPart(relationshipPath)) continue;
       const document = ctx.partDocumentOrUndefined(relationshipPath)?.documentElement;
       if (!document) continue;
@@ -622,8 +624,8 @@ export function addCommentDirect(ctx: CommentContext, range: TextRange | Documen
     const paraId = ctx.nextCommentParaId();
     const date = new Date().toISOString();
     ctx.updatePartXml(ctx.mainPath, (document) => {
-      const startParagraph = ctx.paragraphAt(document, normalized.startParagraph);
-      const endParagraph = ctx.paragraphAt(document, normalized.endParagraph);
+      const startParagraph = paragraphAt(document, normalized.startParagraph);
+      const endParagraph = paragraphAt(document, normalized.endParagraph);
       const collapsed = normalized.startParagraph === normalized.endParagraph && normalized.startOffset === normalized.endOffset;
       if (startParagraph === endParagraph) {
         ctx.splitRunAtOffset(startParagraph, normalized.endOffset);
@@ -641,8 +643,8 @@ export function addCommentDirect(ctx: CommentContext, range: TextRange | Documen
       const endMarker = wordElement(document, 'commentRangeEnd');
       endMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
       const referenceRun = wordElement(document, 'r');
-      const props = ctx.properties(referenceRun, 'rPr');
-      setWordValue(ctx.property(props, 'rStyle'), commentReferenceStyle());
+      const props = properties(referenceRun, 'rPr');
+      setWordValue(property(props, 'rStyle'), commentReferenceStyle());
       const reference = wordElement(document, 'commentReference');
       reference.setAttributeNS(WORD_NS, 'w:id', String(id));
       referenceRun.appendChild(reference);
@@ -787,7 +789,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
     const affectedSourceParts = new Set([...paraIds.values()].map((info) => info.sourcePartPath));
     for (const sourcePartPath of affectedSourceParts) {
       ctx.updatePartXml(sourcePartPath, (document) => {
-        const container = ctx.blockContainerOf(document);
+        const container = blockContainerOf(document);
         for (const nodeName of ['commentRangeStart', 'commentRangeEnd'] as const) {
           for (const node of descendants(container, nodeName)) {
             const commentId = Number(node.getAttributeNS(WORD_NS, 'id') ?? node.getAttribute('w:id'));
@@ -795,7 +797,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
           }
         }
         for (const paragraph of descendants(container, 'p')) {
-          for (const run of ctx.ownRuns(paragraph)) {
+          for (const run of ownRuns(paragraph)) {
             const commentId = commentReferenceInRun(run);
             if (commentId === null || !deleteIds.has(commentId)) continue;
             const reference = children(run, 'commentReference')[0];
