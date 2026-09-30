@@ -68,20 +68,21 @@ test('bullet numbering parses marker font and visible bullet text', () => {
 test('picture bullets resolve their own image relationship and survive package roundtrip', async () => {
   const doc = withBody('<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Item</w:t></w:r></w:p>');
   const numberingXml = `<w:numbering xmlns:w="${WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml"><w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rBullet"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="▪"/><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`;
-  attachNumbering(doc, numberingXml);
+  doc.addPart('word/custom/numberingData.xml', encoder.encode(numberingXml), NUMBERING_TYPE);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="custom/numberingData.xml"/></Relationships>`), RELS_TYPE);
   doc.addPart('word/media/bullet.png', Uint8Array.of(1, 2, 3), 'image/png');
-  doc.addPart('word/_rels/numbering.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.png"/></Relationships>`), RELS_TYPE);
+  doc.addPart('word/custom/_rels/numberingData.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/bullet.png"/></Relationships>`), RELS_TYPE);
   const image = doc.getParagraphs()[0].numbering.image;
   assert.equal(image.relationshipId, 'rBullet');
   assert.equal(image.partPath, 'word/media/bullet.png');
-  assert.equal(image.sourcePartPath, 'word/numbering.xml');
+  assert.equal(image.sourcePartPath, 'word/custom/numberingData.xml');
   assert.equal(image.isExternal, false);
   assert.equal(doc.getImageDataUrl(image), 'data:image/png;base64,AQID');
-  const xml = doc.getPartXml('word/numbering.xml');
+  const xml = doc.getPartXml('word/custom/numberingData.xml');
   const reloaded = await DocxDocument.load(await doc.toUint8Array());
-  assert.equal(reloaded.getPartXml('word/numbering.xml'), xml);
-  assert.match(reloaded.getPartXml('word/numbering.xml'), /w:numPicBulletId="5"/);
-  assert.match(reloaded.getPartXml('word/numbering.xml'), /w:lvlPicBulletId w:val="5"/);
+  assert.equal(reloaded.getPartXml('word/custom/numberingData.xml'), xml);
+  assert.match(reloaded.getPartXml('word/custom/numberingData.xml'), /w:numPicBulletId="5"/);
+  assert.match(reloaded.getPartXml('word/custom/numberingData.xml'), /w:lvlPicBulletId w:val="5"/);
 });
 
 test('external picture bullets are placeholders and missing pictures fall back to marker text', () => {

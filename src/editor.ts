@@ -746,7 +746,7 @@ export class DocxEditor {
     try {
       this.renderFieldInfos = new Map(this.document.getFields().map((field) => [field.index, field]));
     } catch {
-      this.renderFieldInfos.clear();
+      this.renderFieldInfos = new Map();
     }
     if (this.viewMode === 'continuous') this.applyPageSetup();
     this.paragraphs.clear();

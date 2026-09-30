@@ -2180,7 +2180,7 @@ test('getFields parses complex fields and excludes instructions from run text', 
   assert.equal(doc.getParagraphs()[0].runs[2].text, '');
 });
 
-test('fields classify merge and legacy form fields and preserve user values on update', () => {
+test('fields classify merge and legacy form fields and preserve user values on update', async () => {
   const complexField = (instruction, ffData, result) =>
     `<w:p><w:r><w:fldChar w:fldCharType="begin">${ffData}</w:fldChar></w:r>` +
     `<w:r><w:instrText>${instruction}</w:instrText></w:r>` +
@@ -2213,6 +2213,8 @@ test('fields classify merge and legacy form fields and preserve user values on u
   const xml = doc.getPartXml(doc.mainDocumentPath);
   assert.match(xml, /w:entryMacro w:val="EnterMacro"/);
   assert.match(xml, /w:exitMacro w:val="ExitMacro"/);
+  const reloaded = await DocxDocument.load(await doc.toUint8Array());
+  assert.equal(reloaded.getPartXml(reloaded.mainDocumentPath), xml);
 });
 
 test('updateFields updates SEQ and DATE but preserves pagination and unsafe fields', () => {
