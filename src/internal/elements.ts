@@ -42,6 +42,21 @@ export function bodyOf(document: Document): Element {
   return body[0]!;
 }
 
+export function mainParagraphElements(body: Element): Element[] {
+  return descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
+}
+
+export function compactDefined<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
 export function partDirectory(path: string): string {
   const index = path.lastIndexOf('/');
   return index === -1 ? '' : path.slice(0, index);
@@ -175,6 +190,20 @@ export function ownRuns(paragraph: Element): Element[] {
 
     return true;
   });
+}
+
+export function isDescendantOfWithin(node: Node, ancestor: Node, stopAt: Node): boolean {
+  let current: Node | null = node;
+  while (current && current !== stopAt) {
+    if (current === ancestor) return true;
+    current = current.parentNode;
+  }
+  return false;
+}
+
+export function removeWordAttribute(element: Element, name: string): void {
+  element.removeAttributeNS(WORD_NS, name);
+  element.removeAttribute(`w:${name}`);
 }
 
 export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {

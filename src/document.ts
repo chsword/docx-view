@@ -65,8 +65,39 @@ import {
 } from './styles.js';
 import { cellSpan, parseCellFormat, parseTableFormat, readTable, rowCells, tableGrid } from './table.js';
 import {
-  assertHyperlinkInput,
+  type HyperlinkContext,
+  getHyperlinks as readHyperlinks,
+  HYPERLINK_REL,
+  hyperlinkNode as hyperlinkNodeDirect,
+  insertHyperlink as insertHyperlinkDirect,
+  relationshipIdOf,
+  removeHyperlink as removeHyperlinkDirect,
+  resolveHyperlink as resolveHyperlinkDirect,
+  textRangeLength,
+  updateHyperlink as updateHyperlinkDirect,
+} from './hyperlink.js';
+import {
+  type ContentControlContext,
+  elementText,
+  getContentControls as readContentControls,
+  removeContentControl as removeContentControlDirect,
+  replaceSpan,
+  setContentControlChecked as setContentControlCheckedDirect,
+  setContentControlProperties as setContentControlPropertiesDirect,
+  setContentControlText as setContentControlTextDirect,
+  textElements,
+  textOf,
+} from './content-control.js';
+import {
+  type BookmarkContext,
+  deleteBookmark as deleteBookmarkDirect,
+  ensureTocBookmark as ensureTocBookmarkDirect,
+  getBookmarks as readBookmarks,
+  insertBookmark as insertBookmarkDirect,
   isInternalBookmark,
+} from './bookmark.js';
+import {
+  assertHyperlinkInput,
   isUnsafeHyperlink,
   parseFldSimpleHyperlink,
 } from './hyperlink.js';
@@ -77,7 +108,6 @@ import {
 } from './notes.js';
 import {
   type CommentCaches,
-  W14_NS,
   parseCommentEntries,
   type CommentContext,
   type CommentLocation,
@@ -121,9 +151,12 @@ import {
   basename,
   blockContainerOf,
   bodyOf,
+  compactDefined,
   decodeXml,
   dirname,
   encodeXml,
+  isDescendantOfWithin,
+  mainParagraphElements,
   nearestParagraph,
   normalizeReviewerFilterAuthors,
   ownRuns,
@@ -132,6 +165,7 @@ import {
   preOrderElements,
   properties,
   property,
+  removeWordAttribute,
   relsPath,
   reviewerFilterKeyOf,
 } from './internal/elements.js';
@@ -171,7 +205,6 @@ const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessin
 const THEME_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const encoder = new TextEncoder();
 const IMAGE_LIMIT = 16 * 1024 * 1024;
-const HYPERLINK_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
 const STRUCTURE_PARTS = new Set(['[Content_Types].xml', '_rels/.rels']);
 const HISTORY_MAX_ENTRIES = 50;
 const HISTORY_MAX_BYTES = 64 * 1024 * 1024;
@@ -313,17 +346,6 @@ function relativeTarget(fromPart: string, toPart: string): string {
   return `${'../'.repeat(from.length)}${to.join('/')}` || toPart;
 }
 
-function mainParagraphElements(body: Element): Element[] {
-  return descendants(body, 'p').filter((paragraph) => {
-    let ancestor = paragraph.parentNode as Element | null;
-    while (ancestor && ancestor !== body) {
-      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
-      ancestor = ancestor.parentNode as Element | null;
-    }
-    return true;
-  });
-}
-
 function isTransparentWrapper(element: Element): boolean {
   return isTransparentWordWrapper(element);
 }
@@ -426,28 +448,6 @@ function isParagraphAnchorMarker(element: Element): boolean {
   ].includes(element.localName ?? '');
 }
 
-function textElements(element: Element): Element[] {
-  const result: Element[] = [];
-  function walk(node: Node, deletedDepth = 0): void {
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType !== 1) continue;
-      const element = child as Element;
-      if (element.namespaceURI === WORD_NS) {
-        const localName = element.localName ?? '';
-        if (element.localName === 'p') continue;
-        const inDeleted = deletedDepth > 0 || localName === 'delText';
-        if (!inDeleted && ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(localName)) {
-          result.push(element);
-          continue;
-        }
-      }
-      walk(element, deletedDepth + (element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '') ? 1 : 0));
-    }
-  }
-  walk(element);
-  return result;
-}
-
 function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
   let result = children(parent, name)[0];
   if (!result) {
@@ -456,20 +456,6 @@ function numberingProperty(parent: Element, name: 'ilvl' | 'numId'): Element {
     else parent.appendChild(result);
   }
   return result;
-}
-
-function elementText(element: Element): string {
-  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
-  if (element.localName === 'tab') return '\t';
-  if (element.localName === 'noBreakHyphen') return '\u2011';
-  if (element.localName === 'softHyphen') return '\u00ad';
-  if (element.localName === 'sym') {
-    const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
-    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
-    const code = Number.parseInt(value, 16);
-    return Number.isFinite(code) && isValidXmlCharCode(code) ? String.fromCharCode(code) : '�';
-  }
-  return '\n';
 }
 
 function formatFieldNumber(value: number, format?: string): string {
@@ -497,12 +483,6 @@ function formatFieldDate(date: Date, format?: string): string {
     HH: pad(date.getHours()), mm: pad(date.getMinutes()), ss: pad(date.getSeconds()),
     MMM: date.toLocaleString('en-US', { month: 'short' }), MMMM: date.toLocaleString('en-US', { month: 'long' }),
   }[token] ?? token));
-}
-
-function textOf(element: Element): string {
-  if (element.localName === 'r' && descendants(element, 'instrText').length > 0) return '';
-  const text = visibleTextOf(element) || textElements(element).map(elementText).join('');
-  return text;
 }
 
 function bookmarkTexts(document: Document): Map<string, string> {
@@ -558,15 +538,6 @@ function bookmarkParagraphIndices(document: Document, paragraphs: Element[]): Ma
   return result;
 }
 
-function contentControlText(content: Element): string {
-  const paragraphs = descendants(content, 'p');
-  return paragraphs.length ? paragraphs.map(textOf).join('\n') : textOf(content);
-}
-
-function compactDefined<T extends object>(value: T): T {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
-}
-
 function newParagraph(document: Document, text: string): Element {
   const paragraph = wordElement(document, 'p');
   const run = wordElement(document, 'r');
@@ -586,41 +557,6 @@ function isEmptyRun(run: Element): boolean {
     const element = child as Element;
     return !(element.namespaceURI === WORD_NS && ['rPr'].includes(element.localName ?? ''));
   });
-}
-
-// Edit only text-bearing nodes. Drawings, bookmarks, field codes and other XML survive.
-function replaceSpan(paragraph: Element, start: number, end: number, replacement: string): void {
-  const elements = textElements(paragraph);
-  if (elements.length === 0) {
-    const run = children(paragraph, 'r')[0] ?? wordElement(paragraph.ownerDocument!, 'r');
-    if (!run.parentNode) paragraph.appendChild(run);
-    appendText(run, replacement);
-    return;
-  }
-  let offset = 0;
-  let inserted = false;
-  for (const element of elements) {
-    const oldText = elementText(element);
-    const next = offset + oldText.length;
-    const insertHere = !inserted && start >= offset && (start === end ? start <= next : start < next);
-    const overlaps = offset < end && next > start;
-    if (insertHere || overlaps) {
-      if (insertHere && !overlaps && element.localName !== 't') {
-        appendText(element.parentNode as Element, replacement, start === offset ? element : element.nextSibling);
-        inserted = true;
-        offset = next;
-        continue;
-      }
-      const prefix = oldText.slice(0, Math.max(0, Math.min(oldText.length, start - offset)));
-      const suffix = oldText.slice(Math.max(0, Math.min(oldText.length, end - offset)));
-      const text = prefix + (insertHere ? replacement : '') + suffix;
-      const parent = element.parentNode as Element;
-      appendText(parent, text, element);
-      parent.removeChild(element);
-      if (insertHere) inserted = true;
-    }
-    offset = next;
-  }
 }
 
 function revisionTextElement(run: Element, name: 't' | 'delText'): void {
@@ -666,148 +602,6 @@ function wrapRunsWithRevision(
   }
   if (kind === 'del' && options.convertText !== false) {
     for (const run of runs) revisionTextElement(run, 'delText');
-  }
-}
-
-const SDT_PROPERTY_ORDER = [
-  'alias', 'lock', 'placeholder', 'showingPlcHdr', 'dataBinding', 'temporary', 'id', 'tag',
-  'docPartObj', 'docPartGallery', 'docPartUnique', 'comboBox', 'date', 'docPartList', 'dropDownList',
-  'picture', 'richText', 'text', 'citation', 'group', 'bibliography', 'equation', 'ocx', 'entityPicker',
-];
-
-function sdtProperty(parent: Element, name: string): Element {
-  const existing = children(parent, name)[0];
-  if (existing) return existing;
-  const element = wordElement(parent.ownerDocument!, name);
-  const position = SDT_PROPERTY_ORDER.indexOf(name);
-  const following = children(parent).find((child) => {
-    const childPosition = SDT_PROPERTY_ORDER.indexOf(child.localName ?? '');
-    return position !== -1 && childPosition > position;
-  });
-  parent.insertBefore(element, following ?? null);
-  return element;
-}
-
-function sdtProperties(control: Element): Element {
-  let properties = children(control, 'sdtPr')[0];
-  if (!properties) {
-    properties = wordElement(control.ownerDocument!, 'sdtPr');
-    control.insertBefore(properties, children(control, 'sdtContent')[0] ?? control.firstChild);
-  }
-  return properties;
-}
-
-function contentControlKind(control: Element): ContentControlKind {
-  const properties = children(control, 'sdtPr')[0] ?? control;
-  if (children(properties, 'checkbox', W14_NS).length) return 'checkbox';
-  const types: Array<[string, ContentControlKind]> = [
-    ['text', 'text'], ['richText', 'richText'], ['dropDownList', 'dropDownList'],
-    ['comboBox', 'comboBox'], ['date', 'date'], ['picture', 'picture'], ['group', 'group'],
-  ];
-  return types.find(([name]) => children(properties, name).length > 0)?.[1] ?? 'unknown';
-}
-
-function textSpanWithin(root: Element, scope: Element): { start: number; end: number; text: string } | undefined {
-  const elements = textElements(root);
-  const selected = elements.filter((element) => {
-    let ancestor: Node | null = element;
-    while (ancestor && ancestor !== scope) ancestor = ancestor.parentNode;
-    return ancestor === scope;
-  });
-  if (!selected.length) return undefined;
-  const firstIndex = elements.indexOf(selected[0]!);
-  const start = elements.slice(0, firstIndex).reduce((length, element) => length + elementText(element).length, 0);
-  const text = selected.map(elementText).join('');
-  return { start, end: start + text.length, text };
-}
-
-function appendContentControlText(parent: Element, text: string, withinParagraph: boolean): void {
-  const runs = descendants(parent, 'r').filter((run) => {
-    let ancestor: Element | null = run.parentNode as Element | null;
-    while (ancestor && ancestor !== parent) {
-      if (ancestor.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(ancestor.localName ?? '')) return false;
-      ancestor = ancestor.parentNode as Element | null;
-    }
-    return ancestor === parent;
-  });
-  const run = runs[0] ?? wordElement(parent.ownerDocument!, 'r');
-  if (!run.parentNode) {
-    if (withinParagraph) {
-      const paragraphProperties = children(parent, 'pPr')[0];
-      if (paragraphProperties) parent.insertBefore(run, paragraphProperties.nextSibling);
-      else parent.insertBefore(run, parent.firstChild);
-    } else {
-      parent.appendChild(run);
-    }
-  }
-  appendText(run, text);
-}
-
-function setSdtText(control: Element, text: string): void {
-  const content = children(control, 'sdtContent')[0];
-  if (!content) throw new Error('Content control has no w:sdtContent.');
-  const paragraphs = descendants(content, 'p');
-  if (!paragraphs.length) {
-    let ancestor = control.parentNode as Element | null;
-    while (ancestor && ancestor.localName !== 'p' && ancestor.localName !== 'body' && ancestor.localName !== 'tc') {
-      ancestor = ancestor.parentNode as Element | null;
-    }
-    if (ancestor?.localName === 'p') {
-      const span = textSpanWithin(ancestor, content);
-      if (span) {
-        const old = span.text;
-        let prefix = 0;
-        while (prefix < old.length && prefix < text.length && old[prefix] === text[prefix]) prefix++;
-        let oldEnd = old.length;
-        let newEnd = text.length;
-        while (oldEnd > prefix && newEnd > prefix && old[oldEnd - 1] === text[newEnd - 1]) {
-          oldEnd--;
-          newEnd--;
-        }
-        if (prefix > 0 && /[\ud800-\udbff]/.test(old[prefix - 1]!)) prefix--;
-        if (oldEnd < old.length && /[\udc00-\udfff]/.test(old[oldEnd]!)) { oldEnd++; newEnd++; }
-        replaceSpan(ancestor, span.start + prefix, span.start + oldEnd, text.slice(prefix, newEnd));
-      } else {
-        appendContentControlText(content, text, false);
-      }
-      return;
-    }
-    const paragraph = wordElement(control.ownerDocument!, 'p');
-    content.appendChild(paragraph);
-    appendContentControlText(paragraph, text, true);
-    return;
-  }
-  if (paragraphs.length === 1) {
-    const paragraph = paragraphs[0]!;
-    const span = textSpanWithin(paragraph, content);
-    if (span) {
-      let prefix = 0;
-      while (prefix < span.text.length && prefix < text.length && span.text[prefix] === text[prefix]) prefix++;
-      let oldEnd = span.text.length;
-      let newEnd = text.length;
-      while (oldEnd > prefix && newEnd > prefix && span.text[oldEnd - 1] === text[newEnd - 1]) {
-        oldEnd--;
-        newEnd--;
-      }
-      if (prefix > 0 && /[\ud800-\udbff]/.test(span.text[prefix - 1]!)) prefix--;
-      if (oldEnd < span.text.length && /[\udc00-\udfff]/.test(span.text[oldEnd]!)) { oldEnd++; newEnd++; }
-      replaceSpan(paragraph, span.start + prefix, span.start + oldEnd, text.slice(prefix, newEnd));
-    } else {
-      appendContentControlText(paragraph, text, true);
-    }
-    return;
-  }
-  for (const paragraph of paragraphs) {
-    const span = textSpanWithin(paragraph, content);
-    if (span) replaceSpan(paragraph, span.start, span.end, '');
-  }
-  appendContentControlText(paragraphs[0]!, text, true);
-}
-
-function ensureW14Namespace(control: Element): void {
-  const root = control.ownerDocument?.documentElement;
-  if (root && root.lookupNamespaceURI('w14') !== W14_NS) {
-    root.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:w14', W14_NS);
   }
 }
 
@@ -890,19 +684,6 @@ function textOffsetsInParagraph(paragraph: Element): Map<Element, number> {
   };
   visit(paragraph);
   return offsets;
-}
-
-function relationshipIdOf(hyperlink: Element): string | undefined {
-  return hyperlink.getAttributeNS(OFFICE_REL_NS, 'id') ?? hyperlink.getAttribute('r:id') ?? undefined;
-}
-
-function isDescendantOfWithin(node: Node, ancestor: Node, stopAt: Node): boolean {
-  let current: Node | null = node;
-  while (current && current !== stopAt) {
-    if (current === ancestor) return true;
-    current = current.parentNode;
-  }
-  return false;
 }
 
 function nearestWordAncestor(node: Node | null, localName: string): Element | undefined {
@@ -1309,11 +1090,6 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
 
 function removeProperty(parent: Element, name: string): void {
   for (const child of children(parent, name)) parent.removeChild(child);
-}
-
-function removeWordAttribute(element: Element, name: string): void {
-  element.removeAttributeNS(WORD_NS, name);
-  element.removeAttribute(`w:${name}`);
 }
 
 function removeWordAttributes(element: Element, ...names: string[]): void {
@@ -2182,13 +1958,6 @@ function isolateRunChild(run: Element, child: Element): Element {
   return isolated;
 }
 
-function textRangeLength(paragraph: Element, start: number, end: number): void {
-  const size = textOf(paragraph).length;
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > size) {
-    throw new Error(`Range [${start}, ${end}) is out of bounds for paragraph text length ${size}.`);
-  }
-}
-
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
@@ -2447,14 +2216,6 @@ function normalizeTextBoundary(text: string, offset: number, side: 'start' | 'en
   const right = text.charCodeAt(offset);
   if (isHighSurrogateCodeUnit(left) && isLowSurrogateCodeUnit(right)) return side === 'start' ? offset - 1 : offset + 1;
   return offset;
-}
-
-function fieldInstruction(link: { url?: string; anchor?: string }): string {
-  const escapeFieldText = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const chunks = ['HYPERLINK'];
-  if (link.url) chunks.push(`"${escapeFieldText(link.url)}"`);
-  if (link.anchor) chunks.push(`\\l "${escapeFieldText(link.anchor)}"`);
-  return chunks.join(' ');
 }
 
 function cloneReviewerInfo(reviewer: ReviewerInfo): ReviewerInfo {
@@ -4068,236 +3829,26 @@ export class DocxDocument {
   }
 
   getContentControls(): ContentControlInfo[] {
-    const body = bodyOf(this.getCachedPartDocument(this.mainPath));
-    const paragraphs = mainParagraphElements(body);
-    const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    return descendants(body, 'sdt').map((control) => {
-      const properties = children(control, 'sdtPr')[0];
-      const controlContent = children(control, 'sdtContent')[0];
-      const idValue = wordValue(children(properties ?? control, 'id')[0]);
-      const parsedId = idValue !== undefined && /^\d+$/.test(idValue) ? Number(idValue) : undefined;
-      const id = parsedId !== undefined && Number.isSafeInteger(parsedId) && parsedId >= 0 ? parsedId : undefined;
-      const lockValue = wordValue(children(properties ?? control, 'lock')[0]);
-      const lock: ContentControlInfo['lock'] = lockValue === 'sdtLocked' || lockValue === 'contentLocked' ||
-        lockValue === 'sdtContentLocked' ? lockValue : 'unlocked';
-      const checkbox = children(properties ?? control, 'checkbox', W14_NS)[0];
-      const kind = contentControlKind(control);
-      const checkboxChecked = checkbox && children(checkbox, 'checked', W14_NS)[0];
-      const checkedValue = checkboxChecked?.getAttributeNS(W14_NS, 'val') ?? undefined;
-      const list = children(properties ?? control, kind === 'dropDownList' ? 'dropDownList' : 'comboBox')[0];
-      const items = list ? children(list, 'listItem').map((item) => ({
-        displayText: item.getAttributeNS(WORD_NS, 'displayText') ?? '',
-        value: item.getAttributeNS(WORD_NS, 'value') ?? '',
-      })) : undefined;
-      const date = children(properties ?? control, 'date')[0];
-      const dateFormat = wordValue(children(date ?? control, 'dateFormat')[0]);
-      const placeholder = children(properties ?? control, 'placeholder')[0];
-      const binding = children(properties ?? control, 'dataBinding')[0];
-      const bindingValue = binding ? compactDefined({
-        prefixMappings: binding.getAttributeNS(WORD_NS, 'prefixMappings') ?? undefined,
-        xpath: binding.getAttributeNS(WORD_NS, 'xpath') ?? undefined,
-        storeItemId: binding.getAttributeNS(WORD_NS, 'storeItemID') ?? undefined,
-      }) : undefined;
-      const showingPlaceholder = children(properties ?? control, 'showingPlcHdr')[0];
-      const placeholderValue = wordValue(showingPlaceholder);
-      const controlParagraphs = controlContent ? descendants(controlContent, 'p') : [];
-      if (controlContent && controlParagraphs.length === 0) {
-        let ancestor = control.parentNode as Element | null;
-        while (ancestor && ancestor !== body) {
-          if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'p') {
-            controlParagraphs.push(ancestor);
-            break;
-          }
-          ancestor = ancestor.parentNode as Element | null;
-        }
-      }
-      let ancestor = control.parentNode as Element | null;
-      let nested = false;
-      while (ancestor && ancestor !== body) {
-        if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'sdt') {
-          nested = true;
-          break;
-        }
-        ancestor = ancestor.parentNode as Element | null;
-      }
-      return compactDefined({
-        id,
-        kind,
-        alias: wordValue(children(properties ?? control, 'alias')[0]),
-        tag: wordValue(children(properties ?? control, 'tag')[0]),
-        lock,
-        showingPlaceholder: !!showingPlaceholder && !['0', 'false', 'off'].includes((placeholderValue ?? '1').toLowerCase()),
-        placeholderDocPart: wordValue(children(placeholder ?? control, 'docPart')[0]),
-        items,
-        checked: checkedValue === undefined || !['1', 'true', 'on', '0', 'false', 'off'].includes(checkedValue.toLowerCase())
-          ? undefined : ['1', 'true', 'on'].includes(checkedValue.toLowerCase()),
-        dateFormat,
-        dataBinding: bindingValue,
-        paragraphs: [...new Set(controlParagraphs.map((paragraph) => paragraphIndexes.get(paragraph)).filter((index): index is number => index !== undefined))],
-        nested,
-        text: controlContent ? contentControlText(controlContent) : '',
-      });
-    });
+    return readContentControls(this as unknown as ContentControlContext);
   }
 
   setContentControlText(id: number, text: string): void {
-    assertIndex(id);
-    assertText(text);
-    this.updatePartXmlInternal(this.mainPath, (document) => {
-      const body = bodyOf(document);
-      const control = descendants(body, 'sdt').find((candidate) => {
-        const properties = children(candidate, 'sdtPr')[0];
-        const value = wordValue(children(properties ?? candidate, 'id')[0]);
-        return value !== undefined && Number(value) === id;
-      });
-      if (!control) throw new Error(`Content control ${id} does not exist.`);
-      const kind = contentControlKind(control);
-      if (!['text', 'richText', 'dropDownList', 'comboBox', 'date'].includes(kind)) {
-        throw new Error(`Content control ${id} does not accept text values.`);
-      }
-      const properties = children(control, 'sdtPr')[0];
-      const lock = wordValue(children(properties ?? control, 'lock')[0]);
-      if (lock === 'contentLocked' || lock === 'sdtContentLocked') {
-        throw new Error(`Content control ${id} is locked against content changes.`);
-      }
-      const content = children(control, 'sdtContent')[0];
-      if (!content) throw new Error('Content control has no w:sdtContent.');
-      const showingPlaceholder = children(properties ?? control, 'showingPlcHdr');
-      if (contentControlText(content) === text && showingPlaceholder.length === 0) return false;
-      setSdtText(control, text);
-      for (const showing of showingPlaceholder) properties?.removeChild(showing);
-      return true;
-    });
+    setContentControlTextDirect(this as unknown as ContentControlContext, id, text);
   }
 
   setContentControlChecked(id: number, checked: boolean): void {
-    assertIndex(id);
-    if (typeof checked !== 'boolean') throw new Error('checked must be boolean.');
-    this.updatePartXmlInternal(this.mainPath, (document) => {
-      const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
-        const properties = children(candidate, 'sdtPr')[0];
-        const value = wordValue(children(properties ?? candidate, 'id')[0]);
-        return value !== undefined && Number(value) === id;
-      });
-      if (!control) throw new Error(`Content control ${id} does not exist.`);
-      if (contentControlKind(control) !== 'checkbox') {
-        throw new Error(`Content control ${id} is not a checkbox.`);
-      }
-      ensureW14Namespace(control);
-      const properties = sdtProperties(control);
-      let checkbox = children(properties, 'checkbox', W14_NS)[0];
-      if (!checkbox) {
-        checkbox = document.createElementNS(W14_NS, 'w14:checkbox');
-        properties.appendChild(checkbox);
-      }
-      const checkedElement = children(checkbox, 'checked', W14_NS)[0] ??
-        (checkbox.appendChild(document.createElementNS(W14_NS, 'w14:checked')) as Element);
-      const nextValue = checked ? '1' : '0';
-      if (checkedElement.getAttributeNS(W14_NS, 'val') === nextValue) return false;
-      checkedElement.setAttributeNS(W14_NS, 'w14:val', nextValue);
-      return true;
-    });
+    setContentControlCheckedDirect(this as unknown as ContentControlContext, id, checked);
   }
 
   setContentControlProperties(
     id: number,
     patch: { alias?: string | null; tag?: string | null; lock?: ContentControlInfo['lock'] },
   ): void {
-    assertIndex(id);
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch) ||
-        Object.keys(patch).some((key) => !['alias', 'tag', 'lock'].includes(key))) {
-      throw new Error('Content control properties patch must contain only alias, tag, or lock.');
-    }
-    if ('alias' in patch && patch.alias !== null && patch.alias !== undefined) assertText(patch.alias, 'alias');
-    if ('tag' in patch && patch.tag !== null && patch.tag !== undefined) assertText(patch.tag, 'tag');
-    if ('lock' in patch && patch.lock !== undefined &&
-        !['sdtLocked', 'contentLocked', 'sdtContentLocked', 'unlocked'].includes(patch.lock)) {
-      throw new Error('Invalid content control lock.');
-    }
-    this.updatePartXmlInternal(this.mainPath, (document) => {
-      const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
-        const properties = children(candidate, 'sdtPr')[0];
-        const value = wordValue(children(properties ?? candidate, 'id')[0]);
-        return value !== undefined && Number(value) === id;
-      });
-      if (!control) throw new Error(`Content control ${id} does not exist.`);
-      let properties = children(control, 'sdtPr')[0];
-      const updateValue = (name: 'alias' | 'tag', value: string | null | undefined): boolean => {
-        if (!(name in patch)) return false;
-        const entries = children(properties ?? control, name);
-        if (value === null) {
-          for (const entry of entries) entry.parentNode?.removeChild(entry);
-          return entries.length > 0;
-        }
-        if (value === undefined) return false;
-        if (entries.length && wordValue(entries[0]) === value && entries.length === 1) return false;
-        properties ??= sdtProperties(control);
-        const propertyElement = entries[0] ?? sdtProperty(properties, name);
-        setWordValue(propertyElement, value);
-        for (const duplicate of entries.slice(1)) duplicate.parentNode?.removeChild(duplicate);
-        return true;
-      };
-      let changed = updateValue('alias', patch.alias);
-      changed = updateValue('tag', patch.tag) || changed;
-      if ('lock' in patch && patch.lock !== undefined) {
-        const locks = children(properties ?? control, 'lock');
-        if (patch.lock === 'unlocked') {
-          for (const entry of locks) entry.parentNode?.removeChild(entry);
-          changed = locks.length > 0 || changed;
-        } else if (locks.length === 1 && wordValue(locks[0]) === patch.lock) {
-          return changed;
-        } else {
-          properties ??= sdtProperties(control);
-          const lock = locks[0] ?? sdtProperty(properties, 'lock');
-          setWordValue(lock, patch.lock);
-          for (const duplicate of locks.slice(1)) duplicate.parentNode?.removeChild(duplicate);
-          changed = true;
-        }
-      }
-      return changed;
-    });
+    setContentControlPropertiesDirect(this as unknown as ContentControlContext, id, patch);
   }
 
   removeContentControl(id: number, options: { keepContent?: boolean } = {}): void {
-    assertIndex(id);
-    if (!options || typeof options !== 'object' || Array.isArray(options) ||
-        Object.keys(options).some((key) => key !== 'keepContent') ||
-        ('keepContent' in options && typeof options.keepContent !== 'boolean')) {
-      throw new Error('Invalid content control removal options.');
-    }
-    this.updatePartXmlInternal(this.mainPath, (document) => {
-      const body = bodyOf(document);
-      const control = descendants(body, 'sdt').find((candidate) => {
-        const properties = children(candidate, 'sdtPr')[0];
-        return wordValue(children(properties ?? candidate, 'id')[0]) === String(id);
-      });
-      if (!control) throw new Error(`Content control ${id} does not exist.`);
-      const parent = control.parentNode;
-      if (!parent) throw new Error('Content control is detached.');
-      if (options.keepContent !== false) {
-        const content = children(control, 'sdtContent')[0];
-        if (content) {
-          while (content.firstChild) parent.insertBefore(content.firstChild, control);
-        }
-      }
-      parent.removeChild(control);
-      if (options.keepContent === false) {
-        let structuralContainer: Element | null = parent as Element;
-        while (structuralContainer && structuralContainer !== body && structuralContainer.localName !== 'tc') {
-          structuralContainer = structuralContainer.parentNode as Element | null;
-        }
-        if (structuralContainer?.localName === 'tc' && childrenThroughTransparent(structuralContainer, 'p').length === 0) {
-          const paragraph = wordElement(document, 'p');
-          const properties = children(structuralContainer, 'tcPr')[0];
-          structuralContainer.insertBefore(paragraph, properties?.nextSibling ?? null);
-        } else if (structuralContainer === body && childrenThroughTransparent(body, 'p').length === 0 &&
-            childrenThroughTransparent(body, 'tbl').length === 0) {
-          const paragraph = wordElement(document, 'p');
-          body.insertBefore(paragraph, children(body, 'sectPr')[0] ?? null);
-        }
-      }
-      return true;
-    });
+    removeContentControlDirect(this as unknown as ContentControlContext, id, options);
   }
 
   getBlocks(): DocumentBlock[] {
@@ -4984,55 +4535,7 @@ export class DocxDocument {
   }
 
   getHyperlinks(): HyperlinkInfo[] {
-    const main = this.getPartDocument(this.mainPath);
-    const body = bodyOf(main);
-    const paragraphs = mainParagraphElements(body);
-    const relationships = this.relationshipsFor(this.mainPath);
-    const result: HyperlinkInfo[] = [];
-    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    for (const paragraph of paragraphs) {
-      const runs = ownRuns(paragraph);
-      for (const hyperlink of descendants(paragraph, 'hyperlink')) {
-        const linkedRuns = runs.flatMap((run, index) =>
-          isDescendantOfWithin(run, hyperlink, paragraph) ? [index] : []);
-        if (!linkedRuns.length) continue;
-        const relationshipId = relationshipIdOf(hyperlink);
-        const relation = relationshipId ? relationships.get(relationshipId) : undefined;
-        const url = relation?.mode === 'External' ? relation.target : undefined;
-        const anchor = hyperlink.getAttributeNS(WORD_NS, 'anchor') ?? hyperlink.getAttribute('w:anchor') ?? undefined;
-        const tooltip = hyperlink.getAttributeNS(WORD_NS, 'tooltip') ?? hyperlink.getAttribute('w:tooltip') ?? undefined;
-        result.push({
-          paragraph: paragraphIndex.get(paragraph)!,
-          runs: linkedRuns,
-          text: textOf(hyperlink),
-          url,
-          anchor,
-          tooltip,
-          isExternal: Boolean(url),
-          unsafe: isUnsafeHyperlink({ url, anchor }),
-          relationshipId,
-        });
-      }
-      for (const field of descendants(paragraph, 'fldSimple')) {
-        const instruction = field.getAttributeNS(WORD_NS, 'instr') ?? field.getAttribute('w:instr') ?? '';
-        const parsed = parseFldSimpleHyperlink(instruction);
-        if (!parsed) continue;
-        const tooltip = field.getAttributeNS(WORD_NS, 'tooltip') ?? field.getAttribute('w:tooltip') ?? undefined;
-        const linkedRuns = runs.flatMap((run, index) =>
-          isDescendantOfWithin(run, field, paragraph) ? [index] : []);
-        if (!linkedRuns.length) continue;
-        result.push({
-          paragraph: paragraphIndex.get(paragraph)!,
-          runs: linkedRuns,
-          text: textOf(field),
-          ...parsed,
-          tooltip,
-          isExternal: Boolean(parsed.url),
-          unsafe: isUnsafeHyperlink(parsed),
-        });
-      }
-    }
-    return result;
+    return readHyperlinks(this as unknown as HyperlinkContext);
   }
 
   getRevisions(filter: { authors?: string[]; kinds?: RevisionInfo['kind'][] } = {}): RevisionInfo[] {
@@ -5493,47 +4996,7 @@ export class DocxDocument {
   }
 
   getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
-    const body = bodyOf(this.getPartDocument(this.mainPath));
-    const paragraphs = mainParagraphElements(body);
-    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    const order = preOrderElements(body);
-    const paragraphFromNode = (node: Element): number | undefined => {
-      const paragraph = nearestParagraph(node);
-      if (paragraph) return paragraphIndex.get(paragraph);
-      const offset = order.indexOf(node);
-      if (offset === -1) return undefined;
-      for (let index = offset + 1; index < order.length; index++) {
-        const candidate = order[index];
-        if (candidate?.localName === 'p' && candidate.namespaceURI === WORD_NS) {
-          return paragraphIndex.get(candidate);
-        }
-      }
-      return paragraphs.length ? paragraphs.length - 1 : 0;
-    };
-    const starts = new Map<number, { name: string; paragraph: number }>();
-    const ends = new Map<number, number>();
-    for (const start of descendants(body, 'bookmarkStart')) {
-      const id = Number(start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
-      const name = start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name') ?? '';
-      const startParagraph = paragraphFromNode(start);
-      if (!Number.isSafeInteger(id) || startParagraph === undefined || !name) continue;
-      starts.set(id, { name, paragraph: startParagraph });
-    }
-    for (const end of descendants(body, 'bookmarkEnd')) {
-      const id = Number(end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id'));
-      const endParagraph = paragraphFromNode(end);
-      if (!Number.isSafeInteger(id) || endParagraph === undefined) continue;
-      ends.set(id, endParagraph);
-    }
-    return [...starts.entries()]
-      .map(([id, start]) => ({
-        id,
-        name: start.name,
-        startParagraph: start.paragraph,
-        endParagraph: ends.get(id) ?? start.paragraph,
-        isInternal: isInternalBookmark(start.name),
-      }))
-      .filter(bookmark => options.includeInternal || !bookmark.isInternal);
+    return readBookmarks(this as unknown as BookmarkContext, options);
   }
 
   getEditableRegions(): EditableRegionInfo[] {
@@ -5778,35 +5241,11 @@ export class DocxDocument {
   }
 
   private hyperlinkNode(hyperlink: HyperlinkInfo, document: Document): Element {
-    const paragraph = paragraphAt(document, hyperlink.paragraph);
-    const run = ownRuns(paragraph)[hyperlink.runs[0]!] ?? null;
-    let node: Node | null = run;
-    while (node && node !== paragraph) {
-      if (node.nodeType === 1 && (node as Element).namespaceURI === WORD_NS &&
-          ['hyperlink', 'fldSimple'].includes((node as Element).localName ?? '')) {
-        return node as Element;
-      }
-      node = node.parentNode;
-    }
-    throw new Error('Hyperlink node was not found.');
+    return hyperlinkNodeDirect(this as unknown as HyperlinkContext, hyperlink, document);
   }
 
   private resolveHyperlink(reference: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string }): HyperlinkInfo {
-    const hyperlinks = this.getHyperlinks();
-    if (typeof reference === 'number') {
-      const hyperlink = hyperlinks[reference];
-      if (!hyperlink) throw new Error('Hyperlink does not exist.');
-      return hyperlink;
-    }
-    if (!reference || typeof reference !== 'object' || !Number.isSafeInteger(reference.paragraph) ||
-        !Array.isArray(reference.runs) || !reference.runs.every(run => Number.isSafeInteger(run) && run >= 0) ||
-        typeof reference.text !== 'string') {
-      throw new Error('hyperlink must be a hyperlink index or object with paragraph, runs and text.');
-    }
-    const hyperlink = hyperlinks.find(item => item.paragraph === reference.paragraph &&
-      item.runs[0] === reference.runs[0] && item.text === reference.text);
-    if (!hyperlink) throw new Error('Hyperlink does not exist.');
-    return hyperlink;
+    return resolveHyperlinkDirect(this as unknown as HyperlinkContext, reference);
   }
 
   private splitRunAtOffset(paragraph: Element, offset: number): void {
@@ -6630,279 +6069,29 @@ export class DocxDocument {
     target: { paragraph: number; start: number; end: number },
     link: { url?: string; anchor?: string; tooltip?: string },
   ): HyperlinkInfo {
-    assertIndex(target.paragraph);
-    assertIndex(target.start);
-    assertIndex(target.end);
-    assertHyperlinkInput(link);
-    return this.withDraft(draft => {
-      let createdId: string | undefined;
-      let createdMarker: { paragraph: number; run: number; text: string } | undefined;
-      let relationshipPath: string | undefined;
-      let relationships: Document | undefined;
-      if (link.url) {
-        relationshipPath = resolveRelationshipsPath(draft.mainPath);
-        relationships = draft.hasPart(relationshipPath)
-          ? draft.getPartDocument(relationshipPath)
-          : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
-        createdId = draft.nextRelationshipId(relationships);
-        const relationship = relationships.createElementNS(REL_NS, 'Relationship');
-        relationship.setAttribute('Id', createdId);
-        relationship.setAttribute('Type', HYPERLINK_REL);
-        relationship.setAttribute('Target', link.url);
-        relationship.setAttribute('TargetMode', 'External');
-        relationships.documentElement!.appendChild(relationship);
-      }
-      draft.updatePartXml(draft.mainPath, document => {
-        const setHyperlinkAttributes = (node: Element): void => {
-          if (createdId) node.setAttributeNS(OFFICE_REL_NS, 'r:id', createdId);
-          else { node.removeAttributeNS(OFFICE_REL_NS, 'id'); node.removeAttribute('r:id'); }
-          if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
-          else removeWordAttribute(node, 'anchor');
-          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
-          else removeWordAttribute(node, 'tooltip');
-        };
-        const paragraph = paragraphAt(document, target.paragraph);
-        textRangeLength(paragraph, target.start, target.end);
-        draft.splitRunAtOffset(paragraph, target.end);
-        draft.splitRunAtOffset(paragraph, target.start);
-        const runs = ownRuns(paragraph);
-        let cursor = 0;
-        const selected: Element[] = [];
-        for (const run of runs) {
-          const text = textOf(run);
-          const next = cursor + text.length;
-          if (target.start < next && target.end > cursor) selected.push(run);
-          cursor = next;
-        }
-        if (!selected.length) throw new Error('Hyperlink range must include text.');
-        const firstParent = selected[0]!.parentNode as Element;
-        if (selected.some(run => run.parentNode !== firstParent)) {
-          throw new Error('Hyperlink range cannot cross different run containers.');
-        }
-        let hyperlink: Element;
-        if (firstParent.namespaceURI === WORD_NS && firstParent.localName === 'hyperlink') {
-          const original = firstParent;
-          const selectedSet = new Set<Node>(selected);
-          const beforeNodes: Node[] = [];
-          const selectedNodes: Node[] = [];
-          const afterNodes: Node[] = [];
-          let phase: 'before' | 'selected' | 'after' = 'before';
-          for (const child of Array.from(original.childNodes)) {
-            if (selectedSet.has(child)) {
-              if (phase === 'after') {
-                throw new Error('Hyperlink range must map to a contiguous segment inside an existing hyperlink.');
-              }
-              phase = 'selected';
-              selectedNodes.push(child);
-            } else if (phase === 'before') {
-              beforeNodes.push(child);
-            } else {
-              phase = 'after';
-              afterNodes.push(child);
-            }
-          }
-          if (!selectedNodes.length) throw new Error('Hyperlink range must include text.');
-          if (!beforeNodes.length && !afterNodes.length) {
-            hyperlink = original;
-            setHyperlinkAttributes(hyperlink);
-          } else {
-            const parent = original.parentNode as Element | null;
-            if (!parent) throw new Error('Hyperlink container is detached.');
-            const selectedLink = original.cloneNode(false) as Element;
-            setHyperlinkAttributes(selectedLink);
-            for (const node of selectedNodes) selectedLink.appendChild(node);
-            const beforeLink = beforeNodes.length ? original.cloneNode(false) as Element : undefined;
-            const afterLink = afterNodes.length ? original.cloneNode(false) as Element : undefined;
-            if (beforeLink) for (const node of beforeNodes) beforeLink.appendChild(node);
-            if (afterLink) for (const node of afterNodes) afterLink.appendChild(node);
-            parent.insertBefore(beforeLink ?? selectedLink, original);
-            if (beforeLink) parent.insertBefore(selectedLink, original);
-            if (afterLink) parent.insertBefore(afterLink, original);
-            parent.removeChild(original);
-            hyperlink = selectedLink;
-          }
-        } else {
-          hyperlink = wordElement(document, 'hyperlink');
-          setHyperlinkAttributes(hyperlink);
-          firstParent.insertBefore(hyperlink, selected[0]!);
-          for (const run of selected) hyperlink.appendChild(run);
-        }
-        const firstHyperlinkRun = descendants(hyperlink, 'r')[0];
-        if (!firstHyperlinkRun) throw new Error('Inserted hyperlink does not contain runs.');
-        const props = properties(firstHyperlinkRun, 'rPr');
-        if (!children(props, 'rStyle').length) setWordValue(property(props, 'rStyle'), 'Hyperlink');
-        if (!children(props, 'color').length) setWordValue(property(props, 'color'), '0563C1');
-        if (!children(props, 'u').length) setWordValue(property(props, 'u'), 'single');
-        const firstRun = ownRuns(paragraph).findIndex(run => run === firstHyperlinkRun);
-        if (firstRun < 0) throw new Error('Inserted hyperlink run index could not be resolved.');
-        createdMarker = { paragraph: target.paragraph, run: firstRun, text: textOf(hyperlink) };
-      });
-      if (relationshipPath && relationships) {
-        if (draft.hasPart(relationshipPath)) {
-          draft.setPartXml(relationshipPath, serializeXml(relationships));
-        } else {
-          draft.addPart(relationshipPath, encodeXml(serializeXml(relationships)), 'application/vnd.openxmlformats-package.relationships+xml');
-        }
-      }
-      const created = draft.getHyperlinks().find(item => item.paragraph === createdMarker?.paragraph &&
-        item.runs[0] === createdMarker?.run && item.text === createdMarker?.text &&
-        item.url === link.url && item.anchor === link.anchor);
-      if (!created) throw new Error('Inserted hyperlink could not be resolved.');
-      return created;
-    });
+    return insertHyperlinkDirect(this as unknown as HyperlinkContext, target, link);
   }
 
   updateHyperlink(
     hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
     link: { url?: string; anchor?: string; tooltip?: string },
   ): void {
-    assertHyperlinkInput(link);
-    const current = this.resolveHyperlink(hyperlink);
-    const currentNodeName = this.hyperlinkNode(current, this.getPartDocument(this.mainPath)).localName;
-    this.withDraft((draft) => {
-      let nextRelationshipId = current.relationshipId;
-      const currentRelationshipUsers = current.relationshipId
-        ? draft.getHyperlinks().filter(item => item.relationshipId === current.relationshipId).length
-        : 0;
-      if (currentNodeName !== 'fldSimple' && link.url && link.url !== current.url) {
-        const relPath = resolveRelationshipsPath(draft.mainPath);
-        const rels = draft.hasPart(relPath) ? draft.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
-        const canReuse = Boolean(current.relationshipId && currentRelationshipUsers <= 1);
-        nextRelationshipId = canReuse ? current.relationshipId : draft.nextRelationshipId(rels);
-        const existing = canReuse
-          ? children(rels.documentElement!, 'Relationship', REL_NS)
-            .find(item => item.getAttribute('Id') === nextRelationshipId)
-          : undefined;
-        const relationship = existing ?? rels.createElementNS(REL_NS, 'Relationship');
-        relationship.setAttribute('Id', nextRelationshipId!);
-        relationship.setAttribute('Type', HYPERLINK_REL);
-        relationship.setAttribute('Target', link.url);
-        relationship.setAttribute('TargetMode', 'External');
-        if (!existing) rels.documentElement!.appendChild(relationship);
-        if (draft.hasPart(relPath)) {
-          draft.setPartXml(relPath, serializeXml(rels));
-        } else {
-          draft.addPart(relPath, encodeXml(serializeXml(rels)), 'application/vnd.openxmlformats-package.relationships+xml');
-        }
-      }
-      draft.updatePartXml(draft.mainPath, document => {
-        const node = draft.hyperlinkNode(current, document);
-        if (node.localName === 'fldSimple') {
-          node.setAttributeNS(WORD_NS, 'w:instr', fieldInstruction(link));
-          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
-          else removeWordAttribute(node, 'tooltip');
-        } else {
-          if (link.url) node.setAttributeNS(OFFICE_REL_NS, 'r:id', nextRelationshipId!);
-          else { node.removeAttributeNS(OFFICE_REL_NS, 'id'); node.removeAttribute('r:id'); }
-          if (link.anchor) node.setAttributeNS(WORD_NS, 'w:anchor', link.anchor);
-          else removeWordAttribute(node, 'anchor');
-          if (link.tooltip) node.setAttributeNS(WORD_NS, 'w:tooltip', link.tooltip);
-          else removeWordAttribute(node, 'tooltip');
-        }
-      });
-      if (current.relationshipId && (!link.url || current.relationshipId !== nextRelationshipId)) {
-        const stillUsed = draft.getHyperlinks().some(item => item.relationshipId === current.relationshipId);
-        if (!stillUsed) {
-          const relPath = resolveRelationshipsPath(draft.mainPath);
-          if (draft.hasPart(relPath)) {
-            draft.updatePartXml(relPath, rels => {
-              for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
-                if (relationship.getAttribute('Id') === current.relationshipId) {
-                  rels.documentElement!.removeChild(relationship);
-                  break;
-                }
-              }
-            });
-          }
-        }
-      }
-    });
+    updateHyperlinkDirect(this as unknown as HyperlinkContext, hyperlink, link);
   }
 
   removeHyperlink(
     hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
     options: { keepText?: boolean } = {},
   ): void {
-    const link = this.resolveHyperlink(hyperlink);
-    this.withDraft((draft) => {
-      draft.updatePartXml(draft.mainPath, document => {
-        const node = draft.hyperlinkNode(link, document);
-        const parent = node.parentNode as Element;
-        if (options.keepText === false) parent.removeChild(node);
-        else {
-          while (node.firstChild) parent.insertBefore(node.firstChild, node);
-          parent.removeChild(node);
-        }
-      });
-      if (link.relationshipId) {
-        const stillUsed = draft.getHyperlinks().some(item => item.relationshipId === link.relationshipId);
-        if (!stillUsed) {
-          const relPath = resolveRelationshipsPath(draft.mainPath);
-          if (draft.hasPart(relPath)) {
-            draft.updatePartXml(relPath, rels => {
-              for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
-                if (relationship.getAttribute('Id') === link.relationshipId) {
-                  rels.documentElement!.removeChild(relationship);
-                  break;
-                }
-              }
-            });
-          }
-        }
-      }
-    });
+    removeHyperlinkDirect(this as unknown as HyperlinkContext, hyperlink, options);
   }
 
   insertBookmark(name: string, range: { startParagraph: number; endParagraph?: number }): BookmarkInfo {
-    assertText(name, 'name');
-    assertIndex(range.startParagraph);
-    if (range.endParagraph !== undefined) assertIndex(range.endParagraph);
-    if (range.endParagraph !== undefined && range.endParagraph < range.startParagraph) {
-      throw new Error('range.endParagraph must be >= range.startParagraph.');
-    }
-    if (!name) throw new Error('name must not be empty.');
-    if (this.getBookmarks({ includeInternal: true }).some(bookmark => bookmark.name === name)) {
-      throw new Error(`Bookmark "${name}" already exists.`);
-    }
-    let bookmark: BookmarkInfo | undefined;
-    this.updatePartXml(this.mainPath, document => {
-      const start = paragraphAt(document, range.startParagraph);
-      const end = paragraphAt(document, range.endParagraph ?? range.startParagraph);
-      const ids = descendants(bodyOf(document), 'bookmarkStart')
-        .map(item => Number(item.getAttributeNS(WORD_NS, 'id') ?? item.getAttribute('w:id')))
-        .filter(value => Number.isSafeInteger(value));
-      const id = (ids.length ? Math.max(...ids) : 0) + 1;
-      const startMark = wordElement(document, 'bookmarkStart');
-      startMark.setAttributeNS(WORD_NS, 'w:id', String(id));
-      startMark.setAttributeNS(WORD_NS, 'w:name', name);
-      start.insertBefore(startMark, children(start, 'pPr')[0]?.nextSibling ?? start.firstChild);
-      const endMark = wordElement(document, 'bookmarkEnd');
-      endMark.setAttributeNS(WORD_NS, 'w:id', String(id));
-      end.appendChild(endMark);
-      bookmark = {
-        id,
-        name,
-        startParagraph: range.startParagraph,
-        endParagraph: range.endParagraph ?? range.startParagraph,
-        isInternal: isInternalBookmark(name),
-      };
-    });
-    return bookmark!;
+    return insertBookmarkDirect(this as unknown as BookmarkContext, name, range);
   }
 
   deleteBookmark(name: string): void {
-    assertText(name, 'name');
-    this.updatePartXml(this.mainPath, document => {
-      const starts = descendants(bodyOf(document), 'bookmarkStart')
-        .filter(start => (start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name')) === name);
-      if (!starts.length) throw new Error(`Bookmark "${name}" does not exist.`);
-      const ids = starts.map(start => start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
-      for (const start of starts) start.parentNode!.removeChild(start);
-      for (const end of descendants(bodyOf(document), 'bookmarkEnd')) {
-        const id = end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id');
-        if (ids.includes(id)) end.parentNode!.removeChild(end);
-      }
-    });
+    deleteBookmarkDirect(this as unknown as BookmarkContext, name);
   }
 
   setParagraphNumbering(index: number, numId: number, level = 0): void {
@@ -7879,25 +7068,7 @@ export class DocxDocument {
 
   private ensureTocBookmark(document: Document, paragraphIndex: number, namesByParagraph: Map<number, string>,
     usedNames: Set<string>, nextId: { value: number }): string | undefined {
-    const existing = namesByParagraph.get(paragraphIndex);
-    if (existing) return existing;
-    const paragraph = mainParagraphElements(bodyOf(document))[paragraphIndex];
-    if (!paragraph) return undefined;
-    let name = `_Toc${paragraphIndex + 1}`;
-    let suffix = 1;
-    while (usedNames.has(name)) name = `_Toc${paragraphIndex + 1}_${suffix++}`;
-    usedNames.add(name);
-    namesByParagraph.set(paragraphIndex, name);
-    const start = wordElement(document, 'bookmarkStart');
-    const end = wordElement(document, 'bookmarkEnd');
-    const id = String(nextId.value++);
-    start.setAttributeNS(WORD_NS, 'w:id', id);
-    start.setAttributeNS(WORD_NS, 'w:name', name);
-    end.setAttributeNS(WORD_NS, 'w:id', id);
-    const properties = children(paragraph, 'pPr')[0];
-    paragraph.insertBefore(start, properties?.nextSibling ?? paragraph.firstChild);
-    paragraph.appendChild(end);
-    return name;
+    return ensureTocBookmarkDirect(document, paragraphIndex, namesByParagraph, usedNames, nextId);
   }
 
   private writeTocResult(document: Document, paragraph: Element, field: FieldInfo,
