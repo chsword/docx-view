@@ -309,7 +309,7 @@ console.log(tool, result.revision);
 
 ### 域（Fields）
 
-`getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 重算安全的 `SEQ`、日期/时间、文档属性、`REF` 等域；提供 `pagination` 时也会写回 `PAGE`、`NUMPAGES` 和可解析到已存在书签的 `PAGEREF`，结果按所在节的页码格式化。页眉/页脚可用 `getFields(partPath)` 按部件读取，页码域也会随正文域一并写回。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
+`getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 重算安全的 `SEQ`、日期/时间、文档属性、`REF` 等域；提供 `pagination` 时也会写回 `PAGE`、`NUMPAGES` 和可解析到已存在书签的 `PAGEREF`，结果按所在节的页码格式化。页眉/页脚可用 `getFields(partPath)` 按部件读取，页码域也会随正文域一并写回；由于一个页眉/页脚部件由整节共享，持久化的 `PAGE` 缓存使用该节首段所在页的显示页码，分页预览仍会按实际页面单独显示。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
 
 `TOC` 域仅实现 `\o "1-3"` 层级过滤与 `\h` 条目超链接；其他开关（包括 `\z`、`\u`）会保留缓存结果并跳过更新。`DocxEditor.updateFields()` 最多执行 5 轮「分页→更新域→重排」；达到上限时不报错，并保留最后一轮的结果。`INDEX` 域本期不更新，始终保留缓存结果。
 

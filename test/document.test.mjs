@@ -2000,6 +2000,35 @@ test('updateFields builds a level-filtered hyperlinked TOC and skips unsupported
   assert.equal(doc.revision, revision);
 });
 
+test('updateFields preserves TOC cache when no outline entries match', () => {
+  const pagination = {
+    pageCount: 1,
+    pageOfParagraph: () => 0,
+    numberOfPage: () => 1,
+  };
+  const cases = [
+    {
+      body: '<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>Top-level heading</w:t></w:r></w:p>',
+      instruction: ' TOC \\o &quot;2-3&quot; ',
+      result: 'Word generated cached TOC',
+    },
+    {
+      body: '<w:p><w:r><w:t>Custom-style heading without outline metadata</w:t></w:r></w:p>',
+      instruction: ' TOC \\o &quot;1-3&quot; ',
+      result: 'Word generated cached TOC',
+    },
+  ];
+  for (const { body, instruction, result } of cases) {
+    const doc = withBody(`${body}<w:p><w:fldSimple w:instr="${instruction}"><w:r><w:t>${result}</w:t></w:r></w:fldSimple></w:p>`);
+    const before = doc.getPartXml(doc.mainDocumentPath);
+    const revision = doc.revision;
+    assert.equal(doc.updateFields({ pagination }), false);
+    assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+    assert.equal(doc.getFields()[0].result, result);
+    assert.equal(doc.revision, revision);
+  }
+});
+
 test('updateFields resolves REF from a pre-update bookmark snapshot and is repeatable', () => {
   const doc = withBody(
     `<w:bookmarkStart w:id="1" w:name="锚点"/><w:p><w:r><w:t>被引用的文字</w:t></w:r></w:p><w:bookmarkEnd w:id="1"/>` +

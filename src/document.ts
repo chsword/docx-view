@@ -8232,6 +8232,7 @@ export class DocxDocument {
             }
             tocEntries.push(entry);
           }
+          if (!tocEntries.length) continue;
           value = tocEntries.map(entry => `${entry.text}\t${entry.page}`).join('\n');
         } else if (!field.evaluable) continue;
         else if (field.kind === 'SEQ') {
