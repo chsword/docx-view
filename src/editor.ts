@@ -1712,21 +1712,32 @@ export class DocxEditor {
       rects.forEach((series, seriesIndex) => series.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: chart.series[seriesIndex]?.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) })));
     } else {
       chart.series.forEach((series, seriesIndex) => {
-        let path = '';
-        let started = false;
+        const segments: Array<Array<{ x: number; y: number }>> = [];
+        let current: Array<{ x: number; y: number }> = [];
         const xValues = series.xValues;
         series.values.forEach((value, index) => {
-          if (value === null || !Number.isFinite(value)) { started = false; return; }
+          if (value === null || !Number.isFinite(value)) {
+            if (current.length) segments.push(current);
+            current = [];
+            return;
+          }
           const firstSeriesLength = chart.series[0]?.values.length ?? 0;
           const xValue = xValues?.[index];
           const x = plot.x + (chart.kind === 'scatter' && xScale && xValue !== null && xValue !== undefined
             ? valueToPx(xValue, xScale, plot.width)
             : (firstSeriesLength > 1 ? index / (firstSeriesLength - 1) : 0.5) * plot.width);
-          const y = plot.y + plot.height - valueToPx(value, scale, plot.height);
-          path += `${started ? 'L' : 'M'} ${x} ${y} `;
-          started = true;
+          current.push({ x, y: plot.y + plot.height - valueToPx(value, scale, plot.height) });
         });
-        if (chart.kind === 'area' && path) path += `L ${plot.x + plot.width} ${zeroY} L ${plot.x} ${zeroY} Z`;
+        if (current.length) segments.push(current);
+        const path = segments.map((points) => {
+          const line = points.map((point, pointIndex) => `${pointIndex ? 'L' : 'M'} ${point.x} ${point.y} `).join('');
+          if (chart.kind !== 'area') return line;
+          const last = points[points.length - 1]!;
+          const first = points[0]!;
+          return last.x === first.x
+            ? `${line}L ${first.x} ${zeroY} Z`
+            : `${line}L ${last.x} ${zeroY} L ${first.x} ${zeroY} Z`;
+        }).join(' ');
         if (path) add('path', { d: path, fill: chart.kind === 'area' ? (series.fill?.color ?? 'none') : 'none', 'fill-opacity': chart.kind === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) });
       });
     }
