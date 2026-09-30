@@ -59,10 +59,9 @@ export function paragraphSpacingPx(
   const previousFormat = previous?.effective ?? previous;
   const before = format.spacingBeforeAuto ? 0 : Math.max(0, format.spacingBefore ?? 0) * TWIPS_TO_PX;
   const after = format.spacingAfterAuto ? 0 : Math.max(0, format.spacingAfter ?? 0) * TWIPS_TO_PX;
-  const previousAfter = previous && !format.contextualSpacing
-    ? (previousFormat?.spacingAfterAuto ? 0 : Math.max(0, previousFormat?.spacingAfter ?? 0) * TWIPS_TO_PX)
-    : 0;
-  const sameStyle = previousFormat?.style !== undefined && previousFormat.style === format.style;
+  const previousAfter = previousFormat?.spacingAfterAuto
+    ? 0 : Math.max(0, previousFormat?.spacingAfter ?? 0) * TWIPS_TO_PX;
+  const sameStyle = previous !== undefined && previousFormat?.style === format.style;
   return {
     beforePx: sameStyle && format.contextualSpacing ? before : Math.max(previousAfter, before),
     afterPx: after,
@@ -180,6 +179,8 @@ export function paginate(
     pages.push(page);
     current = page;
     currentColumn = 0;
+    previousParagraph = undefined;
+    previousAfterPx = 0;
     columnHeights = Array.from({ length: columnWidthsPx(sectionAt(index)).length }, () => 0);
     wrapsByColumn = columnHeights.map(() => []);
     nextNumber = number + 1;
@@ -193,6 +194,8 @@ export function paginate(
     ensurePage();
     if (currentColumn + 1 < widths().length) {
       currentColumn++;
+      previousParagraph = undefined;
+      previousAfterPx = 0;
     } else {
       newPage();
       previousParagraph = undefined;
@@ -343,13 +346,15 @@ export function paginate(
       }, 0);
     }
     if (total > heightLimit()) {
-      for (let index = 0; index < paragraphs.length; index++) addParagraph(paragraphs[index]!, paragraphs[index + 1]);
+      for (let index = 0; index < paragraphs.length; index++) {
+        addParagraph(paragraphs[index]!, paragraphs[index + 1] ?? (index === paragraphs.length - 1 ? following : undefined));
+      }
       return;
     }
     for (const item of measured) {
       const height = item.lines.reduce((sum, line) => sum + Math.max(0, line.heightPx), 0);
       const spacing = paragraphSpacingPx(previousParagraph, item.paragraph);
-      const nextParagraph = measured[measured.indexOf(item) + 1]?.paragraph;
+      const nextParagraph = measured[measured.indexOf(item) + 1]?.paragraph ?? following;
       const contribution = Math.max(0, spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx));
       append(item.lines.map((line) => ({ type: 'line', paragraph: item.paragraph.index, line })), height + contribution);
       updateWraps(item.paragraph, height + contribution);

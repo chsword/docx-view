@@ -6,6 +6,7 @@ import {
   selectHeaderFooter, updateFieldsUntilStable,
 } from '../dist/editor.js';
 import { sanitizeTextWithInfo, WORD_NS } from '../dist/xml.js';
+import { paragraphSpacingPx } from '../dist/layout.js';
 
 test('formats paginated page numbers and falls back to decimal', () => {
   assert.equal(formatPageNumber(4, 'upperRoman'), 'IV');
@@ -723,6 +724,26 @@ test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
   editor.renderShapeInfos = [];
   const withoutShape = editor.makeParagraph(paragraph, 720, reviewContext);
   assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
+});
+
+test('makeParagraph renders shared paragraph spacing as explicit margins', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.renderShapeInfos = [];
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  const previous = { index: 0, text: 'a', runs: [{ index: 0, text: 'a' }], images: [], spacingAfter: 300 };
+  const current = { index: 1, text: 'b', runs: [{ index: 0, text: 'b' }], images: [], spacingBefore: 100, spacingAfter: 200 };
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const rendered = editor.makeParagraph(current, 720, reviewContext, undefined, previous, false);
+  const spacing = paragraphSpacingPx(previous, current);
+  assert.equal(rendered.style.marginTop, `${spacing.beforePx}px`);
+  assert.equal(rendered.style.marginBottom, undefined);
+  const final = editor.makeParagraph(current, 720, reviewContext, undefined, previous);
+  assert.equal(final.style.marginBottom, `${spacing.afterPx}px`);
 });
 
 test('makeParagraph renders a math-only paragraph as MathML', () => {

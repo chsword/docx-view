@@ -80,6 +80,21 @@ test('uses collapsed paragraph spacing and contextual spacing consistently', () 
   assert.deepEqual(pages.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0, 1], [2]]);
 });
 
+test('contextual spacing treats two default-style paragraphs as matching', () => {
+  const previous = paragraph(0, [10], { spacingAfter: 300 });
+  const current = paragraph(1, [10], { contextualSpacing: true, spacingBefore: 100 });
+  assert.equal(paragraphSpacingPx(previous, current).beforePx, 100 * 96 / 1440);
+});
+
+test('keepNext groups count the following paragraph spacing once', () => {
+  const first = paragraph(0, [20], { keepNext: true, spacingAfter: 200 });
+  const second = paragraph(1, [20], { spacingAfter: 200 });
+  const following = paragraph(2, [20], { spacingBefore: 100 });
+  const pages = paginate(blocks(first, second, following), [section({ pageHeight: 2000 })], measurer,
+    { defaultTabStopTwips: 720 });
+  assert.equal(pages[0].contentHeightPx, 20 * 3 + 2 * 200 * 96 / 1440);
+});
+
 test('paginates split paragraph lines using snapped heights', () => {
   const lines = Array.from({ length: 12 }, () => 15);
   const result = paginate(blocks(paragraph(0, lines)), [

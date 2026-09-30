@@ -279,14 +279,14 @@ export function deriveLineBoxes(rects: Array<{ top: number; height: number; star
   return lines.sort((a, b) => a.start - b.start).map(({ height, start, end }) => ({ heightPx: height, startOffset: start, endOffset: end }));
 }
 
-function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo): void {
+function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo, includeAfter = true): void {
   const effective = paragraph.effective ?? paragraph;
   const spacing = paragraphSpacingPx(previous, { ...paragraph, ...effective });
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
   if (effective.indentLeft !== undefined && effective.indentLeft !== null) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
   if (effective.indentRight !== undefined && effective.indentRight !== null) element.style.marginRight = twipsToPoints(effective.indentRight)!;
   if (spacing.beforePx > 0) element.style.marginTop = `${spacing.beforePx}px`;
-  if (spacing.afterPx > 0) element.style.marginBottom = `${spacing.afterPx}px`;
+  if (includeAfter && spacing.afterPx > 0) element.style.marginBottom = `${spacing.afterPx}px`;
   if ((effective.indentFirstLine !== undefined && effective.indentFirstLine !== null) ||
       (effective.indentHanging !== undefined && effective.indentHanging !== null)) {
     const indent = (effective.indentFirstLine ?? 0) - (effective.indentHanging ?? 0);
@@ -950,9 +950,12 @@ export class DocxEditor {
 
   private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number, reviewContext: ReviewRenderContext): void {
     let previous: ParagraphInfo | undefined;
-    for (const block of blocks) {
+    for (let index = 0; index < blocks.length; index++) {
+      const block = blocks[index]!;
       if (block.type === 'paragraph') {
-        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext, undefined, previous));
+        const next = blocks[index + 1];
+        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext, undefined, previous,
+          next?.type !== 'paragraph'));
         previous = block.paragraph;
       } else if (block.type === 'table') {
         const table = this.makeTable(block, block.rows.map((_, index) => index), defaultTabStopTwips, reviewContext);
@@ -1118,7 +1121,8 @@ export class DocxEditor {
     });
     const renderedTables = new Set<string>();
     const previousByColumn = new Map<number, ParagraphInfo>();
-    for (const item of page.items) {
+    for (let itemIndex = 0; itemIndex < page.items.length; itemIndex++) {
+      const item = page.items[itemIndex]!;
       const columnIndex = Math.min(item.column ?? 0, columns.length - 1);
       const column = columns[columnIndex]!;
       if (item.type === 'line') {
@@ -1127,6 +1131,8 @@ export class DocxEditor {
           const lineHeightPx = snapLineHeightPx(item.line.heightPx, section.docGrid);
           const firstLine = item.line.startOffset === 0;
           const lastLine = item.line.endOffset >= paragraph.text.length;
+          const hasFollowingParagraph = page.items.slice(itemIndex + 1).some((candidate) =>
+            candidate.type === 'line' && candidate.paragraph !== paragraph.index);
           const fragment = {
             ...paragraph,
             ...(firstLine ? {} : { spacingBefore: null }),
@@ -1145,6 +1151,7 @@ export class DocxEditor {
             reviewContext,
             lineHeightPx,
             firstLine ? previousByColumn.get(columnIndex) : undefined,
+            lastLine && !hasFollowingParagraph,
           ));
           if (lastLine) previousByColumn.set(columnIndex, paragraph);
         }
@@ -1291,14 +1298,14 @@ export class DocxEditor {
   }
 
   private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext,
-    lineHeightPx?: number, previous?: ParagraphInfo): HTMLParagraphElement {
+    lineHeightPx?: number, previous?: ParagraphInfo, includeAfter = true): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
     element.dataset.paragraph = String(paragraph.index);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
-    applyParagraphStyle(element, paragraph, previous);
+    applyParagraphStyle(element, paragraph, previous, includeAfter);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;
       element.style.minHeight = `${lineHeightPx}px`;
