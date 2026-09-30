@@ -2659,6 +2659,31 @@ test('CJK and bidi paragraph formats round-trip through the effective format API
   assert.deepEqual(doc.getEffectiveParagraphFormat(0), before);
 });
 
+test('paragraph spacing extensions preserve three-state toggles and line units', () => {
+  const doc = withBody(
+    '<w:p><w:pPr><w:pStyle w:val="List"/><w:spacing w:before="120" w:after="240" w:beforeLines="100" w:afterLines="200" w:beforeAutospacing="0" w:afterAutospacing="1"/><w:contextualSpacing/><w:mirrorIndents w:val="0"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>',
+  );
+  const format = doc.getParagraphs()[0];
+  assert.equal(format.spacingBeforeLines, 100);
+  assert.equal(format.spacingAfterLines, 200);
+  assert.equal(format.spacingBeforeAuto, false);
+  assert.equal(format.spacingAfterAuto, true);
+  assert.equal(format.contextualSpacing, true);
+  assert.equal(format.mirrorIndents, false);
+  const spacingFormat = {
+    spacingBefore: format.spacingBefore,
+    spacingAfter: format.spacingAfter,
+    spacingBeforeLines: format.spacingBeforeLines,
+    spacingAfterLines: format.spacingAfterLines,
+    spacingBeforeAuto: format.spacingBeforeAuto,
+    spacingAfterAuto: format.spacingAfterAuto,
+    contextualSpacing: format.contextualSpacing,
+    mirrorIndents: format.mirrorIndents,
+  };
+  assert.doesNotThrow(() => doc.formatParagraph(0, spacingFormat));
+  assert.deepEqual(Object.fromEntries(Object.keys(spacingFormat).map((key) => [key, doc.getParagraphs()[0][key]])), spacingFormat);
+});
+
 test('format writers keep CJK and bidi properties in OOXML property order', () => {
   const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
   doc.formatParagraph(0, {

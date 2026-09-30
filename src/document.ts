@@ -1484,7 +1484,8 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     }
     removeIfEmpty(indent);
   }
-  if (['spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule'].some(key => key in format)) {
+  if (['spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
+    'lineSpacing', 'lineSpacingRule'].some(key => key in format)) {
     const spacing = children(props, 'spacing')[0] ?? property(props, 'spacing');
     if ('spacingBefore' in format) {
       if (format.spacingBefore === null) removeWordAttribute(spacing, 'before');
@@ -1494,9 +1495,24 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
       if (format.spacingAfter === null) removeWordAttribute(spacing, 'after');
       else if (format.spacingAfter !== undefined) spacing.setAttributeNS(WORD_NS, 'w:after', String(format.spacingAfter));
     }
+    for (const [key, attr] of [['spacingBeforeLines', 'beforeLines'], ['spacingAfterLines', 'afterLines']] as const) {
+      if (!(key in format)) continue;
+      if (format[key] === null) removeWordAttribute(spacing, attr);
+      else if (format[key] !== undefined) spacing.setAttributeNS(WORD_NS, `w:${attr}`, String(format[key]));
+    }
+    for (const [key, tag] of [['spacingBeforeAuto', 'beforeAutospacing'], ['spacingAfterAuto', 'afterAutospacing']] as const) {
+      if (!(key in format)) continue;
+      if (format[key] === null) removeWordAttribute(spacing, tag);
+      else if (format[key] !== undefined) spacing.setAttributeNS(WORD_NS, `w:${tag}`, format[key] ? '1' : '0');
+    }
     if ('lineSpacing' in format) {
       if (format.lineSpacing === null) removeWordAttribute(spacing, 'line');
       else if (format.lineSpacing !== undefined) spacing.setAttributeNS(WORD_NS, 'w:line', String(format.lineSpacing));
+    }
+    for (const [key, tag] of [['contextualSpacing', 'contextualSpacing'], ['mirrorIndents', 'mirrorIndents']] as const) {
+      if (!(key in format)) continue;
+      if (format[key] === null) removeProperty(props, tag);
+      else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
     }
     if ('lineSpacingRule' in format) {
       if (format.lineSpacingRule === null) removeWordAttribute(spacing, 'lineRule');
@@ -2181,7 +2197,8 @@ const RUN_FORMAT_FIELDS = [
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
-  'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
+  'spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
+  'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   'outlineLevel', 'tabs', 'borders', 'shading',
@@ -2203,7 +2220,8 @@ type CompareStep =
 
 const PARAGRAPH_DIRECT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
-  'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
+  'spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
+  'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'outlineLevel', 'tabs', 'borders', 'shading',
 ] as const satisfies readonly (keyof ParagraphFormat)[];

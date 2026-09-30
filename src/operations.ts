@@ -139,7 +139,8 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   object(value);
   keys(value, [
     'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
-    'spacingAfter', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
+    'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
+    'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
     'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens',
     'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   ]);
@@ -157,6 +158,11 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
       throw new Error(`${key} must be an unsigned twips value within OOXML bounds.`);
     }
   }
+  for (const key of ['spacingBeforeLines', 'spacingAfterLines']) {
+    if (key in value && value[key] !== null && (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0 || (value[key] as number) > 31680)) {
+      throw new Error(`${key} must be an unsigned hundredths-of-a-line value within OOXML bounds.`);
+    }
+  }
   if ('outlineLevel' in value && value.outlineLevel !== null &&
       (!Number.isSafeInteger(value.outlineLevel as number) || (value.outlineLevel as number) < 0 || (value.outlineLevel as number) > 9)) {
     throw new Error('outlineLevel must be an integer from 0 to 9.');
@@ -168,6 +174,9 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
     'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
     'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi',
   ]) {
+    if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  for (const key of ['spacingBeforeAuto', 'spacingAfterAuto', 'contextualSpacing', 'mirrorIndents']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   if ('textDirection' in value) maybeNull(value.textDirection as string | null | undefined, (entry) => assertText(entry, 'textDirection'));
@@ -897,6 +906,12 @@ export const AGENT_OPERATION_SCHEMA = {
             indentHanging: nullable(unsignedTwips),
             spacingBefore: nullable(unsignedTwips),
             spacingAfter: nullable(unsignedTwips),
+            spacingBeforeLines: nullable(unsignedTwips),
+            spacingAfterLines: nullable(unsignedTwips),
+            spacingBeforeAuto: nullable({ type: 'boolean' }),
+            spacingAfterAuto: nullable({ type: 'boolean' }),
+            contextualSpacing: nullable({ type: 'boolean' }),
+            mirrorIndents: nullable({ type: 'boolean' }),
             lineSpacing: nullable(signedInteger),
             lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
             keepNext: nullable({ type: 'boolean' }),

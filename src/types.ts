@@ -63,6 +63,12 @@ export interface ParagraphFormat {
   indentHanging?: number | null;
   spacingBefore?: number | null;
   spacingAfter?: number | null;
+  spacingBeforeLines?: number | null;
+  spacingAfterLines?: number | null;
+  spacingBeforeAuto?: boolean | null;
+  spacingAfterAuto?: boolean | null;
+  contextualSpacing?: boolean | null;
+  mirrorIndents?: boolean | null;
   lineSpacing?: number | null;
   lineSpacingRule?: 'auto' | 'atLeast' | 'exact' | null;
   keepNext?: boolean | null;
