@@ -22,11 +22,11 @@ export type { LinearConversion, MathConversion } from './math.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, CommentAnchor, CommentInfo, ContentControlInfo, ContentControlKind,
   EditableRegionEditorGroup, EditableRegionInfo,
-  CompatibilitySettings, DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
+  ColorSchemeMapping, CompatibilitySettings, DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, LatentStyleException, LatentStyles, NoteInfo, NoteSettings, NoteSettingsValue,
   RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, ReviewerInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
-  WidthFormat,
+  ThemeFontLanguages, ThemeSettings, WidthFormat,
   ChartInfo, CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind,
 } from './types.js';

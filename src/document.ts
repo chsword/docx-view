@@ -5,7 +5,7 @@ import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
   CompatibilitySettings, DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
+  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange, ThemeSettings,
   FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   TableCellLocation,
   MathInfo,
@@ -3499,11 +3499,14 @@ export class DocxDocument {
     if (this.caches.stylesCache?.revision === this.revision) return this.caches.stylesCache.context;
     const stylesPath = this.getStylesPath();
     const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
+    const settingsPath = this.getSettingsPath();
     let stylesRoot: Element | undefined;
     let themeRoot: Element | undefined;
+    let settingsRoot: Element | undefined;
     try { stylesRoot = stylesPath ? this.getCachedPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
     try { themeRoot = themePath ? this.getCachedPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
-    const context = parseStyles(stylesRoot, themeRoot, this.getCompatibilitySettings());
+    try { settingsRoot = settingsPath ? this.getCachedPartDocument(settingsPath).documentElement ?? undefined : undefined; } catch { settingsRoot = undefined; }
+    const context = parseStyles(stylesRoot, themeRoot, this.getCompatibilitySettings(), settingsRoot);
     this.caches.stylesCache = { revision: this.revision, context };
     return context;
   }
@@ -8144,6 +8147,21 @@ export class DocxDocument {
   getCompatibilitySettings(): CompatibilitySettings {
     const settingsPath = this.getSettingsPath();
     return parseCompatibilitySettings(settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null);
+  }
+
+  getThemeSettings(): ThemeSettings {
+    const settings = this.getStylesContext().themeSettings;
+    const latentStyles = settings.latentStyles;
+    return {
+      ...(settings.clrSchemeMapping ? { clrSchemeMapping: { ...settings.clrSchemeMapping } } : {}),
+      ...(settings.themeFontLang ? { themeFontLang: { ...settings.themeFontLang } } : {}),
+      ...(latentStyles ? {
+        latentStyles: {
+          ...latentStyles,
+          exceptions: latentStyles.exceptions.map((exception) => ({ ...exception })),
+        },
+      } : {}),
+    };
   }
 
   setNoteSettings(settings: Partial<NoteSettings>): void {
