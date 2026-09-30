@@ -603,6 +603,28 @@ test('makeParagraph renders a math-only paragraph as MathML', () => {
   assert.equal(math.childNodes[0].tagName, 'MI');
 });
 
+test('pagination paragraph slices render trailing math only once', () => {
+  const editor = makeRunRenderEditor();
+  const paragraph = {
+    index: 0,
+    text: '甲乙丙丁戊己',
+    runs: [
+      { index: 0, text: '甲乙' },
+      { index: 1, text: '丙丁' },
+      { index: 2, text: '戊己' },
+    ],
+    math: [{
+      runOffset: 3,
+      display: 'inline',
+      linear: 'x',
+      mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'x' }] },
+    }],
+  };
+  const slices = [[0, 2], [2, 4], [4, 6]].map(([start, end]) =>
+    editor.sliceParagraph(paragraph, start, end));
+  assert.deepEqual(slices.map((slice) => slice.math?.length ?? 0), [0, 0, 1]);
+});
+
 test('paginated page content renders row subsets in their assigned columns', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();

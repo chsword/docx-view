@@ -1044,6 +1044,7 @@ export class DocxEditor {
 
   private sliceParagraph(paragraph: ParagraphInfo, start: number, end: number): ParagraphInfo {
     let offset = 0;
+    const includedRunIndexes = new Set<number>();
     const runs = paragraph.runs.flatMap((run) => {
       const runStart = offset;
       offset += run.text.length;
@@ -1051,9 +1052,13 @@ export class DocxEditor {
       const to = Math.min(end, offset);
       if (!run.text.length && runStart >= start && (runStart < end || (end === paragraph.text.length && runStart === end))) return [{ ...run }];
       if (to <= from) return [];
+      includedRunIndexes.add(run.index);
       return [{ ...run, text: run.text.slice(from - runStart, to - runStart) }];
     });
-    return { ...paragraph, text: paragraph.text.slice(start, end), runs };
+    const math = paragraph.math?.filter((info) =>
+      includedRunIndexes.has(info.runOffset) ||
+      (end === paragraph.text.length && info.runOffset >= paragraph.runs.length));
+    return { ...paragraph, text: paragraph.text.slice(start, end), runs, ...(math ? { math } : {}) };
   }
 
   private makePageContent(page: PageBox, section: SectionInfo, blocks: DocumentBlock[], paragraphs: ParagraphInfo[],

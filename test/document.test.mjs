@@ -34,6 +34,7 @@ const DCMITYPE_NS = 'http://purl.org/dc/dcmitype/';
 const XSI_NS = 'http://www.w3.org/2001/XMLSchema-instance';
 const APP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties';
 const VT_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes';
+const MATH_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -354,6 +355,22 @@ test('text edits retain runs, bookmarks, drawings, and paragraph properties', ()
   assert.equal(doc.getParagraphs()[0].runs.length, 2);
   assert.equal(doc.getParagraphs()[0].runs[0].bold, true);
   assert.equal(doc.getParagraphs()[0].runs[1].italic, true);
+});
+
+test('reads, indexes, edits, and round-trips OMML without mixing it into paragraph text', async () => {
+  const doc = withBody(`<w:p><w:r><w:t>before</w:t></w:r><m:oMath xmlns:m="${MATH_NS}"><m:r><m:t>E=mc²</m:t></m:r></m:oMath><w:r><w:t>after</w:t></w:r></w:p>`);
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'beforeafter');
+  assert.equal(paragraph.math.length, 1);
+  assert.equal(paragraph.math[0].runOffset, 1);
+  assert.equal(doc.getMath()[0].paragraph, 0);
+  assert.equal(doc.getMath()[0].linear, 'E=mc²');
+  assert.match(doc.getSnapshot().paragraphs[0].math[0].linear, /E=mc/);
+  doc.setParagraphText(0, 'changed');
+  assert.equal(doc.getParagraphs()[0].math.length, 1);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.match(reopened.getPartXml(reopened.mainDocumentPath), /m:oMath/);
+  assert.equal(reopened.getParagraphs()[0].math.length, 1);
 });
 
 test('replacement spans runs and repeated matches without losing non-text content', () => {
