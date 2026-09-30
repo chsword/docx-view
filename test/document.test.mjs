@@ -1961,7 +1961,10 @@ test('updateFields writes PAGE results in header parts without changing field ma
   }), true);
   const after = doc.getPartXml(headerPath);
   assert.match(after, /<w:t xml:space="preserve">7<\/w:t>/);
+  const withoutResultText = xml => xml.replace(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g, '<w:t/>');
+  assert.equal(withoutResultText(after), withoutResultText(before));
   assert.equal((after.match(/w:fldCharType="begin"/g) ?? []).length, (before.match(/w:fldCharType="begin"/g) ?? []).length);
+  assert.equal((after.match(/w:fldCharType="separate"/g) ?? []).length, (before.match(/w:fldCharType="separate"/g) ?? []).length);
   assert.equal((after.match(/w:fldCharType="end"/g) ?? []).length, (before.match(/w:fldCharType="end"/g) ?? []).length);
   assert.equal((after.match(/PAGE/g) ?? []).length, (before.match(/PAGE/g) ?? []).length);
   assert.equal(doc.revision, revision + 1);

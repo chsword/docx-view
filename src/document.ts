@@ -8145,16 +8145,20 @@ export class DocxDocument {
     const paths = [this.mainPath, ...partSections.keys()];
     const partDocuments = new Map<string, { document: Document; paragraphs: Element[]; fields: FieldInfo[]; section?: SectionInfo }>();
     for (const path of paths) {
-      const document = path === this.mainPath ? mainDocument : this.getPartDocument(path);
-      const paragraphs = path === this.mainPath
-        ? mainParagraphs
-        : mainParagraphElements(blockContainerOf(document));
-      partDocuments.set(path, {
-        document,
-        paragraphs,
-        fields: parseFields(paragraphs, ownRuns).fields,
-        ...(partSections.has(path) ? { section: sections[partSections.get(path)!] } : {}),
-      });
+      try {
+        const document = path === this.mainPath ? mainDocument : this.getPartDocument(path);
+        const paragraphs = path === this.mainPath
+          ? mainParagraphs
+          : mainParagraphElements(blockContainerOf(document));
+        partDocuments.set(path, {
+          document,
+          paragraphs,
+          fields: parseFields(paragraphs, ownRuns).fields,
+          ...(partSections.has(path) ? { section: sections[partSections.get(path)!] } : {}),
+        });
+      } catch (error) {
+        if (path === this.mainPath) throw error;
+      }
     }
     const outlineNames = new Map<number, string>();
     for (const [name, paragraph] of bookmarkParagraphs) {

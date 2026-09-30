@@ -30,9 +30,9 @@ import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './t
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 import { columnWidthsPx, pageBoxPx, paginate } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
-import { pageFieldResult } from './fields.js';
+import { formatPageNumber, pageFieldResult } from './fields.js';
 
-export { formatPageNumber } from './fields.js';
+export { formatPageNumber };
 
 export const MAX_FIELD_UPDATE_ITERATIONS = 5;
 
