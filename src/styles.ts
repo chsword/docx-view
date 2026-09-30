@@ -1,5 +1,5 @@
 import type { Element } from '@xmldom/xmldom';
-import type { BorderSide, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop } from './types.js';
+import type { BorderSide, CompatibilitySettings, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
@@ -77,6 +77,7 @@ export interface StylesContext {
   byId: Map<string, ParsedStyle>;
   defaults: Partial<Record<StyleType, string>>;
   theme: ThemeInfo;
+  compatibilitySettings?: CompatibilitySettings;
   _tableMeta?: WeakMap<Element, TableMeta>;
   _tableContext?: WeakMap<Element, TableContext>;
   _paragraphContext?: WeakMap<Element, ParagraphContext>;
@@ -445,10 +446,10 @@ function parseStyleType(value: string | undefined): StyleType | undefined {
   return ['paragraph', 'character', 'table', 'numbering'].includes(value ?? '') ? value as StyleType : undefined;
 }
 
-export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element): StylesContext {
+export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element, compatibilitySettings?: CompatibilitySettings): StylesContext {
   const theme = parseTheme(themeRoot);
   if (!stylesRoot || stylesRoot.namespaceURI !== WORD_NS || stylesRoot.localName !== 'styles') {
-    return { docDefaults: { paragraph: {}, run: {} }, styles: [], byId: new Map(), defaults: {}, theme };
+    return { docDefaults: { paragraph: {}, run: {} }, styles: [], byId: new Map(), defaults: {}, theme, compatibilitySettings };
   }
   const docDefaults = children(stylesRoot, 'docDefaults')[0];
   const paragraphDefault = readParagraphProperties(children(children(docDefaults ?? stylesRoot, 'pPrDefault')[0] ?? stylesRoot, 'pPr')[0]);
@@ -492,6 +493,7 @@ export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element
     byId: new Map(styles.map((style) => [style.id, style])),
     defaults,
     theme,
+    compatibilitySettings,
   };
 }
 
@@ -584,8 +586,9 @@ function tableContext(context: StylesContext, paragraph: Element): TableContext 
   if (cellPosition === 0 && firstColumn) conditions.push('firstCol');
   if (cellPosition === cellCount - 1 && lastColumn) conditions.push('lastCol');
   if (!readLookFlag(look, 'noHBand', false)) {
-    const bandStart = firstRow ? 1 : 0;
-    const bandEnd = meta.rows.length - (lastRow ? 1 : 0);
+  const legacyRules = context.compatibilitySettings?.useWord2002TableStyleRules === true;
+  const bandStart = !legacyRules && firstRow ? 1 : 0;
+  const bandEnd = !legacyRules ? meta.rows.length - (lastRow ? 1 : 0) : meta.rows.length;
     if (rowPosition >= bandStart && rowPosition < bandEnd) {
       const bandIndex = Math.floor((rowPosition - bandStart) / meta.rowBandSize);
       conditions.push(bandIndex % 2 === 0 ? 'band1Horz' : 'band2Horz');

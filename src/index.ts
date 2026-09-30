@@ -3,7 +3,7 @@ export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export type { FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, PaginationInfo } from './types.js';
-export { columnWidthsPx, lineNumbersFor, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
+export { columnWidthsPx, effectiveKinsoku, lineNumbersFor, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
 export type {
   FlowItem, LayoutMeasurer, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea, WrapExclusion,
 } from './layout.js';
@@ -22,7 +22,7 @@ export type { LinearConversion, MathConversion } from './math.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, CommentAnchor, CommentInfo, ContentControlInfo, ContentControlKind,
   EditableRegionEditorGroup, EditableRegionInfo,
-  DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
+  CompatibilitySettings, DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue,
   RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, ReviewerInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,

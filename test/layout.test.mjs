@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -113,6 +113,31 @@ test('uses collapsed paragraph spacing and contextual spacing consistently', () 
   const pages = paginate(blocks(first, second, different), [section({ pageHeight: 440 })], measurer,
     { defaultTabStopTwips: 720 });
   assert.deepEqual(pages.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0, 1], [2]]);
+});
+
+test('document compatibility overrides auto spacing and East Asian break rules', () => {
+  const current = paragraph(0, [10], { spacingBefore: 240, spacingBeforeAuto: true, kinsoku: true });
+  assert.equal(paragraphSpacingPx(undefined, current).beforePx, 0);
+  assert.equal(paragraphSpacingPx(undefined, current, { doNotUseHTMLParagraphAutoSpacing: true }).beforePx, 16);
+  assert.equal(effectiveKinsoku(true), true);
+  assert.equal(effectiveKinsoku(true, { doNotUseEastAsianBreakRules: true }), undefined);
+});
+
+test('doNotBreakWrappedTables keeps a wrapped table group together', () => {
+  const wrapped = paragraph(0, [10], {
+    images: [{ placement: 'floating', wrap: 'square', widthPx: 10, heightPx: 10 }],
+  });
+  const wrappedTable = table(row(10, {}, [cell()]), row(10, {}, [cell()]));
+  wrappedTable.rows[0].cells[0].blocks = [{ type: 'paragraph', paragraph: wrapped }];
+  const result = paginate([
+    { type: 'paragraph', paragraph: paragraph(0, [10]) },
+    wrappedTable,
+  ], [section({ pageHeight: 15 })], measurer, {
+    defaultTabStopTwips: 720,
+    compatibilitySettings: { doNotBreakWrappedTables: true },
+  });
+  assert.equal(result.length, 2);
+  assert.deepEqual(result[1].items.filter((item) => item.type === 'tableRow').map((item) => item.row), [0, 1]);
 });
 
 test('contextual spacing treats two default-style paragraphs as matching', () => {

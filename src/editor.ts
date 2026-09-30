@@ -1,6 +1,7 @@
 import { DocxDocument } from './document.js';
 import type {
   BorderFormat,
+  CompatibilitySettings,
   ClipboardFragment,
   ClipboardRun,
   BordersFormat,
@@ -32,7 +33,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -279,9 +280,14 @@ export function deriveLineBoxes(rects: Array<{ top: number; height: number; star
   return lines.sort((a, b) => a.start - b.start).map(({ height, start, end }) => ({ heightPx: height, startOffset: start, endOffset: end }));
 }
 
-function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo, includeAfter = true): void {
+function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo, includeAfter = true,
+  compatibilitySettings?: CompatibilitySettings): void {
   const effective = paragraph.effective ?? paragraph;
-  const spacing = paragraphSpacingPx(previous, { ...paragraph, ...effective });
+  const spacing = paragraphSpacingPx(previous, { ...paragraph, ...effective }, compatibilitySettings);
+  const kinsoku = effectiveKinsoku(effective.kinsoku, compatibilitySettings);
+  if (kinsoku !== undefined) {
+    element.style.lineBreak = kinsoku ? 'strict' : 'auto';
+  }
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
   if (effective.indentLeft !== undefined && effective.indentLeft !== null) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
   if (effective.indentRight !== undefined && effective.indentRight !== null) element.style.marginRight = twipsToPoints(effective.indentRight)!;
@@ -416,6 +422,12 @@ export class DocxEditor {
   private activeRevisionId: number | null = null;
   private viewMode: 'continuous' | 'paginated';
   private measuring = false;
+  private compatibilitySettings: CompatibilitySettings = {};
+
+  private readCompatibilitySettings(): CompatibilitySettings {
+    const getter = (this.document as DocxDocument & { getCompatibilitySettings?: () => CompatibilitySettings }).getCompatibilitySettings;
+    return typeof getter === 'function' ? getter.call(this.document) : {};
+  }
 
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
@@ -462,6 +474,7 @@ export class DocxEditor {
     this.root.setAttribute('aria-label', '文档编辑区域');
     container.append(this.root);
     this.metrics = this.root.ownerDocument.createElement('canvas').getContext('2d');
+    this.compatibilitySettings = this.readCompatibilitySettings();
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.root.addEventListener('keydown', this.handleRootKeydown);
     this.render();
@@ -546,6 +559,7 @@ export class DocxEditor {
   setDocument(document: DocxDocument): void {
     if (this.destroyed) return;
     this.flush();
+    this.compatibilitySettings = this.readCompatibilitySettings();
     this.document = document;
     this.selected = null;
     this.selectedImageInfo = null;
@@ -1215,13 +1229,14 @@ export class DocxEditor {
   }
 
   private paginateDocument(blocks: DocumentBlock[], sections: SectionInfo[], defaultTabStopTwips: number): PageBox[] {
+    this.compatibilitySettings = this.readCompatibilitySettings();
     const measurer = {
       measureParagraph: (paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext) =>
         this.measureParagraphForPagination(paragraph, area, context),
       measureTableRow: (table: LayoutTable, _row: TableRowInfo, rowIndex: number, widthPx: number, context: MeasureContext) =>
         this.measureTableRowForPagination(table, rowIndex, widthPx, context),
     };
-    return paginate(blocks, sections, measurer, { defaultTabStopTwips });
+    return paginate(blocks, sections, measurer, { defaultTabStopTwips, compatibilitySettings: this.compatibilitySettings });
   }
 
   private renderPaginated(parent: Node, reviewContext: ReviewRenderContext, defaultTabStopTwips: number): void {
@@ -1377,7 +1392,7 @@ export class DocxEditor {
     element.dataset.paragraph = String(paragraph.index);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
-    applyParagraphStyle(element, paragraph, previous, includeAfter);
+    applyParagraphStyle(element, paragraph, previous, includeAfter, this.compatibilitySettings);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;
       element.style.minHeight = `${lineHeightPx}px`;
@@ -1776,7 +1791,7 @@ export class DocxEditor {
         element.style.whiteSpace = 'pre-wrap';
         element.style.position = 'relative';
         element.style.zIndex = '1';
-        applyParagraphStyle(element, paragraph);
+        applyParagraphStyle(element, paragraph, undefined, true, this.compatibilitySettings);
         let offset = 0;
         for (const run of paragraph.runs) offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
         if (!paragraph.runs.length) element.textContent = paragraph.text;

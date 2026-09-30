@@ -4,7 +4,7 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
   AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
   CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
-  DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
+  CompatibilitySettings, DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   TableCellLocation,
@@ -72,7 +72,7 @@ import {
 } from './hyperlink.js';
 import {
   assertDocumentProtection, defaultNotePartXml, formatNoteMarker, noteContentType, noteRefName, noteReferenceName, noteReferenceStyle,
-  noteRelationshipType, parseCustomMark, parseDocumentNoteSettings, parseDocumentProtection, parseNoteEntries, parseSectionNoteSettings,
+  noteRelationshipType, parseCompatibilitySettings, parseCustomMark, parseDocumentNoteSettings, parseDocumentProtection, parseNoteEntries, parseSectionNoteSettings,
   setDocumentProtectionOn, setNoteSettingsOn, setTrackChangesOn, type NoteKind,
 } from './notes.js';
 import {
@@ -3742,7 +3742,7 @@ export class DocxDocument {
     let themeRoot: Element | undefined;
     try { stylesRoot = stylesPath ? this.getCachedPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
     try { themeRoot = themePath ? this.getCachedPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
-    const context = parseStyles(stylesRoot, themeRoot);
+    const context = parseStyles(stylesRoot, themeRoot, this.getCompatibilitySettings());
     this.caches.stylesCache = { revision: this.revision, context };
     return context;
   }
@@ -8968,6 +8968,11 @@ export class DocxDocument {
   getNoteSettings(): NoteSettings {
     const settingsPath = this.getSettingsPath();
     return parseDocumentNoteSettings(settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null);
+  }
+
+  getCompatibilitySettings(): CompatibilitySettings {
+    const settingsPath = this.getSettingsPath();
+    return parseCompatibilitySettings(settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null);
   }
 
   setNoteSettings(settings: Partial<NoteSettings>): void {

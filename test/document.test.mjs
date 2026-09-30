@@ -3327,6 +3327,25 @@ test('table style firstCol can be explicitly disabled by tblLook', () => {
   assert.equal(doc.getParagraphs()[0].runs[0].effective.bold, undefined);
 });
 
+test('useWord2002TableStyleRules changes horizontal banding at the first row', () => {
+  const make = (legacy) => {
+    const doc = withStyles(
+      `<w:tbl><w:tblPr><w:tblStyle w:val="Bands"/><w:tblLook w:firstRow="1" w:noHBand="0"/></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr>
+        <w:tr><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`,
+      `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="table" w:styleId="Bands"><w:name w:val="Bands"/>
+        <w:tblStylePr w:type="band1Horz"><w:rPr><w:color w:val="008800"/></w:rPr></w:tblStylePr></w:style></w:styles>`,
+    );
+    doc.addPart('word/_rels/document.xml.rels', encoder.encode(
+      `<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`,
+    ), RELS_TYPE);
+    doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:compat>${legacy ? '<w:useWord2002TableStyleRules/>' : ''}</w:compat></w:settings>`), SETTINGS_TYPE);
+    return doc;
+  };
+  assert.equal(make(false).getParagraphs()[0].runs[0].effective.color, undefined);
+  assert.equal(make(true).getParagraphs()[0].runs[0].effective.color, '008800');
+});
+
 test('theme colors read sysClr lastClr fallbacks', () => {
   const doc = withStyles(
     '<w:p><w:pPr><w:pStyle w:val="Text2"/></w:pPr><w:r><w:t>Theme</w:t></w:r></w:p>',
@@ -3975,6 +3994,43 @@ test('getSettings resolves related settings.xml with defaults', () => {
   doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`), RELS_TYPE);
   doc.addPart('word/settings.xml', encoder.encode(`<w:settings xmlns:w="${WORD_NS}"><w:defaultTabStop w:val="1440"/><w:evenAndOddHeaders/></w:settings>`), SETTINGS_TYPE);
   assert.deepEqual(doc.getSettings(), { defaultTabStop: 1440, evenAndOddHeaders: true, trackChanges: false });
+});
+
+test('getCompatibilitySettings reads compat flags without changing their tri-state', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}">
+    <w:compat>
+      <w:doNotUseHTMLParagraphAutoSpacing/>
+      <w:doNotUseEastAsianBreakRules w:val="0"/>
+      <w:doNotBreakWrappedTables w:val="false"/>
+      <w:useWord2002TableStyleRules w:val="1"/>
+      <w:doNotValidateAgainstSchema w:val="0"/>
+      <w:saveInvalidXml/>
+      <w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/>
+    </w:compat>
+  </w:settings>`);
+  assert.deepEqual(doc.getCompatibilitySettings(), {
+    doNotUseHTMLParagraphAutoSpacing: true,
+    doNotUseEastAsianBreakRules: false,
+    doNotBreakWrappedTables: false,
+    useWord2002TableStyleRules: true,
+    compatSettings: [{ name: 'compatibilityMode', uri: 'http://schemas.microsoft.com/office/word', val: '15' }],
+    other: { doNotValidateAgainstSchema: false, saveInvalidXml: true },
+  });
+  assert.equal(doc.getCompatibilitySettings().compatSettings[0].val, '15');
+  assert.match(doc.getPartXml('word/settings.xml'), /doNotValidateAgainstSchema w:val="0"/);
+});
+
+test('getCompatibilitySettings degrades to an empty object without settings or compat', () => {
+  assert.deepEqual(withBody('<w:p/>').getCompatibilitySettings(), {});
+  assert.deepEqual(withSettingsXml(`<w:settings xmlns:w="${WORD_NS}"/>`).getCompatibilitySettings(), {});
+});
+
+test('compat validation flags are declarations and do not bypass text validation', () => {
+  const doc = withSettingsXml(`<w:settings xmlns:w="${WORD_NS}">
+    <w:compat><w:doNotValidateAgainstSchema/><w:saveInvalidXml/><w:ignoreMixedContent/></w:compat>
+  </w:settings>`);
+  assert.throws(() => doc.setParagraphText(0, '\u0000'), /valid XML text/);
+  assert.throws(() => doc.setPartXml('word/../unsafe.xml', '<x/>'), /Invalid package part path/);
 });
 
 test('getSettings reads explicit trackChanges off and on', () => {
