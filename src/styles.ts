@@ -33,7 +33,7 @@ const DEFAULT_THEME_FONTS: Record<string, string> = {
 type StyleType = StyleInfo['type'];
 type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol' | 'band1Horz' | 'band2Horz';
 
-interface ThemeInfo {
+export interface ThemeInfo {
   colors: Record<string, string>;
   fonts: Record<string, string>;
 }
@@ -214,11 +214,14 @@ function hslToRgb(hue: number, saturation: number, lightness: number): [number, 
   ];
 }
 
-function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined): string | undefined {
+function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined, percentageValues = false): string | undefined {
   const base = normalizeHex(hex);
   if (!base) return undefined;
-  const shadeValue = shade && /^[0-9a-f]{2}$/i.test(shade) ? parseInt(shade, 16) / 255 : undefined;
-  const tintValue = tint && /^[0-9a-f]{2}$/i.test(tint) ? parseInt(tint, 16) / 255 : undefined;
+  const transformValue = (value: string | undefined) => percentageValues
+    ? value && /^\d+$/.test(value) && Number(value) <= 100000 ? Number(value) / 100000 : undefined
+    : value && /^[0-9a-f]{2}$/i.test(value) ? parseInt(value, 16) / 255 : undefined;
+  const shadeValue = transformValue(shade);
+  const tintValue = transformValue(tint);
   if (shadeValue === undefined && tintValue === undefined) return base;
   const channels = base.match(/../g)!.map((channel) => parseInt(channel, 16));
   const [hue, saturation, lightness] = rgbToHsl(channels[0]!, channels[1]!, channels[2]!);
@@ -229,17 +232,31 @@ function applyShadeTint(hex: string | undefined, shade: string | undefined, tint
   return transformed.map((channel) => channel.toString(16).padStart(2, '0').toUpperCase()).join('');
 }
 
+const THEME_COLOR_ALIASES: Record<string, string> = {
+  text1: 'dk1', background1: 'lt1', text2: 'dk2', background2: 'lt2',
+  tx1: 'dk1', bg1: 'lt1', tx2: 'dk2', bg2: 'lt2',
+};
+
+function resolveThemeValue(theme: ThemeInfo, name: string | undefined, shade: string | undefined, tint: string | undefined, percentageValues = false): string | undefined {
+  const key = THEME_COLOR_ALIASES[name ?? ''] ?? name ?? '';
+  return applyShadeTint(theme.colors[key], shade, tint, percentageValues);
+}
+
 function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
   if (!element) return undefined;
   const direct = normalizeHex(wordAttr(element, 'val'));
   if (direct && direct.toLowerCase() !== 'auto') return direct;
-  const themeColor = {
-    text1: 'dk1',
-    background1: 'lt1',
-    text2: 'dk2',
-    background2: 'lt2',
-  }[wordAttr(element, 'themeColor') ?? ''] ?? wordAttr(element, 'themeColor');
-  return applyShadeTint(theme.colors[themeColor ?? ''], wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
+  return resolveThemeValue(theme, wordAttr(element, 'themeColor'), wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
+}
+
+export function resolveDrawingColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
+  if (!element) return undefined;
+  const value = element.getAttribute('val') ?? undefined;
+  const direct = normalizeHex(value);
+  if (direct) return direct;
+  const modifier = (name: 'shade' | 'tint') =>
+    Array.from(element.getElementsByTagNameNS(DRAWINGML_NS, name))[0]?.getAttribute('val') ?? undefined;
+  return resolveThemeValue(theme, value, modifier('shade'), modifier('tint'), true);
 }
 
 function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): string | undefined {

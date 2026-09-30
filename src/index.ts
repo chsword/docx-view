@@ -15,6 +15,7 @@ export {
 } from './drawing.js';
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS } from './xml.js';
 export { readRunShapes } from './shapes.js';
+export { customGeometryPath, presetGeometryPath } from './geometry.js';
 export type {
   AgentOperation, AgentRequest, BookmarkInfo, BorderFormat, BordersFormat, CellFormat, CommentAnchor, CommentInfo, ContentControlInfo, ContentControlKind,
   EditableRegionEditorGroup, EditableRegionInfo,
@@ -24,5 +25,5 @@ export type {
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
-  PageSetup, SectionInfo, SectionType, ShapeInfo, ShapeKind,
+  CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeInfo, ShapeKind,
 } from './types.js';

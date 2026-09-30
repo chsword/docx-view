@@ -4171,9 +4171,11 @@ export class DocxDocument {
     const body = bodyOf(document);
     const paragraphs = mainParagraphElements(body);
     const shapes: ShapeInfo[] = [];
+    const relationships = this.relationshipsFor(this.mainPath);
+    const theme = this.getStylesContext().theme;
     for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
       for (const [runIndex, run] of ownRuns(paragraph).entries()) {
-        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath));
+        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath, relationships, theme));
       }
     }
     return shapes;
@@ -4194,7 +4196,7 @@ export class DocxDocument {
         const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
         for (const child of children) {
           if (!['drawing', 'pict', 'AlternateContent'].includes(child.localName ?? '')) continue;
-          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath);
+          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath, imageContext.relationships, styles.theme);
           const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
           if (shapeIndex < 0) continue;
           const elements = shapeTextElements(child);

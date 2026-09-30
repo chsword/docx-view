@@ -119,7 +119,7 @@ console.log(reopened.getSnapshot());
 | `formatTable()` / `formatTableRow()` / `formatCell()` | 设置表格宽度、布局、边框、底纹、行高、标题行、单元格对齐和边距等显式属性 |
 | `setCellText()` | 修改可见单元格文字，同时保留段落结构与其他未改内容 |
 | `getImages()` / `getImageBytes()` / `getImageDataUrl()` | 读取主文档中的图片元数据、二进制内容和可直接渲染的 `data:` URL |
-| `getShapes()` / `getShapeParagraphs(shapeId)` | 读取文本框、纯形状、SmartArt、图表等的降级元数据及文本框独立文字流；形状本身只提供降级显示，不是几何渲染 |
+| `getShapes()` / `getShapeParagraphs(shapeId)` | 读取文本框、纯形状、SmartArt、图表等元数据及文本框独立文字流；形状由 SVG 绘制，文字流仍独立只读 |
 | `insertImage()` / `replaceImageBytes()` / `resizeImage()` / `setImageAlt()` / `deleteImage()` | 插入、替换、调整尺寸、更新替代文本和删除图片 |
 | `getSections()` / `getSection(index)` | 读取分节类型、纸张、页边距、分栏、页眉页脚引用 |
 | `setPageSetup(section, setup)` | 修改指定节的纸张方向、边距、分栏和页码起始等页面设置 |
@@ -135,7 +135,11 @@ console.log(reopened.getSnapshot());
 
 **索引与作用域**
 
-`getParagraphs()` 和 `getBlocks()` 只包含正文段落；文本框（`w:txbxContent`）里的段落属于独立的只读文字流，通过 `getShapeParagraphs(shapeId)` 访问，不占用正文段落下标。文本框与形状当前仅作降级显示（占位框/边框和可读文字），不是完整的形状、SmartArt 或图表渲染；因此这是一次有意的段落索引破坏性变更，正文按下标写入不会穿透到文本框内部。
+`getParagraphs()` 和 `getBlocks()` 只包含正文段落；文本框（`w:txbxContent`）里的段落属于独立的只读文字流，通过 `getShapeParagraphs(shapeId)` 访问，不占用正文段落下标。正文按下标写入不会穿透到文本框内部。
+
+形状 SVG 渲染支持 `rect`、`roundRect`、`ellipse`、`triangle`、`rtTriangle`、`diamond`、`parallelogram`、`trapezoid`、`pentagon`、`hexagon`、`star5`、`rightArrow`、`leftArrow`、`upArrow`、`downArrow`、`leftRightArrow`、`line`、`straightConnector1`、`wedgeRectCallout` 和 `cloudCallout` 这 20 种 DrawingML 预设几何。其它预设以及含未支持指令的自定义几何以矩形绘制，但保留已读出的填充和线条；自定义路径目前处理首个 `a:path` 中的 `moveTo`、`lnTo`、`cubicBezTo` 与 `close`。支持实体色、线性渐变、透明度 `alpha`、线宽/虚线、旋转和翻转；未指定填充或线条的形状使用浅色填充与细描边作为可见兜底。形状样式只取 `wps:style` 的 `fillRef` / `lnRef` 颜色，忽略 `idx` 指向的主题格式表渐变和效果预设；`lumMod`、`lumOff` 等其他颜色变换不处理。
+
+VML 支持 `v:shape`、`v:rect`、`v:oval`、`v:line` 的基础填充色/线条，以及内置类型 1、2、3、4、5、202、203 的常见几何映射；`v:path` 不解析，退化为矩形并保留颜色。形状 `blipFill` 只显示包内可渲染图片；外部链接图片不联网，以浅色虚线框占位。
 
 `getFields(partPath)` 的段落与 run 索引只在指定部件内有效；页眉、页脚的索引不能用于正文数组。`DocxDocument.updateFields({ pagination })` 接受由调用方计算的页数、段落页索引与显示页码映射，核心文档 API 不依赖浏览器排版。
 

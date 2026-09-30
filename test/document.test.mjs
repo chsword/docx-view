@@ -223,6 +223,48 @@ test('isolates textbox paragraphs and exposes shape fallbacks without duplicatin
   assert.deepEqual(reopened.getShapes().map((shape) => shape.kind), ['textbox', 'shape', 'textbox']);
 });
 
+test('reads DrawingML and VML shape appearance, theme colors, transforms, and package-only image fills', () => {
+  const makeShape = (id, shapeProperties) => `<w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="${id}"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:spPr>${shapeProperties}</wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const shapeWithStyle = (id, shapeStyle, shapeProperties) => `<w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="${id}"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:spPr>${shapeProperties}</wps:spPr><wps:style>${shapeStyle}</wps:style></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const body = `<w:p><w:r>${makeShape(1, '<a:xfrm rot="5400000" flipH="1" flipV="true"/><a:prstGeom prst="rect"><a:avLst><a:gd name="adj" fmla="val 25000"/></a:avLst></a:prstGeom><a:solidFill><a:schemeClr val="accent2"><a:alpha val="50000"/></a:schemeClr></a:solidFill><a:ln w="12700"><a:solidFill><a:schemeClr val="accent1"/></a:solidFill><a:prstDash val="dash"/></a:ln>')}${makeShape(2, '<a:prstGeom prst="flowChartMagneticDisk"/><a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="9000000"/></a:gradFill>')}${makeShape(3, '<a:prstGeom prst="rect"/><a:blipFill><a:blip r:embed="rIdImage"/></a:blipFill>')}${makeShape(4, '<a:prstGeom prst="rect"/><a:blipFill><a:blip r:link="rIdExternal"/></a:blipFill>')}${makeShape(5, '<a:custGeom><a:pathLst><a:path w="100" h="50"><a:moveTo><a:pt x="0" y="0"/></a:moveTo><a:lnTo><a:pt x="50" y="25"/></a:lnTo><a:cubicBezTo><a:pt x="50" y="25"/><a:pt x="75" y="25"/><a:pt x="100" y="50"/></a:cubicBezTo><a:close/></a:path></a:pathLst></a:custGeom><a:noFill/>')}${shapeWithStyle(6, '<a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="50000"/></a:schemeClr></a:lnRef><a:fillRef idx="1"><a:schemeClr val="accent2"><a:tint val="0"/></a:schemeClr></a:fillRef>', '<a:prstGeom prst="rect"/>')}${shapeWithStyle(7, '', '<a:prstGeom prst="ellipse"/>')}</w:r></w:p>
+    <w:p><w:r><w:pict><v:shape id="vml-callout" type="#_x0000_t202" fillcolor="#00ff00" strokecolor="navy" strokeweight="1pt"/><v:oval id="vml-oval" fillcolor="red"/><v:shape id="vml-custom" type="#_x0000_t202" fillcolor="blue"><v:path v="m 0,0"/></v:shape></w:pict></w:r></w:p>`;
+  const doc = withBody('<w:p/>');
+  doc.addPart('word/styles.xml', encoder.encode('<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'), STYLES_TYPE);
+  doc.addPart('word/theme/theme1.xml', encoder.encode('<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="test"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="111111"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="010203"/></a:accent1><a:accent2><a:srgbClr val="112233"/></a:accent2><a:accent3><a:srgbClr val="445566"/></a:accent3><a:accent4><a:srgbClr val="778899"/></a:accent4><a:accent5><a:srgbClr val="AABBCC"/></a:accent5><a:accent6><a:srgbClr val="DDEEFF"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="test"><a:majorFont/><a:minorFont/></a:fontScheme></a:themeElements></a:theme>'), THEME_TYPE);
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:r="${OFFICE_REL_NS}" xmlns:v="${V_NS}"><w:body>${body}<w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/media/shape.png', PNG_BYTES, 'image/png');
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rIdImage" Type="${OFFICE_REL_NS}/image" Target="media/shape.png"/><Relationship Id="rIdExternal" Type="${OFFICE_REL_NS}/image" Target="https://example.invalid/picture.png" TargetMode="External"/></Relationships>`), RELS_TYPE);
+  const shapes = doc.getShapes();
+  assert.equal(shapes.length, 10);
+  assert.equal(shapes[0].fill.color, 'rgba(17, 34, 51, 0.5)');
+  assert.equal(shapes[0].line.color, '#010203');
+  assert.equal(shapes[0].line.dash, '6 3');
+  assert.ok(Math.abs(shapes[0].line.widthPx - 4 / 3) < 0.001);
+  assert.equal(shapes[0].rotation, 90);
+  assert.equal(shapes[0].flipH, true);
+  assert.equal(shapes[0].flipV, true);
+  assert.deepEqual(shapes[0].adjustments, [{ name: 'adj', value: 0.25 }]);
+  assert.deepEqual(shapes[1].fill.stops, [{ position: 0, color: '#FF0000' }, { position: 1, color: '#0000FF' }]);
+  assert.equal(shapes[1].fill.angle, 150);
+  assert.equal(shapes[2].fill.imagePartPath, 'word/media/shape.png');
+  assert.equal(shapes[3].fill.imagePartPath, undefined);
+  assert.equal(shapes[4].fill.type, 'none');
+  assert.deepEqual(shapes[4].customGeometry.commands.map((command) => command.type), ['moveTo', 'lnTo', 'cubicBezTo', 'close']);
+  assert.equal(shapes[5].fill.color, '#FFFFFE');
+  assert.equal(shapes[5].line.color, '#000001');
+  assert.equal(shapes[6].geometry, 'ellipse');
+  assert.deepEqual(shapes[6].fill, { type: 'solid', color: '#f7f9fd' });
+  assert.deepEqual(shapes[6].line, { color: '#c7d3e5', widthPx: 1 });
+  assert.equal(shapes[7].geometry, 'wedgeRectCallout');
+  assert.equal(shapes[7].fill.color, '#00ff00');
+  assert.equal(shapes[7].line.color, 'navy');
+  assert.equal(shapes[8].geometry, 'ellipse');
+  assert.equal(shapes[8].fill.color, 'red');
+  assert.equal(shapes[9].geometry, undefined);
+  assert.equal(shapes[9].fill.color, 'blue');
+  assert.equal(doc.getPartXml(doc.mainDocumentPath).includes('v:path'), true);
+});
+
 test('unmodified binary and XML parts survive an unrelated paragraph edit byte-for-byte', async () => {
   const doc = DocxDocument.create();
   const bytes = Uint8Array.from([0, 1, 2, 255, 23]);

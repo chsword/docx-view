@@ -345,6 +345,17 @@ export interface ImageInfo {
 
 export type ShapeKind = 'textbox' | 'shape' | 'smartArt' | 'chart' | 'ole' | 'unknown';
 
+export type CustomGeometryCommand =
+  | { type: 'moveTo' | 'lnTo'; x: number; y: number }
+  | { type: 'cubicBezTo'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { type: 'close' };
+
+export interface CustomGeometry {
+  width: number;
+  height: number;
+  commands: CustomGeometryCommand[];
+}
+
 export interface ShapeInfo {
   id: string;
   paragraph: number;
@@ -360,6 +371,19 @@ export interface ShapeInfo {
   wrap?: ImageInfo['wrap'];
   hasTextContent: boolean;
   geometry?: string;
+  fill?: {
+    type: 'none' | 'solid' | 'gradient' | 'picture';
+    color?: string;
+    stops?: Array<{ position: number; color: string }>;
+    angle?: number;
+    imagePartPath?: string;
+  };
+  line?: { color?: string; widthPx?: number; dash?: string };
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  adjustments?: Array<{ name: string; value: number }>;
+  customGeometry?: CustomGeometry;
 }
 
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';

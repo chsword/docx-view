@@ -23,7 +23,8 @@ import type {
   TableRowInfo,
   WidthFormat,
 } from './types.js';
-import { placeholderDataUrl, pxToEmu } from './drawing.js';
+import { contentTypeForExtension, dataUrlForBytes, isBrowserRenderableContentType, pxToEmu } from './drawing.js';
+import { customGeometryPath, presetGeometryPath } from './geometry.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
@@ -1448,34 +1449,113 @@ export class DocxEditor {
     wrapper.style.maxWidth = '100%';
     wrapper.style.margin = shape.placement === 'floating' ? '8px 12px 8px 0' : '0 2px';
     wrapper.style.verticalAlign = 'text-bottom';
-    wrapper.style.border = '1px solid #c7d3e5';
-    wrapper.style.background = '#f7f9fd';
-    wrapper.style.padding = '4px';
+    wrapper.style.position = 'relative';
     wrapper.style.boxSizing = 'border-box';
     wrapper.setAttribute('aria-label', shape.alt ?? shape.geometry ?? shape.kind);
+    const width = Math.max(48, shape.widthPx || 160);
+    const height = Math.max(48, shape.heightPx || 90);
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const svg = this.root.ownerDocument.createElementNS(svgNs, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.style.position = 'absolute';
+    svg.style.inset = '0';
+    svg.style.overflow = 'visible';
+    const pathData = shape.customGeometry
+      ? customGeometryPath(shape.customGeometry, width, height)
+      : shape.geometry
+        ? presetGeometryPath(shape.geometry, width, height, new Map(shape.adjustments?.map(({ name, value }) => [name, value])))
+        : undefined;
+    const path = this.root.ownerDocument.createElementNS(svgNs, pathData ? 'path' : 'rect');
+    if (pathData) path.setAttribute('d', pathData);
+    else {
+      path.setAttribute('x', '0');
+      path.setAttribute('y', '0');
+      path.setAttribute('width', String(width));
+      path.setAttribute('height', String(height));
+    }
+    const fill = shape.fill;
+    if (fill?.type === 'none') path.setAttribute('fill', 'none');
+    else if (fill?.type === 'gradient' && fill.stops?.length) {
+      const defs = this.root.ownerDocument.createElementNS(svgNs, 'defs');
+      const gradient = this.root.ownerDocument.createElementNS(svgNs, 'linearGradient');
+      const gradientId = `shape-gradient-${String(shape.id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+      gradient.setAttribute('id', gradientId);
+      gradient.setAttribute('x1', '0%');
+      gradient.setAttribute('y1', '0%');
+      gradient.setAttribute('x2', '100%');
+      gradient.setAttribute('y2', '0%');
+      if (fill.angle) gradient.setAttribute('gradientTransform', `rotate(${fill.angle} 0.5 0.5)`);
+      for (const stop of fill.stops) {
+        const stopElement = this.root.ownerDocument.createElementNS(svgNs, 'stop');
+        stopElement.setAttribute('offset', `${stop.position * 100}%`);
+        stopElement.setAttribute('stop-color', stop.color);
+        gradient.appendChild(stopElement);
+      }
+      defs.appendChild(gradient);
+      svg.appendChild(defs);
+      path.setAttribute('fill', `url(#${gradientId})`);
+    } else if (fill?.type === 'picture' && fill.imagePartPath) {
+      try {
+        const contentType = contentTypeForExtension(fill.imagePartPath.split('.').pop() ?? '');
+        if (isBrowserRenderableContentType(contentType)) {
+          const bytes = this.document.getPartBytes(fill.imagePartPath);
+          const pattern = this.root.ownerDocument.createElementNS(svgNs, 'pattern');
+          const patternId = `shape-pattern-${String(shape.id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+          pattern.setAttribute('id', patternId);
+          pattern.setAttribute('width', '100%');
+          pattern.setAttribute('height', '100%');
+          pattern.setAttribute('patternContentUnits', 'objectBoundingBox');
+          const image = this.root.ownerDocument.createElementNS(svgNs, 'image');
+          image.setAttribute('width', '1');
+          image.setAttribute('height', '1');
+          image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+          image.setAttribute('href', dataUrlForBytes(bytes, contentType!));
+          pattern.appendChild(image);
+          const defs = this.root.ownerDocument.createElementNS(svgNs, 'defs');
+          defs.appendChild(pattern);
+          svg.appendChild(defs);
+          path.setAttribute('fill', `url(#${patternId})`);
+        } else {
+          path.setAttribute('fill', '#f7f9fd');
+          path.setAttribute('stroke-dasharray', shape.line?.dash ?? '6 4');
+        }
+      } catch {
+        path.setAttribute('fill', '#f7f9fd');
+        path.setAttribute('stroke-dasharray', shape.line?.dash ?? '6 4');
+      }
+    } else if (fill?.type === 'picture') {
+      path.setAttribute('fill', '#f7f9fd');
+      path.setAttribute('stroke-dasharray', shape.line?.dash ?? '6 4');
+    } else path.setAttribute('fill', fill?.color ?? 'none');
+    if (shape.line?.color) path.setAttribute('stroke', shape.line.color);
+    else path.setAttribute('stroke', fill?.type === 'picture' ? '#c7d3e5' : 'none');
+    if (shape.line?.widthPx !== undefined) path.setAttribute('stroke-width', String(shape.line.widthPx));
+    if (shape.line?.dash) path.setAttribute('stroke-dasharray', shape.line.dash);
+    if (shape.rotation || shape.flipH || shape.flipV) {
+      const transforms = [`translate(${width / 2} ${height / 2})`];
+      if (shape.rotation) transforms.push(`rotate(${shape.rotation})`);
+      transforms.push(`scale(${shape.flipH ? -1 : 1} ${shape.flipV ? -1 : 1})`);
+      transforms.push(`translate(${-width / 2} ${-height / 2})`);
+      path.setAttribute('transform', transforms.join(' '));
+    }
+    svg.appendChild(path);
+    wrapper.append(svg);
     if (shape.hasTextContent) {
       for (const paragraph of this.document.getShapeParagraphs(shape.id)) {
         const element = this.root.ownerDocument.createElement('p');
         element.className = 'docx-shape-paragraph';
         element.style.whiteSpace = 'pre-wrap';
+        element.style.position = 'relative';
+        element.style.zIndex = '1';
         applyParagraphStyle(element, paragraph);
         let offset = 0;
         for (const run of paragraph.runs) offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
         if (!paragraph.runs.length) element.textContent = paragraph.text;
         wrapper.append(element);
       }
-    } else {
-      const label = shape.alt ?? shape.geometry ?? ({
-        smartArt: 'SmartArt', chart: '图表', textbox: '文本框', shape: '形状', ole: 'OLE', unknown: '对象',
-      }[shape.kind] ?? shape.kind);
-      const image = this.root.ownerDocument.createElement('img');
-      image.src = placeholderDataUrl(label, shape.widthPx || 160, shape.heightPx || 90);
-      image.alt = label;
-      image.draggable = false;
-      image.style.width = '100%';
-      image.style.height = '100%';
-      image.style.display = 'block';
-      wrapper.append(image);
     }
     return wrapper;
   }

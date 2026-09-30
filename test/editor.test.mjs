@@ -276,12 +276,129 @@ function makeRunRenderEditor({ showRevisions = true, revisionView = 'markup' } =
   editor.root = {
     ownerDocument: {
       createElement,
+      createElementNS: (_namespace, tagName) => createElement(tagName),
       createTextNode: (text) => ({ nodeType: 3, textContent: text }),
     },
     append() {},
   };
   return editor;
 }
+
+test('makeShape renders SVG geometry beneath shape text on repeated renders', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = { getShapeParagraphs: () => [{ text: 'Shape text', runs: [] }] };
+  const shape = {
+    id: 'shape-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'textbox',
+    form: 'drawingml',
+    widthPx: 120,
+    heightPx: 80,
+    placement: 'inline',
+    hasTextContent: true,
+    geometry: 'diamond',
+    fill: { type: 'solid', color: '#123456' },
+    line: { color: '#abcdef', widthPx: 2, dash: '4 2' },
+    rotation: 45,
+    flipH: true,
+    flipV: true,
+  };
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  for (let render = 0; render < 2; render++) {
+    const wrapper = editor.makeShape(shape, 720, reviewContext);
+    const [svg, text] = wrapper.childNodes;
+    const path = svg.childNodes.find((node) => node.tagName === 'PATH');
+    assert.equal(svg.tagName, 'SVG');
+    assert.equal(path.attributes.get('d'), 'M 60 0 L 120 40 L 60 80 L 0 40 Z');
+    assert.equal(path.attributes.get('fill'), '#123456');
+    assert.equal(path.attributes.get('stroke'), '#abcdef');
+    assert.equal(path.attributes.get('stroke-width'), '2');
+    assert.equal(path.attributes.get('stroke-dasharray'), '4 2');
+    assert.match(path.attributes.get('transform'), /rotate\(45\).*scale\(-1 -1\)/);
+    assert.equal(text.className, 'docx-shape-paragraph');
+    assert.equal(text.textContent, 'Shape text');
+    assert.ok(wrapper.childNodes.indexOf(svg) < wrapper.childNodes.indexOf(text));
+  }
+});
+
+test('makeShape leaves external picture fills as a local SVG placeholder', () => {
+  const editor = makeRunRenderEditor();
+  let partReads = 0;
+  editor.document = { getPartBytes: () => { partReads++; throw new Error('must not read external image'); } };
+  const wrapper = editor.makeShape({
+    id: 'external-fill',
+    paragraph: 0,
+    run: 0,
+    kind: 'shape',
+    form: 'drawingml',
+    widthPx: 100,
+    heightPx: 50,
+    placement: 'inline',
+    hasTextContent: false,
+    fill: { type: 'picture' },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const path = svg.childNodes.find((node) => node.tagName === 'RECT');
+  assert.equal(path.attributes.get('fill'), '#f7f9fd');
+  assert.equal(path.attributes.get('stroke-dasharray'), '6 4');
+  assert.equal(svg.childNodes.some((node) => node.tagName === 'IMAGE'), false);
+  assert.equal(partReads, 0);
+});
+
+test('makeShape renders package picture fills through an SVG pattern', () => {
+  const editor = makeRunRenderEditor();
+  let partReads = 0;
+  editor.document = { getPartBytes: (path) => {
+    assert.equal(path, 'word/media/shape.png');
+    partReads++;
+    return Uint8Array.from([1, 2, 3]);
+  } };
+  const wrapper = editor.makeShape({
+    id: 'internal-fill',
+    paragraph: 0,
+    run: 0,
+    kind: 'shape',
+    form: 'drawingml',
+    widthPx: 100,
+    heightPx: 50,
+    placement: 'inline',
+    hasTextContent: false,
+    fill: { type: 'picture', imagePartPath: 'word/media/shape.png' },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const pattern = svg.childNodes[0].childNodes[0];
+  const image = pattern.childNodes[0];
+  const shapePath = svg.childNodes.find((node) => node.tagName === 'PATH' || node.tagName === 'RECT');
+  assert.equal(shapePath.attributes.get('fill'), 'url(#shape-pattern-internal-fill)');
+  assert.match(image.attributes.get('href'), /^data:image\/png;base64,/);
+  assert.equal(partReads, 1);
+});
+
+test('makeShape falls back to a styled rectangle for unsupported presets', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'fallback-preset',
+    paragraph: 0,
+    run: 0,
+    kind: 'shape',
+    form: 'drawingml',
+    widthPx: 100,
+    heightPx: 40,
+    placement: 'inline',
+    hasTextContent: false,
+    geometry: 'flowChartMagneticDisk',
+    fill: { type: 'solid', color: '#654321' },
+    line: { color: '#abcdef', widthPx: 3 },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const rect = svg.childNodes.find((node) => node.tagName === 'RECT');
+  assert.ok(rect);
+  assert.equal(rect.attributes.get('fill'), '#654321');
+  assert.equal(rect.attributes.get('stroke'), '#abcdef');
+  assert.equal(rect.attributes.get('stroke-width'), '3');
+});
 
 test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
   const editor = makeRunRenderEditor();
