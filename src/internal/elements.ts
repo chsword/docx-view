@@ -42,6 +42,17 @@ export function bodyOf(document: Document): Element {
   return body[0]!;
 }
 
+export function mainParagraphElements(body: Element): Element[] {
+  return descendants(body, 'p').filter((paragraph) => {
+    let ancestor = paragraph.parentNode as Element | null;
+    while (ancestor && ancestor !== body) {
+      if (ancestor.namespaceURI === WORD_NS && ancestor.localName === 'txbxContent') return false;
+      ancestor = ancestor.parentNode as Element | null;
+    }
+    return true;
+  });
+}
+
 export function partDirectory(path: string): string {
   const index = path.lastIndexOf('/');
   return index === -1 ? '' : path.slice(0, index);

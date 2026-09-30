@@ -28,10 +28,6 @@ function urlScheme(url: string): string | null {
   return match ? match[1]!.toLowerCase() : null;
 }
 
-export function isInternalBookmark(name: string): boolean {
-  return /^_GoBack$/i.test(name) || /^_Toc/i.test(name);
-}
-
 export function isSafeHyperlinkUrl(url: string): boolean {
   const scheme = urlScheme(url);
   return scheme !== null && ALLOWED_URL_SCHEMES.has(scheme);
