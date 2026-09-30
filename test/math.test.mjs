@@ -42,6 +42,17 @@ test('preserves the n-ary body after limits', () => {
   assert.equal(node.children[1].text, 'a_i');
 });
 
+test('renders sPre with preceding scripts and preserves empty placeholders', () => {
+  const formula = parse('<m:sPre><m:e><m:r><m:t>U</m:t></m:r></m:e><m:sub><m:r><m:t>92</m:t></m:r></m:sub><m:sup><m:r><m:t>238</m:t></m:r></m:sup></m:sPre>');
+  const node = ommlToMathMl(formula).children[0];
+  assert.equal(node.tag, 'mmultiscripts');
+  assert.deepEqual(node.children.map((child) => child.tag), ['mi', 'mprescripts', 'mn', 'mn']);
+  assert.equal(ommlToLinearText(formula), '_92^238U');
+
+  const missing = ommlToMathMl(parse('<m:sPre><m:e><m:r><m:t>U</m:t></m:r></m:e></m:sPre>')).children[0];
+  assert.deepEqual(missing.children.map((child) => child.tag), ['mi', 'mprescripts', 'mrow', 'mrow']);
+});
+
 test('converts block, scripts, functions, limits, accents, tables, and boxes', () => {
   const formula = parse(`
     <m:oMathPara><m:jc m:val="centerGroup"/><m:r><m:t>x</m:t></m:r></m:oMathPara>

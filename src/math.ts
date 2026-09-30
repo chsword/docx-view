@@ -128,8 +128,9 @@ function convert(element: Element, depth: number, context: { maxDepth: number; t
     const base = first(element, 'e');
     const sub = first(element, 'sub');
     const sup = first(element, 'sup');
-    return [{ tag: 'msubsup', children: [
+    return [{ tag: 'mmultiscripts', children: [
       base ? childrenAsRow(base, depth, context) : { tag: 'mrow', children: [] },
+      { tag: 'mprescripts' },
       sub ? childrenAsRow(sub, depth, context) : { tag: 'mrow', children: [] },
       sup ? childrenAsRow(sup, depth, context) : { tag: 'mrow', children: [] },
     ] }];
@@ -210,6 +211,7 @@ function linear(node: MathMlNode): string {
     case 'msup': return `${c[0] ?? ''}^${c[1] ?? ''}`;
     case 'msub': return `${c[0] ?? ''}_${c[1] ?? ''}`;
     case 'msubsup': return `${c[0] ?? ''}_${c[1] ?? ''}^${c[2] ?? ''}`;
+    case 'mmultiscripts': return `_${c[2] ?? ''}^${c[3] ?? ''}${c[0] ?? ''}`;
     case 'msqrt': return `√(${c[0] ?? ''})`;
     case 'mroot': return `${c[1] ?? ''}√(${c[0] ?? ''})`;
     case 'munderover': return `${c[0] ?? ''}_(${c[1] ?? ''})^(${c[2] ?? ''})`;

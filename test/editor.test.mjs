@@ -754,6 +754,42 @@ test('makeParagraph renders a math-only paragraph as MathML', () => {
   assert.equal(math.childNodes[0].tagName, 'MI');
 });
 
+test('makeParagraph renders preceding math scripts with MathML multiscripts', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = {
+    index: 0,
+    text: '',
+    runs: [],
+    images: [],
+    math: [{
+      runOffset: 0,
+      display: 'block',
+      linear: '_92^238U',
+      mathMl: {
+        tag: 'mmultiscripts',
+        children: [
+          { tag: 'mi', text: 'U' },
+          { tag: 'mprescripts' },
+          { tag: 'mn', text: '92' },
+          { tag: 'mn', text: '238' },
+        ],
+      },
+    }],
+  };
+  const rendered = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const math = rendered.childNodes[0].childNodes.find((node) => node.dataset?.docxMath === '1');
+  assert.ok(math);
+  assert.equal(math.tagName, 'MMULTISCRIPTS');
+  assert.equal(math.childNodes[1].tagName, 'MPRESCRIPTS');
+});
+
 test('pagination paragraph slices render each math exactly once', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();
