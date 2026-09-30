@@ -287,6 +287,24 @@ test('reads pre-rendered SmartArt diagram drawing children and preserves its par
   assert.match(reopened.getPartXml('word/_rels/document.xml.rels'), /diagramDrawing/);
 });
 
+test('resolves each SmartArt instance to its own pre-rendered drawing', () => {
+  const doc = DocxDocument.create();
+  const diagramUri = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
+  const dspNs = 'http://schemas.microsoft.com/office/drawing/2008/diagram';
+  const body = (dm) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="${dm}"/><a:graphic><a:graphicData uri="${diagramUri}"><dgm:relIds r:dm="${dm}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:dgm="${diagramUri}"><w:body>${body('rIdData1')}${body('rIdData2')}<w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rIdData1" Type="${OFFICE_REL_NS}/diagramData" Target="diagrams/data1.xml"/><Relationship Id="rIdData2" Type="${OFFICE_REL_NS}/diagramData" Target="diagrams/data2.xml"/><Relationship Id="rIdDraw1" Type="http://schemas.microsoft.com/office/2008/relationships/diagramDrawing" Target="diagrams/drawing1.xml"/><Relationship Id="rIdDraw2" Type="http://schemas.microsoft.com/office/2008/relationships/diagramDrawing" Target="diagrams/drawing2.xml"/></Relationships>`), RELS_TYPE);
+  const data = (id) => `<dgm:dataModel xmlns:dgm="${diagramUri}" xmlns:dsp="${dspNs}"><dgm:extLst><dsp:dataModelExt relId="${id}"/></dgm:extLst></dgm:dataModel>`;
+  const drawing = (color, text) => `<dsp:drawing xmlns:dsp="${dspNs}" xmlns:a="${A_NS}"><dsp:sp><dsp:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></dsp:spPr><dsp:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></dsp:txBody></dsp:sp></dsp:drawing>`;
+  doc.addPart('word/diagrams/data1.xml', encoder.encode(data('rIdDraw1')), 'application/xml');
+  doc.addPart('word/diagrams/data2.xml', encoder.encode(data('rIdDraw2')), 'application/xml');
+  doc.addPart('word/diagrams/drawing1.xml', encoder.encode(drawing('FF0000', 'First diagram')), 'application/xml');
+  doc.addPart('word/diagrams/drawing2.xml', encoder.encode(drawing('0000FF', 'Second diagram')), 'application/xml');
+  const shapes = doc.getShapes();
+  assert.deepEqual(shapes.map((shape) => shape.children?.[0]?.text), ['First diagram', 'Second diagram']);
+  assert.deepEqual(shapes.map((shape) => shape.children?.[0]?.fill?.color), ['#FF0000', '#0000FF']);
+});
+
 test('unmodified binary and XML parts survive an unrelated paragraph edit byte-for-byte', async () => {
   const doc = DocxDocument.create();
   const bytes = Uint8Array.from([0, 1, 2, 255, 23]);

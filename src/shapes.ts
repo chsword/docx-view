@@ -16,6 +16,10 @@ function descendants(parent: Element, namespace: string, localName: string): Ele
   return Array.from(parent.getElementsByTagNameNS(namespace, localName));
 }
 
+function descendantsInNamespace(parent: Document, namespace: string, localName: string): Element[] {
+  return Array.from(parent.getElementsByTagNameNS(namespace, localName));
+}
+
 function first(parent: Element | undefined, namespace: string, localName: string): Element | undefined {
   return parent ? descendants(parent, namespace, localName)[0] : undefined;
 }
@@ -151,9 +155,25 @@ function readSmartArtChildren(
   getPartRelationships?: (path: string) => Map<string, RelationshipTarget>,
 ): ShapeChildInfo[] | undefined {
   if (!graphicData || !getPartDocument) return undefined;
-  const relation = [...relationships.values()].find((entry) =>
-    entry.type?.endsWith('/diagramDrawing') ||
-    entry.partPath && /diagramDrawing/i.test(entry.target ?? ''));
+  const relIds = first(graphicData, DIAGRAM_NS, 'relIds');
+  const dataId = relIds?.getAttributeNS(OFFICE_REL_NS, 'dm') ?? relIds?.getAttribute('r:dm');
+  const dataPath = dataId ? relationships.get(dataId)?.partPath : undefined;
+  const dataDocument = dataPath ? getPartDocument(dataPath) : undefined;
+  const dataModelExt = dataDocument
+    ? descendantsInNamespace(dataDocument, DSP_NS, 'dataModelExt')[0]
+    : undefined;
+  const drawingId = dataModelExt?.getAttribute('relId')
+    ?? dataModelExt?.getAttributeNS(OFFICE_REL_NS, 'id')
+    ?? dataModelExt?.getAttribute('r:id');
+  const relation = (drawingId ? relationships.get(drawingId) : undefined)
+    ?? (dataPath ? [...(getPartRelationships?.(dataPath) ?? new Map()).values()].find((entry) =>
+      entry.type?.endsWith('/diagramDrawing')) : undefined)
+    ?? (() => {
+      const candidates = [...relationships.values()].filter((entry) =>
+        entry.type?.endsWith('/diagramDrawing') ||
+        entry.partPath && /diagramDrawing/i.test(entry.target ?? ''));
+      return candidates.length === 1 ? candidates[0] : undefined;
+    })();
   const drawingPath = relation?.partPath;
   if (!drawingPath) return undefined;
   const drawing = getPartDocument(drawingPath);
