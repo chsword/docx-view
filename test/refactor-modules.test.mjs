@@ -34,3 +34,23 @@ test('the content-control module stays a leaf with only its declared dependencie
   assert.match(text, /getCachedPartDocument\(path: string\): Document/);
   assert.match(text, /updatePartXmlInternal\(path: string/);
 });
+
+test('the hyperlink module declares only its actual dependencies', () => {
+  const text = source('../src/hyperlink.ts');
+  assert.deepEqual([...new Set(imports(text))], [
+    '@xmldom/xmldom',
+    './types.js',
+    './drawing.js',
+    './internal/context.js',
+    './operations.js',
+    './xml.js',
+    './content-control.js',
+    './internal/elements.js',
+  ]);
+  // content-control 是单向依赖：它不 import hyperlink，所以不成环。
+  assert.doesNotMatch(source('../src/content-control.ts'), /from '\.\/hyperlink\.js'/);
+  assert.doesNotMatch(text, /from '\.\/document\.js'/);
+  // setPartXml 与 nextRelationshipId 刻意借用公开 API：relationships 是 getPartDocument
+  // 返回的分离副本，只能整体写回；PartAccess 的 updatePartXml 会在副本上重取、丢掉修改。
+  assert.match(text, /setPartXml\(path: string, xml: string\): void/);
+});
