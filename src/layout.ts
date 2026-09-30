@@ -86,20 +86,24 @@ export function lineNumbersFor(
   sections: SectionInfo[],
 ): Array<Array<number | null>> {
   const paragraphByIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
-  let continuousCount = 0;
-  let continuousStart = 1;
+  let count = 0;
+  let numberBase = 1;
   let previousSection: number | undefined;
   return pages.map((page) => {
     const section = sections.find((entry) => entry.index === page.section) ?? sections[0];
     const numbering = section?.lineNumbering;
     const restart = numbering?.restart ?? 'newPage';
-    if (restart === 'newPage' || (restart === 'newSection' && previousSection !== page.section)) continuousCount = 0;
-    previousSection = page.section;
     const start = Number.isFinite(numbering?.start) && (numbering?.start ?? 0) > 0 ? numbering!.start! : 1;
     const countBy = Number.isFinite(numbering?.countBy) && (numbering?.countBy ?? 0) > 0
       ? numbering!.countBy! : 1;
-    if (restart === 'continuous' && continuousCount === 0) continuousStart = start;
-    let count = restart === 'continuous' ? continuousCount : 0;
+    const resetHere = previousSection === undefined ||
+      restart === 'newPage' ||
+      (restart === 'newSection' && previousSection !== page.section);
+    if (resetHere) {
+      count = 0;
+      numberBase = start;
+    }
+    previousSection = page.section;
     const result: Array<number | null> = [];
     for (const item of page.items) {
       if (item.type !== 'line') {
@@ -111,11 +115,10 @@ export function lineNumbersFor(
         result.push(null);
         continue;
       }
-      const number = (restart === 'continuous' ? continuousStart : start) + count;
+      const number = numberBase + count;
       result.push(number % countBy === 0 ? number : null);
       count++;
     }
-    continuousCount = count;
     return result;
   });
 }

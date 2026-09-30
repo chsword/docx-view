@@ -88,6 +88,9 @@ test('numbers paginated lines with restart, suppression, and countBy rules', () 
   assert.deepEqual(lineNumbersFor(
     pages.slice(0, 2), paragraphs, [section({ lineNumbering: { start: 0, countBy: 0, restart: 'continuous' } })],
   ), [[1, null, null], [2]]);
+  assert.deepEqual(lineNumbersFor(
+    pages.slice(0, 2), paragraphs, [section({ lineNumbering: { start: 1, restart: 'newSection' } })],
+  ), [[1, null, null], [2]]);
 });
 
 test('line numbering advances in column and page item order and tolerates negative settings', () => {
