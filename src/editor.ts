@@ -1366,7 +1366,9 @@ export class DocxEditor {
         content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
       }
     }
-    for (const info of math.filter(item => item.runOffset >= paragraph.runs.length)) appendMath(info);
+    // 末尾公式 = 没有任何 run 的索引等于它的 runOffset。用 runs.length 判断会随分页切片变化，
+    // 导致 runOffset 命中切片内某个 run 时这里再渲染一次。
+    for (const info of math.filter(item => !paragraph.runs.some(run => run.index === item.runOffset))) appendMath(info);
 
     if (!paragraph.runs.length && !math.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));

@@ -603,26 +603,63 @@ test('makeParagraph renders a math-only paragraph as MathML', () => {
   assert.equal(math.childNodes[0].tagName, 'MI');
 });
 
-test('pagination paragraph slices render trailing math only once', () => {
+test('pagination paragraph slices render each math exactly once', () => {
   const editor = makeRunRenderEditor();
-  const paragraph = {
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const mathMl = { tag: 'math', children: [{ tag: 'mi', text: 'x' }] };
+  const countMath = (paragraph) => {
+    const element = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+    const walk = (node, out = []) => {
+      for (const child of node.childNodes ?? []) {
+        if (child.tagName) out.push(child.tagName);
+        walk(child, out);
+      }
+      return out;
+    };
+    return walk(element).filter((tag) => tag === 'MATH').length;
+  };
+  const renderedAcross = (paragraph, ranges) => ranges
+    .map(([start, end]) => countMath(editor.sliceParagraph(paragraph, start, end)))
+    .reduce((sum, count) => sum + count, 0);
+
+  // 末尾公式：runOffset 等于 run 数，没有任何 run 的索引与它相同
+  const trailing = {
     index: 0,
     text: '甲乙丙丁戊己',
     runs: [
-      { index: 0, text: '甲乙' },
-      { index: 1, text: '丙丁' },
-      { index: 2, text: '戊己' },
+      { index: 0, text: '甲乙', revisions: [] },
+      { index: 1, text: '丙丁', revisions: [] },
+      { index: 2, text: '戊己', revisions: [] },
     ],
-    math: [{
-      runOffset: 3,
-      display: 'inline',
-      linear: 'x',
-      mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'x' }] },
-    }],
+    math: [{ runOffset: 3, display: 'inline', linear: 'x', mathMl }],
   };
-  const slices = [[0, 2], [2, 4], [4, 6]].map(([start, end]) =>
-    editor.sliceParagraph(paragraph, start, end));
-  assert.deepEqual(slices.map((slice) => slice.math?.length ?? 0), [0, 0, 1]);
+  assert.equal(countMath(trailing), 1);
+  assert.deepEqual([[0, 2], [2, 4], [4, 6]].map(([start, end]) =>
+    editor.sliceParagraph(trailing, start, end).math?.length ?? 0), [0, 0, 1]);
+  assert.equal(renderedAcross(trailing, [[0, 2], [2, 4], [4, 6]]), 1);
+
+  // 中间公式：runOffset 同时是某个 run 的索引。该 run 单独成片时切片只有 1 个 run，
+  // 若用 runs.length 判断末尾公式，这一片会渲染两次。
+  const interior = {
+    index: 0,
+    text: '甲乙丙丁',
+    runs: [
+      { index: 0, text: '甲', revisions: [] },
+      { index: 1, text: '乙', revisions: [] },
+      { index: 2, text: '丙', revisions: [] },
+      { index: 3, text: '丁', revisions: [] },
+    ],
+    math: [{ runOffset: 3, display: 'inline', linear: 'x', mathMl }],
+  };
+  assert.equal(countMath(interior), 1);
+  assert.equal(countMath(editor.sliceParagraph(interior, 3, 4)), 1);
+  assert.equal(renderedAcross(interior, [[0, 1], [1, 2], [2, 3], [3, 4]]), 1);
 });
 
 test('paginated page content renders row subsets in their assigned columns', () => {
