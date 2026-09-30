@@ -265,6 +265,28 @@ test('reads DrawingML and VML shape appearance, theme colors, transforms, and pa
   assert.equal(doc.getPartXml(doc.mainDocumentPath).includes('v:path'), true);
 });
 
+test('reads cached chart groups, literal values, missing points, and theme fallback colors', async () => {
+  const chartNs = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+  const chartRel = `${OFFICE_REL_NS}/chart`;
+  const drawing = `<w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="20"/><a:graphic><a:graphicData uri="${chartNs}"><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:c="${chartNs}" xmlns:r="${OFFICE_REL_NS}"><w:body><w:p><w:r>${drawing}</w:r></w:p><w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/theme/theme1.xml', encoder.encode(`<a:theme xmlns:a="${A_NS}"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="123456"/></a:accent1><a:accent2><a:srgbClr val="654321"/></a:accent2></a:clrScheme><a:fontScheme/></a:themeElements></a:theme>`), THEME_TYPE);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rIdChart" Type="${chartRel}" Target="charts/chart1.xml"/></Relationships>`), RELS_TYPE);
+  doc.addPart('word/charts/chart1.xml', encoder.encode(`<c:chartSpace xmlns:c="${chartNs}" xmlns:a="${A_NS}"><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Combined</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Primary</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:ptCount val="3"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:ptCount val="3"/><c:pt idx="0"><c:v>4.3</c:v></c:pt><c:pt idx="2"><c:v>9.1</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart><c:lineChart><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Secondary</c:v></c:pt></c:strCache></c:strRef></c:tx><c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:val><c:numRef><c:f>Sheet1!A1</c:f></c:numRef></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>`), 'application/xml');
+  doc.addPart('word/embeddings/book.xlsx', Uint8Array.from([1, 2, 3]), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  const chart = doc.getShapes()[0].chart;
+  assert.equal(chart.title, 'Combined');
+  assert.deepEqual(chart.categories, ['Q1', '', 'Q3']);
+  assert.deepEqual(chart.series.map((series) => series.name), ['Primary', 'Secondary']);
+  assert.deepEqual(chart.series[0].values, [4.3, null, 9.1]);
+  assert.equal(chart.series[1].values[1], 2);
+  assert.equal(chart.series[0].fill.color, '#123456');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual([...reopened.getPartBytes('word/embeddings/book.xlsx')], [1, 2, 3]);
+  assert.equal(reopened.getPartXml('word/charts/chart1.xml').includes('numLit'), true);
+});
+
 test('reads pre-rendered SmartArt diagram drawing children and preserves its parts', async () => {
   const doc = DocxDocument.create();
   doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="9"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds r:dm="rIdData" r:lo="rIdLayout" r:qs="rIdStyle" r:cs="rIdColors"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:sectPr/></w:body></w:document>`);

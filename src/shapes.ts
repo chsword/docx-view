@@ -3,7 +3,7 @@ import { emuToPx, V_NS, WP_NS, A_NS, OFFICE_REL_NS } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
 import type { ChartInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
 import { MC_NS, selectAlternateContentBranch } from './xml.js';
-import { resolveDrawingColor, type ThemeInfo } from './styles.js';
+import { resolveDrawingColor, resolveDrawingThemeColor, type ThemeInfo } from './styles.js';
 
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const WPS_NS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
@@ -145,6 +145,13 @@ function chartSeriesFill(ser: Element, theme: ThemeInfo, relationships: Map<stri
   return readShapeAppearance(direct(ser, CHART_NS, 'spPr'), theme, relationships);
 }
 
+function chartSeriesAppearance(ser: Element, index: number, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): Pick<ShapeInfo, 'fill' | 'line'> {
+  const appearance = chartSeriesFill(ser, theme, relationships);
+  if (appearance.fill) return appearance;
+  const color = resolveDrawingThemeColor(theme, `accent${(index % 6) + 1}`);
+  return color ? { ...appearance, fill: { type: 'solid', color: color.startsWith('#') ? color : `#${color}` } } : appearance;
+}
+
 function readChartInfo(
   graphicData: Element | undefined,
   relationships: Map<string, RelationshipTarget>,
@@ -158,9 +165,10 @@ function readChartInfo(
   const chartDocument = chartPath ? getPartDocument(chartPath) : undefined;
   const plotArea = chartDocument && first(chartDocument.documentElement as Element, CHART_NS, 'plotArea');
   if (!plotArea) return undefined;
-  const chartType = Array.from(plotArea.childNodes).find((node) =>
+  const chartTypes = Array.from(plotArea.childNodes).filter((node) =>
     node.nodeType === 1 && (node as Element).namespaceURI === CHART_NS &&
-    (node as Element).localName?.endsWith('Chart')) as Element | undefined;
+    (node as Element).localName?.endsWith('Chart')) as Element[];
+  const chartType = chartTypes[0];
   if (!chartType) return undefined;
   const localName = chartType.localName ?? '';
   const kind = localName === 'barChart' ? 'bar'
@@ -182,16 +190,16 @@ function readChartInfo(
     firstCategoryRef ? direct(firstCategoryRef, CHART_NS, firstCategoryRef.localName === 'numRef' ? 'numCache' : 'strCache') : undefined,
     false,
   ).map((value) => typeof value === 'string' ? value : '');
-  const series = descendants(chartType, CHART_NS, 'ser').flatMap((ser) => {
+  const series = chartTypes.flatMap((group) => descendants(group, CHART_NS, 'ser').flatMap((ser, index) => {
     const val = direct(ser, CHART_NS, 'val') ?? direct(ser, CHART_NS, 'yVal');
     const numRef = val && (direct(val, CHART_NS, 'numRef') ?? direct(val, CHART_NS, 'numLit'));
-    const numCache = numRef && direct(numRef, CHART_NS, 'numCache');
-    if (!numCache) return [];
-    const values = cacheValues(numCache, true) as Array<number | null>;
+    const cache = numRef && (direct(numRef, CHART_NS, 'numCache') ?? (numRef.localName === 'numLit' ? numRef : undefined));
+    if (!cache) return [];
+    const values = cacheValues(cache, true) as Array<number | null>;
     const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
     const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined : undefined;
-    return [{ name, values, ...chartSeriesFill(ser, theme, relationships) }];
-  });
+    return [{ name, values, ...chartSeriesAppearance(ser, index, theme, relationships) }];
+  }));
   const grouping = direct(chartType, CHART_NS, 'grouping')?.getAttribute('val') as ChartInfo['grouping'] | null;
   const barDirection = localName === 'barChart'
     ? (direct(chartType, CHART_NS, 'barDir')?.getAttribute('val') === 'bar' ? 'bar' : 'col')

@@ -1618,7 +1618,6 @@ export class DocxEditor {
       parent.appendChild(node);
       return node;
     };
-    const colors = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47'];
     const titleHeight = chart.title ? 18 : 4;
     const left = chart.axes?.value?.visible === false ? 8 : 34;
     const bottom = chart.axes?.category?.visible === false ? 8 : 24;
@@ -1640,14 +1639,14 @@ export class DocxEditor {
       for (const [index, value] of (chart.series[0]?.values ?? []).entries()) {
         const amount = value !== null && value > 0 ? value : 0;
         const next = angle + (total ? amount / total : 0) * Math.PI * 2;
-        const path = add('path', { d: pieSlicePath(angle, next, plot.x + plot.width / 2, plot.y + plot.height / 2, radius, chart.kind === 'doughnut' ? radius * 0.5 : 0), fill: colors[index % colors.length]!, stroke: '#fff', 'stroke-width': '1' });
+        const path = add('path', { d: pieSlicePath(angle, next, plot.x + plot.width / 2, plot.y + plot.height / 2, radius, chart.kind === 'doughnut' ? radius * 0.5 : 0), fill: chart.series[0]?.fill?.color ?? 'none', stroke: '#fff', 'stroke-width': '1' });
         path.setAttribute('data-docx-chart-series', '0');
         angle = next;
       }
       chart.series.forEach((series, index) => {
         if (!series.name) return;
         add('text', { x: String(plot.x + index * 70 + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = series.name;
-        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? colors[index % colors.length]! });
+        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? 'none' });
       });
       return;
     }
@@ -1667,7 +1666,7 @@ export class DocxEditor {
     }
     if (chart.kind === 'bar') {
       const rects = barRects(chart.series.map((series) => series.values.map((value) => value ?? 0)), scale, plot.width, plot.height, { grouping: chart.grouping ?? 'clustered', direction: chart.barDirection });
-      rects.forEach((series, seriesIndex) => series.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: chart.series[seriesIndex]?.fill?.color ?? colors[seriesIndex % colors.length]!, 'data-docx-chart-series': String(seriesIndex) })));
+      rects.forEach((series, seriesIndex) => series.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: chart.series[seriesIndex]?.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) })));
     } else {
       chart.series.forEach((series, seriesIndex) => {
         let path = '';
@@ -1681,13 +1680,13 @@ export class DocxEditor {
           started = true;
         });
         if (chart.kind === 'area' && path) path += `L ${plot.x + plot.width} ${zeroY} L ${plot.x} ${zeroY} Z`;
-        if (path) add('path', { d: path, fill: chart.kind === 'area' ? (series.fill?.color ?? colors[seriesIndex % colors.length]!) : 'none', 'fill-opacity': chart.kind === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? colors[seriesIndex % colors.length]!, 'data-docx-chart-series': String(seriesIndex) });
+        if (path) add('path', { d: path, fill: chart.kind === 'area' ? (series.fill?.color ?? 'none') : 'none', 'fill-opacity': chart.kind === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) });
       });
     }
     chart.series.forEach((series, index) => {
       if (!series.name) return;
       const x = plot.x + index * 70;
-      add('rect', { x: String(x), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? colors[index % colors.length]! });
+      add('rect', { x: String(x), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? 'none' });
       add('text', { x: String(x + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = series.name;
     });
   }

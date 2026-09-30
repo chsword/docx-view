@@ -11,6 +11,8 @@ test('axisTicks handles degenerate and non-finite ranges', () => {
     assert.ok(result.ticks.every(Number.isFinite));
   }
   assert.deepEqual(axisTicks(0, 10, 5).ticks, [0, 2, 4, 6, 8, 10]);
+  assert.deepEqual(axisTicks(-10, -1, 4).ticks, [-10, -5, 0]);
+  assert.deepEqual(axisTicks(-1, 1, 4).ticks, [-1, -0.5, 0, 0.5, 1]);
 });
 
 test('chart geometry calculates values, grouped and stacked bars, and slices', () => {
@@ -20,6 +22,8 @@ test('chart geometry calculates values, grouped and stacked bars, and slices', (
   assert.ok(clustered[0][0].width > 0);
   const stacked = barRects([[1, 2], [3, 4]], { min: 0, max: 5 }, 100, 80, { grouping: 'stacked' });
   assert.ok(stacked[1][0].y < stacked[0][0].y);
+  const percent = barRects([[1, 1], [3, 1]], { min: 0, max: 100 }, 100, 80, { grouping: 'percentStacked' });
+  assert.equal(Math.round(percent[0][0].height + percent[1][0].height), 80);
   assert.match(pieSlicePath(0, Math.PI, 20, 20, 10), /^M 20 20 L/);
   assert.match(pieSlicePath(0, Math.PI, 20, 20, 10, 5), /A 5 5/);
 });
