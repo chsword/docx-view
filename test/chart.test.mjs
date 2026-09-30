@@ -24,8 +24,13 @@ test('chart geometry calculates values, grouped and stacked bars, and slices', (
   assert.ok(stacked[1][0].y < stacked[0][0].y);
   const percent = barRects([[1, 1], [3, 1]], { min: 0, max: 100 }, 100, 80, { grouping: 'percentStacked' });
   assert.equal(Math.round(percent[0][0].height + percent[1][0].height), 80);
+  const horizontal = barRects([[1, 2]], { min: 0, max: 2 }, 100, 80, { grouping: 'clustered', direction: 'bar' });
+  assert.ok(horizontal[0].every((rect) => rect.y + rect.height <= 80));
   assert.match(pieSlicePath(0, Math.PI, 20, 20, 10), /^M 20 20 L/);
   assert.match(pieSlicePath(0, Math.PI, 20, 20, 10, 5), /A 5 5/);
+  const fullPie = pieSlicePath(-Math.PI / 2, 3 * Math.PI / 2, 50, 50, 40);
+  assert.equal((fullPie.match(/ A /g) ?? []).length, 2);
+  assert.match(fullPie, / A 40 40 0 0 1 [^ ]+ [^ ]+ A 40 40 0 0 1 [^ ]+ [^ ]+ Z$/);
 });
 
 test('chart geometry has no DOM dependencies', () => {

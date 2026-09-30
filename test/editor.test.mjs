@@ -417,6 +417,106 @@ test('makeShape renders category labels and uses cached scatter x values', () =>
   assert.deepEqual(categoryWrapper.childNodes[0].childNodes.filter((node) => node.attributes?.get('data-docx-chart-category') === '1').map((node) => node.textContent), ['Q1', 'Q2']);
 });
 
+test('makeShape closes an area segment at its own ends and swaps horizontal bar axes', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const areaWrapper = editor.makeShape({
+    id: 'area-chart',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'area',
+      categories: ['甲', '乙', '丙'],
+      series: [{ values: [null, 1, 4], fill: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const areaSvg = areaWrapper.childNodes[0];
+  const area = areaSvg.childNodes.find((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  assert.equal(area.attributes.get('fill'), '#123456');
+  const closure = area.attributes.get('d').match(/L ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+) Z\s*$/);
+  assert.ok(closure);
+  // 序列开头是 null，填充收在第一个有数据的点（x=173）而不是绘图区左边界（x=34）
+  assert.deepEqual(closure.slice(1).map(Number), [312, 156, 173, 156]);
+
+  const barWrapper = editor.makeShape({
+    id: 'horizontal-bar-chart',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'bar',
+      barDirection: 'bar',
+      categories: ['甲', '乙'],
+      series: [{ values: [1, 2], fill: { color: '#654321' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: true } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const barSvg = barWrapper.childNodes[0];
+  const categoryLabels = barSvg.childNodes.filter((node) => node.attributes?.get('data-docx-chart-category') === '1');
+  const valueLabels = barSvg.childNodes.filter((node) => node.attributes?.get('data-docx-chart-tick') === '1');
+  assert.deepEqual(categoryLabels.map((node) => node.textContent), ['甲', '乙']);
+  assert.ok(categoryLabels.every((node) => Number(node.attributes.get('x')) < 34));
+  assert.ok(Number(categoryLabels[0].attributes.get('y')) < Number(categoryLabels[1].attributes.get('y')));
+  assert.ok(valueLabels.every((node) => Number(node.attributes.get('y')) > 150));
+  const categoryAxis = barSvg.childNodes.find((node) => node.attributes?.get('data-docx-chart-axis') === 'category');
+  const valueAxis = barSvg.childNodes.find((node) => node.attributes?.get('data-docx-chart-axis') === 'value');
+  assert.equal(categoryAxis.attributes.get('x1'), categoryAxis.attributes.get('x2'));
+  assert.equal(valueAxis.attributes.get('y1'), valueAxis.attributes.get('y2'));
+  const bars = barSvg.childNodes.filter((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  assert.ok(bars.every((node) => Number(node.attributes.get('y')) + Number(node.attributes.get('height')) <= 156));
+});
+
+test('makeShape closes each area gap segment separately without filling the gap', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const areaPath = (values) => {
+    const wrapper = editor.makeShape({
+      id: 'area-gap',
+      paragraph: 0,
+      run: 0,
+      kind: 'chart',
+      form: 'drawingml',
+      widthPx: 320,
+      heightPx: 180,
+      placement: 'inline',
+      hasTextContent: false,
+      chart: {
+        kind: 'area',
+        categories: ['甲', '乙', '丙', '丁'],
+        series: [{ values, fill: { color: '#123456' } }],
+        axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+      },
+    }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+    return wrapper.childNodes[0].childNodes
+      .find((node) => node.attributes?.get('data-docx-chart-series') === '0')
+      .attributes.get('d');
+  };
+
+  // 数据完整时四个类目铺满绘图区 34..312，闭合落在零值线 156 上
+  assert.equal(areaPath([1, 2, 3, 4]), 'M 34 118 L 126.66666666666666 80 L 219.33333333333331 42 L 312 4 L 312 156 L 34 156 Z');
+
+  // 中间缺一点：拆成两段，每段各自闭合，缺口区间没有填充
+  const interior = areaPath([1, null, 3, 4]);
+  assert.equal((interior.match(/M /g) ?? []).length, (interior.match(/Z/g) ?? []).length);
+  assert.equal((interior.match(/Z/g) ?? []).length, 2);
+  assert.equal(interior, 'M 34 118 L 34 156 Z M 219.33333333333331 42 L 312 4 L 312 156 L 219.33333333333331 156 Z');
+
+  // 结尾缺两点：闭合回到最后一个有数据的点，而不是绘图区右边界 312
+  assert.equal(areaPath([1, 2, null, null]), 'M 34 80 L 126.66666666666666 4 L 126.66666666666666 156 L 34 156 Z');
+});
+
 test('makeShape keeps pie slice and category legend colors aligned', () => {
   const editor = makeRunRenderEditor();
   editor.document = {};
@@ -445,6 +545,57 @@ test('makeShape keeps pie slice and category legend colors aligned', () => {
   const slices = svg.childNodes.filter((node) => node.attributes?.get('data-docx-chart-series') === '0');
   assert.deepEqual(slices.map((node) => node.attributes.get('fill')), ['#ff0000', '#00ff00']);
   assert.deepEqual(svg.childNodes.filter((node) => node.tagName === 'RECT').map((node) => node.attributes.get('fill')), ['#ff0000', '#00ff00']);
+});
+
+test('makeShape renders a single-category pie without a degenerate arc and wraps its legend', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const singlePieWrapper = editor.makeShape({
+    id: 'single-pie',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'pie',
+      categories: ['Only'],
+      series: [{ values: [1], fill: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const singleSlice = singlePieWrapper.childNodes[0].childNodes.find((node) => node.tagName === 'PATH');
+  assert.equal((singleSlice.attributes.get('d').match(/ A /g) ?? []).length, 2);
+  assert.match(singleSlice.attributes.get('d'), / A 74 74 0 0 1 173 154 A 74 74 0 0 1 173 6 Z$/);
+
+  const categories = Array.from({ length: 8 }, (_, index) => `Category ${index + 1}`);
+  const legendWrapper = editor.makeShape({
+    id: 'wrapped-pie-legend',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'pie',
+      categories,
+      series: [{ values: categories.map(() => 1), fill: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const legendSvg = legendWrapper.childNodes[0];
+  const legendLabels = legendSvg.childNodes.filter((node) => categories.includes(node.textContent));
+  const legendMarkers = legendSvg.childNodes.filter((node) => node.tagName === 'RECT');
+  assert.equal(legendLabels.length, 8);
+  assert.equal(legendMarkers.length, 8);
+  assert.ok([...legendLabels, ...legendMarkers].every((node) => Number(node.attributes.get('x')) >= 0 && Number(node.attributes.get('x')) < 320));
+  assert.ok(new Set(legendLabels.map((node) => node.attributes.get('y'))).size > 1);
 });
 
 test('makeShape shares the scatter x scale across series', () => {

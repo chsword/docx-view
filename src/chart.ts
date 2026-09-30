@@ -57,12 +57,12 @@ export function barRects(
 ): Rect[][] {
   const count = Math.max(0, ...series.map((values) => values.length));
   if (!count || plotWidthPx <= 0 || plotHeightPx <= 0) return series.map(() => []);
+  const horizontal = options.direction === 'bar';
   const gap = Math.max(0, Math.min(500, options.gapWidth ?? 150)) / 100;
-  const categoryWidth = plotWidthPx / count;
+  const categoryWidth = (horizontal ? plotHeightPx : plotWidthPx) / count;
   const groupWidth = categoryWidth * (1 - gap * 0.5);
   const grouping = options.grouping;
   const overlap = Math.max(-1, Math.min(1, (options.overlap ?? 0) / 100));
-  const horizontal = options.direction === 'bar';
   const result = series.map(() => Array.from({ length: count }, () => ({ x: 0, y: 0, width: 0, height: 0 })));
   for (let index = 0; index < count; index++) {
     const values = series.map((values) => values[index] ?? 0);
@@ -113,6 +113,19 @@ export function barRects(
 
 export function pieSlicePath(startAngle: number, endAngle: number, cx: number, cy: number, r: number, innerR = 0): string {
   const point = (angle: number, radius: number) => `${cx + Math.cos(angle) * radius} ${cy + Math.sin(angle) * radius}`;
+  const sweep = endAngle - startAngle;
+  if (Math.abs(sweep) >= 2 * Math.PI) {
+    const direction = Math.sign(sweep);
+    const middleAngle = startAngle + direction * Math.PI;
+    const outerStart = point(startAngle, r);
+    const outerMiddle = point(middleAngle, r);
+    if (innerR > 0) {
+      const innerStart = point(startAngle, innerR);
+      const innerMiddle = point(middleAngle, innerR);
+      return `M ${outerStart} A ${r} ${r} 0 0 ${direction > 0 ? 1 : 0} ${outerMiddle} A ${r} ${r} 0 0 ${direction > 0 ? 1 : 0} ${outerStart} L ${innerStart} A ${innerR} ${innerR} 0 0 ${direction > 0 ? 0 : 1} ${innerMiddle} A ${innerR} ${innerR} 0 0 ${direction > 0 ? 0 : 1} ${innerStart} Z`;
+    }
+    return `M ${cx} ${cy} L ${outerStart} A ${r} ${r} 0 0 ${direction > 0 ? 1 : 0} ${outerMiddle} A ${r} ${r} 0 0 ${direction > 0 ? 1 : 0} ${outerStart} Z`;
+  }
   const large = Math.abs(endAngle - startAngle) > Math.PI ? 1 : 0;
   const outerStart = point(startAngle, r);
   const outerEnd = point(endAngle, r);
