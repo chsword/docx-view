@@ -1991,6 +1991,22 @@ test('readText skips deleted-text visualization nodes', () => {
   assert.equal(editor.readText(root), 'ABXDEF');
 });
 
+test('readText skips hidden-run preservation nodes', () => {
+  const editor = Object.create(DocxEditor.prototype);
+  const content = {
+    nodeType: 1, tagName: 'SPAN', dataset: {}, childNodes: [
+      { nodeType: 3, textContent: 'visible ' },
+      {
+        nodeType: 1, tagName: 'SPAN', dataset: { docxHidden: '1', docxHiddenPreserved: '1' }, contentEditable: 'false',
+        childNodes: [{ nodeType: 3, textContent: 'hidden' }],
+      },
+      { nodeType: 3, textContent: ' text' },
+    ],
+  };
+  assert.equal(editor.readText(content), 'visible  text');
+  assert.deepEqual(editor.readTextSegments(content), ['visible ', ' text']);
+});
+
 test('focusRevision validates revision id input', () => {
   const editor = Object.create(DocxEditor.prototype);
   editor.filteredRevisionIds = () => [1];
@@ -2175,6 +2191,81 @@ test('appendRun writes data-docx-run for runs without revisions', () => {
   assert.equal('docxRevisionIds' in runSpan.dataset, false);
 });
 
+test('appendRun hides hidden text by default and marks it with dashed underline when enabled', () => {
+  for (const key of ['hidden', 'webHidden']) {
+    for (const showHiddenText of [undefined, false, true]) {
+      const editor = makeRunRenderEditor();
+      editor.options.showHiddenText = showHiddenText;
+      const shown = showHiddenText === true;
+      let measurements = 0;
+      editor.measure = () => { measurements++; return 12; };
+      const { paragraphElement, runSpan, offset } = appendRunToParagraph(editor, {
+        run: { index: 0, text: 'hidden', [key]: true, effective: { [key]: true } },
+      });
+      assert.equal(runSpan.dataset.docxHidden, '1');
+      if (shown) {
+        assert.equal(runSpan.className.includes('docx-hidden-text'), true);
+        assert.equal(runSpan.style.textDecorationStyle, 'dashed');
+        assert.equal(editor.readText(paragraphElement), 'hidden');
+        assert.equal(measurements, 1);
+        assert.equal(offset, 12);
+      } else {
+        assert.equal(runSpan.style.display, 'none');
+        assert.equal(runSpan.contentEditable, 'false');
+        assert.equal(editor.readText(paragraphElement), '');
+        assert.equal(measurements, 0);
+        assert.equal(offset, 0);
+      }
+    }
+  }
+});
+
+test('makeParagraph omits hidden runs from pagination measurement and renders math consistently', () => {
+  for (const showHiddenText of [undefined, false, true]) {
+    const shown = showHiddenText === true;
+    const editor = makeRunRenderEditor();
+    editor.options.showHiddenText = showHiddenText;
+    editor.paragraphs = new Map();
+    editor.measuring = true;
+    editor.composing = false;
+    editor.renderAfterComposition = false;
+    editor.document = { getShapeParagraphs: () => [] };
+    editor.renderShapeInfos = [];
+    const measured = [];
+    editor.measure = (text) => { measured.push(text); return 8; };
+    const paragraph = {
+      index: 0,
+      text: 'draftvisible',
+      runs: [
+        {
+          index: 0, text: 'draft', hidden: true, effective: { hidden: true },
+          revisions: [{ id: 1, kind: 'insertion' }],
+          field: { index: 5, role: 'result', kind: 'PAGE' },
+        },
+        { index: 1, text: 'visible' },
+      ],
+      math: [{
+        runOffset: 1, display: 'inline', linear: 'x',
+        mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'x' }] },
+      }],
+    };
+    const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+    for (let renderCount = 0; renderCount < 2; renderCount++) {
+      const rendered = editor.makeParagraph(paragraph, 720, reviewContext);
+      const content = rendered.childNodes.find((node) => node.className === 'docx-paragraph-content');
+      const hidden = content.childNodes.find((node) => node.dataset.docxHidden === '1');
+      const math = content.childNodes.filter((node) => node.dataset.docxMath === '1');
+      assert.ok(hidden);
+      assert.equal(hidden.style.display === 'none', !shown);
+      assert.equal(hidden.dataset.docxFieldRole, shown ? 'result' : undefined);
+      assert.equal(math.length, 1);
+      assert.equal(hidden.dataset.docxRevisionIds, shown ? '1' : undefined);
+      assert.equal(editor.readText(content), shown ? 'draftvisible' : 'visible');
+    }
+    assert.deepEqual(measured, shown ? ['draft', 'visible', 'draft', 'visible'] : ['visible', 'visible']);
+  }
+});
+
 test('field runs retain roles, hide instruction text, and shade results only when enabled', () => {
   for (const showFieldShading of [undefined, false]) {
     const editor = makeRunRenderEditor();
@@ -2306,6 +2397,48 @@ test('flush edits ordinary text around complex and simple fields without changin
     assert.match(xml, form === 'simple' ? /<w:fldSimple\b/ : /<w:fldChar\b/, form);
     if (form === 'complex') assert.match(xml, /<w:instrText> SEQ test <\/w:instrText>/);
   }
+});
+
+test('flush edits visible text on both sides of hidden runs without changing their XML', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath,
+    `<w:document xmlns:w="${WORD_NS}"><w:body><w:p>` +
+    '<w:r><w:t xml:space="preserve">before </w:t></w:r>' +
+    '<w:ins w:id="1" w:author="Alice"><w:r><w:rPr><w:vanish/></w:rPr><w:t>secret</w:t></w:r></w:ins>' +
+    '<w:r><w:t xml:space="preserve"> after</w:t></w:r>' +
+    '</w:p><w:sectPr/></w:body></w:document>');
+
+  const editor = Object.create(DocxEditor.prototype);
+  const before = { nodeType: 3, textContent: 'updated before ' };
+  const hidden = {
+    nodeType: 1, tagName: 'SPAN', dataset: { docxHidden: '1', docxHiddenPreserved: '1' }, contentEditable: 'false',
+    childNodes: [{ nodeType: 3, textContent: 'secret' }],
+  };
+  const after = { nodeType: 3, textContent: ' after changed' };
+  const content = { nodeType: 1, tagName: 'SPAN', dataset: {}, childNodes: [before, hidden, after] };
+  editor.destroyed = false;
+  editor.options = {};
+  editor.document = doc;
+  editor.paragraphs = new Map([[0, { content, text: 'before  after', failed: false }]]);
+
+  editor.flush();
+  const firstRevision = doc.revision;
+  assert.equal(firstRevision, 2);
+  assert.equal(doc.getParagraphs()[0].text, 'updated before secret after changed');
+  assert.equal(doc.getParagraphs()[0].visibleText, 'updated before  after changed');
+  assert.equal(doc.getParagraphs()[0].runs[1].text, 'secret');
+  assert.equal(doc.getParagraphs()[0].runs[1].revisions[0].kind, 'insertion');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="1" w:author="Alice"><w:r><w:rPr><w:vanish\/><\/w:rPr><w:t>secret<\/w:t><\/w:r><\/w:ins>/);
+
+  editor.flush();
+  assert.equal(doc.revision, firstRevision);
+  before.textContent = 'again ';
+  after.textContent = ' changed';
+  editor.flush();
+  assert.equal(doc.getParagraphs()[0].text, 'again secret changed');
+  assert.equal(doc.getParagraphs()[0].runs[1].text, 'secret');
+  assert.equal(doc.getParagraphs()[0].runs[1].revisions[0].kind, 'insertion');
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:ins w:id="1" w:author="Alice"><w:r><w:rPr><w:vanish\/><\/w:rPr><w:t>secret<\/w:t><\/w:r><\/w:ins>/);
 });
 
 test('readText includes read-only field results but not instructions', () => {

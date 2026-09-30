@@ -1431,9 +1431,17 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
         ...(conversion.truncated ? { truncated: true } : {}),
       };
     });
+  let hiddenRuns: Set<Element> | undefined;
+  runElements.forEach((run, runIndex) => {
+    const format = runs[runIndex]!.effective ?? runs[runIndex]!;
+    if (format.hidden === true || format.webHidden === true) (hiddenRuns ??= new Set()).add(run);
+  });
+  const text = textOf(paragraph);
+  const visibleText = hiddenRuns ? visibleTextOf(paragraph, hiddenRuns) : undefined;
   return {
     index,
-    text: textOf(paragraph),
+    text,
+    ...(visibleText !== undefined && visibleText !== text ? { visibleText } : {}),
     ...direct,
     runs,
     paragraphRevision: paragraphRevision ? {
@@ -1661,6 +1669,8 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
   for (const [key, tag] of [
     ['bold', 'b'],
     ['italic', 'i'],
+    ['hidden', 'vanish'],
+    ['webHidden', 'webHidden'],
     ['strike', 'strike'],
     ['doubleStrike', 'dstrike'],
     ['smallCaps', 'smallCaps'],
@@ -2282,7 +2292,7 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
-  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
+  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [
@@ -8314,6 +8324,46 @@ export class DocxDocument {
       }
       return false;
     });
+  }
+
+  setParagraphTextPreservingHiddenRuns(index: number, segments: string[]): void {
+    assertIndex(index);
+    if (!Array.isArray(segments)) throw new Error('segments must be an array of strings.');
+    if (segments.length > 1001) throw new Error('segments count exceeds 1001.');
+    segments.forEach((segment) => assertText(segment, 'segment'));
+    const paragraph = this.getParagraphs()[index];
+    if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
+    const hiddenRuns = paragraph.runs.map((run) => {
+      const format = run.effective ?? run;
+      return format.hidden === true || format.webHidden === true;
+    });
+    const hiddenCount = hiddenRuns.filter(Boolean).length;
+    if (segments.length !== hiddenCount + 1) throw new Error('segments must contain one text segment around each hidden run.');
+
+    const sourceSegments = [''];
+    const hiddenTexts: string[] = [];
+    paragraph.runs.forEach((run, runIndex) => {
+      if (hiddenRuns[runIndex]) {
+        hiddenTexts.push(run.text);
+        sourceSegments.push('');
+      } else {
+        sourceSegments[sourceSegments.length - 1] += run.text;
+      }
+    });
+    const sourceText = sourceSegments.flatMap((segment, segmentIndex) =>
+      segmentIndex < hiddenTexts.length ? [segment, hiddenTexts[segmentIndex]!] : [segment]).join('');
+    if (sourceText !== paragraph.text) throw new Error('Cannot safely map hidden runs in this paragraph.');
+
+    const operations: AgentRequest['operations'] = [];
+    const nextSegments = [...sourceSegments];
+    for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
+      if (nextSegments[segmentIndex] === segments[segmentIndex]) continue;
+      nextSegments[segmentIndex] = segments[segmentIndex]!;
+      const text = nextSegments.flatMap((segment, index) =>
+        index < hiddenTexts.length ? [segment, hiddenTexts[index]!] : [segment]).join('');
+      operations.push({ type: 'setParagraphText', index, text });
+    }
+    if (operations.length) this.applyOperations({ operations });
   }
 
   insertParagraph(text: string, before?: number): void {

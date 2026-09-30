@@ -350,6 +350,8 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
     style: wordValue(children(props, 'rStyle')[0]),
     bold: readOnOff(children(props, 'b')[0]),
     italic: readOnOff(children(props, 'i')[0]),
+    hidden: readOnOff(children(props, 'vanish')[0]),
+    webHidden: readOnOff(children(props, 'webHidden')[0]),
     underline: underline ? !['none', '0', 'false'].includes((underlineValue ?? 'single').toLowerCase()) : undefined,
     underlineStyle: underline && underlineValue && !['0', 'false', 'none'].includes(underlineValue.toLowerCase()) ? underlineValue : undefined,
     underlineColor: resolveUnderlineColor(theme, underline),

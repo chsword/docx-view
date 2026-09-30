@@ -79,7 +79,7 @@ console.log(reopened.getSnapshot());
 
 | API | 用途 |
 | --- | --- |
-| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、修订标记、样式清单、部件列表和修订号 |
+| `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、修订标记、样式清单、部件列表和修订号；`ParagraphInfo.text` 保留全部文字，隐藏 run 存在时另提供不含隐藏文字的 `visibleText` |
 | `getContentControls()` | 读取内容控件类型、标题 / 标签、锁定状态、占位符、列表项、数据绑定及正文段落索引 |
 | `setContentControlText(id, text)` / `setContentControlChecked(id, checked)` / `setContentControlProperties(id, patch)` / `removeContentControl(id, options?)` | 修改内容控件值或属性、移除控件包装；不提供新建内容控件 API |
 | `getStyles()` / `getStyle(id)` | 读取 `styles.xml` 中的段落 / 字符 / 表格 / 编号样式元数据 |
@@ -154,6 +154,7 @@ SmartArt 使用 Word 预渲染的 `diagrams/drawing*.xml` 形状绘制；缺少�
 **修订的读取**
 
 - 当段落中存在未接受的删除 (`w:del` / `w:moveFrom`) 时，其文本不会进入 `paragraph.text`，但对应 run 仍保留在 `runs[]` 中并以空字符串占位；删除内容请通过 `getRevisions().deletedText` 读取。
+- `ParagraphInfo.text` 始终包含 `w:vanish` / `w:webHidden` 文字，以保留 `setParagraphText(index, paragraph.text)` 往返；存在隐藏文字且可见内容不同时，`visibleText` 提供排除隐藏 run 后的文字。`w:vanish` / `w:webHidden` 只是显示属性，不是安全机制或访问控制。
 - `getRevisions({ kinds })` 对 `kind` 严格匹配：移动修订只会命中 `kinds: ['move']`，不再包含在 `insertion` / `deletion` 过滤中。
 - `getRevisions().author` 保留修订标记里的原始 `w:author`：缺失时为 `undefined`，空串为 `''`，仅空白字符串按原样保留；审阅者身份分桶时，`named` 会用 `author.trim()` 归一（例如 `' Alice '` 与 `'Alice'` 归为同一作者），`empty` / `blank` / `unattributed` 规则不变；`getRevisions({ authors })` / `getComments({ authors })` / `acceptAllRevisions({ authors })` / `rejectAllRevisions({ authors })` 使用同一归一规则。
 - `RevisionInfo.move.pairedId` 与接受/拒绝逻辑使用同一配对规则（优先范围标记，其次文档顺序配对同名 `moveFrom`/`moveTo`）。
@@ -230,6 +231,10 @@ editor.render();
 **组件成员**
 
 - 组件还提供 `selectedParagraph`、`selectedRange`、`setDocument(doc)`、`setReviewFilter(filter)`、`acceptRevision(id)`、`rejectRevision(id)`、`acceptAllRevisions(filter?)`、`rejectAllRevisions(filter?)`、`focusRevision(id)`、`focusNextRevision()`、`focusPreviousRevision()` 和 `destroy()`。
+
+**文字显示**
+
+- `showHiddenText` 缺省为 `false`，隐藏 run 默认不显示；启用后会以虚线下划线标记并显示。隐藏 run 在默认不显示时仍保留，并在编辑同段落时原样写回。
 
 **审阅筛选与视图**
 

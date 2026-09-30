@@ -66,6 +66,8 @@ const ON_OFF_FORMATS = [
     .map((key) => ({ key, tag: key, scope: 'paragraph' })),
   { key: 'rtl', tag: 'rtl', scope: 'run' },
   { key: 'complexScript', tag: 'cs', scope: 'run' },
+  { key: 'hidden', tag: 'vanish', scope: 'run' },
+  { key: 'webHidden', tag: 'webHidden', scope: 'run' },
   { key: 'bidiVisual', tag: 'bidiVisual', scope: 'table' },
 ];
 
@@ -806,6 +808,56 @@ test('format toggles explicitly disable formatting and retain OOXML property ord
   assert.throws(() => doc.formatRun(0, 0, { fontSize: NaN }), /fontSize/);
   assert.throws(() => doc.formatRun(0, 0, { color: 'url(evil)' }), /color/);
   assert.throws(() => doc.formatRun(0, 0, { bold: 'true' }), /boolean/);
+});
+
+test('paragraph text remains lossless while visibleText omits hidden runs', () => {
+  const doc = withBody(
+    '<w:p><w:r><w:t>before </w:t></w:r>' +
+    '<w:r><w:rPr><w:vanish/></w:rPr><w:t>hidden</w:t></w:r>' +
+    '<w:r><w:rPr><w:webHidden w:val="1"/></w:rPr><w:t>web</w:t></w:r>' +
+    '<w:r><w:rPr><w:webHidden w:val="0"/></w:rPr><w:t xml:space="preserve"> shown</w:t></w:r>' +
+    '<w:r><w:t> after</w:t></w:r></w:p>',
+  );
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'before hiddenweb shown after');
+  assert.equal(paragraph.visibleText, 'before  shown after');
+  assert.equal(paragraph.runs[1].hidden, true);
+  assert.equal(paragraph.runs[2].webHidden, true);
+  assert.equal(paragraph.runs[3].webHidden, false);
+
+  const ordinary = withBody('<w:p><w:r><w:t>ordinary</w:t></w:r></w:p>').getParagraphs()[0];
+  assert.equal('visibleText' in ordinary, false);
+});
+
+test('formatRun writes and clears hidden flags without losing explicit false', () => {
+  const doc = withBody('<w:p><w:r><w:t>text</w:t></w:r></w:p>');
+  doc.formatRun(0, 0, { hidden: true, webHidden: false });
+  let run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.hidden, true);
+  assert.equal(run.webHidden, false);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:vanish w:val="1"\/>/);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<w:webHidden w:val="0"\/>/);
+
+  doc.formatRun(0, 0, { hidden: null, webHidden: null });
+  run = doc.getParagraphs()[0].runs[0];
+  assert.equal(run.hidden, undefined);
+  assert.equal(run.webHidden, undefined);
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:(?:vanish|webHidden)\b/);
+  assert.doesNotThrow(() => doc.formatRun(0, 0, { hidden: run.hidden, webHidden: run.webHidden }));
+});
+
+test('explicit hidden off overrides hidden inherited from a run style', () => {
+  const doc = withStyles(
+    '<w:p><w:pPr><w:pStyle w:val="Hidden"/></w:pPr>' +
+    '<w:r><w:t>inherited</w:t></w:r>' +
+    '<w:r><w:rPr><w:vanish w:val="0"/></w:rPr><w:t>shown</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="paragraph" w:styleId="Hidden"><w:rPr><w:vanish/></w:rPr></w:style></w:styles>`,
+  );
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'inheritedshown');
+  assert.equal(paragraph.visibleText, 'shown');
+  assert.equal(paragraph.runs[0].effective.hidden, true);
+  assert.equal(paragraph.runs[1].effective.hidden, false);
 });
 
 test('formatRange updates only the selected character span and keeps surrounding run format', () => {
@@ -2546,7 +2598,7 @@ test('new format fields are in the operation schema and accepted by runtime vali
   const formatSchema = (name) => operations.find((operation) => operation.properties.type.const === name)
     .properties.format.properties;
   const paragraphFields = ['kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection'];
-  const runFields = ['rtl', 'complexScript'];
+  const runFields = ['rtl', 'complexScript', 'hidden', 'webHidden'];
   for (const key of paragraphFields) assert.ok(key in formatSchema('formatParagraph'));
   for (const key of runFields) {
     assert.ok(key in formatSchema('formatRun'));
@@ -2558,7 +2610,7 @@ test('new format fields are in the operation schema and accepted by runtime vali
   const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
   assert.doesNotThrow(() => doc.applyOperations({ operations: [
     { type: 'formatParagraph', index: 0, format: Object.fromEntries(paragraphFields.map((key) => [key, key === 'textDirection' ? 'tbRl' : false])) },
-    { type: 'formatRun', paragraph: 0, run: 0, format: { rtl: false, complexScript: true } },
+    { type: 'formatRun', paragraph: 0, run: 0, format: { rtl: false, complexScript: true, hidden: false, webHidden: true } },
     { type: 'formatTable', table: 0, format: { bidiVisual: false } },
   ] }));
 });

@@ -355,6 +355,7 @@ export interface DocxEditorOptions {
   onError?: (error: Error, context: { paragraph: number }) => void;
   showFormattingMarks?: boolean;
   showFieldShading?: boolean;
+  showHiddenText?: boolean;
   reviewFilter?: EditorReviewFilter;
   viewMode?: 'continuous' | 'paginated';
 }
@@ -486,7 +487,15 @@ export class DocxEditor {
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
-      const sanitized = sanitizeTextWithInfo(this.readText(entry.content));
+      const readSegments = this.readTextSegments(entry.content);
+      const rawSegments = readSegments.length > 1 ? readSegments : [this.readText(entry.content)];
+      const sanitizedSegments = rawSegments.map((segment) => sanitizeTextWithInfo(segment));
+      const sanitizedText = sanitizedSegments.map((segment) => segment.text).join('');
+      const sanitized = {
+        text: sanitizedText,
+        truncated: sanitizedSegments.some((segment) => segment.truncated),
+        truncatedAt: sanitizedSegments.find((segment) => segment.truncated)?.truncatedAt,
+      };
       if (sanitized.text === entry.text) {
         entry.failed = false;
         continue;
@@ -495,7 +504,8 @@ export class DocxEditor {
         this.reportError(new Error(`Paragraph text was truncated at ${sanitized.truncatedAt ?? sanitized.text.length} characters.`), index);
       }
       try {
-        this.document.setParagraphText(index, sanitized.text);
+        if (rawSegments.length > 1) this.document.setParagraphTextPreservingHiddenRuns(index, sanitizedSegments.map((segment) => segment.text));
+        else this.document.setParagraphText(index, sanitized.text);
         entry.text = sanitized.text;
         entry.failed = false;
         changed = true;
@@ -779,19 +789,40 @@ export class DocxEditor {
   }
 
   private readText(element: HTMLElement): string {
+    return this.readTextSegments(element).join('').replace(/\n$/, '');
+  }
+
+  private readTextSegments(element: HTMLElement): string[] {
+    const segments = [''];
     const walk = (node: Node): string => {
-      if (node.nodeType === 3) return node.textContent ?? '';
+      if (node.nodeType === 3) {
+        segments[segments.length - 1] += node.textContent ?? '';
+        return '';
+      }
       if (node.nodeType !== 1) return '';
       const current = node as HTMLElement;
       if (current.dataset.image || current.dataset.docxMark !== undefined) return '';
       if (current.dataset.docxDeleted !== undefined) return '';
+      if (current.dataset.docxHiddenPreserved !== undefined) {
+        segments.push('');
+        return '';
+      }
       if (current.contentEditable === 'false' && current.dataset.docxContent === undefined) return '';
-      if (current.tagName === 'BR') return '\n';
-      const text = Array.from(current.childNodes).map(walk).join('');
-      if (['DIV', 'P'].includes(current.tagName)) return text ? `${text}\n` : '';
+      if (current.tagName === 'BR') {
+        segments[segments.length - 1] += '\n';
+        return '\n';
+      }
+      const startLength = segments[segments.length - 1]!.length;
+      for (const child of Array.from(current.childNodes)) walk(child);
+      const text = segments[segments.length - 1]!.slice(startLength);
+      if (['DIV', 'P'].includes(current.tagName) && text) segments[segments.length - 1] += '\n';
       return text;
     };
-    return walk(element).replace(/\n$/, '');
+    walk(element);
+    if (segments[segments.length - 1]?.endsWith('\n')) {
+      segments[segments.length - 1] = segments[segments.length - 1]!.slice(0, -1);
+    }
+    return segments;
   }
 
   private twipsToPx(value: number | undefined): number | undefined {
@@ -1351,8 +1382,9 @@ export class DocxEditor {
       for (const info of math.filter(item => item.runOffset === run.index)) appendMath(info);
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
-      this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
-      if (run.noteReference) {
+      const hiddenRun = this.runIsHidden(run) && !this.options.showHiddenText;
+      if (!hiddenRun) this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
+      if (!hiddenRun && run.noteReference) {
         const marker = this.root.ownerDocument.createElement('sup');
         marker.className = 'docx-note-ref';
         marker.contentEditable = 'false';
@@ -1361,9 +1393,11 @@ export class DocxEditor {
         marker.setAttribute('aria-label', `${run.noteReference.kind} reference ${run.noteReference.marker}`);
         content.append(marker);
       }
-      for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
-      for (const shape of this.renderShapeInfos.filter((item) => item.paragraph === paragraph.index && item.run === run.index)) {
-        content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
+      if (!hiddenRun) {
+        for (const image of run.images ?? (run.image ? [run.image] : [])) content.append(this.makeImage(paragraph.index, image));
+        for (const shape of this.renderShapeInfos.filter((item) => item.paragraph === paragraph.index && item.run === run.index)) {
+          content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
+        }
       }
     }
     // 末尾公式 = 没有任何 run 的索引等于它的 runOffset。用 runs.length 判断会随分页切片变化，
@@ -1869,6 +1903,23 @@ export class DocxEditor {
     paragraphElement.append(marker);
   }
 
+  private runIsHidden(run: RunInfo): boolean {
+    const format = run.effective ?? run;
+    return format.hidden === true || format.webHidden === true;
+  }
+
+  private appendHiddenRunVisualization(parent: HTMLElement, run: RunInfo): void {
+    const marker = this.root.ownerDocument.createElement('span');
+    marker.className = 'docx-hidden-text';
+    marker.dataset.docxHidden = '1';
+    marker.dataset.docxHiddenPreserved = '1';
+    marker.contentEditable = 'false';
+    marker.textContent = run.text;
+    marker.style.display = 'none';
+    marker.setAttribute('aria-hidden', 'true');
+    parent.append(marker);
+  }
+
   private makeMark(text: string, label: string): HTMLElement {
     const mark = this.root.ownerDocument.createElement('span');
     mark.className = 'docx-mark';
@@ -1960,10 +2011,19 @@ export class DocxEditor {
     defaultTabStopTwips: number,
     currentLineOffsetPx: number,
   ): number {
+    const hidden = this.runIsHidden(run);
+    if (hidden && !this.options.showHiddenText) {
+      this.appendHiddenRunVisualization(paragraphElement, run);
+      return currentLineOffsetPx;
+    }
     const unsafe = run.hyperlink?.unsafe ?? false;
     const hasSafeLink = !!(run.hyperlink && !unsafe && (run.hyperlink.url || run.hyperlink.anchor));
     const runSpan = this.root.ownerDocument.createElement(hasSafeLink ? 'a' : 'span');
     runSpan.dataset.docxRun = String(run.index);
+    if (hidden) {
+      runSpan.dataset.docxHidden = '1';
+      runSpan.classList.add('docx-hidden-text');
+    }
     if (run.field) {
       runSpan.dataset.docxField = String(run.field.index);
       runSpan.dataset.docxFieldRole = run.field.role;
@@ -2018,6 +2078,12 @@ export class DocxEditor {
       const description = this.revisionAriaDescription(run.revisions);
       if (description) runSpan.setAttribute('aria-description', description);
       this.registerRevisionNode(run.revisions.map((revision) => revision.id), runSpan);
+    }
+    if (hidden) {
+      if (!runSpan.style.textDecoration?.includes('underline')) {
+        runSpan.style.textDecoration = [runSpan.style.textDecoration, 'underline'].filter(Boolean).join(' ');
+      }
+      runSpan.style.textDecorationStyle = 'dashed';
     }
     const segments = (run.field?.role === 'instruction' ? '' : run.text).split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
