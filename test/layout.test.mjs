@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, pageBoxPx, paginate, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -66,6 +66,18 @@ test('snaps line heights to a valid section document grid', () => {
     assert.equal(snapLineHeightPx(20, { ...grid, linePitch: 0 }), 20);
     assert.equal(snapLineHeightPx(20, { ...grid, linePitch: -300 }), 20);
   }
+});
+
+test('uses collapsed paragraph spacing and contextual spacing consistently', () => {
+  const first = paragraph(0, [10], { style: 'List', spacingAfter: 300, contextualSpacing: true });
+  const second = paragraph(1, [10], { style: 'List', spacingAfter: 300, contextualSpacing: true });
+  const different = paragraph(2, [10], { style: 'Body', spacingBefore: 100, spacingAfter: 0 });
+  assert.equal(paragraphSpacingPx(undefined, first).afterPx, 20);
+  assert.equal(paragraphSpacingPx(first, second).beforePx, 0);
+  assert.equal(paragraphSpacingPx(second, different).beforePx, 20);
+  const pages = paginate(blocks(first, second, different), [section({ pageHeight: 440 })], measurer,
+    { defaultTabStopTwips: 720 });
+  assert.deepEqual(pages.map((page) => page.items.filter((item) => item.type === 'line').map((item) => item.paragraph)), [[0, 1], [2]]);
 });
 
 test('paginates split paragraph lines using snapped heights', () => {

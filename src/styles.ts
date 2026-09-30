@@ -98,7 +98,11 @@ function normalizeHexOrAuto(value: string | undefined): string | undefined {
 
 function readOnOff(element: Element | undefined): boolean | undefined {
   if (!element) return undefined;
-  const value = (wordValue(element) ?? '1').toLowerCase();
+  return readOnOffValue(wordValue(element));
+}
+
+function readOnOffValue(raw: string | undefined): boolean {
+  const value = (raw ?? '1').toLowerCase();
   return ['0', 'false', 'off'].includes(value) ? false : true;
 }
 
@@ -317,6 +321,12 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
     indentHanging: readNumber(wordAttr(indent, 'hanging')),
     spacingBefore: readNumber(wordAttr(spacing, 'before')),
     spacingAfter: readNumber(wordAttr(spacing, 'after')),
+    spacingBeforeLines: readNumber(wordAttr(spacing, 'beforeLines')),
+    spacingAfterLines: readNumber(wordAttr(spacing, 'afterLines')),
+    spacingBeforeAuto: spacing ? readOnOffValue(wordAttr(spacing, 'beforeAutospacing')) : undefined,
+    spacingAfterAuto: spacing ? readOnOffValue(wordAttr(spacing, 'afterAutospacing')) : undefined,
+    contextualSpacing: readOnOff(children(props, 'contextualSpacing')[0]),
+    mirrorIndents: readOnOff(children(props, 'mirrorIndents')[0]),
     lineSpacing: readNumber(wordAttr(spacing, 'line')),
     lineSpacingRule: wordAttr(spacing, 'lineRule') as ParagraphFormat['lineSpacingRule'] | undefined,
     keepNext: readOnOff(children(props, 'keepNext')[0]),

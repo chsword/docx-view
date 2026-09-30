@@ -32,7 +32,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, pageBoxPx, paginate, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -279,13 +279,14 @@ export function deriveLineBoxes(rects: Array<{ top: number; height: number; star
   return lines.sort((a, b) => a.start - b.start).map(({ height, start, end }) => ({ heightPx: height, startOffset: start, endOffset: end }));
 }
 
-function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo): void {
+function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo): void {
   const effective = paragraph.effective ?? paragraph;
+  const spacing = paragraphSpacingPx(previous, { ...paragraph, ...effective });
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
   if (effective.indentLeft !== undefined && effective.indentLeft !== null) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
   if (effective.indentRight !== undefined && effective.indentRight !== null) element.style.marginRight = twipsToPoints(effective.indentRight)!;
-  if (effective.spacingBefore !== undefined && effective.spacingBefore !== null) element.style.marginTop = twipsToPoints(effective.spacingBefore)!;
-  if (effective.spacingAfter !== undefined && effective.spacingAfter !== null) element.style.marginBottom = twipsToPoints(effective.spacingAfter)!;
+  if (spacing.beforePx > 0) element.style.marginTop = `${spacing.beforePx}px`;
+  if (spacing.afterPx > 0) element.style.marginBottom = `${spacing.afterPx}px`;
   if ((effective.indentFirstLine !== undefined && effective.indentFirstLine !== null) ||
       (effective.indentHanging !== undefined && effective.indentHanging !== null)) {
     const indent = (effective.indentFirstLine ?? 0) - (effective.indentHanging ?? 0);
@@ -948,9 +949,11 @@ export class DocxEditor {
   }
 
   private appendBlocks(parent: Node, blocks: DocumentBlock[], defaultTabStopTwips: number, reviewContext: ReviewRenderContext): void {
+    let previous: ParagraphInfo | undefined;
     for (const block of blocks) {
       if (block.type === 'paragraph') {
-        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext));
+        parent.appendChild(this.makeParagraph(block.paragraph, defaultTabStopTwips, reviewContext, undefined, previous));
+        previous = block.paragraph;
       } else if (block.type === 'table') {
         const table = this.makeTable(block, block.rows.map((_, index) => index), defaultTabStopTwips, reviewContext);
         parent.appendChild(table);
@@ -1114,6 +1117,7 @@ export class DocxEditor {
       return column;
     });
     const renderedTables = new Set<string>();
+    const previousByColumn = new Map<number, ParagraphInfo>();
     for (const item of page.items) {
       const columnIndex = Math.min(item.column ?? 0, columns.length - 1);
       const column = columns[columnIndex]!;
@@ -1121,12 +1125,28 @@ export class DocxEditor {
         const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
         if (paragraph) {
           const lineHeightPx = snapLineHeightPx(item.line.heightPx, section.docGrid);
+          const firstLine = item.line.startOffset === 0;
+          const lastLine = item.line.endOffset >= paragraph.text.length;
+          const fragment = {
+            ...paragraph,
+            ...(firstLine ? {} : { spacingBefore: null }),
+            ...(lastLine ? {} : { spacingAfter: null }),
+            ...(paragraph.effective ? {
+              effective: {
+                ...paragraph.effective,
+                ...(firstLine ? {} : { spacingBefore: null }),
+                ...(lastLine ? {} : { spacingAfter: null }),
+              },
+            } : {}),
+          };
           column.append(this.makeParagraph(
-            this.sliceParagraph(paragraph, item.line.startOffset, item.line.endOffset),
+            this.sliceParagraph(fragment, item.line.startOffset, item.line.endOffset),
             defaultTabStopTwips,
             reviewContext,
             lineHeightPx,
+            firstLine ? previousByColumn.get(columnIndex) : undefined,
           ));
+          if (lastLine) previousByColumn.set(columnIndex, paragraph);
         }
       } else if (item.type === 'tableRow' && !renderedTables.has(`${columnIndex}:${item.table}`)) {
         const block = blocks[item.table];
@@ -1271,14 +1291,14 @@ export class DocxEditor {
   }
 
   private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext,
-    lineHeightPx?: number): HTMLParagraphElement {
+    lineHeightPx?: number, previous?: ParagraphInfo): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
     element.dataset.paragraph = String(paragraph.index);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
-    applyParagraphStyle(element, paragraph);
+    applyParagraphStyle(element, paragraph, previous);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;
       element.style.minHeight = `${lineHeightPx}px`;
