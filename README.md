@@ -139,7 +139,7 @@ console.log(reopened.getSnapshot());
 
 形状 SVG 渲染支持 `rect`、`roundRect`、`ellipse`、`triangle`、`rtTriangle`、`diamond`、`parallelogram`、`trapezoid`、`pentagon`、`hexagon`、`star5`、`rightArrow`、`leftArrow`、`upArrow`、`downArrow`、`leftRightArrow`、`line`、`straightConnector1`、`wedgeRectCallout` 和 `cloudCallout` 这 20 种 DrawingML 预设几何。其它预设以及含未支持指令的自定义几何以矩形绘制，但保留已读出的填充和线条；自定义路径目前处理首个 `a:path` 中的 `moveTo`、`lnTo`、`cubicBezTo` 与 `close`。支持实体色、线性渐变、透明度 `alpha`、线宽/虚线、旋转和翻转；未指定填充或线条的形状使用浅色填充与细描边作为可见兜底。形状样式只取 `wps:style` 的 `fillRef` / `lnRef` 颜色，忽略 `idx` 指向的主题格式表渐变和效果预设；`lumMod`、`lumOff` 等其他颜色变换不处理。
 
-图表 SVG 支持柱状 / 条形、折线、饼图、圆环、面积和散点图，数值只读取 `c:numCache` / `c:numLit` / `c:strCache`，不解析公式或内嵌工作簿，也不会联网读取 `c:externalData`。缺失缓存的序列和不支持的 3D、雷达、曲面、股价、气泡、趋势线、误差线图表退化为占位；组合图和次坐标轴中的序列会合并到同一主坐标轴绘制，因此是近似结果。类目轴绘制缓存中的类目标签；散点图使用缓存的 `c:xVal` 数值范围定位横坐标。图表填充和线条沿用 DrawingML 外观与主题色解析，未指定序列外观时使用当前文档主题的 `accent1`~`accent6`。
+图表 SVG 支持柱状 / 条形、折线、饼图、圆环、面积和散点图，数值只读取 `c:numCache` / `c:numLit` / `c:strCache`，不解析公式或内嵌工作簿，也不会联网读取 `c:externalData`。横向条形图将类目标签绘制在左侧、数值刻度绘制在底部。缺失缓存的序列和不支持的 3D、雷达、曲面、股价、气泡、趋势线、误差线图表退化为占位；组合图和次坐标轴中的序列会合并到同一主坐标轴绘制，因此是近似结果。类目轴绘制缓存中的类目标签；散点图使用缓存的 `c:xVal` 数值范围定位横坐标。图表填充和线条沿用 DrawingML 外观与主题色解析，未指定序列外观时使用当前文档主题的 `accent1`~`accent6`。
 
 VML 支持 `v:shape`、`v:rect`、`v:oval`、`v:line` 的基础填充色/线条，以及内置类型 1、2、3、4、5、202、203 的常见几何映射；`v:path` 不解析，退化为矩形并保留颜色。形状 `blipFill` 只显示包内可渲染图片；外部链接图片不联网，以浅色虚线框占位。
 

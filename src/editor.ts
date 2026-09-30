@@ -1619,9 +1619,15 @@ export class DocxEditor {
       return node;
     };
     const titleHeight = chart.title ? 18 : 4;
-    const left = chart.axes?.value?.visible === false ? 8 : 34;
-    const bottom = chart.axes?.category?.visible === false ? 8 : 24;
-    const plot = { x: left, y: titleHeight, width: Math.max(1, width - left - 8), height: Math.max(1, height - titleHeight - bottom) };
+    const horizontalBars = chart.kind === 'bar' && chart.barDirection === 'bar';
+    const left = (horizontalBars ? chart.axes?.category?.visible : chart.axes?.value?.visible) === false ? 8 : 34;
+    const bottom = (horizontalBars ? chart.axes?.value?.visible : chart.axes?.category?.visible) === false ? 8 : 24;
+    const pieLegendColumns = Math.max(1, Math.floor(Math.max(1, width - left - 8) / 70));
+    const pieLegendRows = chart.kind === 'pie' || chart.kind === 'doughnut'
+      ? Math.max(1, Math.ceil(chart.categories.length / pieLegendColumns))
+      : 1;
+    const pieLegendExtraHeight = (pieLegendRows - 1) * 12;
+    const plot = { x: left, y: titleHeight, width: Math.max(1, width - left - 8), height: Math.max(1, height - titleHeight - bottom - pieLegendExtraHeight) };
     if (chart.title) add('text', { x: String(width / 2), y: '13', 'text-anchor': 'middle', 'font-size': '12', fill: '#222' }).textContent = chart.title;
     const values = chart.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value)));
     const isPercentBars = chart.kind === 'bar' && chart.grouping === 'percentStacked';
@@ -1646,8 +1652,12 @@ export class DocxEditor {
       }
       chart.categories.forEach((category, index) => {
         if (!category) return;
-        add('text', { x: String(plot.x + index * 70 + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = category;
-        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none' });
+        const column = index % pieLegendColumns;
+        const row = Math.floor(index / pieLegendColumns);
+        const x = plot.x + column * 70;
+        const y = height - 4 - (pieLegendRows - 1 - row) * 12;
+        add('text', { x: String(x + 11), y: String(y), 'font-size': '9', fill: '#444' }).textContent = category;
+        add('rect', { x: String(x), y: String(y - 8), width: '8', height: '8', fill: chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none' });
       });
       return;
     }
@@ -1660,22 +1670,41 @@ export class DocxEditor {
     if (chart.kind !== 'scatter' && chart.axes?.category?.visible !== false) {
       chart.categories.forEach((category, index) => {
         if (!category) return;
-        const x = plot.x + (categoryCount > 1 ? index / (categoryCount - 1) : 0.5) * plot.width;
-        const label = add('text', { x: String(x), y: String(plot.y + plot.height + 14), 'text-anchor': 'middle', 'font-size': '9', fill: '#555', 'data-docx-chart-category': '1' });
+        const x = horizontalBars
+          ? plot.x - 4
+          : plot.x + (categoryCount > 1 ? index / (categoryCount - 1) : 0.5) * plot.width;
+        const y = horizontalBars
+          ? plot.y + (index + 0.5) / Math.max(1, categoryCount) * plot.height + 4
+          : plot.y + plot.height + 14;
+        const label = add('text', { x: String(x), y: String(y), 'text-anchor': horizontalBars ? 'end' : 'middle', 'font-size': '9', fill: '#555', 'data-docx-chart-category': '1' });
         label.textContent = category;
       });
     }
     if (chart.axes?.value?.majorGridlines) {
       for (const tick of scale.ticks) {
-        const y = plot.y + plot.height - valueToPx(tick, scale, plot.height);
-        add('line', { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(y), y2: String(y), stroke: '#e5e7eb', 'data-docx-chart-gridline': '1' });
+        if (horizontalBars) {
+          const x = plot.x + valueToPx(tick, scale, plot.width);
+          add('line', { x1: String(x), x2: String(x), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#e5e7eb', 'data-docx-chart-gridline': '1' });
+        } else {
+          const y = plot.y + plot.height - valueToPx(tick, scale, plot.height);
+          add('line', { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(y), y2: String(y), stroke: '#e5e7eb', 'data-docx-chart-gridline': '1' });
+        }
       }
     }
-    if (chart.axes?.value?.visible !== false) add('line', { x1: String(plot.x), x2: String(plot.x), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'value' });
-    if (chart.axes?.category?.visible !== false) add('line', { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(plot.y + plot.height), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'category' });
+    if (chart.axes?.value?.visible !== false) add('line', horizontalBars
+      ? { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(plot.y + plot.height), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'value' }
+      : { x1: String(plot.x), x2: String(plot.x), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'value' });
+    if (chart.axes?.category?.visible !== false) add('line', horizontalBars
+      ? { x1: String(plot.x), x2: String(plot.x), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'category' }
+      : { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(plot.y + plot.height), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'category' });
     for (const tick of scale.ticks) {
-      const y = plot.y + plot.height - valueToPx(tick, scale, plot.height);
-      const label = add('text', { x: String(plot.x - 4), y: String(y + 4), 'text-anchor': 'end', 'font-size': '9', fill: '#555', 'data-docx-chart-tick': '1' });
+      const x = horizontalBars
+        ? plot.x + valueToPx(tick, scale, plot.width)
+        : plot.x - 4;
+      const y = horizontalBars
+        ? plot.y + plot.height + 14
+        : plot.y + plot.height - valueToPx(tick, scale, plot.height) + 4;
+      const label = add('text', { x: String(x), y: String(y), 'text-anchor': horizontalBars ? 'middle' : 'end', 'font-size': '9', fill: '#555', 'data-docx-chart-tick': '1' });
       label.textContent = String(tick);
     }
     if (chart.kind === 'bar') {
