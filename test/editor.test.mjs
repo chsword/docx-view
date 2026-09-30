@@ -918,6 +918,36 @@ test('paginated page content renders row subsets in their assigned columns', () 
   assert.equal(body.childNodes[1].childNodes[0].rows[0].dataset.header, 'true');
 });
 
+test('paginated line numbers are decorative and do not enter paragraph text', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = { index: 0, text: 'x', runs: [{ index: 0, text: 'x', images: [] }], images: [] };
+  const page = {
+    index: 0, number: 1, section: 0, contentHeightPx: 10,
+    items: [{ type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 0, endOffset: 1 }, column: 0 }],
+  };
+  const section = {
+    pageWidth: 1500, pageHeight: 1500,
+    margins: { top: 0, right: 0, bottom: 0, left: 0 },
+    columns: { count: 1, space: 0, equalWidth: true },
+    lineNumbering: { distance: 360 },
+    verticalAlignment: 'bottom',
+  };
+  const body = editor.makePageContent(page, section, [{ type: 'paragraph', paragraph }], [paragraph], 720,
+    { deletedTextByRun: new Map(), revisionColors: new Map() }, [7]);
+  const renderedParagraph = body.childNodes[0].childNodes[0];
+  const marker = renderedParagraph.childNodes[renderedParagraph.childNodes.length - 1];
+  assert.equal(marker.dataset.docxLineNumber, '7');
+  assert.equal(marker.contentEditable, 'false');
+  assert.equal(body.style.alignContent, 'end');
+});
+
 test('makeTable renders only the requested row subset with row and column span datasets intact', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();

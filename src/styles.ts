@@ -121,7 +121,7 @@ function readShading(value: Element | undefined): Shading | undefined {
   };
 }
 
-function readBorderSide(value: Element | undefined): BorderSide | undefined {
+export function readBorderSide(value: Element | undefined): BorderSide | undefined {
   if (!value) return undefined;
   const size = readNumber(wordAttr(value, 'sz'));
   const space = readNumber(wordAttr(value, 'space'));

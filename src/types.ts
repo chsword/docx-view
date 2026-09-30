@@ -468,6 +468,21 @@ export interface SectionInfo {
     charSpace?: number;
   };
   pageNumbering?: { start?: number; format?: string };
+  lineNumbering?: {
+    countBy?: number;
+    start?: number;
+    distance?: number;
+    restart?: 'continuous' | 'newPage' | 'newSection';
+  };
+  pageBorders?: {
+    display?: 'allPages' | 'firstPage' | 'notFirstPage';
+    offsetFrom?: 'page' | 'text';
+    top?: BorderSide;
+    left?: BorderSide;
+    bottom?: BorderSide;
+    right?: BorderSide;
+  };
+  verticalAlignment?: 'top' | 'center' | 'both' | 'bottom';
   titlePage: boolean;
   headers: Partial<Record<'default' | 'first' | 'even', string>>;
   footers: Partial<Record<'default' | 'first' | 'even', string>>;
