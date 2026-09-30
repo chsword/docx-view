@@ -378,6 +378,45 @@ test('makeShape renders chart axes, ticks, and series paths', () => {
   assert.match(series.attributes.get('d'), /M .* M /);
 });
 
+test('makeShape renders category labels and uses cached scatter x values', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'scatter-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'scatter',
+      categories: [],
+      series: [{ values: [1, 2, 3], xValues: [1, 2, 100], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const path = svg.childNodes.find((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  const coordinates = path.attributes.get('d').match(/M ([\d.]+) [\d.]+ L ([\d.]+) [\d.]+ L ([\d.]+) [\d.]+/).slice(1).map(Number);
+  assert.ok(coordinates[1] - coordinates[0] < 10);
+  assert.ok(coordinates[2] - coordinates[1] > 200);
+
+  const categoryWrapper = editor.makeShape({
+    ...wrapper,
+    id: 'category-svg',
+    chart: {
+      kind: 'line',
+      categories: ['Q1', 'Q2'],
+      series: [{ values: [1, 2], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  assert.deepEqual(categoryWrapper.childNodes[0].childNodes.filter((node) => node.attributes?.get('data-docx-chart-category') === '1').map((node) => node.textContent), ['Q1', 'Q2']);
+});
+
 test('makeShape leaves external picture fills as a local SVG placeholder', () => {
   const editor = makeRunRenderEditor();
   let partReads = 0;

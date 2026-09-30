@@ -375,7 +375,7 @@ export interface ChartInfo {
   kind: 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'unsupported';
   title?: string;
   categories: string[];
-  series: Array<{ name?: string; values: Array<number | null>; fill?: ShapeInfo['fill']; line?: ShapeInfo['line'] }>;
+  series: Array<{ name?: string; values: Array<number | null>; xValues?: Array<number | null>; fill?: ShapeInfo['fill']; line?: ShapeInfo['line'] }>;
   barDirection?: 'col' | 'bar';
   grouping?: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
   legend?: { position: 'l' | 'r' | 't' | 'b' | 'tr' };

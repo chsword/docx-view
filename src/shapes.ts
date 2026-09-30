@@ -196,9 +196,13 @@ function readChartInfo(
     const cache = numRef && (direct(numRef, CHART_NS, 'numCache') ?? (numRef.localName === 'numLit' ? numRef : undefined));
     if (!cache) return [];
     const values = cacheValues(cache, true) as Array<number | null>;
+    const xContainer = localName === 'scatterChart' ? direct(ser, CHART_NS, 'xVal') : undefined;
+    const xRef = xContainer && (direct(xContainer, CHART_NS, 'numRef') ?? direct(xContainer, CHART_NS, 'numLit'));
+    const xCache = xRef && (direct(xRef, CHART_NS, 'numCache') ?? (xRef.localName === 'numLit' ? xRef : undefined));
+    const xValues = xCache ? cacheValues(xCache, true) as Array<number | null> : undefined;
     const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
     const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined : undefined;
-    return [{ name, values, ...chartSeriesAppearance(ser, index, theme, relationships) }];
+    return [{ name, values, ...(xValues ? { xValues } : {}), ...chartSeriesAppearance(ser, index, theme, relationships) }];
   }));
   const grouping = direct(chartType, CHART_NS, 'grouping')?.getAttribute('val') as ChartInfo['grouping'] | null;
   const barDirection = localName === 'barChart'
