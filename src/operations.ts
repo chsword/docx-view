@@ -24,7 +24,7 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
 }
 
 const RUN_FORMAT_FIELDS = [
-  'style', 'bold', 'italic', 'hidden', 'webHidden', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+  'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const;
@@ -79,7 +79,7 @@ export function assertInteger(value: unknown, name = 'value'): asserts value is 
 export function validateRunFormat(value: unknown): asserts value is RunFormat {
   object(value);
   keys(value, [
-    'style', 'bold', 'italic', 'hidden', 'webHidden', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+    'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
     'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
   ]);
@@ -87,6 +87,10 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
     if (key in value && value[key] !== null && value[key] !== undefined && typeof value[key] !== 'boolean') {
       throw new Error(`${key} must be boolean.`);
     }
+  }
+  if ('emphasisMark' in value && value.emphasisMark !== null && value.emphasisMark !== undefined &&
+      !['dot', 'comma', 'circle', 'underDot', 'none'].includes(String(value.emphasisMark))) {
+    throw new Error('emphasisMark must be dot, comma, circle, underDot or none.');
   }
   for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
     if (key in value) maybeNull(value[key] as string | null | undefined, (entry) => assertText(entry, key));
@@ -912,6 +916,7 @@ export const AGENT_OPERATION_SCHEMA = {
             italic: nullable({ type: 'boolean' }),
             hidden: nullable({ type: 'boolean' }),
             webHidden: nullable({ type: 'boolean' }),
+            emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
             underline: nullable({ type: 'boolean' }),
             underlineStyle: nullable(text),
             underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
@@ -939,6 +944,7 @@ export const AGENT_OPERATION_SCHEMA = {
               italic: nullable({ type: 'boolean' }),
               hidden: nullable({ type: 'boolean' }),
               webHidden: nullable({ type: 'boolean' }),
+              emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
               underline: nullable({ type: 'boolean' }),
               underlineStyle: nullable(text),
               underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
@@ -972,6 +978,7 @@ export const AGENT_OPERATION_SCHEMA = {
               italic: nullable({ type: 'boolean' }),
               hidden: nullable({ type: 'boolean' }),
               webHidden: nullable({ type: 'boolean' }),
+              emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
               underline: nullable({ type: 'boolean' }),
               underlineStyle: nullable(text),
               underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),

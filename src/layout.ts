@@ -50,6 +50,16 @@ export interface PageBox {
 
 const TWIPS_TO_PX = 96 / 1440;
 
+export function snapLineHeightPx(naturalHeightPx: number, docGrid: SectionInfo['docGrid']): number {
+  if (!docGrid || !['lines', 'linesAndChars', 'snapToChars'].includes(docGrid.type) ||
+      !Number.isFinite(docGrid.linePitch) || (docGrid.linePitch ?? 0) <= 0) {
+    return naturalHeightPx;
+  }
+  const pitchPx = docGrid.linePitch! * TWIPS_TO_PX;
+  if (!Number.isFinite(pitchPx) || pitchPx <= 0 || !Number.isFinite(naturalHeightPx)) return naturalHeightPx;
+  return Math.ceil(Math.max(0, naturalHeightPx) / pitchPx) * pitchPx;
+}
+
 function usableSize(section: SectionInfo): { width: number; height: number } {
   const width = (section.pageWidth - section.margins.left - section.margins.right) * TWIPS_TO_PX;
   const height = (section.pageHeight - section.margins.top - section.margins.bottom) * TWIPS_TO_PX;
@@ -182,7 +192,8 @@ export function paginate(
       wrap: image.wrap as WrapExclusion['wrap'],
       carried: false,
     }));
-    return measurer.measureParagraph(paragraph, { widthPx: width(), wraps: [...carried, ...own] }, context) ?? [];
+    return (measurer.measureParagraph(paragraph, { widthPx: width(), wraps: [...carried, ...own] }, context) ?? [])
+      .map((line) => ({ ...line, heightPx: snapLineHeightPx(line.heightPx, sectionAt(sectionIndex).docGrid) }));
   };
   const updateWraps = (paragraph: ParagraphInfo, consumedHeight: number, includeOwn = true) => {
     const carried = (wrapsByColumn[currentColumn] ?? [])

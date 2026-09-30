@@ -1885,6 +1885,45 @@ test('getSections returns basic page setup from body sectPr', () => {
   assert.equal(section.type, 'nextPage');
   assert.equal(section.orientation, 'portrait');
   assert.equal(section.pageWidth, 11906);
+  assert.equal(Object.hasOwn(section, 'docGrid'), false);
+});
+
+test('reads all emphasis marks and docGrid fields, and formatRun can override and clear emphasis', async () => {
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:rStyle w:val="Emphasis"/><w:em w:val="none"/></w:rPr><w:t>A</w:t></w:r>' +
+    '<w:r><w:rPr><w:em w:val="dot"/></w:rPr><w:t>B</w:t></w:r>' +
+    '<w:r><w:rPr><w:em w:val="comma"/></w:rPr><w:t>C</w:t></w:r>' +
+    '<w:r><w:rPr><w:em w:val="circle"/></w:rPr><w:t>D</w:t></w:r>' +
+    '<w:r><w:rPr><w:em w:val="underDot"/></w:rPr><w:t>E</w:t></w:r>' +
+    '<w:r><w:t>F</w:t></w:r></w:p>' +
+    '<w:sectPr><w:docGrid w:type="linesAndChars" w:linePitch="312" w:charSpace="0"/></w:sectPr>',
+    `<w:styles xmlns:w="${WORD_NS}"><w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:em w:val="comma"/></w:rPr></w:style></w:styles>`,
+  );
+  const section = doc.getSection(0);
+  assert.deepEqual(section.docGrid, { type: 'linesAndChars', linePitch: 312, charSpace: 0 });
+  assert.deepEqual(doc.getParagraphs()[0].runs.slice(0, 5).map((run) => run.emphasisMark),
+    ['none', 'dot', 'comma', 'circle', 'underDot']);
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.emphasisMark, 'none');
+  assert.equal(doc.getParagraphs()[0].runs[1].effective.emphasisMark, 'dot');
+  assert.equal(doc.getParagraphs()[0].runs[5].emphasisMark, undefined);
+
+  doc.formatRun(0, 0, { emphasisMark: 'circle' });
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.emphasisMark, 'circle');
+  doc.formatRun(0, 0, { emphasisMark: null });
+  assert.equal(doc.getParagraphs()[0].runs[0].emphasisMark, undefined);
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.emphasisMark, 'comma');
+  doc.formatRun(0, 5, { emphasisMark: 'underDot' });
+  assert.equal(doc.getParagraphs()[0].runs[5].emphasisMark, 'underDot');
+  doc.formatRun(0, 5, { emphasisMark: null });
+  assert.equal(doc.getParagraphs()[0].runs[5].emphasisMark, undefined);
+
+  doc.setPageSetup(0, { pageWidth: 15000 });
+  assert.deepEqual(doc.getSection(0).docGrid, section.docGrid);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(reopened.getSection(0).docGrid, section.docGrid);
+  assert.deepEqual(reopened.getParagraphs()[0].runs.slice(1, 5).map((run) => run.emphasisMark),
+    ['dot', 'comma', 'circle', 'underDot']);
+  assert.match(reopened.getPartXml(reopened.mainDocumentPath), /w:docGrid w:type="linesAndChars" w:linePitch="312" w:charSpace="0"/);
 });
 
 test('getSections synthesizes an implicit default section when sectPr is missing', () => {
@@ -2598,7 +2637,7 @@ test('new format fields are in the operation schema and accepted by runtime vali
   const formatSchema = (name) => operations.find((operation) => operation.properties.type.const === name)
     .properties.format.properties;
   const paragraphFields = ['kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection'];
-  const runFields = ['rtl', 'complexScript', 'hidden', 'webHidden'];
+  const runFields = ['rtl', 'complexScript', 'hidden', 'webHidden', 'emphasisMark'];
   for (const key of paragraphFields) assert.ok(key in formatSchema('formatParagraph'));
   for (const key of runFields) {
     assert.ok(key in formatSchema('formatRun'));
@@ -2610,7 +2649,7 @@ test('new format fields are in the operation schema and accepted by runtime vali
   const doc = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
   assert.doesNotThrow(() => doc.applyOperations({ operations: [
     { type: 'formatParagraph', index: 0, format: Object.fromEntries(paragraphFields.map((key) => [key, key === 'textDirection' ? 'tbRl' : false])) },
-    { type: 'formatRun', paragraph: 0, run: 0, format: { rtl: false, complexScript: true, hidden: false, webHidden: true } },
+    { type: 'formatRun', paragraph: 0, run: 0, format: { rtl: false, complexScript: true, hidden: false, webHidden: true, emphasisMark: 'comma' } },
     { type: 'formatTable', table: 0, format: { bidiVisual: false } },
   ] }));
 });
@@ -4952,6 +4991,21 @@ test('tracked formatRun preserves the original previousFormat across repeated tr
   const revision = doc.getRevisions().filter((entry) => entry.kind === 'runFormatChange').at(-1);
   assert.deepEqual(revision?.previousFormat, { fontSize: 10 });
   assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /<w:rPrChange[^>]*><w:rPr><w:b w:val="1"\/>/);
+});
+
+test('tracked emphasis changes preserve explicit none on the second write and after reload', async () => {
+  const doc = trackedDoc('<w:p><w:r><w:rPr><w:em w:val="none"/></w:rPr><w:t>X</w:t></w:r></w:p>');
+  doc.formatRun(0, 0, { emphasisMark: 'dot' });
+  doc.formatRun(0, 0, { emphasisMark: 'comma' });
+  const revision = doc.getRevisions().find((entry) => entry.kind === 'runFormatChange');
+  assert.deepEqual(revision?.previousFormat, { emphasisMark: 'none' });
+  assert.equal(doc.getParagraphs()[0].runs[0].effective.emphasisMark, 'comma');
+
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  const reopenedRevision = reopened.getRevisions().find((entry) => entry.kind === 'runFormatChange');
+  assert.deepEqual(reopenedRevision?.previousFormat, { emphasisMark: 'none' });
+  reopened.rejectRevision(reopenedRevision.id);
+  assert.equal(reopened.getParagraphs()[0].runs[0].emphasisMark, 'none');
 });
 
 test('tracked formatRange writes rPrChange on the affected run slice', () => {

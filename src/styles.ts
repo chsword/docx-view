@@ -344,6 +344,13 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
   if (!props) return {};
   const underline = children(props, 'u')[0];
   const underlineValue = wordValue(underline);
+  const emphasis = children(props, 'em')[0];
+  const emphasisValue = (wordValue(emphasis) ?? 'dot').toLowerCase();
+  const emphasisMark: RunFormat['emphasisMark'] | undefined = emphasis
+    ? ['dot', 'comma', 'circle', 'underdot', 'none'].includes(emphasisValue)
+      ? emphasisValue === 'underdot' ? 'underDot' : emphasisValue as NonNullable<RunFormat['emphasisMark']>
+      : undefined
+    : undefined;
   const size = wordValue(children(props, 'sz')[0]) ?? wordValue(children(props, 'szCs')[0]);
   const fonts = children(props, 'rFonts')[0];
   return {
@@ -352,6 +359,7 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
     italic: readOnOff(children(props, 'i')[0]),
     hidden: readOnOff(children(props, 'vanish')[0]),
     webHidden: readOnOff(children(props, 'webHidden')[0]),
+    ...(emphasisMark !== undefined ? { emphasisMark } : {}),
     underline: underline ? !['none', '0', 'false'].includes((underlineValue ?? 'single').toLowerCase()) : undefined,
     underlineStyle: underline && underlineValue && !['0', 'false', 'none'].includes(underlineValue.toLowerCase()) ? underlineValue : undefined,
     underlineColor: resolveUnderlineColor(theme, underline),

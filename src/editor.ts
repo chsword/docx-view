@@ -32,7 +32,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, pageBoxPx, paginate } from './layout.js';
+import { columnWidthsPx, pageBoxPx, paginate, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -318,6 +318,10 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
   const effective = run.effective ?? run;
   if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
   if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
+  if (effective.emphasisMark && effective.emphasisMark !== 'none') {
+    span.style.textEmphasisStyle = effective.emphasisMark === 'comma' ? 'sesame' : effective.emphasisMark === 'underDot' ? 'dot' : effective.emphasisMark;
+    span.style.textEmphasisPosition = `${effective.emphasisMark === 'underDot' ? 'under' : 'over'} right`;
+  }
   const textDecorations = [
     effective.underline ? 'underline' : '',
     effective.strike || effective.doubleStrike ? 'line-through' : '',
@@ -1116,10 +1120,12 @@ export class DocxEditor {
       if (item.type === 'line') {
         const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
         if (paragraph) {
+          const lineHeightPx = snapLineHeightPx(item.line.heightPx, section.docGrid);
           column.append(this.makeParagraph(
             this.sliceParagraph(paragraph, item.line.startOffset, item.line.endOffset),
             defaultTabStopTwips,
             reviewContext,
+            lineHeightPx,
           ));
         }
       } else if (item.type === 'tableRow' && !renderedTables.has(`${columnIndex}:${item.table}`)) {
@@ -1264,7 +1270,8 @@ export class DocxEditor {
     this.render();
   }
 
-  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext): HTMLParagraphElement {
+  private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext,
+    lineHeightPx?: number): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
@@ -1272,6 +1279,10 @@ export class DocxEditor {
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
     applyParagraphStyle(element, paragraph);
+    if (lineHeightPx !== undefined) {
+      element.style.lineHeight = `${lineHeightPx}px`;
+      element.style.minHeight = `${lineHeightPx}px`;
+    }
     if (paragraph.style) element.dataset.style = paragraph.style;
     if (paragraph.numbering) {
       const marker = this.root.ownerDocument.createElement('span');
