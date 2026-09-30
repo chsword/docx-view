@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DOMParser } from '@xmldom/xmldom';
-import { ommlToLinearText, ommlToLinearTextWithInfo, ommlToMathMl, ommlToMathMlWithInfo } from '../dist/math.js';
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import {
+  linearToMathMl, mathMlToOmml, ommlToLinearText, ommlToLinearTextWithInfo, ommlToMathMl, ommlToMathMlWithInfo,
+} from '../dist/math.js';
 import { readFileSync } from 'node:fs';
 
 const ns = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
@@ -96,4 +98,93 @@ test('math converter has no browser DOM dependency', () => {
   assert.doesNotMatch(source, /\b(?:document|window)\b/);
   assert.deepEqual([...source.matchAll(/from ['"]([^'"]+)['"]/g)].map((match) => match[1]),
     ['@xmldom/xmldom', './types.js']);
+});
+
+test('MathML-to-OMML round trips every structure emitted by the reader', () => {
+  const cases = [
+    ['token', '<m:r><m:t>x</m:t></m:r>'],
+    ['row', '<m:box><m:r><m:t>x</m:t></m:r><m:r><m:t>+</m:t></m:r><m:r><m:t>y</m:t></m:r></m:box>'],
+    ['fraction', '<m:f><m:num><m:r><m:t>x</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f>'],
+    ['no-bar fraction', '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num><m:r><m:t>x</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f>'],
+    ['superscript', '<m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>'],
+    ['subscript', '<m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>i</m:t></m:r></m:sub></m:sSub>'],
+    ['subscript and superscript', '<m:sSubSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>i</m:t></m:r></m:sub><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSubSup>'],
+    ['square root', '<m:rad><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad>'],
+    ['indexed root', '<m:rad><m:deg><m:r><m:t>3</m:t></m:r></m:deg><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad>'],
+    ['n-ary limits', '<m:nary><m:sub><m:r><m:t>i</m:t></m:r></m:sub><m:sup><m:r><m:t>n</m:t></m:r></m:sup><m:e><m:r><m:t>x</m:t></m:r></m:e></m:nary>'],
+    ['delimiters', '<m:d><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:d>'],
+    ['lower limit', '<m:limLow><m:e><m:r><m:t>x</m:t></m:r></m:e><m:lim><m:r><m:t>i</m:t></m:r></m:lim></m:limLow>'],
+    ['upper limit', '<m:limUpp><m:e><m:r><m:t>x</m:t></m:r></m:e><m:lim><m:r><m:t>i</m:t></m:r></m:lim></m:limUpp>'],
+    ['accent', '<m:acc><m:accPr><m:chr m:val="^"/></m:accPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:acc>'],
+    ['matrix', '<m:m><m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr></m:m>'],
+    ['enclosure', '<m:borderBox><m:e><m:r><m:t>x</m:t></m:r></m:e></m:borderBox>'],
+    ['phantom', '<m:phant><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant>'],
+    ['prescripts', '<m:sPre><m:e><m:r><m:t>U</m:t></m:r></m:e><m:sub><m:r><m:t>92</m:t></m:r></m:sub><m:sup><m:r><m:t>238</m:t></m:r></m:sup></m:sPre>'],
+  ];
+  const owner = new DOMParser().parseFromString('<root/>', 'text/xml');
+  for (const [name, xml] of cases) {
+    const original = ommlToMathMl(parse(xml));
+    const written = mathMlToOmml(original, owner);
+    assert.deepEqual(ommlToMathMl(written), original, name);
+  }
+  const blockMath = {
+    tag: 'math', attrs: { display: 'block' },
+    children: [{ tag: 'mi', attrs: { mathvariant: 'italic' }, text: 'x' }],
+  };
+  assert.deepEqual(ommlToMathMl(mathMlToOmml(blockMath, owner)), blockMath);
+});
+
+test('linearToMathMl parses only the documented expression subset', () => {
+  const cases = [
+    ['a/b', 'mfrac', 'a/b'],
+    ['a^b', 'msup', 'a^b'],
+    ['a_b', 'msub', 'a_b'],
+    ['a_b^c', 'msubsup', 'a_b^c'],
+    ['√(a)', 'msqrt', '√(a)'],
+    ['sqrt(a)', 'msqrt', '√(a)'],
+    ['(a+b)', 'mrow', '(a+b)'],
+    ['∑_(a)^(b) c', 'mrow', '∑_(a)^(b)c'],
+    ['∫_(a)^(b) c', 'mrow', '∫_(a)^(b)c'],
+  ];
+  const owner = new DOMParser().parseFromString('<root/>', 'text/xml');
+  for (const [source, tag, expectedLinear] of cases) {
+    const tree = linearToMathMl(source);
+    assert.equal(tree.children[0].tag, tag, source);
+    assert.equal(ommlToLinearText(mathMlToOmml(tree, owner)), expectedLinear, source);
+  }
+  assert.throws(() => linearToMathMl('x \\\\alpha'), error =>
+    error.message.includes('a/b') && error.message.includes('∑_(a)^(b) c'));
+});
+
+test('MathML writes reject unknown tags, attributes, invalid text, and excessive depth', () => {
+  const owner = new DOMParser().parseFromString('<root/>', 'text/xml');
+  assert.throws(() => mathMlToOmml({ tag: 'script', text: 'x' }, owner), /Unsupported MathML tag/);
+  assert.throws(() => mathMlToOmml({ tag: 'mi', attrs: { onclick: 'alert(1)' }, text: 'x' }, owner),
+    /Unsupported MathML attribute/);
+  assert.throws(() => mathMlToOmml({ tag: 'math', text: 'ignored' }, owner), /cannot contain text/);
+  assert.throws(() => mathMlToOmml({ tag: 'mi', text: '\u0000' }, owner), /valid XML text/);
+  let nested = { tag: 'mi', text: 'x' };
+  for (let index = 0; index < 66; index++) nested = { tag: 'mrow', children: [nested] };
+  assert.throws(() => mathMlToOmml(nested, owner), /maximum depth/);
+  const injected = mathMlToOmml({ tag: 'mi', text: '<w:evil/>&' }, owner);
+  const xml = new XMLSerializer().serializeToString(injected);
+  assert.match(xml, /&lt;w:evil\/&gt;&amp;/);
+  assert.equal(injected.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'evil').length, 0);
+  const text = mathMlToOmml({ tag: 'mtext', text: '<w:evil/>&' }, owner);
+  assert.match(new XMLSerializer().serializeToString(text), /&lt;w:evil\/&gt;&amp;/);
+});
+
+test('generated OMML follows required child order and grouping containers', () => {
+  const owner = new DOMParser().parseFromString('<root/>', 'text/xml');
+  const childNames = (element) => Array.from(element.childNodes)
+    .filter((child) => child.nodeType === 1)
+    .map((child) => child.localName);
+  const row = mathMlToOmml({ tag: 'mrow', children: [{ tag: 'mi', text: 'x' }] }, owner);
+  assert.deepEqual(childNames(row.firstChild), ['e']);
+  const root = mathMlToOmml({ tag: 'mroot', children: [
+    { tag: 'mi', text: 'x' }, { tag: 'mn', text: '3' },
+  ] }, owner);
+  assert.deepEqual(childNames(root.firstChild), ['radPr', 'deg', 'e']);
+  const phantom = mathMlToOmml({ tag: 'mphantom', children: [{ tag: 'mi', text: 'x' }] }, owner);
+  assert.deepEqual(childNames(phantom.firstChild), ['e']);
 });

@@ -39,6 +39,7 @@ import { formatPageNumber, pageFieldResult } from './fields.js';
 export { formatPageNumber };
 
 export const MAX_FIELD_UPDATE_ITERATIONS = 5;
+const MATH_RENDER_INDEX = Symbol('mathRenderIndex');
 
 export function updateFieldsUntilStable(update: (iteration: number) => boolean,
   maxIterations = MAX_FIELD_UPDATE_ITERATIONS): { updated: boolean; iterations: number } {
@@ -1090,9 +1091,11 @@ export class DocxEditor {
       includedRunIndexes.add(run.index);
       return [{ ...run, text: run.text.slice(from - runStart, to - runStart) }];
     });
-    const math = paragraph.math?.filter((info) =>
+    const math = paragraph.math?.flatMap((info, index) =>
       includedRunIndexes.has(info.runOffset) ||
-      (end === paragraph.text.length && info.runOffset >= paragraph.runs.length));
+      (end === paragraph.text.length && info.runOffset >= paragraph.runs.length)
+        ? [{ ...info, [MATH_RENDER_INDEX]: (info as MathInfo & { [MATH_RENDER_INDEX]?: number })[MATH_RENDER_INDEX] ?? index }]
+        : []);
     return { ...paragraph, text: paragraph.text.slice(start, end), runs, ...(math ? { math } : {}) };
   }
 
@@ -1367,7 +1370,7 @@ export class DocxEditor {
     });
     let currentLineOffsetPx = 0;
     const math = paragraph.math ?? [];
-    const appendMath = (info: MathInfo): void => {
+    const appendMath = (info: MathInfo, index: number): void => {
       const ns = 'http://www.w3.org/1998/Math/MathML';
       const build = (node: MathMlNode): Element => {
         const element = this.root.ownerDocument.createElementNS(ns, node.tag);
@@ -1380,6 +1383,9 @@ export class DocxEditor {
       root.setAttribute('aria-label', info.linear);
       root.contentEditable = 'false';
       root.dataset.docxMath = '1';
+      root.dataset.docxMathIndex = String(
+        (info as MathInfo & { [MATH_RENDER_INDEX]?: number })[MATH_RENDER_INDEX] ?? index,
+      );
       if (info.display === 'block') root.style.display = 'block';
       const semantics = this.root.ownerDocument.createElementNS(ns, 'semantics');
       const annotation = this.root.ownerDocument.createElementNS(ns, 'annotation');
@@ -1390,7 +1396,7 @@ export class DocxEditor {
       content.append(root);
     };
     for (const run of paragraph.runs) {
-      for (const info of math.filter(item => item.runOffset === run.index)) appendMath(info);
+      math.forEach((info, index) => { if (info.runOffset === run.index) appendMath(info, index); });
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
       const hiddenRun = this.runIsHidden(run) && !this.options.showHiddenText;
@@ -1413,7 +1419,9 @@ export class DocxEditor {
     }
     // 末尾公式 = 没有任何 run 的索引等于它的 runOffset。用 runs.length 判断会随分页切片变化，
     // 导致 runOffset 命中切片内某个 run 时这里再渲染一次。
-    for (const info of math.filter(item => !paragraph.runs.some(run => run.index === item.runOffset))) appendMath(info);
+    math.forEach((info, index) => {
+      if (!paragraph.runs.some(run => run.index === info.runOffset)) appendMath(info, index);
+    });
 
     if (!paragraph.runs.length && !math.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));

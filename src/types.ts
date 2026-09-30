@@ -157,6 +157,18 @@ export interface MathMlNode {
   text?: string;
 }
 
+export function assertText(text: unknown, name = 'text'): asserts text is string {
+  if (typeof text !== 'string' || text.length > 1_000_000 ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u.test(text) ||
+      /[\ud800-\udfff]/u.test(text)) {
+    throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
+  }
+}
+
+export type MathSource =
+  | { mathMl: MathMlNode }
+  | { linear: string };
+
 export interface MathInfo {
   runOffset: number;
   display: 'inline' | 'block';

@@ -2271,6 +2271,75 @@ test('insertField writes a complex field and rejects external-resource fields', 
   assert.throws(() => doc.insertField(0, ' INCLUDETEXT x '), /not allowed/);
 });
 
+test('math APIs insert at run offsets, default to paragraph end, and preserve text', async () => {
+  const doc = withBody('<w:p><w:r><w:t>A</w:t></w:r><w:r><w:t>B</w:t></w:r></w:p>');
+  doc.insertMath(0, { linear: 'a/b' }, { runOffset: 1, display: 'block' });
+  doc.insertMath(0, { mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'x' }] } });
+  const paragraph = doc.getParagraphs()[0];
+  assert.equal(paragraph.text, 'AB');
+  assert.deepEqual(paragraph.runs.map((run) => run.text), ['A', 'B']);
+  assert.deepEqual(paragraph.math.map(({ runOffset, display, linear }) => ({ runOffset, display, linear })), [
+    { runOffset: 1, display: 'block', linear: 'a/b' },
+    { runOffset: 2, display: 'inline', linear: 'x' },
+  ]);
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /<m:oMathPara(?:\s|>)/);
+  assert.throws(() => doc.insertMath(0, { linear: 'x \\\\alpha' }), /Unsupported linear math/);
+});
+
+test('setMath changes only the indexed formula and all math writes support undo and redo', async () => {
+  const doc = withBody(
+    '<w:p><w:r><w:t>A</w:t></w:r>' +
+    '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>x</m:t></m:r></m:oMath>' +
+    '<w:r><w:t>B</w:t></w:r>' +
+    '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>y</m:t></m:r></m:oMath></w:p>',
+  );
+  const runs = () => doc.getParagraphs()[0].runs.map((run) => run.text);
+  assert.deepEqual(runs(), ['A', 'B']);
+  doc.setMath(0, 0, { linear: 'c^2' });
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['c^2', 'y']);
+  assert.deepEqual(runs(), ['A', 'B']);
+  doc.undo();
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['x', 'y']);
+  doc.redo();
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['c^2', 'y']);
+
+  doc.deleteMath(0, 1);
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['c^2']);
+  assert.equal(doc.getParagraphs()[0].text, 'AB');
+  doc.undo();
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['c^2', 'y']);
+  doc.redo();
+  assert.deepEqual(doc.getParagraphs()[0].math.map((math) => math.linear), ['c^2']);
+});
+
+test('math insertion undo/redo and save/reload preserve OMML structure', async () => {
+  const doc = withBody('<w:p><w:r><w:t>before</w:t></w:r></w:p>');
+  const source = { mathMl: { tag: 'math', children: [{
+    tag: 'mfrac',
+    children: [{ tag: 'mi', attrs: { mathvariant: 'italic' }, text: 'a' }, { tag: 'mn', text: '2' }],
+  }] } };
+  doc.insertMath(0, source);
+  const original = doc.getParagraphs()[0].math[0].mathMl;
+  doc.undo();
+  assert.equal(doc.getParagraphs()[0].math?.length ?? 0, 0);
+  doc.redo();
+  assert.deepEqual(doc.getParagraphs()[0].math[0].mathMl, original);
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(reopened.getParagraphs()[0].math[0].mathMl, original);
+});
+
+test('tracked math insert, replacement, and deletion use insertion/deletion wrappers', () => {
+  const doc = withBody('<w:p/>');
+  doc.setTrackChanges(true);
+  doc.setRevisionAuthor('Math Author');
+  doc.insertMath(0, { linear: 'x' });
+  doc.setMath(0, 0, { linear: 'y' });
+  doc.deleteMath(0, 1);
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:ins[^>]*w:author="Math Author"/);
+  assert.match(xml, /<w:del[^>]*w:author="Math Author"/);
+});
+
 test('field enumeration excludes textbox fields and keeps paragraph indices aligned', () => {
   const doc = withBody(
     `<w:p><w:r><w:pict><w:txbxContent><w:p><w:fldSimple w:instr=" SEQ 框内 "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p></w:txbxContent></w:pict></w:r></w:p>` +

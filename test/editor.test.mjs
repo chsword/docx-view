@@ -749,9 +749,42 @@ test('makeParagraph renders a math-only paragraph as MathML', () => {
   const rendered = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
   const math = rendered.childNodes[0].childNodes.find((node) => node.dataset?.docxMath === '1');
   assert.ok(math);
+  assert.equal(math.dataset.docxMathIndex, '0');
   assert.equal(math.tagName, 'MATH');
   assert.equal(math.attributes.get('display'), 'block');
   assert.equal(math.childNodes[0].tagName, 'MI');
+});
+
+test('inserted math renders with its paragraph-scoped index, including paginated slices', () => {
+  const document = DocxDocument.create();
+  document.insertMath(0, { linear: 'x' });
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = document;
+  editor.renderShapeInfos = [];
+  const paragraph = document.getParagraphs()[0];
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const rendered = editor.makeParagraph(paragraph, 720, reviewContext);
+  const math = rendered.childNodes[0].childNodes.find((node) => node.dataset?.docxMath === '1');
+  assert.equal(math.dataset.docxMathIndex, '0');
+
+  const multiple = {
+    ...paragraph,
+    text: 'AB',
+    runs: [{ index: 0, text: 'A' }, { index: 1, text: 'B' }],
+    math: [
+      { runOffset: 0, display: 'inline', linear: 'x', mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'x' }] } },
+      { runOffset: 1, display: 'inline', linear: 'y', mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'y' }] } },
+    ],
+  };
+  const slice = editor.sliceParagraph(multiple, 1, 2);
+  const sliceMath = editor.makeParagraph(slice, 720, reviewContext).childNodes[0].childNodes
+    .find((node) => node.dataset?.docxMath === '1');
+  assert.equal(sliceMath.dataset.docxMathIndex, '1');
 });
 
 test('makeParagraph renders preceding math scripts with MathML multiscripts', () => {
