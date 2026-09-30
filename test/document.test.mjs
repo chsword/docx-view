@@ -265,6 +265,46 @@ test('reads DrawingML and VML shape appearance, theme colors, transforms, and pa
   assert.equal(doc.getPartXml(doc.mainDocumentPath).includes('v:path'), true);
 });
 
+test('reads pre-rendered SmartArt diagram drawing children and preserves its parts', async () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="9"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds r:dm="rIdData" r:lo="rIdLayout" r:qs="rIdStyle" r:cs="rIdColors"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rIdDrawing" Type="http://schemas.microsoft.com/office/word/2008/relationships/diagramDrawing" Target="diagrams/drawing1.xml"/><Relationship Id="rIdData" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="diagrams/data1.xml"/><Relationship Id="rIdLayout" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramLayout" Target="diagrams/layout1.xml"/><Relationship Id="rIdStyle" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramQuickStyle" Target="diagrams/quickStyle1.xml"/><Relationship Id="rIdColors" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramColors" Target="diagrams/colors1.xml"/></Relationships>`), RELS_TYPE);
+  doc.addPart('word/diagrams/drawing1.xml', encoder.encode(`<dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" xmlns:a="${A_NS}"><dsp:sp><dsp:spPr><a:xfrm rot="60000"><a:off x="914400" y="457200"/><a:ext cx="1828800" cy="914400"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:schemeClr val="accent1"/></a:solidFill><a:ln w="12700"><a:solidFill><a:schemeClr val="accent2"/></a:solidFill></a:ln></dsp:spPr><dsp:txBody><a:p><a:r><a:t>Node one</a:t></a:r></a:p></dsp:txBody></dsp:sp><dsp:sp><dsp:spPr><a:xfrm><a:off x="3657600" y="457200"/><a:ext cx="1828800" cy="914400"/></a:xfrm><a:prstGeom prst="ellipse"/><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></dsp:spPr><dsp:txBody><a:p><a:r><a:t>Node two</a:t></a:r></a:p></dsp:txBody></dsp:sp></dsp:drawing>`), 'application/xml');
+  for (const name of ['data1.xml', 'layout1.xml', 'quickStyle1.xml', 'colors1.xml']) {
+    doc.addPart(`word/diagrams/${name}`, encoder.encode('<diagram/>'), 'application/xml');
+  }
+  const shape = doc.getShapes()[0];
+  assert.equal(shape.kind, 'smartArt');
+  assert.equal(shape.children.length, 2);
+  assert.deepEqual(shape.children.map(({ offsetXPx, offsetYPx, widthPx, heightPx }) => ({ offsetXPx, offsetYPx, widthPx, heightPx })), [
+    { offsetXPx: 96, offsetYPx: 48, widthPx: 192, heightPx: 96 },
+    { offsetXPx: 384, offsetYPx: 48, widthPx: 192, heightPx: 96 },
+  ]);
+  assert.equal(shape.children[0].fill.color, '#4472C4');
+  assert.equal(shape.children[0].text, 'Node one');
+  const reopened = await DocxDocument.load(await doc.toUint8Array());
+  assert.match(reopened.getPartXml('word/diagrams/drawing1.xml'), /Node one/);
+  assert.match(reopened.getPartXml('word/_rels/document.xml.rels'), /diagramDrawing/);
+});
+
+test('resolves each SmartArt instance to its own pre-rendered drawing', () => {
+  const doc = DocxDocument.create();
+  const diagramUri = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
+  const dspNs = 'http://schemas.microsoft.com/office/drawing/2008/diagram';
+  const body = (dm) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="${dm}"/><a:graphic><a:graphicData uri="${diagramUri}"><dgm:relIds r:dm="${dm}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+  doc.setPartXml(doc.mainDocumentPath, `<w:document xmlns:w="${WORD_NS}" xmlns:r="${OFFICE_REL_NS}" xmlns:wp="${WP_NS}" xmlns:a="${A_NS}" xmlns:dgm="${diagramUri}"><w:body>${body('rIdData1')}${body('rIdData2')}<w:sectPr/></w:body></w:document>`);
+  doc.addPart('word/_rels/document.xml.rels', encoder.encode(`<Relationships xmlns="${REL_NS}"><Relationship Id="rIdData1" Type="${OFFICE_REL_NS}/diagramData" Target="diagrams/data1.xml"/><Relationship Id="rIdData2" Type="${OFFICE_REL_NS}/diagramData" Target="diagrams/data2.xml"/><Relationship Id="rIdDraw1" Type="http://schemas.microsoft.com/office/2008/relationships/diagramDrawing" Target="diagrams/drawing1.xml"/><Relationship Id="rIdDraw2" Type="http://schemas.microsoft.com/office/2008/relationships/diagramDrawing" Target="diagrams/drawing2.xml"/></Relationships>`), RELS_TYPE);
+  const data = (id) => `<dgm:dataModel xmlns:dgm="${diagramUri}" xmlns:dsp="${dspNs}"><dgm:extLst><dsp:dataModelExt relId="${id}"/></dgm:extLst></dgm:dataModel>`;
+  const drawing = (color, text) => `<dsp:drawing xmlns:dsp="${dspNs}" xmlns:a="${A_NS}"><dsp:sp><dsp:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></dsp:spPr><dsp:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></dsp:txBody></dsp:sp></dsp:drawing>`;
+  doc.addPart('word/diagrams/data1.xml', encoder.encode(data('rIdDraw1')), 'application/xml');
+  doc.addPart('word/diagrams/data2.xml', encoder.encode(data('rIdDraw2')), 'application/xml');
+  doc.addPart('word/diagrams/drawing1.xml', encoder.encode(drawing('FF0000', 'First diagram')), 'application/xml');
+  doc.addPart('word/diagrams/drawing2.xml', encoder.encode(drawing('0000FF', 'Second diagram')), 'application/xml');
+  const shapes = doc.getShapes();
+  assert.deepEqual(shapes.map((shape) => shape.children?.[0]?.text), ['First diagram', 'Second diagram']);
+  assert.deepEqual(shapes.map((shape) => shape.children?.[0]?.fill?.color), ['#FF0000', '#0000FF']);
+});
+
 test('unmodified binary and XML parts survive an unrelated paragraph edit byte-for-byte', async () => {
   const doc = DocxDocument.create();
   const bytes = Uint8Array.from([0, 1, 2, 255, 23]);

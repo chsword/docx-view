@@ -356,6 +356,21 @@ export interface CustomGeometry {
   commands: CustomGeometryCommand[];
 }
 
+export interface ShapeChildInfo {
+  offsetXPx: number;
+  offsetYPx: number;
+  widthPx: number;
+  heightPx: number;
+  geometry?: string;
+  customGeometry?: CustomGeometry;
+  fill?: ShapeInfo['fill'];
+  line?: ShapeInfo['line'];
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  text?: string;
+}
+
 export interface ShapeInfo {
   id: string;
   paragraph: number;
@@ -384,6 +399,7 @@ export interface ShapeInfo {
   flipV?: boolean;
   adjustments?: Array<{ name: string; value: number }>;
   customGeometry?: CustomGeometry;
+  children?: ShapeChildInfo[];
 }
 
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';

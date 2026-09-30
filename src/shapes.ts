@@ -1,17 +1,22 @@
-import type { Element } from '@xmldom/xmldom';
+import type { Document, Element } from '@xmldom/xmldom';
 import { emuToPx, V_NS, WP_NS, A_NS, OFFICE_REL_NS } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
-import type { CustomGeometry, CustomGeometryCommand, ShapeInfo, ShapeKind } from './types.js';
+import type { CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
 import { MC_NS, selectAlternateContentBranch } from './xml.js';
 import { resolveDrawingColor, type ThemeInfo } from './styles.js';
 
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const WPS_NS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
 const DIAGRAM_NS = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
+const DSP_NS = 'http://schemas.microsoft.com/office/drawing/2008/diagram';
 const CHART_NS = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 const OLE_NS = 'urn:schemas-microsoft-com:office:office';
 
 function descendants(parent: Element, namespace: string, localName: string): Element[] {
+  return Array.from(parent.getElementsByTagNameNS(namespace, localName));
+}
+
+function descendantsInNamespace(parent: Document, namespace: string, localName: string): Element[] {
   return Array.from(parent.getElementsByTagNameNS(namespace, localName));
 }
 
@@ -51,6 +56,15 @@ function colorWithAlpha(theme: ThemeInfo, color: Element | undefined): string | 
   const opacity = Math.max(0, Math.min(1, Number(alpha) / 100000));
   const [r, g, b] = hex.match(/../g)!.map((channel: string) => parseInt(channel, 16));
   return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+function readShapeAppearance(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): Pick<ShapeInfo, 'fill' | 'line' | 'geometry' | 'customGeometry'> {
+  const presetGeom = first(spPr, A_NS, 'prstGeom');
+  const geometry = presetGeom?.getAttribute('prst') ?? undefined;
+  const fill = readDrawingFill(spPr, theme, relationships, style);
+  const line = readLine(spPr, theme, style);
+  const customGeometry = parseCustomGeometry(spPr);
+  return { ...(geometry ? { geometry } : {}), ...(fill ? { fill } : {}), ...(line ? { line } : {}), ...(customGeometry ? { customGeometry } : {}) };
 }
 
 function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): NonNullable<ShapeInfo['fill']> | undefined {
@@ -133,7 +147,73 @@ function parseCustomGeometry(spPr: Element | undefined): CustomGeometry | undefi
   return commands.length ? { width, height, commands } : undefined;
 }
 
-function readDrawingShape(node: Element, paragraph: number, run: number, ordinal: number, relationships: Map<string, RelationshipTarget>, theme: ThemeInfo): ShapeInfo[] {
+function readSmartArtChildren(
+  graphicData: Element | undefined,
+  relationships: Map<string, RelationshipTarget>,
+  theme: ThemeInfo,
+  getPartDocument?: (path: string) => Document | undefined,
+  getPartRelationships?: (path: string) => Map<string, RelationshipTarget>,
+): ShapeChildInfo[] | undefined {
+  if (!graphicData || !getPartDocument) return undefined;
+  const relIds = first(graphicData, DIAGRAM_NS, 'relIds');
+  const dataId = relIds?.getAttributeNS(OFFICE_REL_NS, 'dm') ?? relIds?.getAttribute('r:dm');
+  const dataPath = dataId ? relationships.get(dataId)?.partPath : undefined;
+  const dataDocument = dataPath ? getPartDocument(dataPath) : undefined;
+  const dataModelExt = dataDocument
+    ? descendantsInNamespace(dataDocument, DSP_NS, 'dataModelExt')[0]
+    : undefined;
+  const drawingId = dataModelExt?.getAttribute('relId')
+    ?? dataModelExt?.getAttributeNS(OFFICE_REL_NS, 'id')
+    ?? dataModelExt?.getAttribute('r:id');
+  const relation = (drawingId ? relationships.get(drawingId) : undefined)
+    ?? (dataPath ? [...(getPartRelationships?.(dataPath) ?? new Map()).values()].find((entry) =>
+      entry.type?.endsWith('/diagramDrawing')) : undefined)
+    ?? (() => {
+      const candidates = [...relationships.values()].filter((entry) =>
+        entry.type?.endsWith('/diagramDrawing') ||
+        entry.partPath && /diagramDrawing/i.test(entry.target ?? ''));
+      return candidates.length === 1 ? candidates[0] : undefined;
+    })();
+  const drawingPath = relation?.partPath;
+  if (!drawingPath) return undefined;
+  const drawing = getPartDocument(drawingPath);
+  if (!drawing) return undefined;
+  const drawingRelationships = getPartRelationships?.(drawingPath) ?? new Map();
+  const shapes = descendants(drawing.documentElement!, DSP_NS, 'sp');
+  if (!shapes.length) return undefined;
+  return shapes.map((shape) => {
+    const spPr = first(shape, DSP_NS, 'spPr');
+    const style = first(shape, DSP_NS, 'style');
+    const appearance = readShapeAppearance(spPr, theme, drawingRelationships, style);
+    const xfrm = first(spPr, A_NS, 'xfrm');
+    const off = first(xfrm, A_NS, 'off');
+    const ext = first(xfrm, A_NS, 'ext');
+    const text = descendants(shape, A_NS, 't').map((node) => node.textContent ?? '').join('');
+    const rotation = Number(xfrm?.getAttribute('rot'));
+    return {
+      offsetXPx: emuToPx(numberAttribute(off, 'x')),
+      offsetYPx: emuToPx(numberAttribute(off, 'y')),
+      widthPx: emuToPx(numberAttribute(ext, 'cx')),
+      heightPx: emuToPx(numberAttribute(ext, 'cy')),
+      ...appearance,
+      ...(Number.isFinite(rotation) && rotation ? { rotation: rotation / 60000 } : {}),
+      ...(xfrm?.getAttribute('flipH') === '1' || xfrm?.getAttribute('flipH') === 'true' ? { flipH: true } : {}),
+      ...(xfrm?.getAttribute('flipV') === '1' || xfrm?.getAttribute('flipV') === 'true' ? { flipV: true } : {}),
+      ...(text ? { text } : {}),
+    };
+  });
+}
+
+function readDrawingShape(
+  node: Element,
+  paragraph: number,
+  run: number,
+  ordinal: number,
+  relationships: Map<string, RelationshipTarget>,
+  theme: ThemeInfo,
+  getPartDocument?: (path: string) => Document | undefined,
+  getPartRelationships?: (path: string) => Map<string, RelationshipTarget>,
+): ShapeInfo[] {
   const result: ShapeInfo[] = [];
   const containers = [
     ...descendants(node, WP_NS, 'inline'),
@@ -151,10 +231,10 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
     const wps = first(source, WPS_NS, 'wsp');
     const spPr = first(wps, WPS_NS, 'spPr');
     const shapeStyle = first(wps, WPS_NS, 'style');
-    const presetGeom = first(spPr, A_NS, 'prstGeom');
-    const geometry = presetGeom?.getAttribute('prst') ?? undefined;
     const xfrm = first(spPr, A_NS, 'xfrm');
     const rotation = Number(xfrm?.getAttribute('rot'));
+    const appearance = readShapeAppearance(spPr, theme, relationships, shapeStyle);
+    const presetGeom = first(spPr, A_NS, 'prstGeom');
     const adjustments = first(presetGeom, A_NS, 'avLst');
     const parsedAdjustments = adjustments ? descendants(adjustments, A_NS, 'gd').flatMap((gd) => {
       const value = Number(gd.getAttribute('fmla')?.replace(/^val\s+/, ''));
@@ -168,8 +248,8 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
         : first(container, WP_NS, 'wrapTopAndBottom') ? 'topAndBottom' : undefined)
       : undefined;
     const id = docPr?.getAttribute('id') ?? `${paragraph}:${run}:${ordinal + result.length}`;
-    const fill = readDrawingFill(spPr, theme, relationships, shapeStyle);
-    const line = readLine(spPr, theme, shapeStyle);
+    const fill = appearance.fill;
+    const line = appearance.line;
     const hasAppearance = fill !== undefined || line !== undefined;
     result.push({
       id,
@@ -185,14 +265,17 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
       placement,
       wrap,
       hasTextContent,
-      geometry,
+      ...appearance,
       ...(fill ? { fill } : hasAppearance ? {} : { fill: { type: 'solid' as const, color: '#f7f9fd' } }),
       ...(line ? { line } : hasAppearance ? {} : { line: { color: '#c7d3e5', widthPx: 1 } }),
       ...(Number.isFinite(rotation) && rotation ? { rotation: rotation / 60000 } : {}),
       ...(xfrm?.getAttribute('flipH') === '1' || xfrm?.getAttribute('flipH') === 'true' ? { flipH: true } : {}),
       ...(xfrm?.getAttribute('flipV') === '1' || xfrm?.getAttribute('flipV') === 'true' ? { flipV: true } : {}),
       ...(parsedAdjustments.length ? { adjustments: parsedAdjustments } : {}),
-      ...(parseCustomGeometry(spPr) ? { customGeometry: parseCustomGeometry(spPr) } : {}),
+      ...(appearance.customGeometry ? { customGeometry: appearance.customGeometry } : {}),
+      ...(shapeKind(uri, hasTextContent) === 'smartArt'
+        ? { children: readSmartArtChildren(graphicData, relationships, theme, getPartDocument, getPartRelationships) }
+        : {}),
     });
   }
   return result;
@@ -242,7 +325,16 @@ function readVmlShape(node: Element, paragraph: number, run: number, ordinal: nu
   });
 }
 
-export function readRunShapes(runElement: Element, paragraph: number, run: number, sourcePartPath = '', relationships: Map<string, RelationshipTarget> = new Map(), theme: ThemeInfo = { colors: {}, fonts: {} }): ShapeInfo[] {
+export function readRunShapes(
+  runElement: Element,
+  paragraph: number,
+  run: number,
+  sourcePartPath = '',
+  relationships: Map<string, RelationshipTarget> = new Map(),
+  theme: ThemeInfo = { colors: {}, fonts: {} },
+  getPartDocument?: (path: string) => Document | undefined,
+  getPartRelationships?: (path: string) => Map<string, RelationshipTarget>,
+): ShapeInfo[] {
   const result: ShapeInfo[] = [];
   const elements: Element[] = [];
   for (let child = runElement.firstChild; child; child = child.nextSibling) {
@@ -261,7 +353,7 @@ export function readRunShapes(runElement: Element, paragraph: number, run: numbe
   }
   for (const element of elements) {
     if (element.namespaceURI === WORD_NS && element.localName === 'drawing') {
-      result.push(...readDrawingShape(element, paragraph, run, result.length, relationships, theme));
+      result.push(...readDrawingShape(element, paragraph, run, result.length, relationships, theme, getPartDocument, getPartRelationships));
     } else if (element.namespaceURI === WORD_NS && element.localName === 'pict') {
       result.push(...readVmlShape(element, paragraph, run, result.length));
     }

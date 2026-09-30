@@ -15,6 +15,7 @@ export const PT_PER_INCH = 72;
 
 export interface RelationshipTarget {
   id: string;
+  type?: string;
   mode?: string;
   target?: string;
   partPath?: string;
