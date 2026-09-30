@@ -1363,7 +1363,7 @@ export class DocxEditor {
     }
     for (const info of math.filter(item => item.runOffset >= paragraph.runs.length)) appendMath(info);
 
-    if (!paragraph.runs.length) content.textContent = paragraph.text;
+    if (!paragraph.runs.length && !math.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
     if (!this.measuring) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });

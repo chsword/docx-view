@@ -2,7 +2,7 @@
 
 一个面向浏览器和 AI Agent 的 TypeScript / JavaScript DOCX 编辑组件库，包含无需后端的静态 `examples`。
 
-**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、编号 / 项目符号列表、表格、常见图片、分节页面设置与页眉页脚编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。OMML 公式支持读取和原生 MathML 渲染（不支持 MathML 的浏览器使用线性文本注释作为兜底），不支持公式编辑。
+**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、编号 / 项目符号列表、表格、常见图片、分节页面设置与页眉页脚编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。OMML 公式支持读取和原生 MathML 渲染，并通过 API 提供线性文本兜底；不支持公式编辑。
 
 ## 运行
 

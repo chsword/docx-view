@@ -38,7 +38,7 @@ import {
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { readRunShapes, shapeTextElements } from './shapes.js';
-import { ommlToLinearText, ommlToMathMl } from './math.js';
+import { ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -1419,14 +1419,15 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
         if (child === element) break;
         if (child.namespaceURI === WORD_NS && child.localName === 'r') runOffset++;
       }
-      const mathMl = ommlToMathMl(element);
-      const linear = ommlToLinearText(element);
+      const conversion = ommlToMathMlWithInfo(element);
+      const mathMl = conversion.node;
+      const linear = ommlToLinearTextWithInfo(element).text;
       return {
         runOffset,
         display: element.localName === 'oMathPara' ? 'block' : 'inline',
         linear,
         mathMl,
-        ...(linear.includes('…') ? { truncated: true } : {}),
+        ...(conversion.truncated ? { truncated: true } : {}),
       };
     });
   return {
@@ -4216,8 +4217,10 @@ export class DocxDocument {
     validatePath(partPath);
     const document = this.getCachedPartDocument(partPath);
     const container = partPath === this.mainPath ? bodyOf(document) : blockContainerOf(document);
-    const paragraphs = descendants(container, 'p');
-    const main = partPath === this.mainPath ? new Map(mainParagraphElements(container).map((p, i) => [p, i])) : undefined;
+    const paragraphs = partPath === this.mainPath
+      ? mainParagraphElements(container)
+      : descendants(container, 'p');
+    const main = partPath === this.mainPath ? new Map(paragraphs.map((p, i) => [p, i])) : undefined;
     const result: Array<MathInfo & { paragraph: number }> = [];
     for (const [fallbackIndex, paragraph] of paragraphs.entries()) {
       const paragraphIndex = main?.get(paragraph) ?? fallbackIndex;
@@ -4228,14 +4231,15 @@ export class DocxDocument {
             if (child === element) break;
             if (child.namespaceURI === WORD_NS && child.localName === 'r') runOffset++;
           }
-          const linear = ommlToLinearText(element);
+          const conversion = ommlToMathMlWithInfo(element);
+          const linear = ommlToLinearTextWithInfo(element).text;
           result.push({
             paragraph: paragraphIndex,
             runOffset: Math.min(runOffset, runs.length),
             display: element.localName === 'oMathPara' ? 'block' : 'inline',
             linear,
-            mathMl: ommlToMathMl(element),
-            ...(linear.includes('…') ? { truncated: true } : {}),
+            mathMl: conversion.node,
+            ...(conversion.truncated ? { truncated: true } : {}),
           });
         });
     }

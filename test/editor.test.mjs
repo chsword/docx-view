@@ -574,6 +574,35 @@ test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
   assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
 });
 
+test('makeParagraph renders a math-only paragraph as MathML', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = {
+    index: 0,
+    text: '',
+    runs: [],
+    images: [],
+    math: [{
+      runOffset: 0,
+      display: 'block',
+      linear: 'x+1',
+      mathMl: { tag: 'math', attrs: { display: 'block' }, children: [{ tag: 'mi', text: 'x' }] },
+    }],
+  };
+  const rendered = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const math = rendered.childNodes[0].childNodes.find((node) => node.dataset?.docxMath === '1');
+  assert.ok(math);
+  assert.equal(math.tagName, 'MATH');
+  assert.equal(math.attributes.get('display'), 'block');
+  assert.equal(math.childNodes[0].tagName, 'MI');
+});
+
 test('paginated page content renders row subsets in their assigned columns', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();
