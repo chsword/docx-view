@@ -93,7 +93,7 @@ console.log(reopened.getSnapshot());
 
 分页与连续视图使用同一套段落间距计算：相邻段落的 `before` / `after` 取较大值（首段的 `before` 和末段的 `after` 仍保留）。`contextualSpacing` 在相邻段落样式相同处抑制该间距；`beforeLines` / `afterLines` 和 `autospacing` 会无损读取并写回，但当前不参与排版（行单位需要实际行高，autospacing 的 Word 算法也不在布局度量器中）。
 
-`getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
+`getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
 | `getNumberingDefinitions()` | 读取 `word/numbering.xml` 中已解析的编号定义 |
 | `setParagraphNumbering(index, numId, level?)` | 为段落绑定指定编号定义与级别（默认 0） |
 | `clearParagraphNumbering(index)` | 清除段落上的直接编号绑定 |

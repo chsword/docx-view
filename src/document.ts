@@ -3742,7 +3742,7 @@ export class DocxDocument {
     let themeRoot: Element | undefined;
     try { stylesRoot = stylesPath ? this.getCachedPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
     try { themeRoot = themePath ? this.getCachedPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
-    const context = parseStyles(stylesRoot, themeRoot);
+    const context = parseStyles(stylesRoot, themeRoot, this.getCompatibilitySettings());
     this.caches.stylesCache = { revision: this.revision, context };
     return context;
   }

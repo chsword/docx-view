@@ -1,4 +1,5 @@
 import type {
+  CompatibilitySettings,
   DocumentBlock,
   ImageInfo,
   ParagraphInfo,
@@ -8,6 +9,7 @@ import type {
 
 export interface MeasureContext {
   defaultTabStopTwips: number;
+  compatibilitySettings?: CompatibilitySettings;
 }
 
 export interface LineBox {
@@ -54,18 +56,24 @@ const TWIPS_TO_PX = 96 / 1440;
 export function paragraphSpacingPx(
   previous: ParagraphInfo | undefined,
   current: ParagraphInfo,
+  compatibilitySettings?: CompatibilitySettings,
 ): { beforePx: number; afterPx: number } {
   const format = current.effective ?? current;
   const previousFormat = previous?.effective ?? previous;
-  const before = format.spacingBeforeAuto ? 0 : Math.max(0, format.spacingBefore ?? 0) * TWIPS_TO_PX;
-  const after = format.spacingAfterAuto ? 0 : Math.max(0, format.spacingAfter ?? 0) * TWIPS_TO_PX;
-  const previousAfter = previousFormat?.spacingAfterAuto
+  const autoSpacingDisabled = compatibilitySettings?.doNotUseHTMLParagraphAutoSpacing === true;
+  const before = format.spacingBeforeAuto && !autoSpacingDisabled ? 0 : Math.max(0, format.spacingBefore ?? 0) * TWIPS_TO_PX;
+  const after = format.spacingAfterAuto && !autoSpacingDisabled ? 0 : Math.max(0, format.spacingAfter ?? 0) * TWIPS_TO_PX;
+  const previousAfter = previousFormat?.spacingAfterAuto && !autoSpacingDisabled
     ? 0 : Math.max(0, previousFormat?.spacingAfter ?? 0) * TWIPS_TO_PX;
   const sameStyle = previous !== undefined && previousFormat?.style === format.style;
   return {
     beforePx: sameStyle && format.contextualSpacing ? before : Math.max(previousAfter, before),
     afterPx: after,
   };
+}
+
+export function effectiveKinsoku(value: boolean | null | undefined, compatibilitySettings?: CompatibilitySettings): boolean | undefined {
+  return compatibilitySettings?.doNotUseEastAsianBreakRules === true ? undefined : value ?? undefined;
 }
 
 export function snapLineHeightPx(naturalHeightPx: number, docGrid: SectionInfo['docGrid']): number {
@@ -279,7 +287,7 @@ export function paginate(
     }
     let lines = measureParagraph(paragraph);
     if (lines.length === 0) return;
-    const spacing = paragraphSpacingPx(previousParagraph, paragraph);
+    const spacing = paragraphSpacingPx(previousParagraph, paragraph, context.compatibilitySettings);
     const spacingContribution = spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx);
     let total = lines.reduce((sum, line) => sum + Math.max(0, line.heightPx), 0) + Math.max(0, spacingContribution);
     const keepWhole = paragraph.keepLines === true;
@@ -327,7 +335,7 @@ export function paginate(
     let measured = paragraphs.map((paragraph) => ({ paragraph, lines: measureParagraph(paragraph) }));
     let groupPrevious = previousParagraph;
     let total = measured.reduce((sum, item) => {
-      const spacing = paragraphSpacingPx(groupPrevious, item.paragraph);
+      const spacing = paragraphSpacingPx(groupPrevious, item.paragraph, context.compatibilitySettings);
       const nextParagraph = measured[measured.indexOf(item) + 1]?.paragraph ?? following;
       const contribution = spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx);
       groupPrevious = item.paragraph;
@@ -338,7 +346,7 @@ export function paginate(
       measured = paragraphs.map((paragraph) => ({ paragraph, lines: measureParagraph(paragraph) }));
       groupPrevious = previousParagraph;
       total = measured.reduce((sum, item) => {
-        const spacing = paragraphSpacingPx(groupPrevious, item.paragraph);
+        const spacing = paragraphSpacingPx(groupPrevious, item.paragraph, context.compatibilitySettings);
         const nextParagraph = measured[measured.indexOf(item) + 1]?.paragraph ?? following;
         const contribution = spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx);
         groupPrevious = item.paragraph;
@@ -353,7 +361,7 @@ export function paginate(
     }
     for (const item of measured) {
       const height = item.lines.reduce((sum, line) => sum + Math.max(0, line.heightPx), 0);
-      const spacing = paragraphSpacingPx(previousParagraph, item.paragraph);
+      const spacing = paragraphSpacingPx(previousParagraph, item.paragraph, context.compatibilitySettings);
       const nextParagraph = measured[measured.indexOf(item) + 1]?.paragraph ?? following;
       const contribution = Math.max(0, spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx));
       append(item.lines.map((line) => ({ type: 'line', paragraph: item.paragraph.index, line })), height + contribution);
@@ -389,6 +397,10 @@ export function paginate(
         append([{ type: 'tableRow', table: blockIndex, row: index, heightPx: height }], height);
       }
     };
+    const wrappedTable = context.compatibilitySettings?.doNotBreakWrappedTables === true &&
+      table.rows.some((row) => row.cells.some((cell) => cell.blocks.some((block) =>
+        block.type === 'paragraph' && block.paragraph.images.some((image) =>
+          image.placement === 'floating' && image.wrap !== undefined && image.wrap !== 'none'))));
     if (headerCount === table.rows.length) {
       appendHeaders();
       return;
@@ -396,7 +408,7 @@ export function paginate(
     let index = headerCount;
     let fragmentStarted = false;
     while (index < table.rows.length) {
-      let end = index + 1;
+      let end = wrappedTable ? table.rows.length : index + 1;
       for (let scan = index; scan < end; scan++) {
         const span = Math.max(1, ...table.rows[scan]!.cells.map((cell) => Math.max(1, cell.rowSpan)));
         end = Math.max(end, Math.min(table.rows.length, scan + span));
