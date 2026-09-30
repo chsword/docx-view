@@ -1898,6 +1898,105 @@ test('updateFields updates SEQ and DATE but preserves pagination and unsafe fiel
   assert.equal(doc.updateFields(), false);
 });
 
+test('updateFields leaves pagination field caches byte-for-byte unchanged without injected layout', () => {
+  const doc = withBody(
+    '<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>cached &amp; exact</w:t></w:r></w:fldSimple></w:p>' +
+    '<w:p><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>9</w:t></w:r></w:fldSimple></w:p>',
+  );
+  const before = doc.getPartXml(doc.mainDocumentPath);
+  const revision = doc.revision;
+  assert.equal(doc.updateFields(), false);
+  assert.equal(doc.getPartXml(doc.mainDocumentPath), before);
+  assert.equal(doc.revision, revision);
+});
+
+test('updateFields writes PAGE, NUMPAGES, and PAGEREF with section page numbering and is idempotent', async () => {
+  const doc = withBody(
+    '<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:bookmarkStart w:id="1" w:name="target"/>' +
+      '<w:r><w:t>Chapter</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>' +
+    '<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>old-page</w:t></w:r></w:fldSimple></w:p>' +
+    '<w:p><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>old-total</w:t></w:r></w:fldSimple></w:p>' +
+    '<w:p><w:fldSimple w:instr=" PAGEREF target "><w:r><w:t>old-ref</w:t></w:r></w:fldSimple></w:p>' +
+    '<w:p><w:fldSimple w:instr=" PAGEREF missing "><w:r><w:t>keep-me</w:t></w:r></w:fldSimple></w:p>',
+  );
+  doc.setPageSetup(0, { pageNumbering: { start: 5, format: 'upperRoman' } });
+  const pagination = {
+    pageCount: 2,
+    pageOfParagraph: paragraph => ({ 0: 0, 1: 1, 2: 1, 3: 0, 4: 1 })[paragraph],
+    numberOfPage: page => page + 5,
+  };
+  assert.equal(doc.updateFields({ pagination }), true);
+  assert.deepEqual(doc.getFields().map(field => field.result), ['VI', 'II', 'V', 'keep-me']);
+  const revision = doc.revision;
+  assert.equal(doc.updateFields({ pagination }), false);
+  assert.equal(doc.revision, revision);
+  const xmlBeforeReload = doc.getPartXml(doc.mainDocumentPath);
+  const reloaded = await DocxDocument.load(await doc.toUint8Array());
+  assert.deepEqual(reloaded.getFields().map(field => field.instruction), doc.getFields().map(field => field.instruction));
+  assert.match(reloaded.getPartXml(reloaded.mainDocumentPath), /PAGEREF target/);
+  assert.equal(reloaded.getPartXml(reloaded.mainDocumentPath), xmlBeforeReload);
+});
+
+test('updateFields writes PAGE results in header parts without changing field markers', () => {
+  const doc = DocxDocument.create();
+  doc.setPartXml(doc.mainDocumentPath,
+    `<w:document xmlns:w="${WORD_NS}"><w:body>` +
+    '<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>' +
+    '<w:sectPr/></w:body></w:document>');
+  const headerPath = doc.createHeader(0);
+  doc.setPartXml(headerPath,
+    `<w:hdr xmlns:w="${WORD_NS}"><w:p>` +
+    '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+    '<w:r><w:instrText> PAGE </w:instrText></w:r>' +
+    '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+    '<w:r><w:rPr><w:b/></w:rPr><w:t>1</w:t></w:r>' +
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+    '</w:p></w:hdr>');
+  assert.equal(doc.getFields().length, 1);
+  const before = doc.getPartXml(headerPath);
+  const revision = doc.revision;
+  assert.equal(doc.getFields(headerPath).length, 1);
+  assert.equal(doc.updateFields({
+    pagination: { pageCount: 3, pageOfParagraph: () => 0, numberOfPage: () => 7 },
+  }), true);
+  const after = doc.getPartXml(headerPath);
+  assert.match(after, /<w:t xml:space="preserve">7<\/w:t>/);
+  assert.equal((after.match(/w:fldCharType="begin"/g) ?? []).length, (before.match(/w:fldCharType="begin"/g) ?? []).length);
+  assert.equal((after.match(/w:fldCharType="end"/g) ?? []).length, (before.match(/w:fldCharType="end"/g) ?? []).length);
+  assert.equal((after.match(/PAGE/g) ?? []).length, (before.match(/PAGE/g) ?? []).length);
+  assert.equal(doc.revision, revision + 1);
+});
+
+test('updateFields builds a level-filtered hyperlinked TOC and skips unsupported switches', () => {
+  const doc = withBody(
+    '<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>Chapter one</w:t></w:r></w:p>' +
+    '<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:t>Section one</w:t></w:r></w:p>' +
+    '<w:p><w:pPr><w:outlineLvl w:val="2"/></w:pPr><w:r><w:t>Excluded level</w:t></w:r></w:p>' +
+    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText> TOC \\o &quot;1-2&quot; \\h </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>old toc</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>' +
+    '<w:p><w:fldSimple w:instr=" TOC \\o &quot;1-3&quot; \\z "><w:r><w:t>keep cached TOC</w:t></w:r></w:fldSimple></w:p>',
+  );
+  const pagination = {
+    pageCount: 3,
+    pageOfParagraph: paragraph => paragraph,
+    numberOfPage: page => page + 1,
+  };
+  assert.equal(doc.updateFields({ pagination }), true);
+  const fields = doc.getFields();
+  assert.equal(fields[0].result, 'Chapter one\t1\nSection one\t2');
+  assert.equal(fields[1].result, 'keep cached TOC');
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:hyperlink w:anchor="_Toc1">/);
+  assert.match(xml, /<w:hyperlink w:anchor="_Toc2">/);
+  assert.equal(fields[0].result.includes('Excluded level'), false);
+  assert.equal((xml.match(/w:bookmarkStart/g) ?? []).length, 2);
+  const revision = doc.revision;
+  assert.equal(doc.updateFields({ pagination }), false);
+  assert.equal(doc.revision, revision);
+});
+
 test('updateFields resolves REF from a pre-update bookmark snapshot and is repeatable', () => {
   const doc = withBody(
     `<w:bookmarkStart w:id="1" w:name="锚点"/><w:p><w:r><w:t>被引用的文字</w:t></w:r></w:p><w:bookmarkEnd w:id="1"/>` +

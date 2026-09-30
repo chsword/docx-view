@@ -127,6 +127,7 @@ console.log(reopened.getSnapshot());
 | `getHeaderBlocks()` / `getFooterBlocks()` | 读取页眉页脚 block 结构（段落、表格等） |
 | `createHeader()` / `createFooter()` / `setHeaderText()` / `setFooterText()` | 创建并写入页眉页脚部件，自动维护 rels 与 content-types |
 | `insertPageNumberField(partPath, options)` | 在页眉/页脚部件写入 `PAGE` 或 `NUMPAGES` 域占位结构 |
+| `getFields(partPath?)` / `updateFields(options?)` | 按部件读取域；文档层可接收调用方提供的分页结果，写回 `PAGE` / `NUMPAGES` / `PAGEREF` 与受限的 `TOC` 域结果 |
 | `getDocumentProperties()` / `setDocumentProperties(patch)` | 读取和按字段更新 `docProps/core.xml` / `docProps/app.xml` 中的常用文档属性；缺失部件时自动补包级关系与 content-type，未知元素和未改字段原样保留 |
 | `getDocumentProtection()` / `setDocumentProtection(value)` | 读取和写入 `settings.xml` 中的 `w:documentProtection`（如只读 / 仅批注 / 仅修订 / 表单）；仅修改 `edit` / `enforcement`，保留已有 hash/salt 等密码相关属性 |
 | `getSettings()` / `setTrackChanges(enabled)` / `setRevisionAuthor(author)` | 读取常用文档设置（当前返回 `{ defaultTabStop, evenAndOddHeaders, trackChanges }`），显式开启/关闭 `w:trackChanges`（关闭时写 `w:val="0"`，不删除元素），并设置后续记录修订写入使用的作者名 |
@@ -135,6 +136,8 @@ console.log(reopened.getSnapshot());
 **索引与作用域**
 
 `getParagraphs()` 和 `getBlocks()` 只包含正文段落；文本框（`w:txbxContent`）里的段落属于独立的只读文字流，通过 `getShapeParagraphs(shapeId)` 访问，不占用正文段落下标。文本框与形状当前仅作降级显示（占位框/边框和可读文字），不是完整的形状、SmartArt 或图表渲染；因此这是一次有意的段落索引破坏性变更，正文按下标写入不会穿透到文本框内部。
+
+`getFields(partPath)` 的段落与 run 索引只在指定部件内有效；页眉、页脚的索引不能用于正文数组。`DocxDocument.updateFields({ pagination })` 接受由调用方计算的页数、段落页索引与显示页码映射，核心文档 API 不依赖浏览器排版。
 
 - 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。
 - 高层操作默认处理主文档，可通过页眉页脚 API 读写 `header*.xml` / `footer*.xml`；`getRevisions()`、`accept*`/`reject*`、`getReviewers()` 与 `DocxDocument.compare()` 当前都只作用于主文档。
@@ -306,11 +309,11 @@ console.log(tool, result.revision);
 
 ### 域（Fields）
 
-`getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 只重算安全且本 issue 支持的 `SEQ`、日期/时间、文档属性、`REF` 等域；分页域只保留缓存值。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
+`getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 重算安全的 `SEQ`、日期/时间、文档属性、`REF` 等域；提供 `pagination` 时也会写回 `PAGE`、`NUMPAGES` 和可解析到已存在书签的 `PAGEREF`，结果按所在节的页码格式化。页眉/页脚可用 `getFields(partPath)` 按部件读取，页码域也会随正文域一并写回。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
 
-域指令不会生成合成文本；因此没有缓存结果的 `PAGE` / `NUMPAGES` 域现在读作空字符串，而不是旧版的 `"1"` / `"?"`。真实页码要等分页能力（A4）落地后再提供。
+`TOC` 域仅实现 `\o "1-3"` 层级过滤与 `\h` 条目超链接；其他开关（包括 `\z`、`\u`）会保留缓存结果并跳过更新。`DocxEditor.updateFields()` 最多执行 5 轮「分页→更新域→重排」；达到上限时不报错，并保留最后一轮的结果。`INDEX` 域本期不更新，始终保留缓存结果。
 
-`getFields()` 与 `updateFields()` 只覆盖正文；文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
+域指令不会生成合成文本；没有缓存结果的 `PAGE` / `NUMPAGES` 域仍读作空字符串。文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
 编辑器中的域结果默认显示灰色底纹（可通过 `DocxEditorOptions.showFieldShading: false` 关闭），选区落在结果内时扩展到整个域结果。域指令不显示；域结果只读，域前后的普通文字仍可编辑。更新域请调用 `updateFields()` 或重新插入域。
 
 - 请求中的所有操作在副本上顺序执行；任一操作失败，原文档和修订号不变。

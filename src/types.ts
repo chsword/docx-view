@@ -188,6 +188,12 @@ export interface FieldInfo {
   nestedIn?: number;
 }
 
+export interface PaginationInfo {
+  pageCount: number;
+  pageOfParagraph: (paragraph: number) => number | undefined;
+  numberOfPage: (pageIndex: number) => number;
+}
+
 export interface BorderFormat {
   style?: string;
   size?: number;
