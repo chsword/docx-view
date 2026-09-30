@@ -6,6 +6,9 @@ import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
 import { fieldKindFromInstruction, NEVER_EVALUATE } from './fields.js';
+import { assertIndex } from './internal/elements.js';
+
+export { assertIndex } from './internal/elements.js';
 
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -63,12 +66,6 @@ function validateStyleApplyOptions(value: unknown): asserts value is { clearDire
   keys(value, ['clearDirectFormat']);
   if ('clearDirectFormat' in value && value.clearDirectFormat !== undefined && typeof value.clearDirectFormat !== 'boolean') {
     throw new Error('options.clearDirectFormat must be boolean.');
-  }
-}
-
-export function assertIndex(value: unknown): asserts value is number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new Error('Index/revision must be a non-negative safe integer.');
   }
 }
 
