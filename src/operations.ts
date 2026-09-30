@@ -29,7 +29,8 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
+  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
+  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
 ] as const;
 
 function validateTextRange(value: unknown): asserts value is { paragraph: number; start: number; end: number } {
@@ -78,9 +79,13 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   keys(value, [
     'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-    'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
+    'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
+    'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
   ]);
-  for (const key of ['bold', 'italic', 'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl', 'complexScript']) {
+  for (const key of [
+    'bold', 'italic', 'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl',
+    'complexScript', 'textOutline', 'textShadow', 'emboss', 'imprint',
+  ]) {
     if (key in value && value[key] !== null && value[key] !== undefined && typeof value[key] !== 'boolean') {
       throw new Error(`${key} must be boolean.`);
     }
@@ -92,6 +97,7 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
     if (key in value) maybeNull(value[key] as string | null | undefined, (entry) => assertText(entry, key));
   }
+  if ('textEffect' in value) maybeNull(value.textEffect as string | null | undefined, (entry) => assertText(entry, 'textEffect'));
   for (const key of ['color', 'underlineColor']) {
     if (key in value && value[key] !== null && (typeof value[key] !== 'string' || !/^[a-f\d]{6}$/i.test(value[key] as string))) {
       throw new Error(`${key} must be six hexadecimal digits without #.`);
@@ -108,6 +114,22 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   if ('characterSpacing' in value && value.characterSpacing !== null &&
       (!Number.isSafeInteger(value.characterSpacing as number) || Math.abs(value.characterSpacing as number) > 31680)) {
     throw new Error('characterSpacing must be a safe integer within OOXML spacing bounds.');
+  }
+  if ('position' in value && value.position !== null && value.position !== undefined &&
+      (!Number.isSafeInteger(value.position as number) || (value.position as number) < -32768 || (value.position as number) > 32767)) {
+    throw new Error('position must be a safe integer within OOXML bounds.');
+  }
+  if ('characterScale' in value && value.characterScale !== null && value.characterScale !== undefined &&
+      (!Number.isSafeInteger(value.characterScale as number) || (value.characterScale as number) < 1 || (value.characterScale as number) > 600)) {
+    throw new Error('characterScale must be an integer from 1 to 600.');
+  }
+  if ('kerning' in value && value.kerning !== null && value.kerning !== undefined &&
+      (!Number.isSafeInteger(value.kerning) || (value.kerning as number) < 0 || (value.kerning as number) > 32767)) {
+    throw new Error('kerning must be an unsigned half-point integer within OOXML bounds.');
+  }
+  if ('fitTextWidth' in value && value.fitTextWidth !== null && value.fitTextWidth !== undefined &&
+      (!Number.isSafeInteger(value.fitTextWidth) || (value.fitTextWidth as number) < 0 || (value.fitTextWidth as number) > 31680)) {
+    throw new Error('fitTextWidth must be an unsigned twips integer within OOXML bounds.');
   }
   if ('border' in value) maybeNull(value.border as BorderSide | null | undefined, (entry) => validateBorderSide(entry));
   if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry));
@@ -740,6 +762,8 @@ const index = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const integer = { type: 'integer', minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER };
 const signedInteger = { type: 'integer', minimum: -31680, maximum: 31680 };
 const unsignedTwips = { type: 'integer', minimum: 0, maximum: 31680 };
+const signedHalfPoints = { type: 'integer', minimum: -32768, maximum: 32767 };
+const halfPoints = { type: 'integer', minimum: 0, maximum: 32767 };
 const outlineLevel = { type: 'integer', minimum: 0, maximum: 9 };
 const nullable = <T extends Record<string, unknown>>(schema: T) => ({ anyOf: [schema, { type: 'null' }] });
 const shape = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
@@ -930,6 +954,15 @@ export const AGENT_OPERATION_SCHEMA = {
             allCaps: nullable({ type: 'boolean' }),
             highlight: nullable(text),
             characterSpacing: nullable(signedInteger),
+            position: nullable(signedHalfPoints),
+            characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
+            kerning: nullable(halfPoints),
+            fitTextWidth: nullable(unsignedTwips),
+            textEffect: nullable(text),
+            textOutline: nullable({ type: 'boolean' }),
+            textShadow: nullable({ type: 'boolean' }),
+            emboss: nullable({ type: 'boolean' }),
+            imprint: nullable({ type: 'boolean' }),
             border: nullable(docBorderSide),
             shading: nullable(docShading),
           }, []) }),
@@ -958,6 +991,15 @@ export const AGENT_OPERATION_SCHEMA = {
               allCaps: nullable({ type: 'boolean' }),
               highlight: nullable(text),
               characterSpacing: nullable(signedInteger),
+              position: nullable(signedHalfPoints),
+              characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
+              kerning: nullable(halfPoints),
+              fitTextWidth: nullable(unsignedTwips),
+              textEffect: nullable(text),
+              textOutline: nullable({ type: 'boolean' }),
+              textShadow: nullable({ type: 'boolean' }),
+              emboss: nullable({ type: 'boolean' }),
+              imprint: nullable({ type: 'boolean' }),
               border: nullable(docBorderSide),
               shading: nullable(docShading),
             }, []),
@@ -992,6 +1034,15 @@ export const AGENT_OPERATION_SCHEMA = {
               allCaps: nullable({ type: 'boolean' }),
               highlight: nullable(text),
               characterSpacing: nullable(signedInteger),
+              position: nullable(signedHalfPoints),
+              characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
+              kerning: nullable(halfPoints),
+              fitTextWidth: nullable(unsignedTwips),
+              textEffect: nullable(text),
+              textOutline: nullable({ type: 'boolean' }),
+              textShadow: nullable({ type: 'boolean' }),
+              emboss: nullable({ type: 'boolean' }),
+              imprint: nullable({ type: 'boolean' }),
               border: nullable(docBorderSide),
               shading: nullable(docShading),
             }, []),

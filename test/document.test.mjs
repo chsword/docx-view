@@ -846,6 +846,70 @@ test('formatRun writes and clears hidden flags without losing explicit false', (
   assert.doesNotThrow(() => doc.formatRun(0, 0, { hidden: run.hidden, webHidden: run.webHidden }));
 });
 
+test('reads, writes, clears, and round-trips run text effect properties', async () => {
+  const defaults = '<w:docDefaults><w:rPrDefault><w:rPr>' +
+    '<w:position w:val="4"/><w:w w:val="120"/><w:kern w:val="20"/><w:fitText w:val="600"/>' +
+    '<w:effect w:val="sparkle"/><w:outline/><w:shadow/><w:emboss/><w:imprint/>' +
+    '</w:rPr></w:rPrDefault></w:docDefaults>';
+  const doc = withStyles(
+    '<w:p><w:r><w:rPr><w:position w:val="-12"/><w:w w:val="150"/><w:kern w:val="24"/>' +
+    '<w:fitText w:val="720"/><w:effect w:val="lights"/><w:outline w:val="0"/>' +
+    '<w:shadow w:val="false"/><w:emboss w:val="off"/></w:rPr><w:t>A</w:t></w:r>' +
+    '<w:r><w:t>B</w:t></w:r></w:p>',
+    `<w:styles xmlns:w="${WORD_NS}">${defaults}</w:styles>`,
+  );
+  const [direct, inherited] = doc.getParagraphs()[0].runs;
+  assert.deepEqual(
+    Object.fromEntries(['position', 'characterScale', 'kerning', 'fitTextWidth', 'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint']
+      .map((key) => [key, direct[key]])),
+    {
+      position: -12, characterScale: 150, kerning: 24, fitTextWidth: 720, textEffect: 'lights',
+      textOutline: false, textShadow: false, emboss: false, imprint: undefined,
+    },
+  );
+  assert.equal(direct.effective.textOutline, false);
+  assert.equal(direct.effective.textShadow, false);
+  assert.equal(direct.effective.emboss, false);
+  assert.equal(direct.effective.imprint, true);
+  assert.equal(inherited.position, undefined);
+  assert.equal(inherited.characterScale, undefined);
+  assert.equal(inherited.kerning, undefined);
+  assert.equal(inherited.fitTextWidth, undefined);
+  assert.equal(inherited.textEffect, undefined);
+  assert.equal(inherited.effective.position, 4);
+  assert.equal(inherited.effective.characterScale, 120);
+  assert.equal(inherited.effective.kerning, 20);
+  assert.equal(inherited.effective.fitTextWidth, 600);
+  assert.equal(inherited.effective.textOutline, true);
+  assert.equal(inherited.effective.textShadow, true);
+  assert.equal(inherited.effective.emboss, true);
+  assert.equal(inherited.effective.imprint, true);
+
+  const format = {
+    position: -12, characterScale: 150, kerning: 24, fitTextWidth: 720, textEffect: 'sparkle',
+    textOutline: true, textShadow: false, emboss: true, imprint: false,
+  };
+  const writable = withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>');
+  writable.formatRun(0, 0, format);
+  const writtenProperties = Array.from(parseXml(writable.getPartXml(writable.mainDocumentPath))
+    .getElementsByTagNameNS(WORD_NS, 'rPr')[0].childNodes)
+    .filter((node) => node.nodeType === 1).map((node) => node.localName);
+  assert.deepEqual(writtenProperties, ['outline', 'shadow', 'emboss', 'imprint', 'w', 'kern', 'position', 'effect', 'fitText']);
+  const reopened = await DocxDocument.load(await writable.toUint8Array());
+  const run = reopened.getParagraphs()[0].runs[0];
+  assert.deepEqual(Object.fromEntries(Object.keys(format).map((key) => [key, run[key]])), format);
+
+  writable.formatRun(0, 0, Object.fromEntries(Object.keys(format).map((key) => [key, null])));
+  const cleared = writable.getParagraphs()[0].runs[0];
+  for (const key of Object.keys(format)) assert.equal(cleared[key], undefined, key);
+  assert.doesNotMatch(writable.getPartXml(writable.mainDocumentPath), /<w:(?:position|w|kern|fitText|effect|outline|shadow|emboss|imprint)\b/);
+  assert.doesNotThrow(() => writable.formatRun(0, 0, {
+    position: cleared.position, characterScale: cleared.characterScale, kerning: cleared.kerning,
+    fitTextWidth: cleared.fitTextWidth, textEffect: cleared.textEffect,
+    textOutline: cleared.textOutline, textShadow: cleared.textShadow, emboss: cleared.emboss, imprint: cleared.imprint,
+  }));
+});
+
 test('explicit hidden off overrides hidden inherited from a run style', () => {
   const doc = withStyles(
     '<w:p><w:pPr><w:pStyle w:val="Hidden"/></w:pPr>' +

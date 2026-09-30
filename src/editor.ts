@@ -338,6 +338,7 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
   }
   if (effective.color && /^[0-9a-f]{6}$/i.test(effective.color)) span.style.color = `#${effective.color}`;
   if (effective.verticalAlign === 'subscript' || effective.verticalAlign === 'superscript') span.style.verticalAlign = effective.verticalAlign;
+  if (effective.position !== undefined && effective.position !== null) span.style.verticalAlign = `${effective.position / 2}pt`;
   if (effective.smallCaps || effective.allCaps) span.style.fontVariantCaps = effective.allCaps ? 'all-small-caps' : 'small-caps';
   if (effective.allCaps) span.style.textTransform = 'uppercase';
   if (effective.highlight && effective.highlight !== 'none') span.style.backgroundColor = highlightColor(effective.highlight);
@@ -351,6 +352,26 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
       : /^[0-9a-f]{6}$/i.test(effective.border.color) ? `#${effective.border.color}` : '#000';
     span.style.border = `${Math.max(1, effective.border.size) / 8}pt ${borderStyle(effective.border.style)} ${color}`;
     span.style.paddingInline = '0.05em';
+  }
+  if (effective.textOutline) {
+    const originalColor = effective.color && /^[0-9a-f]{6}$/i.test(effective.color)
+      ? `#${effective.color}`
+      : span.style.color || 'inherit';
+    span.style.webkitTextStroke = '1px currentColor';
+    span.style.webkitTextStrokeColor = originalColor;
+    span.style.color = 'transparent';
+  }
+  if (effective.kerning !== undefined && effective.kerning !== null &&
+      effective.fontSize !== undefined && effective.fontSize !== null) {
+    span.style.fontKerning = effective.fontSize * 2 >= effective.kerning ? 'normal' : 'none';
+  }
+  if (effective.textShadow || effective.emboss || effective.imprint) {
+    const textShadows = [
+      ...(effective.textShadow ? ['1px 1px 2px rgba(0, 0, 0, 0.45)'] : []),
+      ...(effective.emboss ? ['-1px -1px 1px rgba(255, 255, 255, 0.9)', '1px 1px 1px rgba(0, 0, 0, 0.65)'] : []),
+      ...(effective.imprint ? ['1px 1px 1px rgba(255, 255, 255, 0.9)', '-1px -1px 1px rgba(0, 0, 0, 0.65)'] : []),
+    ];
+    span.style.textShadow = textShadows.join(', ');
   }
 }
 
