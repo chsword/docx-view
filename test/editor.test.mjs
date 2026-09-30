@@ -322,6 +322,32 @@ test('makeShape renders SVG geometry beneath shape text on repeated renders', ()
   }
 });
 
+test('makeShape renders pre-rendered SmartArt children at their offsets with text', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'smartart-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'smartArt',
+    form: 'drawingml',
+    widthPx: 640,
+    heightPx: 240,
+    placement: 'inline',
+    hasTextContent: false,
+    children: [
+      { offsetXPx: 12, offsetYPx: 8, widthPx: 100, heightPx: 40, geometry: 'rect', fill: { type: 'solid', color: '#123456' }, text: 'First' },
+      { offsetXPx: 140, offsetYPx: 8, widthPx: 100, heightPx: 40, geometry: 'ellipse', fill: { type: 'solid', color: '#abcdef' }, text: 'Second' },
+    ],
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const children = svg.childNodes.filter((node) => node.attributes?.get('data-docx-shape-child') !== undefined);
+  assert.equal(children.length, 2);
+  assert.equal(children[0].attributes.get('fill'), '#123456');
+  assert.equal(children[0].attributes.get('transform'), 'translate(12 8)');
+  assert.deepEqual(svg.childNodes.filter((node) => node.tagName === 'TEXT').map((node) => node.textContent), ['First', 'Second']);
+});
+
 test('makeShape leaves external picture fills as a local SVG placeholder', () => {
   const editor = makeRunRenderEditor();
   let partReads = 0;

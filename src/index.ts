@@ -25,5 +25,5 @@ export type {
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   WidthFormat,
-  CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeInfo, ShapeKind,
+  CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind,
 } from './types.js';

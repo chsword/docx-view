@@ -141,6 +141,8 @@ console.log(reopened.getSnapshot());
 
 VML 支持 `v:shape`、`v:rect`、`v:oval`、`v:line` 的基础填充色/线条，以及内置类型 1、2、3、4、5、202、203 的常见几何映射；`v:path` 不解析，退化为矩形并保留颜色。形状 `blipFill` 只显示包内可渲染图片；外部链接图片不联网，以浅色虚线框占位。
 
+SmartArt 使用 Word 预渲染的 `diagrams/drawing*.xml` 形状绘制；缺少该部件时显示占位，子形状文字仅支持纯文本、不支持富文本。
+
 `getFields(partPath)` 的段落与 run 索引只在指定部件内有效；页眉、页脚的索引不能用于正文数组。`DocxDocument.updateFields({ pagination })` 接受由调用方计算的页数、段落页索引与显示页码映射，核心文档 API 不依赖浏览器排版。
 
 - 索引从 0 开始，包含主文档中的表格段落；结构变更后请重新读取快照。

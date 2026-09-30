@@ -2996,6 +2996,7 @@ export class DocxDocument {
       if (!id) return [];
       return [[id, {
         id: rel.getAttribute('Id') ?? '',
+        type: rel.getAttribute('Type') ?? undefined,
         mode: rel.getAttribute('TargetMode') ?? undefined,
         target,
         // 畸形 Target（目录穿越、非法字符、编码错误）降级为无部件路径，读取方法不得因此抛错。
@@ -4175,7 +4176,16 @@ export class DocxDocument {
     const theme = this.getStylesContext().theme;
     for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
       for (const [runIndex, run] of ownRuns(paragraph).entries()) {
-        shapes.push(...readRunShapes(run, paragraphIndex, runIndex, this.mainPath, relationships, theme));
+        shapes.push(...readRunShapes(
+          run,
+          paragraphIndex,
+          runIndex,
+          this.mainPath,
+          relationships,
+          theme,
+          path => this.partDocumentOrUndefined(path),
+          path => this.relationshipsFor(path),
+        ));
       }
     }
     return shapes;
@@ -4196,7 +4206,16 @@ export class DocxDocument {
         const children = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1);
         for (const child of children) {
           if (!['drawing', 'pict', 'AlternateContent'].includes(child.localName ?? '')) continue;
-          const shapes = readRunShapes(run, paragraphIndex, runIndex, this.mainPath, imageContext.relationships, styles.theme);
+          const shapes = readRunShapes(
+            run,
+            paragraphIndex,
+            runIndex,
+            this.mainPath,
+            imageContext.relationships,
+            styles.theme,
+            path => this.partDocumentOrUndefined(path),
+            path => this.relationshipsFor(path),
+          );
           const shapeIndex = shapes.findIndex((shape) => shape.id === shapeId);
           if (shapeIndex < 0) continue;
           const elements = shapeTextElements(child);

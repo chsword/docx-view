@@ -1542,6 +1542,48 @@ export class DocxEditor {
       path.setAttribute('transform', transforms.join(' '));
     }
     svg.appendChild(path);
+    for (const [index, child] of (shape.children ?? []).entries()) {
+      const childWidth = Math.max(1, child.widthPx || 1);
+      const childHeight = Math.max(1, child.heightPx || 1);
+      const childPathData = child.customGeometry
+        ? customGeometryPath(child.customGeometry, childWidth, childHeight)
+        : child.geometry
+          ? presetGeometryPath(child.geometry, childWidth, childHeight)
+          : undefined;
+      const childPath = this.root.ownerDocument.createElementNS(svgNs, childPathData ? 'path' : 'rect');
+      if (childPathData) childPath.setAttribute('d', childPathData);
+      else {
+        childPath.setAttribute('x', '0');
+        childPath.setAttribute('y', '0');
+        childPath.setAttribute('width', String(childWidth));
+        childPath.setAttribute('height', String(childHeight));
+      }
+      childPath.setAttribute('data-docx-shape-child', String(index));
+      if (child.fill?.type === 'none') childPath.setAttribute('fill', 'none');
+      else childPath.setAttribute('fill', child.fill?.color ?? 'none');
+      if (child.line?.color) childPath.setAttribute('stroke', child.line.color);
+      else childPath.setAttribute('stroke', 'none');
+      if (child.line?.widthPx !== undefined) childPath.setAttribute('stroke-width', String(child.line.widthPx));
+      if (child.line?.dash) childPath.setAttribute('stroke-dasharray', child.line.dash);
+      const transforms = [`translate(${child.offsetXPx} ${child.offsetYPx})`];
+      if (child.rotation || child.flipH || child.flipV) {
+        transforms.push(`translate(${childWidth / 2} ${childHeight / 2})`);
+        if (child.rotation) transforms.push(`rotate(${child.rotation})`);
+        transforms.push(`scale(${child.flipH ? -1 : 1} ${child.flipV ? -1 : 1})`);
+        transforms.push(`translate(${-childWidth / 2} ${-childHeight / 2})`);
+      }
+      childPath.setAttribute('transform', transforms.join(' '));
+      svg.appendChild(childPath);
+      if (child.text) {
+        const text = this.root.ownerDocument.createElementNS(svgNs, 'text');
+        text.setAttribute('x', String(child.offsetXPx + childWidth / 2));
+        text.setAttribute('y', String(child.offsetYPx + childHeight / 2));
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'middle');
+        text.textContent = child.text;
+        svg.appendChild(text);
+      }
+    }
     wrapper.append(svg);
     if (shape.hasTextContent) {
       for (const paragraph of this.document.getShapeParagraphs(shape.id)) {
