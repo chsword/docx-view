@@ -424,6 +424,11 @@ export class DocxEditor {
   private measuring = false;
   private compatibilitySettings: CompatibilitySettings = {};
 
+  private readCompatibilitySettings(): CompatibilitySettings {
+    const getter = (this.document as DocxDocument & { getCompatibilitySettings?: () => CompatibilitySettings }).getCompatibilitySettings;
+    return typeof getter === 'function' ? getter.call(this.document) : {};
+  }
+
   private dispatchLinkClick(target: HTMLElement): void {
     const EventClass = this.root.ownerDocument.defaultView?.CustomEvent;
     if (!EventClass) return;
@@ -469,7 +474,7 @@ export class DocxEditor {
     this.root.setAttribute('aria-label', '文档编辑区域');
     container.append(this.root);
     this.metrics = this.root.ownerDocument.createElement('canvas').getContext('2d');
-    this.compatibilitySettings = document.getCompatibilitySettings();
+    this.compatibilitySettings = this.readCompatibilitySettings();
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.root.addEventListener('keydown', this.handleRootKeydown);
     this.render();
@@ -554,7 +559,7 @@ export class DocxEditor {
   setDocument(document: DocxDocument): void {
     if (this.destroyed) return;
     this.flush();
-    this.compatibilitySettings = this.document.getCompatibilitySettings();
+    this.compatibilitySettings = this.readCompatibilitySettings();
     this.document = document;
     this.selected = null;
     this.selectedImageInfo = null;
@@ -1201,7 +1206,7 @@ export class DocxEditor {
   }
 
   private paginateDocument(blocks: DocumentBlock[], sections: SectionInfo[], defaultTabStopTwips: number): PageBox[] {
-    this.compatibilitySettings = this.document.getCompatibilitySettings();
+    this.compatibilitySettings = this.readCompatibilitySettings();
     const measurer = {
       measureParagraph: (paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext) =>
         this.measureParagraphForPagination(paragraph, area, context),
