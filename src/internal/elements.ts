@@ -192,6 +192,20 @@ export function ownRuns(paragraph: Element): Element[] {
   });
 }
 
+export function isDescendantOfWithin(node: Node, ancestor: Node, stopAt: Node): boolean {
+  let current: Node | null = node;
+  while (current && current !== stopAt) {
+    if (current === ancestor) return true;
+    current = current.parentNode;
+  }
+  return false;
+}
+
+export function removeWordAttribute(element: Element, name: string): void {
+  element.removeAttributeNS(WORD_NS, name);
+  element.removeAttribute(`w:${name}`);
+}
+
 export function reviewerBucketOf(author: string | undefined): ReviewerFilterAuthor {
   if (author === undefined) return { kind: 'unattributed' };
   if (author === '') return { kind: 'empty', author: '' };
