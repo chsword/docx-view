@@ -25,6 +25,7 @@ import type {
 } from './types.js';
 import { contentTypeForExtension, dataUrlForBytes, isBrowserRenderableContentType, pxToEmu } from './drawing.js';
 import { customGeometryPath, presetGeometryPath } from './geometry.js';
+import { axisTicks, barRects, pieSlicePath, valueToPx } from './chart.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
@@ -1463,6 +1464,11 @@ export class DocxEditor {
     svg.style.position = 'absolute';
     svg.style.inset = '0';
     svg.style.overflow = 'visible';
+    if (shape.chart && shape.chart.kind !== 'unsupported') {
+      this.renderChart(svg, shape.chart, width, height);
+      wrapper.append(svg);
+      return wrapper;
+    }
     const pathData = shape.customGeometry
       ? customGeometryPath(shape.customGeometry, width, height)
       : shape.geometry
@@ -1600,6 +1606,107 @@ export class DocxEditor {
       }
     }
     return wrapper;
+  }
+
+  private renderChart(svg: SVGElement, chart: NonNullable<ShapeInfo['chart']>, width: number, height: number): void {
+    const doc = this.root.ownerDocument;
+    const ns = 'http://www.w3.org/2000/svg';
+    const element = (name: string) => doc.createElementNS(ns, name);
+    const add = (name: string, attrs: Record<string, string>, parent = svg) => {
+      const node = element(name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+      parent.appendChild(node);
+      return node;
+    };
+    const titleHeight = chart.title ? 18 : 4;
+    const left = chart.axes?.value?.visible === false ? 8 : 34;
+    const bottom = chart.axes?.category?.visible === false ? 8 : 24;
+    const plot = { x: left, y: titleHeight, width: Math.max(1, width - left - 8), height: Math.max(1, height - titleHeight - bottom) };
+    if (chart.title) add('text', { x: String(width / 2), y: '13', 'text-anchor': 'middle', 'font-size': '12', fill: '#222' }).textContent = chart.title;
+    const values = chart.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value)));
+    const isPercentBars = chart.kind === 'bar' && chart.grouping === 'percentStacked';
+    const isStackedBars = chart.kind === 'bar' && (chart.grouping === 'stacked' || isPercentBars);
+    const stackedTotals = isStackedBars ? chart.series[0]?.values.map((_, index) =>
+      chart.series.reduce((sum, series) => sum + Math.max(0, series.values[index] ?? 0), 0),
+    ) ?? [] : [];
+    const minValue = isPercentBars ? -100 : isStackedBars ? Math.min(0, ...stackedTotals) : values.length ? Math.min(0, ...values) : 0;
+    const maxValue = isPercentBars ? 100 : isStackedBars ? Math.max(1, ...stackedTotals) : values.length ? Math.max(0, ...values) : 1;
+    const scale = axisTicks(minValue, maxValue, 5);
+    if (chart.kind === 'pie' || chart.kind === 'doughnut') {
+      const total = chart.series.reduce((sum, series) => sum + series.values.reduce<number>((part, value) => part + (value !== null && value > 0 ? value : 0), 0), 0);
+      const radius = Math.max(1, Math.min(plot.width, plot.height) / 2 - 2);
+      let angle = -Math.PI / 2;
+      for (const [index, value] of (chart.series[0]?.values ?? []).entries()) {
+        const amount = value !== null && value > 0 ? value : 0;
+        const next = angle + (total ? amount / total : 0) * Math.PI * 2;
+        const fill = chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none';
+        const path = add('path', { d: pieSlicePath(angle, next, plot.x + plot.width / 2, plot.y + plot.height / 2, radius, chart.kind === 'doughnut' ? radius * 0.5 : 0), fill, stroke: '#fff', 'stroke-width': '1' });
+        path.setAttribute('data-docx-chart-series', '0');
+        angle = next;
+      }
+      chart.categories.forEach((category, index) => {
+        if (!category) return;
+        add('text', { x: String(plot.x + index * 70 + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = category;
+        add('rect', { x: String(plot.x + index * 70), y: String(height - 12), width: '8', height: '8', fill: chart.series[0]?.pointFills?.[index]?.color ?? chart.series[0]?.fill?.color ?? 'none' });
+      });
+      return;
+    }
+    const zeroY = plot.y + plot.height - valueToPx(0, scale, plot.height);
+    const allXValues = chart.series.flatMap((series) => series.xValues?.filter((value): value is number => value !== null && Number.isFinite(value)) ?? []);
+    const xScale = chart.kind === 'scatter' && allXValues.length
+      ? axisTicks(Math.min(...allXValues), Math.max(...allXValues), 5)
+      : undefined;
+    const categoryCount = Math.max(chart.categories.length, ...chart.series.map((series) => series.values.length), 0);
+    if (chart.kind !== 'scatter' && chart.axes?.category?.visible !== false) {
+      chart.categories.forEach((category, index) => {
+        if (!category) return;
+        const x = plot.x + (categoryCount > 1 ? index / (categoryCount - 1) : 0.5) * plot.width;
+        const label = add('text', { x: String(x), y: String(plot.y + plot.height + 14), 'text-anchor': 'middle', 'font-size': '9', fill: '#555', 'data-docx-chart-category': '1' });
+        label.textContent = category;
+      });
+    }
+    if (chart.axes?.value?.majorGridlines) {
+      for (const tick of scale.ticks) {
+        const y = plot.y + plot.height - valueToPx(tick, scale, plot.height);
+        add('line', { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(y), y2: String(y), stroke: '#e5e7eb', 'data-docx-chart-gridline': '1' });
+      }
+    }
+    if (chart.axes?.value?.visible !== false) add('line', { x1: String(plot.x), x2: String(plot.x), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'value' });
+    if (chart.axes?.category?.visible !== false) add('line', { x1: String(plot.x), x2: String(plot.x + plot.width), y1: String(plot.y + plot.height), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'category' });
+    for (const tick of scale.ticks) {
+      const y = plot.y + plot.height - valueToPx(tick, scale, plot.height);
+      const label = add('text', { x: String(plot.x - 4), y: String(y + 4), 'text-anchor': 'end', 'font-size': '9', fill: '#555', 'data-docx-chart-tick': '1' });
+      label.textContent = String(tick);
+    }
+    if (chart.kind === 'bar') {
+      const rects = barRects(chart.series.map((series) => series.values.map((value) => value ?? 0)), scale, plot.width, plot.height, { grouping: chart.grouping ?? 'clustered', direction: chart.barDirection });
+      rects.forEach((series, seriesIndex) => series.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: chart.series[seriesIndex]?.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) })));
+    } else {
+      chart.series.forEach((series, seriesIndex) => {
+        let path = '';
+        let started = false;
+        const xValues = series.xValues;
+        series.values.forEach((value, index) => {
+          if (value === null || !Number.isFinite(value)) { started = false; return; }
+          const firstSeriesLength = chart.series[0]?.values.length ?? 0;
+          const xValue = xValues?.[index];
+          const x = plot.x + (chart.kind === 'scatter' && xScale && xValue !== null && xValue !== undefined
+            ? valueToPx(xValue, xScale, plot.width)
+            : (firstSeriesLength > 1 ? index / (firstSeriesLength - 1) : 0.5) * plot.width);
+          const y = plot.y + plot.height - valueToPx(value, scale, plot.height);
+          path += `${started ? 'L' : 'M'} ${x} ${y} `;
+          started = true;
+        });
+        if (chart.kind === 'area' && path) path += `L ${plot.x + plot.width} ${zeroY} L ${plot.x} ${zeroY} Z`;
+        if (path) add('path', { d: path, fill: chart.kind === 'area' ? (series.fill?.color ?? 'none') : 'none', 'fill-opacity': chart.kind === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) });
+      });
+    }
+    chart.series.forEach((series, index) => {
+      if (!series.name) return;
+      const x = plot.x + index * 70;
+      add('rect', { x: String(x), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? 'none' });
+      add('text', { x: String(x + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = series.name;
+    });
   }
 
   private reviewScopedRun(paragraphIndex: number, run: RunInfo, reviewContext: ReviewRenderContext): RunInfo {

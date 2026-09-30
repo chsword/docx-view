@@ -259,6 +259,10 @@ export function resolveDrawingColor(theme: ThemeInfo, element: Element | undefin
   return resolveThemeValue(theme, value, modifier('shade'), modifier('tint'), true);
 }
 
+export function resolveDrawingThemeColor(theme: ThemeInfo, name: string): string | undefined {
+  return resolveThemeValue(theme, name, undefined, undefined, true);
+}
+
 function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
   if (!element) return undefined;
   const direct = normalizeHex(wordAttr(element, 'color'));

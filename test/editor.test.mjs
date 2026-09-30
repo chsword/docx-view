@@ -348,6 +348,134 @@ test('makeShape renders pre-rendered SmartArt children at their offsets with tex
   assert.deepEqual(svg.childNodes.filter((node) => node.tagName === 'TEXT').map((node) => node.textContent), ['First', 'Second']);
 });
 
+test('makeShape renders chart axes, ticks, and series paths', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'chart-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'line',
+      title: 'Sales',
+      categories: ['Q1', 'Q2', 'Q3'],
+      series: [{ name: 'Actual', values: [1, null, 3], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: true } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  assert.equal(svg.tagName, 'SVG');
+  assert.ok(svg.childNodes.some((node) => node.attributes?.get('data-docx-chart-axis') === 'value'));
+  assert.ok(svg.childNodes.some((node) => node.attributes?.get('data-docx-chart-tick') === '1'));
+  const series = svg.childNodes.find((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  assert.equal(series.tagName, 'PATH');
+  assert.match(series.attributes.get('d'), /M .* M /);
+});
+
+test('makeShape renders category labels and uses cached scatter x values', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'scatter-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'scatter',
+      categories: [],
+      series: [{ values: [1, 2, 3], xValues: [1, 2, 100], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const path = svg.childNodes.find((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  const coordinates = path.attributes.get('d').match(/M ([\d.]+) [\d.]+ L ([\d.]+) [\d.]+ L ([\d.]+) [\d.]+/).slice(1).map(Number);
+  assert.ok(coordinates[1] - coordinates[0] < 10);
+  assert.ok(coordinates[2] - coordinates[1] > 200);
+
+  const categoryWrapper = editor.makeShape({
+    ...wrapper,
+    id: 'category-svg',
+    chart: {
+      kind: 'line',
+      categories: ['Q1', 'Q2'],
+      series: [{ values: [1, 2], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  assert.deepEqual(categoryWrapper.childNodes[0].childNodes.filter((node) => node.attributes?.get('data-docx-chart-category') === '1').map((node) => node.textContent), ['Q1', 'Q2']);
+});
+
+test('makeShape keeps pie slice and category legend colors aligned', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'pie-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'pie',
+      categories: ['Q1', 'Q2'],
+      series: [{
+        values: [1, 2],
+        fill: { type: 'solid', color: '#111111' },
+        pointFills: [{ type: 'solid', color: '#ff0000' }, { type: 'solid', color: '#00ff00' }],
+      }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const slices = svg.childNodes.filter((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  assert.deepEqual(slices.map((node) => node.attributes.get('fill')), ['#ff0000', '#00ff00']);
+  assert.deepEqual(svg.childNodes.filter((node) => node.tagName === 'RECT').map((node) => node.attributes.get('fill')), ['#ff0000', '#00ff00']);
+});
+
+test('makeShape shares the scatter x scale across series', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'scatter-shared-scale',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'scatter',
+      categories: [],
+      series: [
+        { values: [1, 2], xValues: [0, 10], line: { color: '#111111' } },
+        { values: [1, 2], xValues: [0, 1000], line: { color: '#222222' } },
+      ],
+      axes: { category: { visible: false }, value: { visible: true, majorGridlines: false } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const paths = wrapper.childNodes[0].childNodes.filter((node) => node.attributes?.get('data-docx-chart-series') !== undefined);
+  const firstEnd = Number(paths[0].attributes.get('d').match(/L ([\d.]+) /)[1]);
+  const secondEnd = Number(paths[1].attributes.get('d').match(/L ([\d.]+) /)[1]);
+  assert.ok(firstEnd < secondEnd);
+});
+
 test('makeShape leaves external picture fills as a local SVG placeholder', () => {
   const editor = makeRunRenderEditor();
   let partReads = 0;

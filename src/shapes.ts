@@ -1,9 +1,9 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import { emuToPx, V_NS, WP_NS, A_NS, OFFICE_REL_NS } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
-import type { CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
+import type { ChartInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
 import { MC_NS, selectAlternateContentBranch } from './xml.js';
-import { resolveDrawingColor, type ThemeInfo } from './styles.js';
+import { resolveDrawingColor, resolveDrawingThemeColor, type ThemeInfo } from './styles.js';
 
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const WPS_NS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
@@ -116,6 +116,130 @@ function readLine(spPr: Element | undefined, theme: ThemeInfo, style?: Element):
     ...(colorWithAlpha(theme, color) ? { color: colorWithAlpha(theme, color) } : {}),
     ...(line && Number.isFinite(width) && width >= 0 ? { widthPx: emuToPx(width) } : {}),
     ...(dashName && dashes[dashName] ? { dash: dashes[dashName] } : {}),
+  };
+}
+
+function direct(parent: Element | undefined, namespace: string, localName: string): Element | undefined {
+  if (!parent) return undefined;
+  for (let child = parent.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType === 1 && (child as Element).namespaceURI === namespace && (child as Element).localName === localName) return child as Element;
+  }
+  return undefined;
+}
+
+function cacheValues(cache: Element | undefined, numeric: boolean): Array<number | string | null> {
+  if (!cache) return [];
+  const points = descendants(cache, CHART_NS, 'pt');
+  const count = Math.max(Number(cache.getAttribute('ptCount') ?? 0), ...points.map((point) => Number(point.getAttribute('idx')) + 1), 0);
+  const values: Array<number | string | null> = Array.from({ length: count }, () => null);
+  for (const point of points) {
+    const index = Number(point.getAttribute('idx'));
+    const value = descendants(point, CHART_NS, 'v')[0]?.textContent ?? '';
+    if (!Number.isInteger(index) || index < 0) continue;
+    values[index] = numeric ? (Number.isFinite(Number(value)) ? Number(value) : null) : value;
+  }
+  return values;
+}
+
+function chartSeriesFill(ser: Element, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): Pick<ShapeInfo, 'fill' | 'line'> {
+  return readShapeAppearance(direct(ser, CHART_NS, 'spPr'), theme, relationships);
+}
+
+function chartSeriesAppearance(ser: Element, index: number, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): Pick<ShapeInfo, 'fill' | 'line'> {
+  const appearance = chartSeriesFill(ser, theme, relationships);
+  if (appearance.fill) return appearance;
+  const color = resolveDrawingThemeColor(theme, `accent${(index % 6) + 1}`);
+  return color ? { ...appearance, fill: { type: 'solid', color: color.startsWith('#') ? color : `#${color}` } } : appearance;
+}
+
+function chartPointFills(ser: Element, count: number, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): Array<ShapeInfo['fill'] | undefined> {
+  return Array.from({ length: count }, (_, index) => {
+    const point = descendants(ser, CHART_NS, 'dPt').find((candidate) => Number(direct(candidate, CHART_NS, 'idx')?.getAttribute('val') ?? candidate.getAttribute('idx')) === index);
+    const appearance = point ? chartSeriesFill(point, theme, relationships) : {};
+    if (appearance.fill) return appearance.fill;
+    const color = resolveDrawingThemeColor(theme, `accent${(index % 6) + 1}`);
+    return color ? { type: 'solid' as const, color: color.startsWith('#') ? color : `#${color}` } : undefined;
+  });
+}
+
+function readChartInfo(
+  graphicData: Element | undefined,
+  relationships: Map<string, RelationshipTarget>,
+  theme: ThemeInfo,
+  getPartDocument?: (path: string) => Document | undefined,
+): ChartInfo | undefined {
+  if (!graphicData || !getPartDocument) return undefined;
+  const chartId = first(graphicData, CHART_NS, 'chart')?.getAttributeNS(OFFICE_REL_NS, 'id')
+    ?? first(graphicData, CHART_NS, 'chart')?.getAttribute('r:id');
+  const chartPath = chartId ? relationships.get(chartId)?.partPath : undefined;
+  const chartDocument = chartPath ? getPartDocument(chartPath) : undefined;
+  const plotArea = chartDocument && first(chartDocument.documentElement as Element, CHART_NS, 'plotArea');
+  if (!plotArea) return undefined;
+  const chartTypes = Array.from(plotArea.childNodes).filter((node) =>
+    node.nodeType === 1 && (node as Element).namespaceURI === CHART_NS &&
+    (node as Element).localName?.endsWith('Chart')) as Element[];
+  const chartType = chartTypes[0];
+  if (!chartType) return undefined;
+  const localName = chartType.localName ?? '';
+  const kind = localName === 'barChart' ? 'bar'
+    : localName === 'lineChart' ? 'line'
+      : localName === 'pieChart' ? 'pie'
+        : localName === 'doughnutChart' ? 'doughnut'
+          : localName === 'areaChart' ? 'area'
+            : localName === 'scatterChart' ? 'scatter' : 'unsupported';
+  const titleNode = direct(chartDocument.documentElement as Element, CHART_NS, 'chart')
+    && direct(direct(chartDocument.documentElement as Element, CHART_NS, 'chart'), CHART_NS, 'title');
+  const title = titleNode ? descendants(titleNode, A_NS, 't').map((node) => node.textContent ?? '').join('').trim() || undefined : undefined;
+  const firstSeries = first(chartType, CHART_NS, 'ser');
+  const categoryContainer = localName === 'scatterChart'
+    ? direct(firstSeries, CHART_NS, 'xVal')
+    : direct(firstSeries, CHART_NS, 'cat');
+  const firstCategoryRef = direct(categoryContainer, CHART_NS, 'strRef')
+    ?? direct(categoryContainer, CHART_NS, 'numRef');
+  const categories = cacheValues(
+    firstCategoryRef ? direct(firstCategoryRef, CHART_NS, firstCategoryRef.localName === 'numRef' ? 'numCache' : 'strCache') : undefined,
+    false,
+  ).map((value) => typeof value === 'string' ? value : '');
+  const series = chartTypes.flatMap((group) => descendants(group, CHART_NS, 'ser').flatMap((ser, index) => {
+    const val = direct(ser, CHART_NS, 'val') ?? direct(ser, CHART_NS, 'yVal');
+    const numRef = val && (direct(val, CHART_NS, 'numRef') ?? direct(val, CHART_NS, 'numLit'));
+    const cache = numRef && (direct(numRef, CHART_NS, 'numCache') ?? (numRef.localName === 'numLit' ? numRef : undefined));
+    if (!cache) return [];
+    const values = cacheValues(cache, true) as Array<number | null>;
+    const xContainer = localName === 'scatterChart' ? direct(ser, CHART_NS, 'xVal') : undefined;
+    const xRef = xContainer && (direct(xContainer, CHART_NS, 'numRef') ?? direct(xContainer, CHART_NS, 'numLit'));
+    const xCache = xRef && (direct(xRef, CHART_NS, 'numCache') ?? (xRef.localName === 'numLit' ? xRef : undefined));
+    const xValues = xCache ? cacheValues(xCache, true) as Array<number | null> : undefined;
+    const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
+    const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined : undefined;
+    const appearance = chartSeriesAppearance(ser, index, theme, relationships);
+    const pointFills = (localName === 'pieChart' || localName === 'doughnutChart')
+      ? chartPointFills(ser, values.length, theme, relationships)
+      : undefined;
+    return [{ name, values, ...(xValues ? { xValues } : {}), ...(pointFills ? { pointFills } : {}), ...appearance }];
+  }));
+  const grouping = direct(chartType, CHART_NS, 'grouping')?.getAttribute('val') as ChartInfo['grouping'] | null;
+  const barDirection = localName === 'barChart'
+    ? (direct(chartType, CHART_NS, 'barDir')?.getAttribute('val') === 'bar' ? 'bar' : 'col')
+    : undefined;
+  const legendPosition = descendants(chartDocument.documentElement as Element, CHART_NS, 'legendPos')[0]?.getAttribute('val');
+  const legend = ['l', 'r', 't', 'b', 'tr'].includes(legendPosition ?? '') ? { position: legendPosition as 'l' | 'r' | 't' | 'b' | 'tr' } : undefined;
+  const axes = {
+    category: { visible: direct(plotArea, CHART_NS, 'catAx') ? direct(direct(plotArea, CHART_NS, 'catAx'), CHART_NS, 'delete')?.getAttribute('val') !== '1' : true },
+    value: {
+      visible: direct(plotArea, CHART_NS, 'valAx') ? direct(direct(plotArea, CHART_NS, 'valAx'), CHART_NS, 'delete')?.getAttribute('val') !== '1' : true,
+      majorGridlines: Boolean(direct(plotArea, CHART_NS, 'valAx') && direct(direct(plotArea, CHART_NS, 'valAx'), CHART_NS, 'majorGridlines')),
+    },
+  };
+  return {
+    kind,
+    ...(title ? { title } : {}),
+    categories,
+    series,
+    ...(barDirection ? { barDirection } : {}),
+    ...(grouping ? { grouping } : {}),
+    ...(legend ? { legend } : {}),
+    axes,
   };
 }
 
@@ -234,6 +358,9 @@ function readDrawingShape(
     const xfrm = first(spPr, A_NS, 'xfrm');
     const rotation = Number(xfrm?.getAttribute('rot'));
     const appearance = readShapeAppearance(spPr, theme, relationships, shapeStyle);
+    const chart = shapeKind(uri, hasTextContent) === 'chart'
+      ? readChartInfo(graphicData, relationships, theme, getPartDocument)
+      : undefined;
     const presetGeom = first(spPr, A_NS, 'prstGeom');
     const adjustments = first(presetGeom, A_NS, 'avLst');
     const parsedAdjustments = adjustments ? descendants(adjustments, A_NS, 'gd').flatMap((gd) => {
@@ -273,6 +400,7 @@ function readDrawingShape(
       ...(xfrm?.getAttribute('flipV') === '1' || xfrm?.getAttribute('flipV') === 'true' ? { flipV: true } : {}),
       ...(parsedAdjustments.length ? { adjustments: parsedAdjustments } : {}),
       ...(appearance.customGeometry ? { customGeometry: appearance.customGeometry } : {}),
+      ...(chart ? { chart } : {}),
       ...(shapeKind(uri, hasTextContent) === 'smartArt'
         ? { children: readSmartArtChildren(graphicData, relationships, theme, getPartDocument, getPartRelationships) }
         : {}),
