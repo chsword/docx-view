@@ -620,6 +620,15 @@ export interface NoteSettings {
   endnote: NoteSettingsValue;
 }
 
+export interface CompatibilitySettings {
+  doNotUseHTMLParagraphAutoSpacing?: boolean;
+  doNotUseEastAsianBreakRules?: boolean;
+  doNotBreakWrappedTables?: boolean;
+  useWord2002TableStyleRules?: boolean;
+  compatSettings?: Array<{ name: string; uri?: string; val?: string }>;
+  other?: Record<string, boolean>;
+}
+
 export interface NoteInfo {
   id: number;
   kind: 'footnote' | 'endnote';

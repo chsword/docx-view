@@ -1,5 +1,5 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { DocumentProtection, NoteSettings, NoteSettingsValue } from './types.js';
+import type { CompatibilitySettings, DocumentProtection, NoteSettings, NoteSettingsValue } from './types.js';
 import { WORD_NS, children, descendants, setWordValue, wordElement, wordValue } from './xml.js';
 
 export type NoteKind = 'footnote' | 'endnote';
@@ -118,6 +118,45 @@ export function parseDocumentNoteSettings(settingsDocument: Document | null): No
     footnote: readNotePr(children(root, 'footnotePr')[0]),
     endnote: readNotePr(children(root, 'endnotePr')[0]),
   };
+}
+
+const COMPATIBILITY_FLAGS = new Set([
+  'doNotUseHTMLParagraphAutoSpacing',
+  'doNotUseEastAsianBreakRules',
+  'doNotBreakWrappedTables',
+  'useWord2002TableStyleRules',
+]);
+
+function readCompatibilityFlag(element: Element): boolean {
+  const value = wordValue(element)?.toLowerCase();
+  return value === undefined || !['0', 'false', 'off', 'no'].includes(value);
+}
+
+export function parseCompatibilitySettings(settingsDocument: Document | null): CompatibilitySettings {
+  const root = settingsDocument?.documentElement;
+  if (!root || root.namespaceURI !== WORD_NS || root.localName !== 'settings') return {};
+  const compat = children(root, 'compat')[0];
+  if (!compat) return {};
+  const result: CompatibilitySettings = {};
+  const other: Record<string, boolean> = {};
+  for (const flag of children(compat)) {
+    if (flag.localName === 'compatSetting') continue;
+    const value = readCompatibilityFlag(flag);
+    if (COMPATIBILITY_FLAGS.has(flag.localName ?? '')) {
+      (result as Record<string, boolean>)[flag.localName!] = value;
+    } else if (flag.localName) {
+      other[flag.localName] = value;
+    }
+  }
+  const compatSettings = children(compat, 'compatSetting').map((setting) => {
+    const name = setting.getAttributeNS(WORD_NS, 'name') ?? setting.getAttribute('w:name') ?? setting.getAttribute('name');
+    const uri = setting.getAttributeNS(WORD_NS, 'uri') ?? setting.getAttribute('w:uri') ?? undefined;
+    const val = setting.getAttributeNS(WORD_NS, 'val') ?? setting.getAttribute('w:val') ?? undefined;
+    return name ? { name, ...(uri !== undefined ? { uri } : {}), ...(val !== undefined ? { val } : {}) } : undefined;
+  }).filter((setting): setting is { name: string; uri?: string; val?: string } => setting !== undefined);
+  if (compatSettings.length) result.compatSettings = compatSettings;
+  if (Object.keys(other).length) result.other = other;
+  return result;
 }
 
 export function parseSectionNoteSettings(sectPr: Element | undefined, base: NoteSettings): NoteSettings {
