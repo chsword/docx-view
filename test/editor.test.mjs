@@ -348,6 +348,36 @@ test('makeShape renders pre-rendered SmartArt children at their offsets with tex
   assert.deepEqual(svg.childNodes.filter((node) => node.tagName === 'TEXT').map((node) => node.textContent), ['First', 'Second']);
 });
 
+test('makeShape renders chart axes, ticks, and series paths', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const wrapper = editor.makeShape({
+    id: 'chart-svg',
+    paragraph: 0,
+    run: 0,
+    kind: 'chart',
+    form: 'drawingml',
+    widthPx: 320,
+    heightPx: 180,
+    placement: 'inline',
+    hasTextContent: false,
+    chart: {
+      kind: 'line',
+      title: 'Sales',
+      categories: ['Q1', 'Q2', 'Q3'],
+      series: [{ name: 'Actual', values: [1, null, 3], line: { color: '#123456' } }],
+      axes: { category: { visible: true }, value: { visible: true, majorGridlines: true } },
+    },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  assert.equal(svg.tagName, 'SVG');
+  assert.ok(svg.childNodes.some((node) => node.attributes?.get('data-docx-chart-axis') === 'value'));
+  assert.ok(svg.childNodes.some((node) => node.attributes?.get('data-docx-chart-tick') === '1'));
+  const series = svg.childNodes.find((node) => node.attributes?.get('data-docx-chart-series') === '0');
+  assert.equal(series.tagName, 'PATH');
+  assert.match(series.attributes.get('d'), /M .* M /);
+});
+
 test('makeShape leaves external picture fills as a local SVG placeholder', () => {
   const editor = makeRunRenderEditor();
   let partReads = 0;

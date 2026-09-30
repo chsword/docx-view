@@ -371,6 +371,17 @@ export interface ShapeChildInfo {
   text?: string;
 }
 
+export interface ChartInfo {
+  kind: 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'unsupported';
+  title?: string;
+  categories: string[];
+  series: Array<{ name?: string; values: Array<number | null>; fill?: ShapeInfo['fill']; line?: ShapeInfo['line'] }>;
+  barDirection?: 'col' | 'bar';
+  grouping?: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
+  legend?: { position: 'l' | 'r' | 't' | 'b' | 'tr' };
+  axes?: { category?: { visible: boolean }; value?: { visible: boolean; majorGridlines: boolean } };
+}
+
 export interface ShapeInfo {
   id: string;
   paragraph: number;
@@ -400,6 +411,7 @@ export interface ShapeInfo {
   adjustments?: Array<{ name: string; value: number }>;
   customGeometry?: CustomGeometry;
   children?: ShapeChildInfo[];
+  chart?: ChartInfo;
 }
 
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';
