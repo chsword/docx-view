@@ -1434,6 +1434,15 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
   return {
     index,
     text: textOf(paragraph),
+    ...(() => {
+      const hiddenRuns = new Set(runElements.filter((run, runIndex) => {
+        const format = runs[runIndex]!.effective ?? runs[runIndex]!;
+        return format.hidden === true || format.webHidden === true;
+      }));
+      if (!hiddenRuns.size) return {};
+      const visibleText = visibleTextOf(paragraph, hiddenRuns);
+      return visibleText !== textOf(paragraph) ? { visibleText } : {};
+    })(),
     ...direct,
     runs,
     paragraphRevision: paragraphRevision ? {
@@ -1661,6 +1670,8 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
   for (const [key, tag] of [
     ['bold', 'b'],
     ['italic', 'i'],
+    ['hidden', 'vanish'],
+    ['webHidden', 'webHidden'],
     ['strike', 'strike'],
     ['doubleStrike', 'dstrike'],
     ['smallCaps', 'smallCaps'],
@@ -2282,7 +2293,7 @@ function textRangeLength(paragraph: Element, start: number, end: number): void {
 
 const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
-  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
+  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [

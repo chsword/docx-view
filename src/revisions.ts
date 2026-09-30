@@ -84,12 +84,13 @@ function isDeletedWrapper(element: Element): boolean {
   return element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '');
 }
 
-function collectTextElements(element: Element, mode: 'visible' | 'deleted'): Element[] {
+function collectTextElements(element: Element, mode: 'visible' | 'deleted', excludedRuns?: ReadonlySet<Element>): Element[] {
   const result: Element[] = [];
   const walk = (node: Node, deletedDepth = 0): void => {
     for (let child = node.firstChild; child; child = child.nextSibling) {
       if (child.nodeType !== 1) continue;
       const current = child as Element;
+      if (excludedRuns?.has(current)) continue;
       if (current.namespaceURI === WORD_NS) {
         const localName = current.localName ?? '';
         if (localName === 'p') continue;
@@ -155,8 +156,8 @@ export function hasRevisionMarkup(root: Document | Element): boolean {
   return REVISION_NAMES.some((name) => descendants(root as Document | Element, name).length > 0);
 }
 
-export function visibleTextOf(element: Element): string {
-  return collectTextElements(element, 'visible').map(elementText).join('');
+export function visibleTextOf(element: Element, excludedRuns?: ReadonlySet<Element>): string {
+  return collectTextElements(element, 'visible', excludedRuns).map(elementText).join('');
 }
 
 export function deletedTextOf(element: Element): string {

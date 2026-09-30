@@ -2,6 +2,8 @@ export interface RunFormat {
   style?: string | null;
   bold?: boolean | null;
   italic?: boolean | null;
+  hidden?: boolean | null;
+  webHidden?: boolean | null;
   underline?: boolean | null;
   underlineStyle?: string | null;
   underlineColor?: string | null;
@@ -165,6 +167,7 @@ export interface MathInfo {
 export interface ParagraphInfo extends ParagraphFormat {
   index: number;
   text: string;
+  visibleText?: string;
   runs: RunInfo[];
   paragraphRevision?: RevisionMark;
   effective?: ParagraphFormat;

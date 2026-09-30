@@ -24,7 +24,7 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
 }
 
 const RUN_FORMAT_FIELDS = [
-  'style', 'bold', 'italic', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+  'style', 'bold', 'italic', 'hidden', 'webHidden', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
 ] as const;
@@ -83,7 +83,7 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
     'rtl', 'complexScript', 'highlight', 'characterSpacing', 'border', 'shading',
   ]);
-  for (const key of ['bold', 'italic', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl', 'complexScript']) {
+  for (const key of ['bold', 'italic', 'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl', 'complexScript']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   for (const key of ['style', 'fontFamily', 'fontFamilyEastAsia', 'underlineStyle', 'highlight']) {
