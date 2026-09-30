@@ -10,6 +10,8 @@ import type {
   DocumentSnapshot,
   FieldKind,
   ImageInfo,
+  MathInfo,
+  MathMlNode,
   ParagraphInfo,
   PaginationInfo,
   ShapeInfo,
@@ -1042,6 +1044,7 @@ export class DocxEditor {
 
   private sliceParagraph(paragraph: ParagraphInfo, start: number, end: number): ParagraphInfo {
     let offset = 0;
+    const includedRunIndexes = new Set<number>();
     const runs = paragraph.runs.flatMap((run) => {
       const runStart = offset;
       offset += run.text.length;
@@ -1049,9 +1052,13 @@ export class DocxEditor {
       const to = Math.min(end, offset);
       if (!run.text.length && runStart >= start && (runStart < end || (end === paragraph.text.length && runStart === end))) return [{ ...run }];
       if (to <= from) return [];
+      includedRunIndexes.add(run.index);
       return [{ ...run, text: run.text.slice(from - runStart, to - runStart) }];
     });
-    return { ...paragraph, text: paragraph.text.slice(start, end), runs };
+    const math = paragraph.math?.filter((info) =>
+      includedRunIndexes.has(info.runOffset) ||
+      (end === paragraph.text.length && info.runOffset >= paragraph.runs.length));
+    return { ...paragraph, text: paragraph.text.slice(start, end), runs, ...(math ? { math } : {}) };
   }
 
   private makePageContent(page: PageBox, section: SectionInfo, blocks: DocumentBlock[], paragraphs: ParagraphInfo[],
@@ -1317,7 +1324,31 @@ export class DocxEditor {
       this.focusContent(content);
     });
     let currentLineOffsetPx = 0;
+    const math = paragraph.math ?? [];
+    const appendMath = (info: MathInfo): void => {
+      const ns = 'http://www.w3.org/1998/Math/MathML';
+      const build = (node: MathMlNode): Element => {
+        const element = this.root.ownerDocument.createElementNS(ns, node.tag);
+        for (const [name, value] of Object.entries(node.attrs ?? {})) element.setAttribute(name, value);
+        if (node.text !== undefined) element.textContent = node.text;
+        for (const child of node.children ?? []) element.append(build(child));
+        return element;
+      };
+      const root = build(info.mathMl) as HTMLElement;
+      root.setAttribute('aria-label', info.linear);
+      root.contentEditable = 'false';
+      root.dataset.docxMath = '1';
+      if (info.display === 'block') root.style.display = 'block';
+      const semantics = this.root.ownerDocument.createElementNS(ns, 'semantics');
+      const annotation = this.root.ownerDocument.createElementNS(ns, 'annotation');
+      annotation.setAttribute('encoding', 'text/plain');
+      annotation.textContent = info.linear;
+      semantics.append(annotation);
+      root.append(semantics);
+      content.append(root);
+    };
     for (const run of paragraph.runs) {
+      for (const info of math.filter(item => item.runOffset === run.index)) appendMath(info);
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
       this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
@@ -1335,8 +1366,11 @@ export class DocxEditor {
         content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
       }
     }
+    // 末尾公式 = 没有任何 run 的索引等于它的 runOffset。用 runs.length 判断会随分页切片变化，
+    // 导致 runOffset 命中切片内某个 run 时这里再渲染一次。
+    for (const info of math.filter(item => !paragraph.runs.some(run => run.index === item.runOffset))) appendMath(info);
 
-    if (!paragraph.runs.length) content.textContent = paragraph.text;
+    if (!paragraph.runs.length && !math.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
     if (!this.measuring) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });

@@ -8,6 +8,7 @@ import type {
   SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange,
   FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
   TableCellLocation,
+  MathInfo,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -37,6 +38,7 @@ import {
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { readRunShapes, shapeTextElements } from './shapes.js';
+import { ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -955,8 +957,34 @@ function ownRuns(paragraph: Element): Element[] {
           (parent as Element).localName === 'p') return false;
       parent = parent.parentNode;
     }
+
     return true;
   });
+}
+
+function allElements(node: Element): Element[] {
+  const result: Element[] = [];
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    result.push(element, ...allElements(element));
+  }
+
+  return result;
+}
+
+function mathElements(paragraph: Element): Element[] {
+  const elements = allElements(paragraph);
+  return elements.filter(element =>
+    element.namespaceURI === 'http://schemas.openxmlformats.org/officeDocument/2006/math' &&
+    (element.localName === 'oMath' || element.localName === 'oMathPara') &&
+    !elements.some(ancestor => ancestor !== element && (() => {
+      for (let parent = element.parentNode; parent; parent = parent.parentNode) {
+        if (parent === ancestor) return true;
+        if (parent === paragraph) break;
+      }
+      return false;
+    })()));
 }
 
 function textOffsetsInParagraph(paragraph: Element): Map<Element, number> {
@@ -1385,6 +1413,23 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
   const runElements = ownRuns(paragraph);
   const runs = runElements.map((run, runIndex) => readRun(run, runIndex, styles, paragraph, index, imageContext, noteNumber,
     fieldRoles?.get(run)));
+  const math = mathElements(paragraph).map((element): MathInfo => {
+      let runOffset = 0;
+      for (const child of allElements(paragraph)) {
+        if (child === element) break;
+        if (child.namespaceURI === WORD_NS && child.localName === 'r') runOffset++;
+      }
+      const conversion = ommlToMathMlWithInfo(element);
+      const mathMl = conversion.node;
+      const linear = ommlToLinearTextWithInfo(element).text;
+      return {
+        runOffset,
+        display: element.localName === 'oMathPara' ? 'block' : 'inline',
+        linear,
+        mathMl,
+        ...(conversion.truncated ? { truncated: true } : {}),
+      };
+    });
   return {
     index,
     text: textOf(paragraph),
@@ -1399,6 +1444,7 @@ function readParagraph(paragraph: Element, index: number, styles: StylesContext,
     effective: computeEffectiveParagraphFormat(styles, paragraph),
     numbering,
     images: runs.flatMap(run => run.images ?? []),
+    ...(math.length ? { math } : {}),
   };
 }
 
@@ -4165,6 +4211,39 @@ export class DocxDocument {
       ? mainParagraphElements(bodyOf(document))
       : mainParagraphElements(blockContainerOf(document));
     return parseFields(paragraphs, ownRuns).fields;
+  }
+
+  getMath(partPath = this.mainPath): Array<MathInfo & { paragraph: number }> {
+    validatePath(partPath);
+    const document = this.getCachedPartDocument(partPath);
+    const container = partPath === this.mainPath ? bodyOf(document) : blockContainerOf(document);
+    const paragraphs = partPath === this.mainPath
+      ? mainParagraphElements(container)
+      : descendants(container, 'p');
+    const main = partPath === this.mainPath ? new Map(paragraphs.map((p, i) => [p, i])) : undefined;
+    const result: Array<MathInfo & { paragraph: number }> = [];
+    for (const [fallbackIndex, paragraph] of paragraphs.entries()) {
+      const paragraphIndex = main?.get(paragraph) ?? fallbackIndex;
+      const runs = ownRuns(paragraph);
+      mathElements(paragraph).forEach(element => {
+          let runOffset = 0;
+          for (const child of allElements(paragraph)) {
+            if (child === element) break;
+            if (child.namespaceURI === WORD_NS && child.localName === 'r') runOffset++;
+          }
+          const conversion = ommlToMathMlWithInfo(element);
+          const linear = ommlToLinearTextWithInfo(element).text;
+          result.push({
+            paragraph: paragraphIndex,
+            runOffset: Math.min(runOffset, runs.length),
+            display: element.localName === 'oMathPara' ? 'block' : 'inline',
+            linear,
+            mathMl: conversion.node,
+            ...(conversion.truncated ? { truncated: true } : {}),
+          });
+        });
+    }
+    return result;
   }
 
   getShapes(): ShapeInfo[] {

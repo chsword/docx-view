@@ -725,6 +725,94 @@ test('makeParagraph renders shapes only for matching renderShapeInfos', () => {
   assert.equal(withoutShape.childNodes[0].childNodes.some((node) => node.className.includes('docx-shape')), false);
 });
 
+test('makeParagraph renders a math-only paragraph as MathML', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const paragraph = {
+    index: 0,
+    text: '',
+    runs: [],
+    images: [],
+    math: [{
+      runOffset: 0,
+      display: 'block',
+      linear: 'x+1',
+      mathMl: { tag: 'math', attrs: { display: 'block' }, children: [{ tag: 'mi', text: 'x' }] },
+    }],
+  };
+  const rendered = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const math = rendered.childNodes[0].childNodes.find((node) => node.dataset?.docxMath === '1');
+  assert.ok(math);
+  assert.equal(math.tagName, 'MATH');
+  assert.equal(math.attributes.get('display'), 'block');
+  assert.equal(math.childNodes[0].tagName, 'MI');
+});
+
+test('pagination paragraph slices render each math exactly once', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.composing = false;
+  editor.renderAfterComposition = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  const mathMl = { tag: 'math', children: [{ tag: 'mi', text: 'x' }] };
+  const countMath = (paragraph) => {
+    const element = editor.makeParagraph(paragraph, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+    const walk = (node, out = []) => {
+      for (const child of node.childNodes ?? []) {
+        if (child.tagName) out.push(child.tagName);
+        walk(child, out);
+      }
+      return out;
+    };
+    return walk(element).filter((tag) => tag === 'MATH').length;
+  };
+  const renderedAcross = (paragraph, ranges) => ranges
+    .map(([start, end]) => countMath(editor.sliceParagraph(paragraph, start, end)))
+    .reduce((sum, count) => sum + count, 0);
+
+  // 末尾公式：runOffset 等于 run 数，没有任何 run 的索引与它相同
+  const trailing = {
+    index: 0,
+    text: '甲乙丙丁戊己',
+    runs: [
+      { index: 0, text: '甲乙', revisions: [] },
+      { index: 1, text: '丙丁', revisions: [] },
+      { index: 2, text: '戊己', revisions: [] },
+    ],
+    math: [{ runOffset: 3, display: 'inline', linear: 'x', mathMl }],
+  };
+  assert.equal(countMath(trailing), 1);
+  assert.deepEqual([[0, 2], [2, 4], [4, 6]].map(([start, end]) =>
+    editor.sliceParagraph(trailing, start, end).math?.length ?? 0), [0, 0, 1]);
+  assert.equal(renderedAcross(trailing, [[0, 2], [2, 4], [4, 6]]), 1);
+
+  // 中间公式：runOffset 同时是某个 run 的索引。该 run 单独成片时切片只有 1 个 run，
+  // 若用 runs.length 判断末尾公式，这一片会渲染两次。
+  const interior = {
+    index: 0,
+    text: '甲乙丙丁',
+    runs: [
+      { index: 0, text: '甲', revisions: [] },
+      { index: 1, text: '乙', revisions: [] },
+      { index: 2, text: '丙', revisions: [] },
+      { index: 3, text: '丁', revisions: [] },
+    ],
+    math: [{ runOffset: 3, display: 'inline', linear: 'x', mathMl }],
+  };
+  assert.equal(countMath(interior), 1);
+  assert.equal(countMath(editor.sliceParagraph(interior, 3, 4)), 1);
+  assert.equal(renderedAcross(interior, [[0, 1], [1, 2], [2, 3], [3, 4]]), 1);
+});
+
 test('paginated page content renders row subsets in their assigned columns', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();
