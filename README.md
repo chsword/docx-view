@@ -137,7 +137,7 @@ console.log(reopened.getSnapshot());
 
 `getParagraphs()` 和 `getBlocks()` 只包含正文段落；文本框（`w:txbxContent`）里的段落属于独立的只读文字流，通过 `getShapeParagraphs(shapeId)` 访问，不占用正文段落下标。正文按下标写入不会穿透到文本框内部。
 
-形状 SVG 渲染支持 `rect`、`roundRect`、`ellipse`、`triangle`、`rtTriangle`、`diamond`、`parallelogram`、`trapezoid`、`pentagon`、`hexagon`、`star5`、`rightArrow`、`leftArrow`、`upArrow`、`downArrow`、`leftRightArrow`、`line`、`straightConnector1`、`wedgeRectCallout` 和 `cloudCallout` 这 20 种 DrawingML 预设几何。其它预设以及含未支持指令的自定义几何以矩形绘制，但保留已读出的填充和线条；自定义路径目前处理首个 `a:path` 中的 `moveTo`、`lnTo`、`cubicBezTo` 与 `close`。支持实体色、线性渐变、透明度 `alpha`、线宽/虚线、旋转和翻转；`lumMod`、`lumOff` 等其他颜色变换不处理。
+形状 SVG 渲染支持 `rect`、`roundRect`、`ellipse`、`triangle`、`rtTriangle`、`diamond`、`parallelogram`、`trapezoid`、`pentagon`、`hexagon`、`star5`、`rightArrow`、`leftArrow`、`upArrow`、`downArrow`、`leftRightArrow`、`line`、`straightConnector1`、`wedgeRectCallout` 和 `cloudCallout` 这 20 种 DrawingML 预设几何。其它预设以及含未支持指令的自定义几何以矩形绘制，但保留已读出的填充和线条；自定义路径目前处理首个 `a:path` 中的 `moveTo`、`lnTo`、`cubicBezTo` 与 `close`。支持实体色、线性渐变、透明度 `alpha`、线宽/虚线、旋转和翻转；未指定填充或线条的形状使用浅色填充与细描边作为可见兜底。形状样式只取 `wps:style` 的 `fillRef` / `lnRef` 颜色，忽略 `idx` 指向的主题格式表渐变和效果预设；`lumMod`、`lumOff` 等其他颜色变换不处理。
 
 VML 支持 `v:shape`、`v:rect`、`v:oval`、`v:line` 的基础填充色/线条，以及内置类型 1、2、3、4、5、202、203 的常见几何映射；`v:path` 不解析，退化为矩形并保留颜色。形状 `blipFill` 只显示包内可渲染图片；外部链接图片不联网，以浅色虚线框占位。
 

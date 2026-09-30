@@ -214,11 +214,14 @@ function hslToRgb(hue: number, saturation: number, lightness: number): [number, 
   ];
 }
 
-function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined): string | undefined {
+function applyShadeTint(hex: string | undefined, shade: string | undefined, tint: string | undefined, percentageValues = false): string | undefined {
   const base = normalizeHex(hex);
   if (!base) return undefined;
-  const shadeValue = shade && /^[0-9a-f]{2}$/i.test(shade) ? parseInt(shade, 16) / 255 : undefined;
-  const tintValue = tint && /^[0-9a-f]{2}$/i.test(tint) ? parseInt(tint, 16) / 255 : undefined;
+  const transformValue = (value: string | undefined) => percentageValues
+    ? value && /^\d+$/.test(value) && Number(value) <= 100000 ? Number(value) / 100000 : undefined
+    : value && /^[0-9a-f]{2}$/i.test(value) ? parseInt(value, 16) / 255 : undefined;
+  const shadeValue = transformValue(shade);
+  const tintValue = transformValue(tint);
   if (shadeValue === undefined && tintValue === undefined) return base;
   const channels = base.match(/../g)!.map((channel) => parseInt(channel, 16));
   const [hue, saturation, lightness] = rgbToHsl(channels[0]!, channels[1]!, channels[2]!);
@@ -234,9 +237,9 @@ const THEME_COLOR_ALIASES: Record<string, string> = {
   tx1: 'dk1', bg1: 'lt1', tx2: 'dk2', bg2: 'lt2',
 };
 
-function resolveThemeValue(theme: ThemeInfo, name: string | undefined, shade: string | undefined, tint: string | undefined): string | undefined {
+function resolveThemeValue(theme: ThemeInfo, name: string | undefined, shade: string | undefined, tint: string | undefined, percentageValues = false): string | undefined {
   const key = THEME_COLOR_ALIASES[name ?? ''] ?? name ?? '';
-  return applyShadeTint(theme.colors[key], shade, tint);
+  return applyShadeTint(theme.colors[key], shade, tint, percentageValues);
 }
 
 function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
@@ -251,7 +254,9 @@ export function resolveDrawingColor(theme: ThemeInfo, element: Element | undefin
   const value = element.getAttribute('val') ?? undefined;
   const direct = normalizeHex(value);
   if (direct) return direct;
-  return resolveThemeValue(theme, value, element.getAttribute('shade') ?? undefined, element.getAttribute('tint') ?? undefined);
+  const modifier = (name: 'shade' | 'tint') =>
+    Array.from(element.getElementsByTagNameNS(DRAWINGML_NS, name))[0]?.getAttribute('val') ?? undefined;
+  return resolveThemeValue(theme, value, modifier('shade'), modifier('tint'), true);
 }
 
 function resolveUnderlineColor(theme: ThemeInfo, element: Element | undefined): string | undefined {

@@ -42,7 +42,9 @@ const presets: Record<string, ShapePath> = {
     return polygon([[0, h / 2 - half], [neck, h / 2 - half], [neck, 0], [w, h / 2], [neck, h], [neck, h / 2 + half], [0, h / 2 + half]]);
   },
   leftArrow: (w, h, a) => {
-    return `M ${w} ${h / 2 - h * (a.get('adj2') ?? 0.24)} L ${w * (1 - (a.get('adj1') ?? 0.62))} ${h / 2 - h * (a.get('adj2') ?? 0.24)} L ${w * (1 - (a.get('adj1') ?? 0.62))} 0 L 0 ${h / 2} L ${w * (1 - (a.get('adj1') ?? 0.62))} ${h} L ${w * (1 - (a.get('adj1') ?? 0.62))} ${h / 2 + h * (a.get('adj2') ?? 0.24)} L ${w} ${h / 2 + h * (a.get('adj2') ?? 0.24)} Z`;
+    const neck = w * Math.max(0.35, Math.min(0.8, a.get('adj1') ?? 0.62));
+    const half = h * Math.max(0.12, Math.min(0.45, a.get('adj2') ?? 0.24));
+    return polygon([[w, h / 2 - half], [w - neck, h / 2 - half], [w - neck, 0], [0, h / 2], [w - neck, h], [w - neck, h / 2 + half], [w, h / 2 + half]]);
   },
   upArrow: (w, h, a) => {
     const neck = h * Math.max(0.35, Math.min(0.8, a.get('adj1') ?? 0.62));

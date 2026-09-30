@@ -53,11 +53,16 @@ function colorWithAlpha(theme: ThemeInfo, color: Element | undefined): string | 
   return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 }
 
-function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>): NonNullable<ShapeInfo['fill']> | undefined {
+function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): NonNullable<ShapeInfo['fill']> | undefined {
   const fillNode = spPr && Array.from(spPr.childNodes).find((child) =>
     child.nodeType === 1 && (child as Element).namespaceURI === A_NS &&
     ['noFill', 'solidFill', 'gradFill', 'blipFill'].includes((child as Element).localName ?? '')) as Element | undefined;
-  if (!fillNode) return undefined;
+  if (!fillNode) {
+    const fillRef = style && descendants(style, A_NS, 'fillRef')[0];
+    const color = fillRef && (descendants(fillRef, A_NS, 'schemeClr')[0] ?? descendants(fillRef, A_NS, 'srgbClr')[0]);
+    const resolved = colorWithAlpha(theme, color);
+    return resolved ? { type: 'solid', color: resolved } : undefined;
+  }
   if (fillNode.localName === 'noFill') return { type: 'none' };
   if (fillNode.localName === 'solidFill') return { type: 'solid', color: colorWithAlpha(theme, descendants(fillNode, A_NS, 'srgbClr')[0] ?? descendants(fillNode, A_NS, 'schemeClr')[0]) };
   if (fillNode.localName === 'gradFill') {
@@ -79,20 +84,23 @@ function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationsh
   };
 }
 
-function readLine(spPr: Element | undefined, theme: ThemeInfo): ShapeInfo['line'] {
+function readLine(spPr: Element | undefined, theme: ThemeInfo, style?: Element): ShapeInfo['line'] {
   const line = spPr && Array.from(spPr.childNodes).find((child) =>
     child.nodeType === 1 && (child as Element).namespaceURI === A_NS && (child as Element).localName === 'ln') as Element | undefined;
-  if (!line) return undefined;
-  const color = descendants(line, A_NS, 'srgbClr')[0] ?? descendants(line, A_NS, 'schemeClr')[0];
-  const width = Number(line.getAttribute('w'));
-  const dashName = descendants(line, A_NS, 'prstDash')[0]?.getAttribute('val');
+  const lineRef = !line && style ? descendants(style, A_NS, 'lnRef')[0] : undefined;
+  if (!line && !lineRef) return undefined;
+  const color = line
+    ? descendants(line, A_NS, 'srgbClr')[0] ?? descendants(line, A_NS, 'schemeClr')[0]
+    : lineRef && (descendants(lineRef, A_NS, 'schemeClr')[0] ?? descendants(lineRef, A_NS, 'srgbClr')[0]);
+  const width = line ? Number(line.getAttribute('w')) : Number.NaN;
+  const dashName = line ? descendants(line, A_NS, 'prstDash')[0]?.getAttribute('val') : undefined;
   const dashes: Record<string, string> = {
     dash: '6 3', dashDot: '6 3 1 3', dot: '1 3', lgDash: '10 3', lgDashDot: '10 3 1 3',
     lgDashDotDot: '10 3 1 3 1 3', sysDash: '4 2', sysDashDot: '4 2 1 2', sysDot: '1 2',
   };
   return {
     ...(colorWithAlpha(theme, color) ? { color: colorWithAlpha(theme, color) } : {}),
-    ...(Number.isFinite(width) && width >= 0 ? { widthPx: emuToPx(width) } : {}),
+    ...(line && Number.isFinite(width) && width >= 0 ? { widthPx: emuToPx(width) } : {}),
     ...(dashName && dashes[dashName] ? { dash: dashes[dashName] } : {}),
   };
 }
@@ -142,6 +150,7 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
     const docPr = first(container, WP_NS, 'docPr');
     const wps = first(source, WPS_NS, 'wsp');
     const spPr = first(wps, WPS_NS, 'spPr');
+    const shapeStyle = first(wps, WPS_NS, 'style');
     const presetGeom = first(spPr, A_NS, 'prstGeom');
     const geometry = presetGeom?.getAttribute('prst') ?? undefined;
     const xfrm = first(spPr, A_NS, 'xfrm');
@@ -159,6 +168,9 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
         : first(container, WP_NS, 'wrapTopAndBottom') ? 'topAndBottom' : undefined)
       : undefined;
     const id = docPr?.getAttribute('id') ?? `${paragraph}:${run}:${ordinal + result.length}`;
+    const fill = readDrawingFill(spPr, theme, relationships, shapeStyle);
+    const line = readLine(spPr, theme, shapeStyle);
+    const hasAppearance = fill !== undefined || line !== undefined;
     result.push({
       id,
       paragraph,
@@ -174,8 +186,8 @@ function readDrawingShape(node: Element, paragraph: number, run: number, ordinal
       wrap,
       hasTextContent,
       geometry,
-      fill: readDrawingFill(spPr, theme, relationships),
-      line: readLine(spPr, theme),
+      ...(fill ? { fill } : hasAppearance ? {} : { fill: { type: 'solid' as const, color: '#f7f9fd' } }),
+      ...(line ? { line } : hasAppearance ? {} : { line: { color: '#c7d3e5', widthPx: 1 } }),
       ...(Number.isFinite(rotation) && rotation ? { rotation: rotation / 60000 } : {}),
       ...(xfrm?.getAttribute('flipH') === '1' || xfrm?.getAttribute('flipH') === 'true' ? { flipH: true } : {}),
       ...(xfrm?.getAttribute('flipV') === '1' || xfrm?.getAttribute('flipV') === 'true' ? { flipV: true } : {}),

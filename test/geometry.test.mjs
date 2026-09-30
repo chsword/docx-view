@@ -18,6 +18,13 @@ test('preset shape geometry returns deterministic paths for supported names', ()
   assert.equal(presetGeometryPath('flowChartMagneticDisk', 120, 80), undefined);
 });
 
+test('left arrow adjustments are clamped to keep the path within its bounds', () => {
+  assert.equal(
+    presetGeometryPath('leftArrow', 120, 80, new Map([['adj1', 5], ['adj2', 5]])),
+    presetGeometryPath('leftArrow', 120, 80, new Map([['adj1', 0.8], ['adj2', 0.45]])),
+  );
+});
+
 test('custom geometry scales supported path commands and rejects unsupported commands', () => {
   const geometry = {
     width: 100,
