@@ -346,6 +346,35 @@ test('makeShape leaves external picture fills as a local SVG placeholder', () =>
   assert.equal(partReads, 0);
 });
 
+test('makeShape renders package picture fills through an SVG pattern', () => {
+  const editor = makeRunRenderEditor();
+  let partReads = 0;
+  editor.document = { getPartBytes: (path) => {
+    assert.equal(path, 'word/media/shape.png');
+    partReads++;
+    return Uint8Array.from([1, 2, 3]);
+  } };
+  const wrapper = editor.makeShape({
+    id: 'internal-fill',
+    paragraph: 0,
+    run: 0,
+    kind: 'shape',
+    form: 'drawingml',
+    widthPx: 100,
+    heightPx: 50,
+    placement: 'inline',
+    hasTextContent: false,
+    fill: { type: 'picture', imagePartPath: 'word/media/shape.png' },
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const svg = wrapper.childNodes[0];
+  const pattern = svg.childNodes[0].childNodes[0];
+  const image = pattern.childNodes[0];
+  const shapePath = svg.childNodes.find((node) => node.tagName === 'PATH' || node.tagName === 'RECT');
+  assert.equal(shapePath.attributes.get('fill'), 'url(#shape-pattern-internal-fill)');
+  assert.match(image.attributes.get('href'), /^data:image\/png;base64,/);
+  assert.equal(partReads, 1);
+});
+
 test('makeShape falls back to a styled rectangle for unsupported presets', () => {
   const editor = makeRunRenderEditor();
   editor.document = {};
