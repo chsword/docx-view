@@ -10,6 +10,8 @@ import type {
   DocumentSnapshot,
   FieldKind,
   ImageInfo,
+  MathInfo,
+  MathMlNode,
   ParagraphInfo,
   PaginationInfo,
   ShapeInfo,
@@ -1317,7 +1319,31 @@ export class DocxEditor {
       this.focusContent(content);
     });
     let currentLineOffsetPx = 0;
+    const math = paragraph.math ?? [];
+    const appendMath = (info: MathInfo): void => {
+      const ns = 'http://www.w3.org/1998/Math/MathML';
+      const build = (node: MathMlNode): Element => {
+        const element = this.root.ownerDocument.createElementNS(ns, node.tag);
+        for (const [name, value] of Object.entries(node.attrs ?? {})) element.setAttribute(name, value);
+        if (node.text !== undefined) element.textContent = node.text;
+        for (const child of node.children ?? []) element.append(build(child));
+        return element;
+      };
+      const root = build(info.mathMl) as HTMLElement;
+      root.setAttribute('aria-label', info.linear);
+      root.contentEditable = 'false';
+      root.dataset.docxMath = '1';
+      if (info.display === 'block') root.style.display = 'block';
+      const semantics = this.root.ownerDocument.createElementNS(ns, 'semantics');
+      const annotation = this.root.ownerDocument.createElementNS(ns, 'annotation');
+      annotation.setAttribute('encoding', 'text/plain');
+      annotation.textContent = info.linear;
+      semantics.append(annotation);
+      root.append(semantics);
+      content.append(root);
+    };
     for (const run of paragraph.runs) {
+      for (const info of math.filter(item => item.runOffset === run.index)) appendMath(info);
       const visibleRun = this.reviewScopedRun(paragraph.index, run, reviewContext);
       currentLineOffsetPx = this.appendRun(content, paragraph, visibleRun, reviewContext, defaultTabStopTwips, currentLineOffsetPx);
       this.appendDeletedRunVisualization(content, paragraph.index, visibleRun, reviewContext);
@@ -1335,6 +1361,7 @@ export class DocxEditor {
         content.append(this.makeShape(shape, defaultTabStopTwips, reviewContext));
       }
     }
+    for (const info of math.filter(item => item.runOffset >= paragraph.runs.length)) appendMath(info);
 
     if (!paragraph.runs.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));

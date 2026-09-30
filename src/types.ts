@@ -147,6 +147,21 @@ export interface RunInfo extends RunFormat {
   field?: { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string };
 }
 
+export interface MathMlNode {
+  tag: string;
+  attrs?: Record<string, string>;
+  children?: MathMlNode[];
+  text?: string;
+}
+
+export interface MathInfo {
+  runOffset: number;
+  display: 'inline' | 'block';
+  linear: string;
+  mathMl: MathMlNode;
+  truncated?: boolean;
+}
+
 export interface ParagraphInfo extends ParagraphFormat {
   index: number;
   text: string;
@@ -155,6 +170,7 @@ export interface ParagraphInfo extends ParagraphFormat {
   effective?: ParagraphFormat;
   numbering?: NumberingInfo;
   images: ImageInfo[];
+  math?: MathInfo[];
 }
 
 export type FieldKind =
