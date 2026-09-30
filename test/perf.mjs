@@ -130,6 +130,30 @@ function singleSetParagraphText(count) {
   };
 }
 
+function paragraphPreservingWrites(method, paragraphCount, operationCount = 200) {
+  return {
+    setup: () => {
+      const doc = seededDocument(paragraphCount);
+      if (method === 'setParagraphLevel') {
+        const numId = doc.createNumbering('decimal');
+        doc.setParagraphNumbering(0, numId);
+      } else if (method === 'setCellText') {
+        doc.insertTable([['cell']]);
+      }
+      doc.clearHistory();
+      return doc;
+    },
+    run: (doc) => {
+      for (let i = 0; i < operationCount; i++) {
+        if (method === 'formatParagraph') doc.formatParagraph(0, { alignment: i % 2 ? 'left' : 'right' });
+        else if (method === 'formatRun') doc.formatRun(0, 0, { fontSize: i % 2 ? 11 : 12 });
+        else if (method === 'setParagraphLevel') doc.setParagraphLevel(0, i % 2 ? -1 : 1);
+        else if (method === 'setCellText') doc.setCellText(0, 0, 0, `cell-${i % 2}`);
+      }
+    },
+  };
+}
+
 // 在一份固定大小的文档上，把同样多的改写拆成 chunkSize 一批。
 // 两侧每个样本做的工作量完全相同 —— 这样 JIT 与堆的轨迹一致，
 // 比值才只反映批处理粒度本身，不掺进「小的那侧越跑越快」的假象。
@@ -200,6 +224,18 @@ test('performance regression: setParagraphText retains its delta speed advantage
   assertRatioAbove(result, 6, 'insertParagraph cost ratio',
     'single insert x1000 into 1000 seeded paragraphs', 'setParagraphText x1000');
 });
+
+for (const method of ['formatParagraph', 'formatRun', 'setParagraphLevel', 'setCellText']) {
+  test(`performance regression: ${method} retains its paragraph-delta speed advantage`, () => {
+    // setParagraphText is the existing fast delta path, so shared slowdowns cannot hide in both sides.
+    const result = measurePairedRatio(
+      singleSetParagraphText(200),
+      paragraphPreservingWrites(method, 2000),
+    );
+    assertRatioAbove(result, 0.08, `${method} delta speed ratio`,
+      'setParagraphText x200 into 2000 seeded paragraphs', `${method} x200`);
+  });
+}
 
 test('performance regression: batched inserts remain materially faster than repeated single inserts', () => {
   const result = measurePairedRatio(batchInsert(300), singleInsert(300));
