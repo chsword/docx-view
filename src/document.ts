@@ -76,6 +76,7 @@ import {
   setDocumentProtectionOn, setNoteSettingsOn, setTrackChangesOn, type NoteKind,
 } from './notes.js';
 import {
+  type CommentCaches,
   W14_NS,
   parseCommentEntries,
   type CommentContext,
@@ -2760,14 +2761,12 @@ export class DocxDocument {
   private documents = new Map<string, Document>();
   private dirtyPartXml = new Set<string>();
   private dirtyPartSizes = new Map<string, number>();
-  private caches: CacheBundle & {
+  private caches: CacheBundle & CommentCaches & {
     numberingContextCache?: NumberingContext;
     stylesCache?: { revision: number; context: StylesContext };
     outlineCache?: { revision: number; outline: OutlineNode[] };
     noteStateCache?: { revision: number; state: NoteState };
-    commentStateCache?: { revision: number; comments: CommentInfo[] };
     contentPartPathsCache?: { revision: number; paths: string[] };
-    commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
     revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
     reviewerInfoCache?: { revision: number; reviewers: ReviewerInfo[] };
     tableCellLocationCache?: { revision: number; locations: Map<number, TableCellLocation> };

@@ -25,11 +25,14 @@ export interface CommentPartBinding {
 
 type Bound<F> = F extends (ctx: CommentContext, ...args: infer A) => infer R ? (...args: A) => R : never;
 
+/** The two comment caches, declared once so DocxDocument and this module cannot drift apart. */
+export interface CommentCaches {
+  commentStateCache?: { revision: number; comments: CommentInfo[] };
+  commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
+}
+
 export interface CommentContext extends PartAccess, HistoryRecorder<CommentContext> {
-  caches: CacheBundle & {
-    commentStateCache?: { revision: number; comments: CommentInfo[] };
-    commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
-  };
+  caches: CacheBundle & CommentCaches;
   mayContainComments: Bound<typeof mayContainComments>;
   commentBindings: Bound<typeof commentBindings>;
   collectCommentLocations: Bound<typeof collectCommentLocations>;
