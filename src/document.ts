@@ -76,21 +76,43 @@ import {
   setDocumentProtectionOn, setNoteSettingsOn, setTrackChangesOn, type NoteKind,
 } from './notes.js';
 import {
-  COMMENTS_EXTENDED_REL,
-  COMMENTS_EXTENDED_TYPE,
-  COMMENTS_REL,
-  COMMENTS_TYPE,
   W14_NS,
-  W15_NS,
-  commentParagraphStyle,
-  commentReferenceStyle,
-  defaultCommentsExtendedXml,
-  defaultCommentsXml,
-  ensureCommentParagraphParaId,
-  makeCommentAnnotationRun,
   parseCommentEntries,
-  parseCommentExEntries,
+  type CommentContext,
+  type CommentLocation,
+  type CommentPartBinding,
+  mayContainComments,
+  commentBindings,
+  collectCommentLocations,
+  readCommentBody,
+  getAllComments,
+  getCommentsPartPath,
+  getCommentsExtendedPartPath,
+  getComments,
+  ensureCommentsParts,
+  nextCommentId,
+  nextCommentParaId,
+  locateComment,
+  ensureCommentParaId,
+  writeCommentBody,
+  upsertCommentEx,
+  removeRelationshipTarget,
+  relationshipCount,
+  removePartOverride,
+  removePartAndOverride,
+  cleanupCommentParts,
+  addComment,
+  addCommentDirect,
+  replyComment,
+  replyCommentDirect,
+  setCommentResolved,
+  setCommentResolvedDirect,
+  setCommentText,
+  setCommentTextDirect,
+  deleteComment,
+  deleteCommentDirect,
 } from './comments.js';
+import type { CacheBundle } from './internal/context.js';
 import {
   createRevisionWrapper,
   deletedTextOf,
@@ -1243,13 +1265,6 @@ function noteReferenceInRun(run: Element): { kind: NoteKind; id: number; customM
   return null;
 }
 
-function commentReferenceInRun(run: Element): number | null {
-  const reference = children(run, 'commentReference')[0];
-  if (!reference) return null;
-  const id = Number(reference.getAttributeNS(WORD_NS, 'id') ?? reference.getAttribute('w:id'));
-  return Number.isSafeInteger(id) && id >= 0 ? id : null;
-}
-
 interface NoteReferenceRecord {
   kind: NoteKind;
   id: number;
@@ -1263,21 +1278,6 @@ interface NoteState {
   byKind: Record<NoteKind, Map<number, { number: number; marker: string }>>;
   refs: NoteReferenceRecord[];
   entries: Record<NoteKind, Map<number, ReturnType<typeof parseNoteEntries>[number]>>;
-}
-
-interface CommentLocation {
-  sourcePartPath: string;
-  paragraph?: number;
-  runs?: number[];
-  startParagraph?: number;
-  endParagraph?: number;
-  order: number;
-}
-
-interface CommentPartBinding {
-  sourcePartPath: string;
-  commentsPath?: string;
-  commentsExtendedPath?: string;
 }
 
 function normalizedNoteSettingsPatch(input: Partial<NoteSettings>): Partial<NoteSettings> {
@@ -2558,17 +2558,8 @@ function preOrderElements(root: Element): Element[] {
   return result;
 }
 
-function cloneCommentInfo(comment: CommentInfo): CommentInfo {
-  return JSON.parse(JSON.stringify(comment)) as CommentInfo;
-}
-
 function cloneReviewerInfo(reviewer: ReviewerInfo): ReviewerInfo {
   return JSON.parse(JSON.stringify(reviewer)) as ReviewerInfo;
-}
-
-function normalizeCommentDate(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  return Number.isFinite(Date.parse(value)) ? value : undefined;
 }
 
 function updateStyleLength(style: string | null, name: string, points: number): string {
@@ -2769,16 +2760,18 @@ export class DocxDocument {
   private documents = new Map<string, Document>();
   private dirtyPartXml = new Set<string>();
   private dirtyPartSizes = new Map<string, number>();
-  private numberingContextCache?: NumberingContext;
-  private stylesCache?: { revision: number; context: StylesContext };
-  private outlineCache?: { revision: number; outline: OutlineNode[] };
-  private noteStateCache?: { revision: number; state: NoteState };
-  private commentStateCache?: { revision: number; comments: CommentInfo[] };
-  private contentPartPathsCache?: { revision: number; paths: string[] };
-  private commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
-  private revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
-  private reviewerInfoCache?: { revision: number; reviewers: ReviewerInfo[] };
-  private tableCellLocationCache?: { revision: number; locations: Map<number, TableCellLocation> };
+  private caches: CacheBundle & {
+    numberingContextCache?: NumberingContext;
+    stylesCache?: { revision: number; context: StylesContext };
+    outlineCache?: { revision: number; outline: OutlineNode[] };
+    noteStateCache?: { revision: number; state: NoteState };
+    commentStateCache?: { revision: number; comments: CommentInfo[] };
+    contentPartPathsCache?: { revision: number; paths: string[] };
+    commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
+    revisionInfoCache?: { revision: number; mainPath: string; stylesRevision: number; revisions: RevisionInfo[] };
+    reviewerInfoCache?: { revision: number; reviewers: ReviewerInfo[] };
+    tableCellLocationCache?: { revision: number; locations: Map<number, TableCellLocation> };
+  } = {};
   private imageDataUrls = new Map<string, { revision: number; contentType: string; url: string }>();
   private undoHistory: HistoryState[] = [];
   private redoHistory: HistoryState[] = [];
@@ -2798,6 +2791,73 @@ export class DocxDocument {
   private constructor(parts: Map<string, Uint8Array>) {
     this.parts = parts;
     this.mainPath = this.validatePackage();
+  }
+
+  private get commentContext(): CommentContext {
+    const owner = this;
+    return {
+      get mainPath() { return owner.mainPath; },
+      get revision() { return owner.revision; },
+      get caches() { return owner.caches; },
+      hasPart: (path) => owner.parts.has(path),
+      readPart: (path) => owner.parts.get(path),
+      deletePart: (path) => { owner.parts.delete(path); },
+      forgetPartDocument: (path) => { owner.documents.delete(path); },
+      forgetDirtyPartXml: (path) => { owner.dirtyPartXml.delete(path); },
+      forgetDirtyPartSize: (path) => { owner.dirtyPartSizes.delete(path); },
+      getPartDocument: (path) => owner.getPartDocument(path),
+      partDocumentOrUndefined: (path) => owner.partDocumentOrUndefined(path),
+      updatePartXml: (path, update) => owner.updatePartXml(path, update),
+      addPart: (path, bytes, contentType) => owner.addPart(path, bytes, contentType),
+      relatedPartPathFor: (source, type) => owner.relatedPartPathFor(source, type),
+      contentPartPaths: () => owner.contentPartPaths(),
+      ensurePartRelationship: (source, type, target) => owner.ensurePartRelationship(source, type, target),
+      withDraft: (action) => owner.withDraft((draft) => action(draft.commentContext)),
+      mayContainComments: (...args) => owner.mayContainComments(...args),
+      commentBindings: (...args) => owner.commentBindings(...args),
+      collectCommentLocations: (...args) => owner.collectCommentLocations(...args),
+      readCommentBody: (...args) => owner.readCommentBody(...args),
+      getAllComments: (...args) => owner.getAllComments(...args),
+      getCommentsPartPath: (...args) => owner.getCommentsPartPath(...args),
+      getCommentsExtendedPartPath: (...args) => owner.getCommentsExtendedPartPath(...args),
+      ensureCommentsParts: (...args) => owner.ensureCommentsParts(...args),
+      nextCommentId: (...args) => owner.nextCommentId(...args),
+      nextCommentParaId: (...args) => owner.nextCommentParaId(...args),
+      locateComment: (...args) => owner.locateComment(...args),
+      ensureCommentParaId: (...args) => owner.ensureCommentParaId(...args),
+      writeCommentBody: (...args) => owner.writeCommentBody(...args),
+      upsertCommentEx: (...args) => owner.upsertCommentEx(...args),
+      removeRelationshipTarget: (...args) => owner.removeRelationshipTarget(...args),
+      relationshipCount: (...args) => owner.relationshipCount(...args),
+      removePartOverride: (...args) => owner.removePartOverride(...args),
+      removePartAndOverride: (...args) => owner.removePartAndOverride(...args),
+      cleanupCommentParts: (...args) => owner.cleanupCommentParts(...args),
+      addCommentDirect: (...args) => owner.addCommentDirect(...args),
+      replyCommentDirect: (...args) => owner.replyCommentDirect(...args),
+      setCommentResolvedDirect: (...args) => owner.setCommentResolvedDirect(...args),
+      setCommentTextDirect: (...args) => owner.setCommentTextDirect(...args),
+      deleteCommentDirect: (...args) => owner.deleteCommentDirect(...args),
+      boundaryRun: (...args) => owner.boundaryRun(...args),
+      buildBlocksFromElement: (...args) => owner.buildBlocksFromElement(...args),
+      getStylesContext: (...args) => owner.getStylesContext(...args),
+      normalizeRangeOn: (...args) => owner.normalizeRangeOn(...args),
+      normalizeDocumentRange: (...args) => owner.normalizeDocumentRange(...args),
+      splitRunAtOffset: (...args) => owner.splitRunAtOffset(...args),
+      blockContainerOf,
+      preOrderElements,
+      ownRuns,
+      nearestParagraph,
+      paragraphAt,
+      properties,
+      property,
+      appendText,
+      basename,
+      dirname,
+      relsPath,
+      encodeXml,
+      decodeXml,
+      normalizeReviewerFilterAuthors,
+    };
   }
 
   static create(): DocxDocument {
@@ -2865,16 +2925,16 @@ export class DocxDocument {
     result.pendingMergedHistory = undefined;
     result.nextHistoryLabel = undefined;
     result.nextHistoryAction = { kind: 'other' };
-    result.numberingContextCache = undefined;
-    result.stylesCache = undefined;
-    result.noteStateCache = undefined;
-    result.commentStateCache = undefined;
-    result.contentPartPathsCache = undefined;
-    result.commentBindingsCache = undefined;
-    result.revisionInfoCache = undefined;
-    result.reviewerInfoCache = undefined;
-    result.outlineCache = undefined;
-    result.tableCellLocationCache = undefined;
+    result.caches.numberingContextCache = undefined;
+    result.caches.stylesCache = undefined;
+    result.caches.noteStateCache = undefined;
+    result.caches.commentStateCache = undefined;
+    result.caches.contentPartPathsCache = undefined;
+    result.caches.commentBindingsCache = undefined;
+    result.caches.revisionInfoCache = undefined;
+    result.caches.reviewerInfoCache = undefined;
+    result.caches.outlineCache = undefined;
+    result.caches.tableCellLocationCache = undefined;
     result.imageDataUrls.clear();
     result.suppressHistory = false;
     return result;
@@ -3220,14 +3280,14 @@ export class DocxDocument {
       this.assertPackageLimits();
       this.mainPath = this.validatePackage();
       this.currentRevision++;
-      this.numberingContextCache = undefined;
-      this.stylesCache = undefined;
-      this.outlineCache = undefined;
-      this.noteStateCache = undefined;
-      this.commentStateCache = undefined;
-      this.revisionInfoCache = undefined;
-      this.reviewerInfoCache = undefined;
-      this.tableCellLocationCache = undefined;
+      this.caches.numberingContextCache = undefined;
+      this.caches.stylesCache = undefined;
+      this.caches.outlineCache = undefined;
+      this.caches.noteStateCache = undefined;
+      this.caches.commentStateCache = undefined;
+      this.caches.revisionInfoCache = undefined;
+      this.caches.reviewerInfoCache = undefined;
+      this.caches.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       else this.applyPendingMergedHistory();
@@ -3295,14 +3355,14 @@ export class DocxDocument {
       dirtyPartSizes: new Map(this.dirtyPartSizes),
       mainPath: this.mainPath,
       revision: this.currentRevision,
-      numberingContextCache: this.numberingContextCache,
-      stylesCache: this.stylesCache,
-      outlineCache: this.outlineCache,
-      noteStateCache: this.noteStateCache,
-      commentStateCache: this.commentStateCache,
-      revisionInfoCache: this.revisionInfoCache,
-      reviewerInfoCache: this.reviewerInfoCache,
-      tableCellLocationCache: this.tableCellLocationCache,
+      numberingContextCache: this.caches.numberingContextCache,
+      stylesCache: this.caches.stylesCache,
+      outlineCache: this.caches.outlineCache,
+      noteStateCache: this.caches.noteStateCache,
+      commentStateCache: this.caches.commentStateCache,
+      revisionInfoCache: this.caches.revisionInfoCache,
+      reviewerInfoCache: this.caches.reviewerInfoCache,
+      tableCellLocationCache: this.caches.tableCellLocationCache,
       imageDataUrls: new Map(this.imageDataUrls),
     };
   }
@@ -3314,14 +3374,14 @@ export class DocxDocument {
     this.dirtyPartSizes = state.dirtyPartSizes;
     this.mainPath = state.mainPath;
     this.currentRevision = state.revision;
-    this.numberingContextCache = state.numberingContextCache;
-    this.stylesCache = state.stylesCache;
-    this.outlineCache = state.outlineCache;
-    this.noteStateCache = state.noteStateCache;
-    this.commentStateCache = state.commentStateCache;
-    this.revisionInfoCache = state.revisionInfoCache;
-    this.reviewerInfoCache = state.reviewerInfoCache;
-    this.tableCellLocationCache = state.tableCellLocationCache;
+    this.caches.numberingContextCache = state.numberingContextCache;
+    this.caches.stylesCache = state.stylesCache;
+    this.caches.outlineCache = state.outlineCache;
+    this.caches.noteStateCache = state.noteStateCache;
+    this.caches.commentStateCache = state.commentStateCache;
+    this.caches.revisionInfoCache = state.revisionInfoCache;
+    this.caches.reviewerInfoCache = state.reviewerInfoCache;
+    this.caches.tableCellLocationCache = state.tableCellLocationCache;
     this.imageDataUrls = state.imageDataUrls;
   }
 
@@ -3524,14 +3584,14 @@ export class DocxDocument {
   }
 
   private invalidateMutationCaches(): void {
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.outlineCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.reviewerInfoCache = undefined;
-    this.tableCellLocationCache = undefined;
+    this.caches.numberingContextCache = undefined;
+    this.caches.stylesCache = undefined;
+    this.caches.outlineCache = undefined;
+    this.caches.noteStateCache = undefined;
+    this.caches.commentStateCache = undefined;
+    this.caches.revisionInfoCache = undefined;
+    this.caches.reviewerInfoCache = undefined;
+    this.caches.tableCellLocationCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -3582,14 +3642,14 @@ export class DocxDocument {
       bodyOf(this.getCachedPartDocument(this.mainPath));
     }
     this.currentRevision++;
-    this.numberingContextCache = undefined;
-    this.stylesCache = undefined;
-    this.outlineCache = undefined;
-    this.noteStateCache = undefined;
-    this.commentStateCache = undefined;
-    this.revisionInfoCache = undefined;
-    this.reviewerInfoCache = undefined;
-    this.tableCellLocationCache = undefined;
+    this.caches.numberingContextCache = undefined;
+    this.caches.stylesCache = undefined;
+    this.caches.outlineCache = undefined;
+    this.caches.noteStateCache = undefined;
+    this.caches.commentStateCache = undefined;
+    this.caches.revisionInfoCache = undefined;
+    this.caches.reviewerInfoCache = undefined;
+    this.caches.tableCellLocationCache = undefined;
     this.imageDataUrls.clear();
   }
 
@@ -3792,7 +3852,7 @@ export class DocxDocument {
   }
 
   private getStylesContext(): StylesContext {
-    if (this.stylesCache?.revision === this.revision) return this.stylesCache.context;
+    if (this.caches.stylesCache?.revision === this.revision) return this.caches.stylesCache.context;
     const stylesPath = this.getStylesPath();
     const themePath = this.getRelatedPartPath(THEME_REL, 'word/theme/theme1.xml');
     let stylesRoot: Element | undefined;
@@ -3800,12 +3860,12 @@ export class DocxDocument {
     try { stylesRoot = stylesPath ? this.getCachedPartDocument(stylesPath).documentElement ?? undefined : undefined; } catch { stylesRoot = undefined; }
     try { themeRoot = themePath ? this.getCachedPartDocument(themePath).documentElement ?? undefined : undefined; } catch { themeRoot = undefined; }
     const context = parseStyles(stylesRoot, themeRoot);
-    this.stylesCache = { revision: this.revision, context };
+    this.caches.stylesCache = { revision: this.revision, context };
     return context;
   }
 
   private getNoteState(): NoteState {
-    if (this.noteStateCache?.revision === this.revision) return this.noteStateCache.state;
+    if (this.caches.noteStateCache?.revision === this.revision) return this.caches.noteStateCache.state;
     const footnotePath = this.getNotePartPath('footnote');
     const endnotePath = this.getNotePartPath('endnote');
     const state = !footnotePath && !endnotePath
@@ -3815,12 +3875,12 @@ export class DocxDocument {
           entries: { footnote: new Map(), endnote: new Map() },
         }
       : this.collectNoteState(bodyOf(this.getCachedPartDocument(this.mainPath)));
-    this.noteStateCache = { revision: this.revision, state };
+    this.caches.noteStateCache = { revision: this.revision, state };
     return state;
   }
 
   private contentPartPaths(): string[] {
-    if (this.contentPartPathsCache?.revision === this.revision) return [...this.contentPartPathsCache.paths];
+    if (this.caches.contentPartPathsCache?.revision === this.revision) return [...this.caches.contentPartPathsCache.paths];
     const paths = this.listParts().filter((path) => {
       try {
         const root = this.getCachedPartDocument(path).documentElement;
@@ -3829,7 +3889,7 @@ export class DocxDocument {
         return false;
       }
     });
-    this.contentPartPathsCache = { revision: this.revision, paths };
+    this.caches.contentPartPathsCache = { revision: this.revision, paths };
     return [...paths];
   }
 
@@ -3856,217 +3916,36 @@ export class DocxDocument {
   }
 
   private mayContainComments(path: string): boolean {
-    const bytes = this.parts.get(path);
-    if (!bytes) return false;
-    try {
-      const xml = decodeXml(bytes);
-      return /commentRange(Start|End)|commentReference|<w:comment\b/i.test(xml);
-    } catch {
-      return false;
-    }
+    return mayContainComments(this.commentContext, path);
   }
 
   private commentBindings(): CommentPartBinding[] {
-    if (this.commentBindingsCache?.revision === this.revision) return this.commentBindingsCache.bindings.map((binding) => ({ ...binding }));
-    const bindings = this.contentPartPaths()
-      .map((sourcePartPath) => ({
-        sourcePartPath,
-        commentsPath: this.relatedPartPathFor(sourcePartPath, COMMENTS_REL),
-        commentsExtendedPath: this.relatedPartPathFor(sourcePartPath, COMMENTS_EXTENDED_REL),
-      }))
-      .filter((binding) => binding.commentsPath || binding.commentsExtendedPath || this.mayContainComments(binding.sourcePartPath));
-    this.commentBindingsCache = { revision: this.revision, bindings };
-    return bindings.map((binding) => ({ ...binding }));
+    return commentBindings(this.commentContext);
   }
 
   private collectCommentLocations(sourcePartPath: string): Map<number, CommentLocation> {
-    const document = this.partDocumentOrUndefined(sourcePartPath);
-    if (!document) return new Map();
-    let container: Element;
-    try {
-      container = blockContainerOf(document);
-    } catch {
-      return new Map();
-    }
-    const paragraphs = descendants(container, 'p');
-    const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    const order = preOrderElements(container);
-    const orderIndex = new Map(order.map((element, index) => [element, index]));
-    const starts = new Map<number, Element>();
-    const ends = new Map<number, Element>();
-    const refs = new Map<number, { paragraph: number; run: number }[]>();
-    for (const start of descendants(container, 'commentRangeStart')) {
-      const id = Number(start.getAttributeNS(WORD_NS, 'id') ?? start.getAttribute('w:id'));
-      if (Number.isSafeInteger(id) && id >= 0 && !starts.has(id)) starts.set(id, start);
-    }
-    for (const end of descendants(container, 'commentRangeEnd')) {
-      const id = Number(end.getAttributeNS(WORD_NS, 'id') ?? end.getAttribute('w:id'));
-      if (Number.isSafeInteger(id) && id >= 0) ends.set(id, end);
-    }
-    for (const [paragraph, paragraphNumber] of paragraphIndex.entries()) {
-      for (const [runNumber, run] of ownRuns(paragraph).entries()) {
-        const id = commentReferenceInRun(run);
-        if (id === null) continue;
-        const list = refs.get(id) ?? [];
-        list.push({ paragraph: paragraphNumber, run: runNumber });
-        refs.set(id, list);
-      }
-    }
-    const result = new Map<number, CommentLocation>();
-    const ids = new Set<number>([...starts.keys(), ...ends.keys(), ...refs.keys()]);
-    for (const id of ids) {
-      const start = starts.get(id);
-      const end = ends.get(id);
-      if (start && end) {
-        const startParagraph = nearestParagraph(start);
-        const endParagraph = nearestParagraph(end);
-        const startParagraphNumber = startParagraph ? paragraphIndex.get(startParagraph) : undefined;
-        const endParagraphNumber = endParagraph ? paragraphIndex.get(endParagraph) : undefined;
-        const startOrder = orderIndex.get(start) ?? Number.MAX_SAFE_INTEGER;
-        const endOrder = orderIndex.get(end) ?? Number.MAX_SAFE_INTEGER;
-        if (startParagraph && endParagraph && startParagraphNumber !== undefined && endParagraphNumber !== undefined) {
-          if (startParagraph === endParagraph) {
-            const runs = ownRuns(startParagraph).flatMap((run, runIndex) => {
-              const position = orderIndex.get(run) ?? -1;
-              return position > startOrder && position < endOrder ? [runIndex] : [];
-            });
-            if (runs.length) {
-              result.set(id, { sourcePartPath, paragraph: startParagraphNumber, runs, order: startOrder });
-              continue;
-            }
-          }
-          result.set(id, {
-            sourcePartPath,
-            startParagraph: startParagraphNumber,
-            endParagraph: endParagraphNumber,
-            order: startOrder,
-          });
-          continue;
-        }
-      }
-      const references = refs.get(id)?.slice().sort((a, b) => a.paragraph - b.paragraph || a.run - b.run) ?? [];
-      if (!references.length) continue;
-      const first = references[0]!;
-      const last = references[references.length - 1]!;
-      if (references.every((entry) => entry.paragraph === first.paragraph)) {
-        result.set(id, {
-          sourcePartPath,
-          paragraph: first.paragraph,
-          runs: [...new Set(references.map((entry) => entry.run))],
-          order: first.paragraph * 10_000 + first.run,
-        });
-      } else {
-        result.set(id, {
-          sourcePartPath,
-          startParagraph: first.paragraph,
-          endParagraph: last.paragraph,
-          order: first.paragraph * 10_000 + first.run,
-        });
-      }
-    }
-    return result;
+    return collectCommentLocations(this.commentContext, sourcePartPath);
   }
 
   private readCommentBody(entry: ReturnType<typeof parseCommentEntries>[number], commentsPath: string): { blocks: DocumentBlock[]; text: string } {
-    const blocks = this.buildBlocksFromElement(entry.element, this.getStylesContext(), () => null, commentsPath);
-    const text = blocks
-      .flatMap((block) => block.type === 'paragraph' ? [block.paragraph.text] : [])
-      .join('\n')
-      .trim();
-    return { blocks, text };
+    return readCommentBody(this.commentContext, entry, commentsPath);
   }
 
   private getAllComments(): CommentInfo[] {
-    if (this.commentStateCache?.revision === this.revision) return this.commentStateCache.comments;
-    const bindings = this.commentBindings();
-    if (!bindings.length) {
-      this.commentStateCache = { revision: this.revision, comments: [] };
-      return [];
-    }
-    const locations = new Map<number, CommentLocation>();
-    for (const binding of bindings) {
-      for (const [id, location] of this.collectCommentLocations(binding.sourcePartPath)) {
-        const previous = locations.get(id);
-        if (!previous || location.order < previous.order) locations.set(id, location);
-      }
-    }
-    const entries = new Map<number, { entry: ReturnType<typeof parseCommentEntries>[number]; commentsPath: string }>();
-    const exEntries = new Map<string, ReturnType<typeof parseCommentExEntries>[number]>();
-    const parsedCommentsPaths = new Set<string>();
-    const parsedExtendedPaths = new Set<string>();
-    for (const binding of bindings) {
-      if (binding.commentsPath && !parsedCommentsPaths.has(binding.commentsPath) && this.parts.has(binding.commentsPath)) {
-        parsedCommentsPaths.add(binding.commentsPath);
-        for (const entry of parseCommentEntries(this.partDocumentOrUndefined(binding.commentsPath) ?? null)) {
-          if (!entries.has(entry.id)) entries.set(entry.id, { entry, commentsPath: binding.commentsPath });
-        }
-      }
-      if (binding.commentsExtendedPath && !parsedExtendedPaths.has(binding.commentsExtendedPath) && this.parts.has(binding.commentsExtendedPath)) {
-        parsedExtendedPaths.add(binding.commentsExtendedPath);
-        for (const entry of parseCommentExEntries(this.partDocumentOrUndefined(binding.commentsExtendedPath) ?? null)) exEntries.set(entry.paraId, entry);
-      }
-    }
-    const paraToId = new Map<string, number>();
-    for (const [id, { entry }] of entries) {
-      if (entry.paraId) paraToId.set(entry.paraId.toUpperCase(), id);
-    }
-    const comments = new Map<number, CommentInfo>();
-    const ids = new Set<number>([...locations.keys(), ...entries.keys()]);
-    for (const id of ids) {
-      const location = locations.get(id);
-      const entryInfo = entries.get(id);
-      const entry = entryInfo?.entry;
-      const extended = entry?.paraId ? exEntries.get(entry.paraId.toUpperCase()) : undefined;
-      const body = entry && entryInfo ? this.readCommentBody(entry, entryInfo.commentsPath) : undefined;
-      const anchor = location
-        ? (location.runs
-            ? { sourcePartPath: location.sourcePartPath, paragraph: location.paragraph!, runs: [...location.runs] }
-            : { sourcePartPath: location.sourcePartPath, startParagraph: location.startParagraph!, endParagraph: location.endParagraph! }) satisfies CommentAnchor
-        : undefined;
-      comments.set(id, {
-        id,
-        author: entry?.element.getAttributeNS(WORD_NS, 'author') ?? entry?.element.getAttribute('w:author') ?? undefined,
-        initials: entry?.element.getAttributeNS(WORD_NS, 'initials') ?? entry?.element.getAttribute('w:initials') ?? undefined,
-        date: normalizeCommentDate(entry?.element.getAttributeNS(WORD_NS, 'date') ?? entry?.element.getAttribute('w:date') ?? undefined),
-        text: body?.text ?? '',
-        blocks: body?.blocks,
-        anchor,
-        parentId: extended?.paraIdParent ? paraToId.get(extended.paraIdParent) : undefined,
-        resolved: extended?.done,
-        isOrphan: !entry || !anchor,
-      });
-    }
-    for (const comment of comments.values()) {
-      if (!comment.anchor && comment.parentId !== undefined) {
-        const parent = comments.get(comment.parentId);
-        if (parent?.anchor) {
-          comment.anchor = cloneCommentInfo({ ...parent, blocks: undefined }).anchor;
-          comment.isOrphan = false;
-        }
-      }
-    }
-    const ordered = [...comments.values()].sort((a, b) => {
-      const aLocation = locations.get(a.id)?.order ?? Number.MAX_SAFE_INTEGER;
-      const bLocation = locations.get(b.id)?.order ?? Number.MAX_SAFE_INTEGER;
-      return aLocation - bLocation || a.id - b.id;
-    });
-    this.commentStateCache = { revision: this.revision, comments: ordered };
-    return ordered;
+    return getAllComments(this.commentContext);
   }
 
   private getCommentsPartPath(sourcePartPath = this.mainPath): string | undefined {
-    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`;
-    return this.relatedPartPathFor(sourcePartPath, COMMENTS_REL) ?? (this.parts.has(conventional) ? conventional : undefined);
+    return getCommentsPartPath(this.commentContext, sourcePartPath);
   }
 
   private getCommentsExtendedPartPath(sourcePartPath = this.mainPath): string | undefined {
-    const conventional = `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`;
-    return this.relatedPartPathFor(sourcePartPath, COMMENTS_EXTENDED_REL) ?? (this.parts.has(conventional) ? conventional : undefined);
+    return getCommentsExtendedPartPath(this.commentContext, sourcePartPath);
   }
 
   private getNumberingContext(): NumberingContext {
-    if (this.numberingContextCache?.revision === this.revision && this.numberingContextCache.mainPath === this.mainPath) {
-      return this.numberingContextCache;
+    if (this.caches.numberingContextCache?.revision === this.revision && this.caches.numberingContextCache.mainPath === this.mainPath) {
+      return this.caches.numberingContextCache;
     }
     const numberingPath = this.getNumberingPath();
     const stylesPath = this.getStylesPath();
@@ -4079,7 +3958,7 @@ export class DocxDocument {
       stylesPath,
       model: parseNumberingModel(numbering, styles),
     };
-    this.numberingContextCache = context;
+    this.caches.numberingContextCache = context;
     return context;
   }
 
@@ -4546,7 +4425,7 @@ export class DocxDocument {
   }
 
   private getTableCellLocationIndex(): Map<number, TableCellLocation> {
-    if (this.tableCellLocationCache?.revision === this.revision) return this.tableCellLocationCache.locations;
+    if (this.caches.tableCellLocationCache?.revision === this.revision) return this.caches.tableCellLocationCache.locations;
     const locations = new Map<number, TableCellLocation>();
     let tableIndex = 0;
     const findActiveVertical = (
@@ -4626,7 +4505,7 @@ export class DocxDocument {
       }
       tableIndex++;
     }
-    this.tableCellLocationCache = { revision: this.revision, locations };
+    this.caches.tableCellLocationCache = { revision: this.revision, locations };
     return locations;
   }
 
@@ -4637,30 +4516,16 @@ export class DocxDocument {
   }
 
   getComments(filter: { authors?: string[]; resolved?: boolean } = {}): CommentInfo[] {
-    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) throw new Error('filter must be an object.');
-    if ('authors' in filter && filter.authors !== undefined) {
-      if (!Array.isArray(filter.authors)) throw new Error('filter.authors must be an array.');
-      for (const author of filter.authors) assertText(author, 'filter.authors[]');
-    }
-    if ('resolved' in filter && filter.resolved !== undefined && typeof filter.resolved !== 'boolean') {
-      throw new Error('filter.resolved must be boolean.');
-    }
-    let comments = this.getAllComments();
-    if (filter.authors?.length) {
-      const authors = normalizeReviewerFilterAuthors(filter.authors);
-      comments = comments.filter((comment) => authors.has(reviewerBucketKey(reviewerBucketOf(comment.author))));
-    }
-    if (filter.resolved !== undefined) comments = comments.filter((comment) => comment.resolved === filter.resolved);
-    return comments.map(cloneCommentInfo);
+    return getComments(this.commentContext, filter);
   }
 
   getReviewers(): ReviewerInfo[] {
-    if (this.reviewerInfoCache?.revision === this.revision) return this.reviewerInfoCache.reviewers.map(cloneReviewerInfo);
+    if (this.caches.reviewerInfoCache?.revision === this.revision) return this.caches.reviewerInfoCache.reviewers.map(cloneReviewerInfo);
     const revisions = this.getRevisions();
     const comments = this.getComments().filter((comment) =>
       comment.anchor?.sourcePartPath === this.mainDocumentPath);
     if (!revisions.length && !comments.length) {
-      this.reviewerInfoCache = { revision: this.revision, reviewers: [] };
+      this.caches.reviewerInfoCache = { revision: this.revision, reviewers: [] };
       return [];
     }
     type Aggregate = ReviewerInfo & {
@@ -4747,7 +4612,7 @@ export class DocxDocument {
       b.commentCount - a.commentCount ||
       b.unresolvedCommentCount - a.unresolvedCommentCount ||
       reviewerBucketKey(a).localeCompare(reviewerBucketKey(b)));
-    this.reviewerInfoCache = { revision: this.revision, reviewers };
+    this.caches.reviewerInfoCache = { revision: this.revision, reviewers };
     return reviewers.map(cloneReviewerInfo);
   }
 
@@ -4888,9 +4753,9 @@ export class DocxDocument {
   }
 
   getOutline(): OutlineNode[] {
-    if (this.outlineCache?.revision === this.revision) return this.outlineCache.outline.map(cloneOutlineNode);
+    if (this.caches.outlineCache?.revision === this.revision) return this.caches.outlineCache.outline.map(cloneOutlineNode);
     const outline = this.buildOutline();
-    this.outlineCache = { revision: this.revision, outline };
+    this.caches.outlineCache = { revision: this.revision, outline };
     return outline.map(cloneOutlineNode);
   }
 
@@ -5299,16 +5164,16 @@ export class DocxDocument {
 
   private collectRevisions(): RevisionInfo[] {
     const styles = this.getStylesContext();
-    const stylesRevision = this.stylesCache?.revision ?? this.revision;
-    if (this.revisionInfoCache?.revision === this.revision &&
-        this.revisionInfoCache.mainPath === this.mainDocumentPath &&
-        this.revisionInfoCache.stylesRevision === stylesRevision) {
-      return this.revisionInfoCache.revisions;
+    const stylesRevision = this.caches.stylesCache?.revision ?? this.revision;
+    if (this.caches.revisionInfoCache?.revision === this.revision &&
+        this.caches.revisionInfoCache.mainPath === this.mainDocumentPath &&
+        this.caches.revisionInfoCache.stylesRevision === stylesRevision) {
+      return this.caches.revisionInfoCache.revisions;
     }
     const document = this.getCachedPartDocument(this.mainDocumentPath);
     if (!hasRevisionMarkup(document)) {
-      this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: [] };
-      return this.revisionInfoCache.revisions;
+      this.caches.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: [] };
+      return this.caches.revisionInfoCache.revisions;
     }
     const body = bodyOf(document);
     const theme = styles.theme;
@@ -5396,7 +5261,7 @@ export class DocxDocument {
       if (!pairedInfo || !info.move) continue;
       info.move.pairedId = pairedInfo.id;
     }
-    this.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
+    this.caches.revisionInfoCache = { revision: this.revision, mainPath: this.mainDocumentPath, stylesRevision, revisions: result };
     return result;
   }
 
@@ -9143,14 +9008,14 @@ export class DocxDocument {
       this.mainPath = draft.mainPath;
       this.revisionAuthor = draft.revisionAuthor;
       this.currentRevision++;
-      this.numberingContextCache = undefined;
-      this.stylesCache = undefined;
-      this.outlineCache = undefined;
-      this.noteStateCache = undefined;
-      this.commentStateCache = undefined;
-      this.revisionInfoCache = undefined;
-      this.reviewerInfoCache = undefined;
-      this.tableCellLocationCache = undefined;
+      this.caches.numberingContextCache = undefined;
+      this.caches.stylesCache = undefined;
+      this.caches.outlineCache = undefined;
+      this.caches.noteStateCache = undefined;
+      this.caches.commentStateCache = undefined;
+      this.caches.revisionInfoCache = undefined;
+      this.caches.reviewerInfoCache = undefined;
+      this.caches.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return result;
@@ -9478,123 +9343,31 @@ export class DocxDocument {
   }
 
   private ensureCommentsParts(sourcePartPath: string, includeExtended = false): { commentsPath: string; commentsExtendedPath?: string } {
-    const sourceBase = basename(sourcePartPath).replace(/\.xml$/i, '');
-    let commentsPath = this.getCommentsPartPath(sourcePartPath);
-    if (!commentsPath) {
-      // Keep new comment parts next to the source part; non-main fallback names stay source-specific
-      // so future cleanup/interoperability logic can reconstruct the relationship target deterministically.
-      commentsPath = sourcePartPath === this.mainPath
-        ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}comments.xml`
-        : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-comments.xml`;
-    }
-    if (!this.parts.has(commentsPath)) this.addPart(commentsPath, encodeXml(defaultCommentsXml()), COMMENTS_TYPE);
-    this.ensurePartRelationship(sourcePartPath, COMMENTS_REL, commentsPath);
-    let commentsExtendedPath: string | undefined;
-    if (includeExtended) {
-      commentsExtendedPath = this.getCommentsExtendedPartPath(sourcePartPath);
-      if (!commentsExtendedPath) {
-        commentsExtendedPath = sourcePartPath === this.mainPath
-          ? `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}commentsExtended.xml`
-          : `${dirname(sourcePartPath) ? `${dirname(sourcePartPath)}/` : ''}${sourceBase}-commentsExtended.xml`;
-      }
-      if (!this.parts.has(commentsExtendedPath)) {
-        this.addPart(commentsExtendedPath, encodeXml(defaultCommentsExtendedXml()), COMMENTS_EXTENDED_TYPE);
-      }
-      this.ensurePartRelationship(sourcePartPath, COMMENTS_EXTENDED_REL, commentsExtendedPath);
-    }
-    return { commentsPath, commentsExtendedPath };
+    return ensureCommentsParts(this.commentContext, sourcePartPath, includeExtended);
   }
 
   private nextCommentId(): number {
-    const max = this.getAllComments().reduce((current, comment) => Math.max(current, comment.id), 0);
-    return max + 1;
+    return nextCommentId(this.commentContext);
   }
 
   private nextCommentParaId(): string {
-    const used = new Set<number>();
-    for (const binding of this.commentBindings()) {
-      if (binding.commentsPath && this.parts.has(binding.commentsPath)) {
-        for (const entry of parseCommentEntries(this.partDocumentOrUndefined(binding.commentsPath) ?? null)) {
-          if (entry.paraId && /^[0-9a-f]{8}$/i.test(entry.paraId)) used.add(Number.parseInt(entry.paraId, 16));
-        }
-      }
-      if (binding.commentsExtendedPath && this.parts.has(binding.commentsExtendedPath)) {
-        for (const entry of parseCommentExEntries(this.partDocumentOrUndefined(binding.commentsExtendedPath) ?? null)) {
-          used.add(Number.parseInt(entry.paraId, 16));
-          if (entry.paraIdParent) used.add(Number.parseInt(entry.paraIdParent, 16));
-        }
-      }
-    }
-    let next = 1;
-    while (used.has(next)) next++;
-    return next.toString(16).toUpperCase().padStart(8, '0');
+    return nextCommentParaId(this.commentContext);
   }
 
   private locateComment(id: number): { sourcePartPath: string; commentsPath: string; commentsExtendedPath?: string; entry: ReturnType<typeof parseCommentEntries>[number] } {
-    assertIndex(id);
-    const parsed = new Set<string>();
-    for (const binding of this.commentBindings()) {
-      if (!binding.commentsPath || parsed.has(binding.commentsPath) || !this.parts.has(binding.commentsPath)) continue;
-      parsed.add(binding.commentsPath);
-      const entry = parseCommentEntries(this.partDocumentOrUndefined(binding.commentsPath) ?? null).find((item) => item.id === id);
-      if (entry) return { sourcePartPath: binding.sourcePartPath, commentsPath: binding.commentsPath, commentsExtendedPath: binding.commentsExtendedPath, entry };
-    }
-    throw new Error(`Comment ${id} does not exist.`);
+    return locateComment(this.commentContext, id);
   }
 
   private ensureCommentParaId(commentsPath: string, id: number): string {
-    let resolved = '';
-    this.updatePartXml(commentsPath, (document) => {
-      const entry = parseCommentEntries(document).find((item) => item.id === id);
-      if (!entry) throw new Error(`Comment ${id} does not exist.`);
-      if (entry.paraId) {
-        resolved = entry.paraId.toUpperCase();
-        return;
-      }
-      const paragraphs = children(entry.element, 'p');
-      const paragraph = paragraphs.at(-1) ?? wordElement(document, 'p');
-      if (!paragraph.parentNode) entry.element.appendChild(paragraph);
-      resolved = this.nextCommentParaId();
-      ensureCommentParagraphParaId(paragraph, resolved);
-    });
-    return resolved;
+    return ensureCommentParaId(this.commentContext, commentsPath, id);
   }
 
   private writeCommentBody(commentElement: Element, paraId: string, text: string): void {
-    const document = commentElement.ownerDocument!;
-    while (commentElement.firstChild) commentElement.removeChild(commentElement.firstChild);
-    const paragraph = wordElement(document, 'p');
-    ensureCommentParagraphParaId(paragraph, paraId);
-    const paragraphProps = properties(paragraph, 'pPr');
-    setWordValue(property(paragraphProps, 'pStyle'), commentParagraphStyle());
-    paragraph.appendChild(makeCommentAnnotationRun(document));
-    if (text) {
-      const run = wordElement(document, 'r');
-      const props = properties(run, 'rPr');
-      setWordValue(property(props, 'rStyle'), commentParagraphStyle());
-      appendText(run, text);
-      paragraph.appendChild(run);
-    }
-    commentElement.appendChild(paragraph);
+    writeCommentBody(this.commentContext, commentElement, paraId, text);
   }
 
   private upsertCommentEx(commentsExtendedPath: string, paraId: string, patch: { parentParaId?: string | null; done?: boolean }): void {
-    this.updatePartXml(commentsExtendedPath, (document) => {
-      const root = document.documentElement!;
-      let entry = parseCommentExEntries(document).find((item) => item.paraId === paraId)?.element;
-      if (!entry) {
-        entry = document.createElementNS(W15_NS, 'w15:commentEx');
-        entry.setAttributeNS(W15_NS, 'w15:paraId', paraId);
-        root.appendChild(entry);
-      }
-      if (patch.parentParaId === null) {
-        entry.removeAttributeNS(W15_NS, 'paraIdParent');
-        entry.removeAttribute('w15:paraIdParent');
-      } else if (patch.parentParaId) {
-        entry.setAttributeNS(W15_NS, 'w15:paraIdParent', patch.parentParaId);
-      }
-      if (patch.done !== undefined) entry.setAttributeNS(W15_NS, 'w15:done', patch.done ? '1' : '0');
-    });
+    upsertCommentEx(this.commentContext, commentsExtendedPath, paraId, patch);
   }
 
   private boundaryRun(paragraph: Element, offset: number): Element | null {
@@ -9610,303 +9383,63 @@ export class DocxDocument {
   }
 
   private removeRelationshipTarget(sourcePartPath: string, relationType: string, targetPath: string): void {
-    const relationshipPath = relsPath(sourcePartPath);
-    if (!this.parts.has(relationshipPath)) return;
-    this.updatePartXml(relationshipPath, (document) => {
-      for (const relation of children(document.documentElement!, 'Relationship', REL_NS)) {
-        if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') continue;
-        const target = relation.getAttribute('Target');
-        if (!target) continue;
-        let resolved: string | undefined;
-        try {
-          resolved = resolveTargetPath(sourcePartPath, decodeURIComponent(target));
-        } catch {
-          resolved = undefined;
-        }
-        if (resolved === targetPath) relation.parentNode?.removeChild(relation);
-      }
-    });
+    removeRelationshipTarget(this.commentContext, sourcePartPath, relationType, targetPath);
   }
 
   private relationshipCount(targetPath: string, relationType: string): number {
-    let count = 0;
-    for (const sourcePartPath of this.contentPartPaths()) {
-      const relationshipPath = relsPath(sourcePartPath);
-      if (!this.parts.has(relationshipPath)) continue;
-      const document = this.partDocumentOrUndefined(relationshipPath)?.documentElement;
-      if (!document) continue;
-      for (const relation of children(document, 'Relationship', REL_NS)) {
-        if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') continue;
-        const target = relation.getAttribute('Target');
-        if (!target) continue;
-        let resolved: string | undefined;
-        try {
-          resolved = resolveTargetPath(sourcePartPath, decodeURIComponent(target));
-        } catch {
-          resolved = undefined;
-        }
-        if (resolved === targetPath) count++;
-      }
-    }
-    return count;
+    return relationshipCount(this.commentContext, targetPath, relationType);
   }
 
   private removePartOverride(path: string): void {
-    this.updatePartXml('[Content_Types].xml', (document) => {
-      for (const override of children(document.documentElement!, 'Override', CONTENT_TYPES_NS)) {
-        if (override.getAttribute('PartName') === `/${path}`) override.parentNode?.removeChild(override);
-      }
-    });
+    removePartOverride(this.commentContext, path);
   }
 
   private removePartAndOverride(path: string): void {
-    if (!this.parts.has(path)) return;
-    this.parts.delete(path);
-    this.documents.delete(path);
-    this.dirtyPartXml.delete(path);
-    this.dirtyPartSizes.delete(path);
-    this.removePartOverride(path);
+    removePartAndOverride(this.commentContext, path);
   }
 
   private cleanupCommentParts(commentsPath: string, commentsExtendedPath?: string): void {
-    const hasComments = this.parts.has(commentsPath) && parseCommentEntries(this.partDocumentOrUndefined(commentsPath) ?? null).length > 0;
-    if (!hasComments) {
-      for (const binding of this.commentBindings()) {
-        this.removeRelationshipTarget(binding.sourcePartPath, COMMENTS_REL, commentsPath);
-      }
-      if (this.relationshipCount(commentsPath, COMMENTS_REL) === 0) this.removePartAndOverride(commentsPath);
-    }
-    if (commentsExtendedPath && this.parts.has(commentsExtendedPath) && parseCommentExEntries(this.partDocumentOrUndefined(commentsExtendedPath) ?? null).length === 0) {
-      for (const binding of this.commentBindings()) {
-        this.removeRelationshipTarget(binding.sourcePartPath, COMMENTS_EXTENDED_REL, commentsExtendedPath);
-      }
-      if (this.relationshipCount(commentsExtendedPath, COMMENTS_EXTENDED_REL) === 0) this.removePartAndOverride(commentsExtendedPath);
-    }
+    cleanupCommentParts(this.commentContext, commentsPath, commentsExtendedPath);
   }
 
   addComment(range: TextRange | DocumentRange, comment: { author?: string; initials?: string; text: string }): number {
-    // TextRange/DocumentRange use the main-document paragraph namespace in this API surface.
-    // Header/footer/footnote/endnote comment anchors are readable via getComments(), but write APIs
-    // currently insert anchors only into the main document part.
-    return this.withDraft((draft) => draft.addCommentDirect(range, comment));
+    return addComment(this.commentContext, range, comment);
   }
 
   private addCommentDirect(range: TextRange | DocumentRange, comment: { author?: string; initials?: string; text: string }): number {
-    if (comment.author !== undefined) assertText(comment.author, 'comment.author');
-    if (comment.initials !== undefined) assertText(comment.initials, 'comment.initials');
-    assertText(comment.text, 'comment.text');
-    const preview = this.getPartDocument(this.mainPath);
-    const normalized = 'paragraph' in range
-      ? (() => {
-          const current = this.normalizeRangeOn(preview, range);
-          return {
-            startParagraph: range.paragraph,
-            startOffset: current.start,
-            endParagraph: range.paragraph,
-            endOffset: current.end,
-          };
-        })()
-      : (() => {
-          const current = this.normalizeDocumentRange(preview, range);
-          return {
-            startParagraph: current.start.paragraph,
-            startOffset: current.start.offset,
-            endParagraph: current.end.paragraph,
-            endOffset: current.end.offset,
-          };
-        })();
-    const id = this.nextCommentId();
-    const paraId = this.nextCommentParaId();
-    const date = new Date().toISOString();
-    this.updatePartXml(this.mainPath, (document) => {
-      const startParagraph = paragraphAt(document, normalized.startParagraph);
-      const endParagraph = paragraphAt(document, normalized.endParagraph);
-      const collapsed = normalized.startParagraph === normalized.endParagraph && normalized.startOffset === normalized.endOffset;
-      if (startParagraph === endParagraph) {
-        this.splitRunAtOffset(startParagraph, normalized.endOffset);
-        this.splitRunAtOffset(startParagraph, normalized.startOffset);
-      } else {
-        this.splitRunAtOffset(endParagraph, normalized.endOffset);
-        this.splitRunAtOffset(startParagraph, normalized.startOffset);
-      }
-      const startMarker = wordElement(document, 'commentRangeStart');
-      startMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
-      const startBoundary = this.boundaryRun(startParagraph, normalized.startOffset);
-      if (startBoundary?.parentNode) startBoundary.parentNode.insertBefore(startMarker, startBoundary);
-      else startParagraph.insertBefore(startMarker, startParagraph.firstChild);
-
-      const endMarker = wordElement(document, 'commentRangeEnd');
-      endMarker.setAttributeNS(WORD_NS, 'w:id', String(id));
-      const referenceRun = wordElement(document, 'r');
-      const props = properties(referenceRun, 'rPr');
-      setWordValue(property(props, 'rStyle'), commentReferenceStyle());
-      const reference = wordElement(document, 'commentReference');
-      reference.setAttributeNS(WORD_NS, 'w:id', String(id));
-      referenceRun.appendChild(reference);
-      if (collapsed) {
-        const parent = startMarker.parentNode;
-        if (!parent) throw new Error('Comment anchor parent is missing.');
-        if (startMarker.nextSibling) parent.insertBefore(endMarker, startMarker.nextSibling);
-        else parent.appendChild(endMarker);
-        if (endMarker.nextSibling) parent.insertBefore(referenceRun, endMarker.nextSibling);
-        else parent.appendChild(referenceRun);
-      } else {
-        const endBoundary = this.boundaryRun(endParagraph, normalized.endOffset);
-        if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(endMarker, endBoundary);
-        else endParagraph.appendChild(endMarker);
-        if (endBoundary?.parentNode) endBoundary.parentNode.insertBefore(referenceRun, endBoundary);
-        else endParagraph.appendChild(referenceRun);
-      }
-    });
-    const { commentsPath, commentsExtendedPath } = this.ensureCommentsParts(this.mainPath, true);
-    this.updatePartXml(commentsPath, (document) => {
-      const root = document.documentElement!;
-      const commentElement = wordElement(document, 'comment');
-      commentElement.setAttributeNS(WORD_NS, 'w:id', String(id));
-      if (comment.author) commentElement.setAttributeNS(WORD_NS, 'w:author', comment.author);
-      if (comment.initials) commentElement.setAttributeNS(WORD_NS, 'w:initials', comment.initials);
-      commentElement.setAttributeNS(WORD_NS, 'w:date', date);
-      this.writeCommentBody(commentElement, paraId, comment.text);
-      root.appendChild(commentElement);
-    });
-    this.upsertCommentEx(commentsExtendedPath!, paraId, { done: false, parentParaId: null });
-    return id;
+    return addCommentDirect(this.commentContext, range, comment);
   }
 
   replyComment(parentId: number, comment: { author?: string; initials?: string; text: string }): number {
-    return this.withDraft((draft) => draft.replyCommentDirect(parentId, comment));
+    return replyComment(this.commentContext, parentId, comment);
   }
 
   private replyCommentDirect(parentId: number, comment: { author?: string; initials?: string; text: string }): number {
-    if (comment.author !== undefined) assertText(comment.author, 'comment.author');
-    if (comment.initials !== undefined) assertText(comment.initials, 'comment.initials');
-    assertText(comment.text, 'comment.text');
-    const parent = this.locateComment(parentId);
-    const parentParaId = this.ensureCommentParaId(parent.commentsPath, parentId);
-    const id = this.nextCommentId();
-    const paraId = this.nextCommentParaId();
-    const { commentsPath, commentsExtendedPath } = this.ensureCommentsParts(parent.sourcePartPath, true);
-    this.updatePartXml(commentsPath, (document) => {
-      const root = document.documentElement!;
-      const commentElement = wordElement(document, 'comment');
-      commentElement.setAttributeNS(WORD_NS, 'w:id', String(id));
-      if (comment.author) commentElement.setAttributeNS(WORD_NS, 'w:author', comment.author);
-      if (comment.initials) commentElement.setAttributeNS(WORD_NS, 'w:initials', comment.initials);
-      commentElement.setAttributeNS(WORD_NS, 'w:date', new Date().toISOString());
-      this.writeCommentBody(commentElement, paraId, comment.text);
-      root.appendChild(commentElement);
-    });
-    this.upsertCommentEx(commentsExtendedPath!, paraId, { parentParaId, done: false });
-    return id;
+    return replyCommentDirect(this.commentContext, parentId, comment);
   }
 
   setCommentResolved(id: number, resolved: boolean): void {
-    this.withDraft((draft) => draft.setCommentResolvedDirect(id, resolved));
+    setCommentResolved(this.commentContext, id, resolved);
   }
 
   private setCommentResolvedDirect(id: number, resolved: boolean): void {
-    assertIndex(id);
-    if (typeof resolved !== 'boolean') throw new Error('resolved must be boolean.');
-    const target = this.locateComment(id);
-    const paraId = this.ensureCommentParaId(target.commentsPath, id);
-    const { commentsExtendedPath } = this.ensureCommentsParts(target.sourcePartPath, true);
-    this.upsertCommentEx(commentsExtendedPath!, paraId, { done: resolved });
+    setCommentResolvedDirect(this.commentContext, id, resolved);
   }
 
   setCommentText(id: number, text: string): void {
-    this.withDraft((draft) => draft.setCommentTextDirect(id, text));
+    setCommentText(this.commentContext, id, text);
   }
 
   private setCommentTextDirect(id: number, text: string): void {
-    assertIndex(id);
-    assertText(text, 'text');
-    const target = this.locateComment(id);
-    const paraId = this.ensureCommentParaId(target.commentsPath, id);
-    this.updatePartXml(target.commentsPath, (document) => {
-      const entry = parseCommentEntries(document).find((item) => item.id === id);
-      if (!entry) throw new Error(`Comment ${id} does not exist.`);
-      this.writeCommentBody(entry.element, paraId, text);
-    });
+    setCommentTextDirect(this.commentContext, id, text);
   }
 
   deleteComment(id: number, options: { withReplies?: boolean } = {}): void {
-    this.withDraft((draft) => draft.deleteCommentDirect(id, options));
+    deleteComment(this.commentContext, id, options);
   }
 
   private deleteCommentDirect(id: number, options: { withReplies?: boolean } = {}): void {
-    assertIndex(id);
-    const withReplies = options.withReplies ?? true;
-    const allComments = this.getAllComments();
-    if (!allComments.some((comment) => comment.id === id)) throw new Error(`Comment ${id} does not exist.`);
-    const deleteIds = new Set<number>([id]);
-    if (withReplies) {
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const comment of allComments) {
-          if (comment.parentId !== undefined && deleteIds.has(comment.parentId) && !deleteIds.has(comment.id)) {
-            deleteIds.add(comment.id);
-            changed = true;
-          }
-        }
-      }
-    }
-    const byCommentsPath = new Map<string, number[]>();
-    const paraIds = new Map<number, { commentsPath: string; commentsExtendedPath?: string; paraId: string; sourcePartPath: string }>();
-    for (const commentId of deleteIds) {
-      const target = this.locateComment(commentId);
-      const paraId = this.ensureCommentParaId(target.commentsPath, commentId);
-      const list = byCommentsPath.get(target.commentsPath) ?? [];
-      list.push(commentId);
-      byCommentsPath.set(target.commentsPath, list);
-      paraIds.set(commentId, { commentsPath: target.commentsPath, commentsExtendedPath: target.commentsExtendedPath, paraId, sourcePartPath: target.sourcePartPath });
-    }
-    for (const [commentsPath, ids] of byCommentsPath) {
-      this.updatePartXml(commentsPath, (document) => {
-        for (const entry of parseCommentEntries(document)) {
-          if (ids.includes(entry.id)) entry.element.parentNode?.removeChild(entry.element);
-        }
-      });
-    }
-    const extendedPaths = new Set<string>();
-    for (const info of paraIds.values()) {
-      if (!info.commentsExtendedPath || extendedPaths.has(info.commentsExtendedPath) || !this.parts.has(info.commentsExtendedPath)) continue;
-      extendedPaths.add(info.commentsExtendedPath);
-      const deletedParaIds = new Set([...paraIds.values()]
-        .filter((entry) => entry.commentsExtendedPath === info.commentsExtendedPath)
-        .map((entry) => entry.paraId));
-      this.updatePartXml(info.commentsExtendedPath, (document) => {
-        for (const entry of parseCommentExEntries(document)) {
-          if (deletedParaIds.has(entry.paraId)) entry.element.parentNode?.removeChild(entry.element);
-        }
-      });
-    }
-    const affectedSourceParts = new Set([...paraIds.values()].map((info) => info.sourcePartPath));
-    for (const sourcePartPath of affectedSourceParts) {
-      this.updatePartXml(sourcePartPath, (document) => {
-        const container = blockContainerOf(document);
-        for (const nodeName of ['commentRangeStart', 'commentRangeEnd'] as const) {
-          for (const node of descendants(container, nodeName)) {
-            const commentId = Number(node.getAttributeNS(WORD_NS, 'id') ?? node.getAttribute('w:id'));
-            if (deleteIds.has(commentId)) node.parentNode?.removeChild(node);
-          }
-        }
-        for (const paragraph of descendants(container, 'p')) {
-          for (const run of ownRuns(paragraph)) {
-            const commentId = commentReferenceInRun(run);
-            if (commentId === null || !deleteIds.has(commentId)) continue;
-            const reference = children(run, 'commentReference')[0];
-            if (reference) run.removeChild(reference);
-            const hasMeaningfulContent = Array.from(run.childNodes).some((child) => {
-              if (child.nodeType === 1) return (child as Element).localName !== 'rPr';
-              return (child.textContent ?? '').trim().length > 0;
-            });
-            if (!hasMeaningfulContent) run.parentNode?.removeChild(run);
-          }
-        }
-      });
-    }
-    for (const info of paraIds.values()) this.cleanupCommentParts(info.commentsPath, info.commentsExtendedPath);
+    deleteCommentDirect(this.commentContext, id, options);
   }
 
   /** All operations succeed together, or the original package/revision is unchanged. */
@@ -10073,14 +9606,14 @@ export class DocxDocument {
       this.redoHistory = draft.redoHistory;
       this.undoHistoryBytes = draft.undoHistoryBytes;
       this.redoHistoryBytes = draft.redoHistoryBytes;
-      this.numberingContextCache = undefined;
-      this.stylesCache = undefined;
-      this.outlineCache = undefined;
-      this.noteStateCache = undefined;
-      this.commentStateCache = undefined;
-      this.revisionInfoCache = undefined;
-      this.reviewerInfoCache = undefined;
-      this.tableCellLocationCache = undefined;
+      this.caches.numberingContextCache = undefined;
+      this.caches.stylesCache = undefined;
+      this.caches.outlineCache = undefined;
+      this.caches.noteStateCache = undefined;
+      this.caches.commentStateCache = undefined;
+      this.caches.revisionInfoCache = undefined;
+      this.caches.reviewerInfoCache = undefined;
+      this.caches.tableCellLocationCache = undefined;
       this.imageDataUrls.clear();
       if (history) this.recordHistory(history);
       return { ...snapshot, revision: this.revision };
