@@ -3132,3 +3132,91 @@ test('appendDeletedRunVisualization marks move-from text distinctly in markup vi
   assert.equal(appended.length, 1);
   assert.equal(appended[0].style.textDecoration.includes('underline'), true);
 });
+
+test('ruby renders as a native <ruby> and the annotation never flows back into the text', () => {
+  const editor = makeRunRenderEditor();
+  editor.measure = () => 10;
+  editor.runIsHidden = () => false;
+  const paragraph = { index: 0, text: '读漢字', runs: [], images: [] };
+  const span = { nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [], attributes: new Map(),
+    append(...children) { this.childNodes.push(...children); } };
+  const run = {
+    index: 1, text: '漢',
+    ruby: { text: 'hàn', base: '漢', align: 'distributeSpace', sizeHalfPoints: 12, language: 'zh-CN' },
+  };
+  editor.appendRun(span, paragraph, run, { deletedTextByRun: new Map(), revisionColors: new Map() }, 720, 0);
+  const runSpan = span.childNodes[0];
+  const ruby = runSpan.childNodes.find((child) => child.tagName === 'RUBY');
+  assert.ok(ruby, '基字符包在原生 <ruby> 里，浏览器自己排注音');
+  assert.equal(ruby.dataset.docxRuby, '1');
+  // 基字符在前、<rt> 在后，这是 <ruby> 要求的子元素顺序。
+  assert.equal(ruby.childNodes[0].textContent, '漢');
+  const annotation = ruby.childNodes.at(-1);
+  assert.equal(annotation.tagName, 'RT');
+  assert.equal(annotation.textContent, 'hàn');
+  assert.equal(annotation.style.fontSize, '6pt', '12 半磅 = 6 磅');
+  assert.equal(annotation.style.rubyAlign, 'space-around');
+  assert.equal(annotation.lang, 'zh-CN');
+  // 注音必须被 readText() 跳过，否则它会被当成正文追加进 paragraph.text 写回文档。
+  // 这里靠的是 contentEditable='false'：假 DOM 的 setAttribute 不会联动 dataset，
+  // 而这一条在真实 DOM 里同样成立。
+  assert.equal(annotation.contentEditable, 'false');
+  assert.equal(editor.readText(runSpan), '漢');
+});
+
+test('two lines in one stacks the text and keeps its brackets out of the text', () => {
+  const editor = makeRunRenderEditor();
+  editor.measure = () => 10;
+  editor.runIsHidden = () => false;
+  const paragraph = { index: 0, text: '股份有限', runs: [], images: [] };
+  const span = { nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [], attributes: new Map(),
+    append(...children) { this.childNodes.push(...children); } };
+  const run = { index: 0, text: '股份有限', eastAsianLayout: { combine: true, combineBrackets: 'round' } };
+  editor.appendRun(span, paragraph, run, { deletedTextByRun: new Map(), revisionColors: new Map() }, 720, 0);
+  const runSpan = span.childNodes[0];
+  const box = runSpan.childNodes.find((child) => child.dataset?.docxCombine === '1');
+  assert.ok(box, '双行合一自己堆两行，CSS 没有对应能力');
+  assert.deepEqual(box.childNodes.map((row) => row.childNodes[0].textContent), ['股份', '有限']);
+  assert.deepEqual(box.childNodes.map((row) => row.style.display), ['block', 'block'],
+    '用 display:block 而不是 <br> —— readText() 会把 <br> 读成换行');
+  // 括号是装饰，不在文档文本里，所以不能流回去。
+  assert.equal(runSpan.childNodes[0].textContent, '（');
+  assert.equal(runSpan.childNodes.at(-1).textContent, '）');
+  assert.equal(runSpan.childNodes[0].contentEditable, 'false');
+  assert.equal(editor.readText(runSpan), '股份有限');
+});
+
+test('horizontal in vertical maps to text-combine-upright', () => {
+  const editor = makeRunRenderEditor();
+  editor.measure = () => 10;
+  editor.runIsHidden = () => false;
+  const paragraph = { index: 0, text: '2026', runs: [], images: [] };
+  const span = { nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [], attributes: new Map(),
+    append(...children) { this.childNodes.push(...children); } };
+  editor.appendRun(span, paragraph, { index: 0, text: '2026', eastAsianLayout: { vert: true } },
+    { deletedTextByRun: new Map(), revisionColors: new Map() }, 720, 0);
+  assert.equal(span.childNodes[0].style.textCombineUpright, 'all');
+});
+
+test('a stacked two-lines-in-one run advances by half its width, not its full width', () => {
+  // 盒子是 font-size:50% 的上下两行，占的宽度是较长那行的一半。按整段文字算会高估近一倍，
+  // 分页测量就会让这种 run 过早换行。
+  const editor = makeRunRenderEditor();
+  editor.runIsHidden = () => false;
+  editor.measure = (text) => text.length * 10;
+  const paragraph = { index: 0, text: '股份有限', runs: [], images: [] };
+  const newSpan = () => ({ nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [],
+    attributes: new Map(), append(...children) { this.childNodes.push(...children); } });
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const plain = editor.appendRun(newSpan(), paragraph, { index: 0, text: '股份有限' }, reviewContext, 720, 0);
+  assert.equal(plain, 40, '四个字，每字 10');
+  // 较长那行「股份」是 20，取一半 10；两个全角括号按原字号各 10。
+  const combined = editor.appendRun(newSpan(), paragraph,
+    { index: 0, text: '股份有限', eastAsianLayout: { combine: true, combineBrackets: 'round' } },
+    reviewContext, 720, 0);
+  assert.equal(combined, 30);
+  const noBrackets = editor.appendRun(newSpan(), paragraph,
+    { index: 0, text: '股份有限', eastAsianLayout: { combine: true } }, reviewContext, 720, 0);
+  assert.equal(noBrackets, 10);
+  assert.ok(noBrackets < plain);
+});

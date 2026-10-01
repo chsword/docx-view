@@ -1,6 +1,7 @@
 import type { Element } from '@xmldom/xmldom';
 import type { BorderSide, CompatibilitySettings, ColorSchemeMapping, LatentStyles, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop, ThemeFontLanguages, ThemeSettings } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
+import { compactDefined } from './internal/elements.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 
@@ -107,6 +108,26 @@ function readOnOff(element: Element | undefined): boolean | undefined {
 function readOnOffValue(raw: string | undefined): boolean {
   const value = (raw ?? '1').toLowerCase();
   return ['0', 'false', 'off'].includes(value) ? false : true;
+}
+
+const COMBINE_BRACKETS = ['none', 'round', 'square', 'angle', 'curly'] as const;
+
+/** `w:eastAsianLayout` 的开关放在属性上（`w:combine="true"`），不是 `w:val` 子元素。 */
+function readEastAsianLayout(element: Element | undefined): RunFormat['eastAsianLayout'] {
+  if (!element) return undefined;
+  const brackets = wordAttr(element, 'combineBrackets');
+  const flag = (name: string): boolean | undefined => {
+    const raw = wordAttr(element, name);
+    return raw === undefined ? undefined : readOnOffValue(raw);
+  };
+  return compactDefined({
+    id: readNumber(wordAttr(element, 'id')),
+    combine: flag('combine'),
+    combineBrackets: brackets !== undefined && (COMBINE_BRACKETS as readonly string[]).includes(brackets)
+      ? brackets as NonNullable<RunFormat['eastAsianLayout']>['combineBrackets'] : undefined,
+    vert: flag('vert'),
+    vertCompress: flag('vertCompress'),
+  });
 }
 
 function readNumber(value: string | undefined): number | undefined {
@@ -422,6 +443,7 @@ export function readRunProperties(props: Element | undefined, theme: StylesConte
     imprint: readOnOff(children(props, 'imprint')[0]),
     border: readBorderSide(children(props, 'bdr')[0]),
     shading: readShading(children(props, 'shd')[0]),
+    eastAsianLayout: readEastAsianLayout(children(props, 'eastAsianLayout')[0]),
   };
 }
 

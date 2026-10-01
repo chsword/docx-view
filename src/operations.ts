@@ -1,7 +1,4 @@
-import type {
-  AgentRequest, BorderSide, CellFormat, EditableRegionEditorGroup, ParagraphFormat, RowFormat, RunFormat, Shading,
-  TableFormat, TabStop,
-} from './types.js';
+import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, RowFormat, RunFormat, Shading, TabStop, TableFormat } from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
@@ -30,7 +27,7 @@ const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
-  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
+  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
 ] as const;
 
 function validateTextRange(value: unknown): asserts value is { paragraph: number; start: number; end: number } {
@@ -80,7 +77,7 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
     'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
     'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
     'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
-    'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
+    'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
   ]);
   for (const key of [
     'bold', 'italic', 'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl',
@@ -133,6 +130,28 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   }
   if ('border' in value) maybeNull(value.border as BorderSide | null | undefined, (entry) => validateBorderSide(entry));
   if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry));
+  if ('eastAsianLayout' in value) {
+    maybeNull(value.eastAsianLayout as EastAsianLayout | null | undefined, (entry) => validateEastAsianLayout(entry));
+  }
+}
+
+export function validateEastAsianLayout(value: unknown): asserts value is EastAsianLayout {
+  object(value);
+  const layout = value as Record<string, unknown>;
+  keys(layout, ['id', 'combine', 'combineBrackets', 'vert', 'vertCompress']);
+  if ('id' in layout && layout.id !== undefined &&
+      (!Number.isSafeInteger(layout.id) || (layout.id as number) < 0 || (layout.id as number) > 0xffff)) {
+    throw new Error('eastAsianLayout.id must be an unsigned integer within OOXML bounds.');
+  }
+  for (const name of ['combine', 'vert', 'vertCompress'] as const) {
+    if (name in layout && layout[name] !== undefined && typeof layout[name] !== 'boolean') {
+      throw new Error(`eastAsianLayout.${name} must be boolean.`);
+    }
+  }
+  if ('combineBrackets' in layout && layout.combineBrackets !== undefined &&
+      !['none', 'round', 'square', 'angle', 'curly'].includes(layout.combineBrackets as string)) {
+    throw new Error('eastAsianLayout.combineBrackets must be none, round, square, angle or curly.');
+  }
 }
 
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {

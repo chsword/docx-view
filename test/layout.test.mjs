@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -455,4 +455,41 @@ test('columnWidthsPx splits usable width across equal columns and honours explic
   assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 2, space: 720, equalWidth: true } })), [288, 288]);
   assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 2, space: 720, equalWidth: false, widths: [2880, 5760] } })), [192, 384]);
   assert.deepEqual(columnWidthsPx(section({ ...page, columns: { count: 3, space: 720, equalWidth: false, widths: [2880, 5760] } })), [176, 176, 176]);
+});
+
+test('combinedTextLines splits by code point, not by UTF-16 code unit', () => {
+  assert.deepEqual(combinedTextLines('股份有限'), ['股份', '有限']);
+  // 奇数个字时上一行多一个，和 Word 一致。
+  assert.deepEqual(combinedTextLines('有限公司五'), ['有限公', '司五']);
+  assert.deepEqual(combinedTextLines(''), ['', '']);
+  assert.deepEqual(combinedTextLines('甲'), ['甲', '']);
+  // 补充平面的字各占两个码元，按码元切会把代理对劈成两个无效半码。字数要是**奇数**：
+  // 偶数个时中点恰好落在代理对边界上，按码元切也碰巧是对的，用例就没有区分力了。
+  assert.deepEqual(combinedTextLines('𠀀𠀁𠀂'), ['𠀀𠀁', '𠀂']);
+  // 按码点迭代：合法的代理对会得到一个 > 0xFFFF 的字符，孤立的半码会得到一个落在
+  // 0xD800–0xDFFF 里的字符。
+  for (const half of combinedTextLines('𠀀𠀁𠀂')) {
+    for (const character of half) {
+      const code = character.codePointAt(0);
+      assert.ok(code < 0xd800 || code > 0xdfff, `孤立的代理码元 U+${code.toString(16)}`);
+    }
+  }
+});
+
+test('combineBracketChars and rubyAlignToCss only claim what they can actually draw', () => {
+  assert.deepEqual(combineBracketChars('round'), ['（', '）']);
+  assert.deepEqual(combineBracketChars('square'), ['［', '］']);
+  assert.deepEqual(combineBracketChars('angle'), ['〈', '〉']);
+  assert.deepEqual(combineBracketChars('curly'), ['｛', '｝']);
+  assert.equal(combineBracketChars('none'), undefined);
+  assert.equal(combineBracketChars(undefined), undefined);
+  assert.equal(rubyAlignToCss('center'), 'center');
+  assert.equal(rubyAlignToCss('distributeLetter'), 'space-between');
+  assert.equal(rubyAlignToCss('distributeSpace'), 'space-around');
+  assert.equal(rubyAlignToCss('left'), 'start');
+  // CSS 的 ruby-align 只有 start / center / space-between / space-around，
+  // right 和 rightVertical 没有对应项，返回 undefined 用浏览器默认值，不硬凑近似。
+  assert.equal(rubyAlignToCss('right'), undefined);
+  assert.equal(rubyAlignToCss('rightVertical'), undefined);
+  assert.equal(rubyAlignToCss(undefined), undefined);
 });

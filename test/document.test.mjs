@@ -6303,3 +6303,67 @@ test('compare validates compare options through assertText', () => {
     /date/,
   );
 });
+
+test('ruby annotations stay out of the paragraph text and out of the run list', () => {
+  const run = (text) => `<w:r><w:t>${text}</w:t></w:r>`;
+  const ruby = `<w:r><w:ruby>`
+    + `<w:rubyPr><w:rubyAlign w:val="distributeSpace"/><w:hps w:val="12"/><w:hpsRaise w:val="22"/>`
+    + `<w:hpsBaseText w:val="24"/><w:lid w:val="zh-CN"/></w:rubyPr>`
+    + `<w:rt>${run('hàn')}</w:rt><w:rubyBase>${run('漢')}</w:rubyBase></w:ruby></w:r>`;
+  const body = `<w:p>${run('读')}${ruby}${run('字')}</w:p>`;
+  const paragraph = withBody(body).getParagraphs()[0];
+  // Word 的阅读顺序是「读漢字」：注音排在基字符上方，不进正文。
+  assert.equal(paragraph.text, '读漢字');
+  // w:ruby 把注音和基字符各放进一个 w:r，而这些 w:r 又在外层 w:r 之内。按后代搜集会把同一批
+  // 字符数三遍（外层 run、w:rt 的 run、w:rubyBase 的 run），下标就全不可靠了。
+  assert.deepEqual(paragraph.runs.map((entry) => entry.text), ['读', '漢', '字']);
+  assert.deepEqual(paragraph.runs.map((entry) => entry.index), [0, 1, 2]);
+  assert.deepEqual(paragraph.runs[1].ruby, {
+    text: 'hàn', base: '漢', align: 'distributeSpace',
+    sizeHalfPoints: 12, raiseHalfPoints: 22, baseSizeHalfPoints: 24, language: 'zh-CN',
+  });
+  assert.equal(paragraph.runs[0].ruby, undefined);
+
+  // setParagraphText(i, p.text) 必须是恒等变换。
+  const original = withBody(body).getPartXml('word/document.xml');
+  const unchanged = withBody(body);
+  unchanged.setParagraphText(0, unchanged.getParagraphs()[0].text);
+  assert.equal(unchanged.getPartXml('word/document.xml'), original);
+
+  // 改写段落文本时，注音是注音、不是可写的文本槽位：它不能被当成正文清空。
+  const edited = withBody(body);
+  edited.setParagraphText(0, '甲乙丙');
+  const editedXml = edited.getPartXml('word/document.xml');
+  assert.match(editedXml, /<w:rt><w:r><w:t>hàn<\/w:t><\/w:r><\/w:rt>/);
+  assert.equal(edited.getParagraphs()[0].text, '甲乙丙');
+
+  // 外层那个 run 才是 formatRun 的下标目标，格式要落在它的 rPr 上。
+  const formatted = withBody(body);
+  formatted.formatRun(0, 1, { bold: true });
+  assert.match(formatted.getPartXml('word/document.xml'), /<w:r><w:rPr><w:b w:val="1"\/><\/w:rPr><w:ruby>/);
+});
+
+test('eastAsianLayout reads and writes both of its display modes', () => {
+  const combine = '<w:eastAsianLayout w:id="1" w:combine="true" w:combineBrackets="round"/>';
+  const vert = '<w:eastAsianLayout w:id="2" w:vert="true" w:vertCompress="true"/>';
+  const body = `<w:p><w:r><w:rPr>${combine}</w:rPr><w:t>股份有限</w:t></w:r></w:p>`
+    + `<w:p><w:r><w:rPr>${vert}</w:rPr><w:t>2026</w:t></w:r></w:p>`;
+  const paragraphs = withBody(body).getParagraphs();
+  assert.deepEqual(paragraphs[0].runs[0].eastAsianLayout, { id: 1, combine: true, combineBrackets: 'round' });
+  assert.deepEqual(paragraphs[1].runs[0].eastAsianLayout, { id: 2, vert: true, vertCompress: true });
+
+  const written = withBody('<w:p><w:r><w:t>股份有限</w:t></w:r></w:p>');
+  written.formatRun(0, 0, { eastAsianLayout: { combine: true, combineBrackets: 'square' } });
+  assert.match(written.getPartXml('word/document.xml'), /<w:eastAsianLayout w:combine="1" w:combineBrackets="square"\/>/);
+  assert.deepEqual(written.getParagraphs()[0].runs[0].eastAsianLayout, { combine: true, combineBrackets: 'square' });
+
+  const removed = withBody(body);
+  removed.formatRun(0, 0, { eastAsianLayout: null });
+  assert.equal(removed.getParagraphs()[0].runs[0].eastAsianLayout, undefined);
+  // 删的是第 0 段那一处，第 1 段的不受影响。
+  assert.deepEqual(removed.getParagraphs()[1].runs[0].eastAsianLayout, { id: 2, vert: true, vertCompress: true });
+
+  for (const invalid of [{ combineBrackets: 'oops' }, { combine: 'yes' }, { nope: 1 }, { id: -1 }]) {
+    assert.throws(() => withBody(body).formatRun(0, 0, { eastAsianLayout: invalid }), undefined, JSON.stringify(invalid));
+  }
+});

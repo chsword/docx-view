@@ -2,13 +2,7 @@ import JSZip from 'jszip';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, ContentControlInfo, ContentControlKind,
-  CommentAnchor, CommentInfo, DocumentBlock, DocumentRange, DocumentSnapshot,
-  CompatibilitySettings, DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
-  SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange, ThemeSettings,
-  FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
-  TableCellLocation, MathMlNode, MathSource,
-  MathInfo,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, TabStop, TableCellLocation, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -922,6 +916,35 @@ function runHyperlinkInfo(run: Element, paragraph: Element, relationships?: Map<
   return undefined;
 }
 
+const RUBY_ALIGNMENTS = ['center', 'distributeLetter', 'distributeSpace', 'left', 'right', 'rightVertical'] as const;
+
+/**
+ * `w:ruby` 的注音。注音文字在 `w:rt` 里,基字符在 `w:rubyBase` 里;只有基字符算段落正文
+ * （见 internal/elements.ts 的 collectTextElements），所以注音在这里单独读出来给调用方。
+ */
+function rubyInRun(run: Element): RubyInfo | undefined {
+  const ruby = children(run, 'ruby')[0];
+  if (!ruby) return undefined;
+  const props = children(ruby, 'rubyPr')[0];
+  const align = wordValue(children(props ?? ruby, 'rubyAlign')[0]);
+  const halfPoints = (name: string): number | undefined => {
+    const raw = wordValue(children(props ?? ruby, name)[0]);
+    return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : undefined;
+  };
+  const annotation = children(ruby, 'rt')[0];
+  const base = children(ruby, 'rubyBase')[0];
+  return compactDefined({
+    text: annotation ? textOf(annotation) : '',
+    base: base ? textOf(base) : '',
+    align: align !== undefined && (RUBY_ALIGNMENTS as readonly string[]).includes(align)
+      ? align as RubyInfo['align'] : undefined,
+    sizeHalfPoints: halfPoints('hps'),
+    raiseHalfPoints: halfPoints('hpsRaise'),
+    baseSizeHalfPoints: halfPoints('hpsBaseText'),
+    language: wordValue(children(props ?? ruby, 'lid')[0]),
+  }) as RubyInfo;
+}
+
 function noteReferenceInRun(run: Element): { kind: NoteKind; id: number; customMarkFollows: boolean } | null {
   for (const kind of ['footnote', 'endnote'] as const) {
     const reference = children(run, noteReferenceName(kind))[0];
@@ -1056,9 +1079,11 @@ function readRun(run: Element, index: number, styles: StylesContext, paragraph: 
     : [];
   const note = noteReferenceInRun(run);
   const resolved = note && noteNumber ? noteNumber(note.kind, note.id) : null;
+  const ruby = rubyInRun(run);
   return {
     index,
     text: textOf(run),
+    ...(ruby ? { ruby } : {}),
     ...(field ? { field } : {}),
     ...direct,
     revisions: revisions.length ? revisions.map(({ id, kind, author, date, move }) => ({
@@ -1442,6 +1467,12 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     if (value === null) removeProperty(props, tag);
     else if (value !== undefined) setWordValue(property(props, tag), String(value));
   }
+  if ('eastAsianLayout' in format) {
+    if (format.eastAsianLayout === null) removeProperty(props, 'eastAsianLayout');
+    else if (format.eastAsianLayout !== undefined) {
+      setEastAsianLayout(property(props, 'eastAsianLayout'), format.eastAsianLayout);
+    }
+  }
   if ('textEffect' in format) {
     if (format.textEffect === null) removeProperty(props, 'effect');
     else if (format.textEffect !== undefined) setWordValue(property(props, 'effect'), format.textEffect);
@@ -1460,6 +1491,18 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
 function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: string): void {
   for (const [key, value] of Object.entries(format)) {
     if (value === null) throw new Error(`${label}.${key} cannot be null in defineStyle().`);
+  }
+}
+
+/** `w:eastAsianLayout` 的开关都在属性上,所以不能走 setWordValue 那条路。 */
+function setEastAsianLayout(element: Element, layout: NonNullable<RunFormat['eastAsianLayout']>): void {
+  for (const name of ['id', 'combine', 'combineBrackets', 'vert', 'vertCompress'] as const) {
+    const value = layout[name];
+    if (value === undefined) {
+      element.removeAttributeNS(WORD_NS, name);
+      continue;
+    }
+    setWordAttr(element, name, typeof value === 'boolean' ? (value ? '1' : '0') : String(value));
   }
 }
 
@@ -1537,6 +1580,9 @@ function appendRunProperties(parent: Element, format: RunFormat | undefined): vo
   ] as const) {
     const value = format[key];
     if (value !== undefined && value !== null) setWordValue(property(props, tag), String(value));
+  }
+  if (format.eastAsianLayout !== undefined && format.eastAsianLayout !== null) {
+    setEastAsianLayout(property(props, 'eastAsianLayout'), format.eastAsianLayout);
   }
   if (format.textEffect !== undefined && format.textEffect !== null) {
     setWordValue(property(props, 'effect'), format.textEffect);
@@ -2002,7 +2048,7 @@ const RUN_FORMAT_FIELDS = [
   'style', 'bold', 'italic', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
-  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading',
+  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
 ] as const satisfies readonly (keyof RunFormat)[];
 const PARAGRAPH_FORMAT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',

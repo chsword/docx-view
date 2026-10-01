@@ -22,6 +22,7 @@ export interface RunFormat {
   highlight?: string | null;
   characterSpacing?: number | null;
   position?: number | null;
+  eastAsianLayout?: EastAsianLayout | null;
   characterScale?: number | null;
   kerning?: number | null;
   fitTextWidth?: number | null;
@@ -154,9 +155,46 @@ export interface NumberingInfo {
   image?: ImageInfo;
 }
 
+/**
+ * `w:eastAsianLayout` —— Word 的「双行合一」与「纵中横」。两者都只是显示方式,文本本身不变。
+ */
+export interface EastAsianLayout {
+  id?: number;
+  /** 双行合一：把这一段文字压成上下两行，占一行的高度。 */
+  combine?: boolean;
+  /** 双行合一两侧的括号样式。 */
+  combineBrackets?: 'none' | 'round' | 'square' | 'angle' | 'curly';
+  /** 纵中横：竖排文本里把这一段横过来排。横排视图下 Word 也不显示差别。 */
+  vert?: boolean;
+  /** 纵中横时压缩字宽以适应行宽。 */
+  vertCompress?: boolean;
+}
+
+/**
+ * `w:ruby` —— 注音（拼音 / 振假名）。注音文字排在基字符上方，**不进段落正文**：
+ * Word 的阅读顺序只含基字符，所以 `RunInfo.text` 是基字符，注音在这里单独给出。
+ */
+export interface RubyInfo {
+  /** 注音文字（`w:rt`）。 */
+  text: string;
+  /** 基字符（`w:rubyBase`），与所在 run 的 `text` 相同。 */
+  base: string;
+  align?: 'center' | 'distributeLetter' | 'distributeSpace' | 'left' | 'right' | 'rightVertical';
+  /** 注音字号，半磅。 */
+  sizeHalfPoints?: number;
+  /** 注音相对基线抬升，半磅。 */
+  raiseHalfPoints?: number;
+  /** 基字符字号，半磅。 */
+  baseSizeHalfPoints?: number;
+  /** `w:lid`，注音所用语言。 */
+  language?: string;
+}
+
 export interface RunInfo extends RunFormat {
   index: number;
   text: string;
+  /** 注音；注音文字不算正文，所以不在 `text` 里。 */
+  ruby?: RubyInfo;
   revisions?: RevisionMark[];
   effective?: RunFormat;
   hyperlink?: { url?: string; anchor?: string; tooltip?: string; unsafe: boolean };

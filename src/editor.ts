@@ -34,7 +34,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -374,6 +374,9 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
       effective.fontSize !== undefined && effective.fontSize !== null) {
     span.style.fontKerning = effective.fontSize * 2 >= effective.kerning ? 'normal' : 'none';
   }
+  // 纵中横（w:eastAsianLayout w:vert）就是 CSS 的 text-combine-upright。横排视图里它不产生
+  // 可见差别——Word 也一样，只有竖排时才显示，所以照写，不另做近似。
+  if (effective.eastAsianLayout?.vert) span.style.textCombineUpright = 'all';
   if (effective.textShadow || effective.emboss || effective.imprint) {
     const textShadows = [
       ...(effective.textShadow ? ['1px 1px 2px rgba(0, 0, 0, 0.45)'] : []),
@@ -2242,22 +2245,71 @@ export class DocxEditor {
       }
       runSpan.style.textDecorationStyle = 'dashed';
     }
+    // 文本平时直接进 runSpan;注音要把基字符放进 <ruby> 里，双行合一要放进上下两行的盒子里。
+    let textTarget: HTMLElement = runSpan;
+    let rubyAnnotation: HTMLElement | undefined;
+    if (run.ruby) {
+      const ruby = this.root.ownerDocument.createElement('ruby');
+      ruby.dataset.docxRuby = '1';
+      runSpan.append(ruby);
+      textTarget = ruby;
+      // 注音是文档内容，但不在段落的阅读顺序里。标成 contentEditable=false，readText() 就会
+      // 跳过它——否则注音会被当成正文追加进 paragraph.text，把文本写坏。
+      const annotation = this.root.ownerDocument.createElement('rt');
+      annotation.contentEditable = 'false';
+      annotation.dataset.docxRubyText = '1';
+      annotation.style.userSelect = 'none';
+      if (run.ruby.sizeHalfPoints !== undefined) annotation.style.fontSize = `${run.ruby.sizeHalfPoints / 2}pt`;
+      const rubyAlign = rubyAlignToCss(run.ruby.align);
+      if (rubyAlign) annotation.style.rubyAlign = rubyAlign;
+      if (run.ruby.language) annotation.lang = run.ruby.language;
+      annotation.textContent = run.ruby.text;
+      rubyAnnotation = annotation;
+    }
+    const combine = run.effective?.eastAsianLayout ?? run.eastAsianLayout;
+    if (combine?.combine) {
+      // CSS 画不出双行合一，所以自己堆：两个 display:block 的 span（不能用 <br>，readText()
+      // 会把它读成换行）。括号是装饰，contentEditable=false 且不进 readText()。
+      const brackets = combineBracketChars(combine.combineBrackets);
+      const box = this.root.ownerDocument.createElement('span');
+      box.dataset.docxCombine = '1';
+      box.style.display = 'inline-flex';
+      box.style.flexDirection = 'column';
+      box.style.verticalAlign = 'middle';
+      box.style.fontSize = '50%';
+      box.style.lineHeight = '1';
+      box.style.textAlign = 'center';
+      const lines = combinedTextLines(run.text);
+      if (brackets) textTarget.append(this.makeMark(brackets[0], '双行合一左括号'));
+      for (const line of lines) {
+        const row = this.root.ownerDocument.createElement('span');
+        row.style.display = 'block';
+        row.append(this.root.ownerDocument.createTextNode(line));
+        box.append(row);
+      }
+      textTarget.append(box);
+      if (brackets) textTarget.append(this.makeMark(brackets[1], '双行合一右括号'));
+      // 盒子是 font-size:50% 的上下两行，占的宽度是较长那行的一半，不是整段文字的宽度；
+      // 按整段算会高估近一倍，让这种 run 过早换行。括号按原字号另计。
+      currentLineOffsetPx += Math.max(...lines.map((line) => this.measure(line, run))) / 2;
+      if (brackets) currentLineOffsetPx += brackets.reduce((total, bracket) => total + this.measure(bracket, run), 0);
+    } else {
     const segments = (run.field?.role === 'instruction' ? '' : run.text).split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
       if (!segment) continue;
       if (segment === '\n') {
-        runSpan.append(this.root.ownerDocument.createElement('br'));
-        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('↵', '换行符'));
+        textTarget.append(this.root.ownerDocument.createElement('br'));
+        if (this.options.showFormattingMarks) textTarget.append(this.makeMark('↵', '换行符'));
         currentLineOffsetPx = 0;
         continue;
       }
       if (segment === '\t') {
         const nextText = segments.slice(i + 1).find((part) => part !== '\t' && part !== '\n') ?? '';
         const tab = this.makeTabSpan(paragraph, run, currentLineOffsetPx, nextText, defaultTabStopTwips);
-        runSpan.append(tab);
+        textTarget.append(tab);
         currentLineOffsetPx += Number.parseFloat(tab.style.width || '0');
-        if (this.options.showFormattingMarks) runSpan.append(this.makeMark('→', '制表符'));
+        if (this.options.showFormattingMarks) textTarget.append(this.makeMark('→', '制表符'));
         continue;
       }
       if (this.options.showFormattingMarks && segment.includes(' ')) {
@@ -2265,15 +2317,18 @@ export class DocxEditor {
         for (const part of parts) {
           if (!part) continue;
           if (part === ' ') {
-            runSpan.append(this.root.ownerDocument.createTextNode(' '));
-            runSpan.append(this.makeMark('·', '空格'));
-          } else runSpan.append(this.root.ownerDocument.createTextNode(part));
+            textTarget.append(this.root.ownerDocument.createTextNode(' '));
+            textTarget.append(this.makeMark('·', '空格'));
+          } else textTarget.append(this.root.ownerDocument.createTextNode(part));
         }
       } else {
-        runSpan.append(this.root.ownerDocument.createTextNode(segment));
+        textTarget.append(this.root.ownerDocument.createTextNode(segment));
       }
       currentLineOffsetPx += this.measure(segment, run);
     }
+    }
+    // 注音挂在基字符后面，<ruby> 的子元素顺序就是基字符在前、<rt> 在后。
+    if (rubyAnnotation) textTarget.append(rubyAnnotation);
     if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup' &&
         run.revisions.some((revision) => revision.kind === 'move' && revision.move?.side === 'to')) {
       runSpan.append(this.makeMark('↦', '移动目标'));

@@ -1,8 +1,10 @@
 import type {
   CompatibilitySettings,
   DocumentBlock,
+  EastAsianLayout,
   ImageInfo,
   ParagraphInfo,
+  RubyInfo,
   SectionInfo,
   TableRowInfo,
 } from './types.js';
@@ -559,4 +561,39 @@ export function paginate(
     blockIndex++;
   }
   return pages;
+}
+
+/**
+ * 「双行合一」（`w:eastAsianLayout w:combine`）：Word 把这段文字平分成上下两行，一起占一行的
+ * 高度。按码点切，不按 UTF-16 码元，否则会把代理对劈成两半。
+ */
+export function combinedTextLines(text: string): [string, string] {
+  const characters = Array.from(text);
+  const cut = Math.ceil(characters.length / 2);
+  return [characters.slice(0, cut).join(''), characters.slice(cut).join('')];
+}
+
+/** 双行合一两侧的括号。CSS 没有对应能力，所以当装饰画，不进 `readText()`。 */
+export function combineBracketChars(style: EastAsianLayout['combineBrackets']): [string, string] | undefined {
+  switch (style) {
+    case 'round': return ['\uff08', '\uff09'];
+    case 'square': return ['\uff3b', '\uff3d'];
+    case 'angle': return ['\u3008', '\u3009'];
+    case 'curly': return ['\uff5b', '\uff5d'];
+    default: return undefined;
+  }
+}
+
+/**
+ * `w:rubyAlign` → CSS `ruby-align`。CSS 只有 start / center / space-between / space-around 四个值，
+ * `right` 与 `rightVertical` 没有对应项，返回 `undefined` 让浏览器用默认值，不硬凑一个近似的。
+ */
+export function rubyAlignToCss(align: RubyInfo['align']): string | undefined {
+  switch (align) {
+    case 'center': return 'center';
+    case 'distributeLetter': return 'space-between';
+    case 'distributeSpace': return 'space-around';
+    case 'left': return 'start';
+    default: return undefined;
+  }
 }

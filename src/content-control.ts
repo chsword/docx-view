@@ -3,7 +3,7 @@ import type { ContentControlInfo, ContentControlKind } from './types.js';
 import type { PartAccess } from './internal/context.js';
 import { assertIndex } from './operations.js';
 import { WORD_NS, assertText, children, childrenThroughTransparent, descendants, isValidXmlCharCode, setWordValue, wordElement, wordValue } from './xml.js';
-import { appendText, bodyOf, compactDefined, mainParagraphElements } from './internal/elements.js';
+import { appendText, bodyOf, collectTextElements, compactDefined, elementText, mainParagraphElements } from './internal/elements.js';
 import { visibleTextOf } from './revisions.js';
 
 const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
@@ -12,41 +12,12 @@ export interface ContentControlContext
   extends Pick<PartAccess, 'mainPath' | 'livePartDocument' | 'mutateLivePartXml'> {
 }
 
+/** 规则只有一处,见 internal/elements.ts 的 collectTextElements。 */
 export function textElements(element: Element): Element[] {
-  const result: Element[] = [];
-  function walk(node: Node, deletedDepth = 0): void {
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType !== 1) continue;
-      const element = child as Element;
-      if (element.namespaceURI === WORD_NS) {
-        const localName = element.localName ?? '';
-        if (element.localName === 'p') continue;
-        const inDeleted = deletedDepth > 0 || localName === 'delText';
-        if (!inDeleted && ['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym'].includes(localName)) {
-          result.push(element);
-          continue;
-        }
-      }
-      walk(element, deletedDepth + (element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '') ? 1 : 0));
-    }
-  }
-  walk(element);
-  return result;
+  return collectTextElements(element, 'visible');
 }
 
-export function elementText(element: Element): string {
-  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
-  if (element.localName === 'tab') return '\t';
-  if (element.localName === 'noBreakHyphen') return '\u2011';
-  if (element.localName === 'softHyphen') return '\u00ad';
-  if (element.localName === 'sym') {
-    const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
-    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
-    const code = Number.parseInt(value, 16);
-    return Number.isFinite(code) && isValidXmlCharCode(code) ? String.fromCharCode(code) : '�';
-  }
-  return '\n';
-}
+export { elementText };
 
 export function textOf(element: Element): string {
   if (element.localName === 'r' && descendants(element, 'instrText').length > 0) return '';

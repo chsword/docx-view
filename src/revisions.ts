@@ -2,13 +2,11 @@ import type { Document, Element, Node } from '@xmldom/xmldom';
 import type { ParagraphFormat, RevisionInfo, RevisionMark, ReviewerAuthorKind, RunFormat } from './types.js';
 import { readParagraphProperties, readRunProperties } from './styles.js';
 import { WORD_NS, assertText, children, descendants, wordElement } from './xml.js';
-import { PROPERTY_ORDER, reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
+import { collectTextElements, elementText, PROPERTY_ORDER, reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
 
 export { reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
 
 const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel'] as const;
-const VISIBLE_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
-const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
 const DEFAULT_REVISION_AUTHOR = 'docx-view';
 const WRAPPER_KIND = {
   ins: 'insertion',
@@ -57,50 +55,6 @@ function moveSideOf(element: Element): 'from' | 'to' | undefined {
   if (element.localName === 'moveFrom') return 'from';
   if (element.localName === 'moveTo') return 'to';
   return undefined;
-}
-
-function isDeletedWrapper(element: Element): boolean {
-  return element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '');
-}
-
-function collectTextElements(element: Element, mode: 'visible' | 'deleted', excludedRuns?: ReadonlySet<Element>): Element[] {
-  const result: Element[] = [];
-  const walk = (node: Node, deletedDepth = 0): void => {
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType !== 1) continue;
-      const current = child as Element;
-      if (excludedRuns?.has(current)) continue;
-      if (current.namespaceURI === WORD_NS) {
-        const localName = current.localName ?? '';
-        if (localName === 'p') continue;
-        const inDeleted = deletedDepth > 0 || localName === 'delText';
-        if (mode === 'visible' && VISIBLE_TEXT_NAMES.has(localName) && !inDeleted) {
-          result.push(current);
-          continue;
-        }
-        if (mode === 'deleted' && DELETED_TEXT_NAMES.has(localName) && inDeleted) {
-          result.push(current);
-          continue;
-        }
-      }
-      walk(current, deletedDepth + (isDeletedWrapper(current) ? 1 : 0));
-    }
-  };
-  walk(element);
-  return result;
-}
-
-function elementText(element: Element): string {
-  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
-  if (element.localName === 'tab') return '\t';
-  if (element.localName === 'noBreakHyphen') return '\u2011';
-  if (element.localName === 'softHyphen') return '\u00ad';
-  if (element.localName === 'sym') {
-    const value = revisionAttribute(element, 'char');
-    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
-    return String.fromCharCode(Number.parseInt(value, 16));
-  }
-  return '\n';
 }
 
 function previousFormatOf(element: Element, theme: Parameters<typeof readRunProperties>[1]): RunFormat | ParagraphFormat | undefined {

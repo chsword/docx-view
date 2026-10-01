@@ -1,6 +1,6 @@
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type { ReviewerAuthorKind, ReviewerFilterAuthor } from '../types.js';
-import { children, descendants, WORD_NS, wordElement } from '../xml.js';
+import { children, descendants, isValidXmlCharCode, WORD_NS, wordElement } from '../xml.js';
 
 const encoder = new TextEncoder();
 const REVIEWER_FILTER_BUCKET_KEYS = new Set(['unattributed', 'empty', 'blank']);
@@ -179,12 +179,78 @@ export function property(parent: Element, name: string): Element {
   return result;
 }
 
+const BODY_TEXT_NAMES = new Set(['t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
+const DELETED_TEXT_NAMES = new Set(['t', 'delText', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen', 'sym']);
+
+function isDeletedWrapper(element: Element): boolean {
+  return element.namespaceURI === WORD_NS && ['del', 'moveFrom'].includes(element.localName ?? '');
+}
+
+/**
+ * 段落正文由哪些元素承载。`revisions.ts` 与 `content-control.ts` 原先各有一份一模一样的
+ * 遍历(连 `w:sym` 的写法都抄了两遍,只有有效性校验那一处悄悄不同),规则必须只有一处,
+ * 否则下一个人改了一边就会走偏。
+ *
+ * `w:ruby` 的 `w:rt` 是**注音、不是正文**:它排在基字符上方,不进阅读顺序。收进来的话
+ * `paragraph.text` 会变成「读hàn漢字」,而 `setParagraphText()` 把文本按 `w:t` 顺序铺回去时
+ * 会把注音当成可写的槽位——实测改一次段落文本就会留下 `<w:rt><w:r/></w:rt>` 的空壳,
+ * 注音和基字符一起没了。只有 `w:rubyBase` 里的才算正文。
+ */
+export function collectTextElements(element: Element, mode: 'visible' | 'deleted',
+  excludedRuns?: ReadonlySet<Element>): Element[] {
+  const result: Element[] = [];
+  const walk = (node: Node, deletedDepth = 0): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      const current = child as Element;
+      if (excludedRuns?.has(current)) continue;
+      if (current.namespaceURI === WORD_NS) {
+        const localName = current.localName ?? '';
+        if (localName === 'p' || localName === 'rt') continue;
+        const inDeleted = deletedDepth > 0 || localName === 'delText';
+        if (mode === 'visible' && BODY_TEXT_NAMES.has(localName) && !inDeleted) {
+          result.push(current);
+          continue;
+        }
+        if (mode === 'deleted' && DELETED_TEXT_NAMES.has(localName) && inDeleted) {
+          result.push(current);
+          continue;
+        }
+      }
+      walk(current, deletedDepth + (isDeletedWrapper(current) ? 1 : 0));
+    }
+  };
+  walk(element);
+  return result;
+}
+
+/** `w:sym` 的字符码来自文档内容,无效时退回 U+FFFD,绝不原样放进字符串。 */
+export function elementText(element: Element): string {
+  if (['t', 'delText'].includes(element.localName ?? '')) return element.textContent ?? '';
+  if (element.localName === 'tab') return '\t';
+  if (element.localName === 'noBreakHyphen') return '\u2011';
+  if (element.localName === 'softHyphen') return '\u00ad';
+  if (element.localName === 'sym') {
+    const value = element.getAttributeNS(WORD_NS, 'char') ?? element.getAttribute('w:char');
+    if (!value || !/^[a-f0-9]{1,4}$/i.test(value)) return '';
+    const code = Number.parseInt(value, 16);
+    return Number.isFinite(code) && isValidXmlCharCode(code) ? String.fromCharCode(code) : '\ufffd';
+  }
+  return '\n';
+}
+
 export function ownRuns(paragraph: Element): Element[] {
   return descendants(paragraph, 'r').filter(run => {
     let parent = run.parentNode;
     while (parent && parent !== paragraph) {
-      if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS &&
-          (parent as Element).localName === 'p') return false;
+      if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS) {
+        const localName = (parent as Element).localName;
+        if (localName === 'p') return false;
+        // w:ruby 把注音和基字符各放在一个 w:r 里,而这些 w:r 又在外层 w:r 之内。
+        // 后代搜索会把同一批字符数三遍(外层 run、w:rt 的 run、w:rubyBase 的 run),
+        // 下标因此全不可靠,formatRun() 落到内层 run 上还会静默无效。只认最外层那个。
+        if (localName === 'r') return false;
+      }
       parent = parent.parentNode;
     }
 

@@ -88,3 +88,22 @@ test('the copy and live document semantics are observably different', () => {
     '对副本的修改不得进入包',
   );
 });
+
+test('only one place decides which elements carry paragraph text', () => {
+  // revisions.ts 与 content-control.ts 原先各有一份一模一样的遍历，连 w:sym 的处理都抄了两遍，
+  // 只有有效性校验那一处悄悄不同（一份会把无效码点原样放进字符串）。规则有两份时，
+  // 「w:ruby 的 w:rt 不算正文」这类改动只落在一边就会静静走偏，所以把它钉在叶子模块里。
+  const leaf = source('../src/internal/elements.ts');
+  assert.match(leaf, /export function collectTextElements\(/);
+  assert.match(leaf, /export function elementText\(/);
+  // 注音不算正文的判定就在这一处。
+  assert.match(leaf, /localName === 'p' \|\| localName === 'rt'/);
+  for (const path of ['../src/revisions.ts', '../src/content-control.ts']) {
+    const text = source(path);
+    assert.doesNotMatch(text, /^function collectTextElements\(/m, `${path} 不该再有自己的一份`);
+    assert.doesNotMatch(text, /^(export )?function elementText\(/m, `${path} 不该再有自己的一份`);
+    assert.match(text, /from '\.?\.?\/?internal\/elements\.js'/);
+  }
+  // ownRuns 只认最外层的 run：w:ruby 把注音和基字符各放在一个嵌套的 w:r 里。
+  assert.match(leaf, /if \(localName === 'r'\) return false;/);
+});
