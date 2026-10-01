@@ -127,6 +127,7 @@ export interface NumberingLevelDefinition {
   indentLeft?: number;
   indentHanging?: number;
   runFormat?: RunFormat;
+  image?: ImageInfo;
 }
 
 export interface NumberingDefinition {
@@ -150,6 +151,7 @@ export interface NumberingInfo {
   indentHanging?: number;
   suffix: 'tab' | 'space' | 'nothing';
   runFormat?: RunFormat;
+  image?: ImageInfo;
 }
 
 export interface RunInfo extends RunFormat {
@@ -198,7 +200,8 @@ export type FieldKind =
   | 'DOCPROPERTY' | 'FILENAME' | 'REF' | 'PAGE' | 'NUMPAGES' | 'PAGEREF'
   | 'TOC' | 'INDEX' | 'INCLUDETEXT' | 'INCLUDEPICTURE' | 'LINK' | 'DDE' | 'DDEAUTO'
   | 'MACROBUTTON' | 'GOTOBUTTON' | 'FILLIN' | 'ASK' | 'DATABASE' | 'AUTOTEXT'
-  | 'AUTOTEXTLIST' | 'HYPERLINK' | 'IF' | 'unknown';
+  | 'AUTOTEXTLIST' | 'HYPERLINK' | 'IF' | 'MERGEFIELD' | 'FORMTEXT' | 'FORMCHECKBOX'
+  | 'FORMDROPDOWN' | 'unknown';
 
 export interface FieldSwitch {
   name: string;
@@ -214,6 +217,19 @@ export interface FieldInfo {
   kind: FieldKind;
   instruction: string;
   argument?: string;
+  mergeFieldName?: string;
+  formField?: {
+    name?: string;
+    enabled?: boolean;
+    helpText?: string;
+    statusText?: string;
+    entryMacro?: string;
+    exitMacro?: string;
+    kind: 'text' | 'checkBox' | 'dropDown';
+    text?: { default?: string; maxLength?: number; format?: string; type?: string };
+    checkBox?: { default?: boolean; checked?: boolean; sizeAuto?: boolean; sizePt?: number };
+    dropDown?: { default?: number; result?: number; entries: string[] };
+  };
   switches: FieldSwitch[];
   result: string;
   requiresPagination: boolean;

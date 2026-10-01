@@ -5,7 +5,8 @@ import { WORD_NS, children, descendants } from './xml.js';
 const PAGINATION = new Set<FieldKind>(['PAGE', 'NUMPAGES', 'PAGEREF', 'TOC', 'INDEX']);
 const NEVER_EVALUATE = new Set<FieldKind>([
   'INCLUDETEXT', 'INCLUDEPICTURE', 'LINK', 'DDE', 'DDEAUTO', 'MACROBUTTON', 'GOTOBUTTON',
-  'FILLIN', 'ASK', 'DATABASE', 'AUTOTEXT', 'AUTOTEXTLIST',
+  'FILLIN', 'ASK', 'DATABASE', 'AUTOTEXT', 'AUTOTEXTLIST', 'MERGEFIELD',
+  'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN',
 ]);
 
 export interface ParsedFields {
@@ -73,7 +74,7 @@ function parseInstruction(instruction: string): { kind: FieldKind; argument?: st
     'KEYWORDS', 'COMMENTS', 'LASTSAVEDBY', 'DOCPROPERTY', 'FILENAME', 'REF', 'PAGE', 'NUMPAGES',
     'PAGEREF', 'TOC', 'INDEX', 'INCLUDETEXT', 'INCLUDEPICTURE', 'LINK', 'DDE', 'DDEAUTO',
     'MACROBUTTON', 'GOTOBUTTON', 'FILLIN', 'ASK', 'DATABASE', 'AUTOTEXT', 'AUTOTEXTLIST',
-    'HYPERLINK', 'IF',
+    'HYPERLINK', 'IF', 'MERGEFIELD', 'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN',
   ]);
   const kind = (known.has(rawKind.toUpperCase() as FieldKind) ? rawKind.toUpperCase() : 'unknown') as FieldKind;
   const switches: FieldSwitch[] = [];
@@ -100,6 +101,82 @@ function fieldFlags(element: Element): { locked: boolean; dirty: boolean } {
   };
 }
 
+function parseFormField(begin: Element, kind: FieldKind): FieldInfo['formField'] {
+  const data = children(begin, 'ffData')[0];
+  if (!data || !['FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN'].includes(kind)) return undefined;
+  const value = (parent: Element, name: string): string | undefined => {
+    const node = children(parent, name)[0];
+    return node ? attr(node, 'val') ?? node.textContent ?? '' : undefined;
+  };
+  const onOff = (parent: Element, name: string): boolean | undefined => {
+    const node = children(parent, name)[0];
+    if (!node) return undefined;
+    const raw = attr(node, 'val');
+    return raw === undefined || !['0', 'false', 'off'].includes(raw.toLowerCase());
+  };
+  const integer = (parent: Element, name: string): number | undefined => {
+    const raw = value(parent, name);
+    if (raw === undefined || raw === '') return undefined;
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+  };
+  const formField: NonNullable<FieldInfo['formField']> = {
+    kind: kind === 'FORMTEXT' ? 'text' : kind === 'FORMCHECKBOX' ? 'checkBox' : 'dropDown',
+    ...(value(data, 'name') !== undefined ? { name: value(data, 'name') } : {}),
+    ...(onOff(data, 'enabled') !== undefined ? { enabled: onOff(data, 'enabled') } : {}),
+    ...(value(data, 'helpText') !== undefined ? { helpText: value(data, 'helpText') } : {}),
+    ...(value(data, 'statusText') !== undefined ? { statusText: value(data, 'statusText') } : {}),
+    ...(value(data, 'entryMacro') !== undefined ? { entryMacro: value(data, 'entryMacro') } : {}),
+    ...(value(data, 'exitMacro') !== undefined ? { exitMacro: value(data, 'exitMacro') } : {}),
+  };
+  if (kind === 'FORMTEXT') {
+    const input = children(data, 'textInput')[0];
+    if (input) {
+      const defaultValue = value(input, 'default');
+      const maxLength = integer(input, 'maxLength');
+      const format = value(input, 'format');
+      const type = value(input, 'type');
+      formField.text = {
+        ...(defaultValue !== undefined ? { default: defaultValue } : {}),
+        ...(maxLength !== undefined ? { maxLength } : {}),
+        ...(format !== undefined ? { format } : {}),
+        ...(type !== undefined ? { type } : {}),
+      };
+    }
+  } else if (kind === 'FORMCHECKBOX') {
+    const checkBox = children(data, 'checkBox')[0];
+    if (checkBox) {
+      const defaultValue = onOff(checkBox, 'default');
+      const checked = onOff(checkBox, 'checked');
+      const sizeAuto = onOff(checkBox, 'sizeAuto');
+      const size = integer(checkBox, 'size');
+      formField.checkBox = {
+        ...(defaultValue !== undefined ? { default: defaultValue } : {}),
+        ...(checked !== undefined ? { checked } : {}),
+        ...(sizeAuto !== undefined ? { sizeAuto } : {}),
+        ...(size !== undefined ? { sizePt: size / 2 } : {}),
+      };
+    }
+  } else {
+    const dropDown = children(data, 'ddList')[0];
+    if (dropDown) {
+      const entries = children(dropDown, 'listEntry')
+        .map((entry) => attr(entry, 'val'))
+        .filter((entry): entry is string => entry !== undefined);
+      // w:default 与 w:result 是 w:ddList 的子元素（<w:result w:val="1"/>），不是它的属性，
+      // 所以要用读子元素 w:val 的 integer()，和上面 checkBox 的 size 一样。
+      const defaultValue = integer(dropDown, 'default');
+      const result = integer(dropDown, 'result');
+      formField.dropDown = {
+        entries,
+        ...(defaultValue !== undefined ? { default: defaultValue } : {}),
+        ...(result !== undefined ? { result } : {}),
+      };
+    }
+  }
+  return formField;
+}
+
 function belongsToParagraph(field: Element, paragraph: Element): boolean {
   let parent = field.parentNode;
   for (; parent && parent !== paragraph; parent = parent.parentNode) {
@@ -114,19 +191,23 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
   const fields: FieldInfo[] = [];
   const roles = new Map<Element, { index: number; role: 'instruction' | 'result'; kind?: FieldKind; instruction?: string }>();
   const add = (paragraph: Element, paragraphIndex: number, form: 'simple' | 'complex', instruction: string,
-    runElements: Element[], resultRuns: Element[], flags: { locked: boolean; dirty: boolean }, nestedIn?: number): void => {
+    runElements: Element[], resultRuns: Element[], flags: { locked: boolean; dirty: boolean },
+    nestedIn?: number, formDataBegin?: Element): void => {
     const parsed = parseInstruction(instruction);
     const index = fields.length;
     const paragraphRuns = ownRuns(paragraph);
     const runIndexes = runElements.map(run => paragraphRuns.indexOf(run)).filter(run => run >= 0).sort((a, b) => a - b);
     const resultIndexes = resultRuns.map(run => paragraphRuns.indexOf(run)).filter(run => run >= 0).sort((a, b) => a - b);
     const result = resultRuns.map(visibleText).join('');
+    const formField = formDataBegin ? parseFormField(formDataBegin, parsed.kind) : undefined;
     for (const run of runElements) {
       if (!roles.has(run)) roles.set(run, { index, role: resultRuns.includes(run) ? 'result' : 'instruction', kind: parsed.kind, instruction });
     }
     fields.push({
       index, paragraph: paragraphIndex, runs: [...new Set(runIndexes)], resultRuns: [...new Set(resultIndexes)], form,
       kind: parsed.kind, instruction, ...(parsed.argument !== undefined ? { argument: parsed.argument } : {}),
+      ...(parsed.kind === 'MERGEFIELD' && parsed.argument !== undefined ? { mergeFieldName: parsed.argument } : {}),
+      ...(formField ? { formField } : {}),
       switches: parsed.switches, result, requiresPagination: PAGINATION.has(parsed.kind),
       evaluable: !PAGINATION.has(parsed.kind) && !NEVER_EVALUATE.has(parsed.kind) &&
         ['SEQ', 'DATE', 'TIME', 'CREATEDATE', 'SAVEDATE', 'PRINTDATE', 'AUTHOR', 'TITLE', 'SUBJECT',
@@ -167,7 +248,8 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
           current.runs.push(run);
           const instruction = current.instr.map(node => node.textContent ?? '').join('');
           const resultRuns = current.resultRuns;
-          add(paragraph, paragraphIndex, 'complex', instruction, [...current.runs, ...resultRuns], resultRuns, fieldFlags(marker), current.nestedIn);
+          add(paragraph, paragraphIndex, 'complex', instruction, [...current.runs, ...resultRuns], resultRuns,
+            fieldFlags(marker), current.nestedIn, current.begin);
         }
       }
       if (stack.length && stack.at(-1)!.separated &&

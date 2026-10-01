@@ -24,7 +24,7 @@ import {
   setAppDocumentPropertiesOn,
   setCoreDocumentPropertiesOn,
 } from './docprops.js';
-import type { NumberingModel } from './numbering.js';
+import type { NumberingImageContext, NumberingModel } from './numbering.js';
 import { computeParagraphNumbering, parseNumberingModel } from './numbering.js';
 import {
   A_NS, dataUrlForBytes, decodeBase64, detectImageContentType, detectImageSize, emuToPx, extensionForContentType, IMAGE_REL,
@@ -3598,12 +3598,18 @@ export class DocxDocument {
     const stylesPath = this.getStylesPath();
     const numbering = numberingPath && this.parts.has(numberingPath) ? this.getCachedPartDocument(numberingPath) : undefined;
     const styles = stylesPath && this.parts.has(stylesPath) ? this.getCachedPartDocument(stylesPath) : undefined;
+    const imageContext: NumberingImageContext | undefined = numberingPath ? {
+      sourcePartPath: numberingPath,
+      relationships: this.relationshipsFor(numberingPath),
+      getContentType: path => this.getContentType(path),
+      hasPart: path => this.hasPart(path),
+    } : undefined;
     const context = {
       revision: this.revision,
       mainPath: this.mainPath,
       numberingPath,
       stylesPath,
-      model: parseNumberingModel(numbering, styles),
+      model: parseNumberingModel(numbering, styles, imageContext),
     };
     this.caches.numberingContextCache = context;
     return context;
