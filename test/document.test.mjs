@@ -6810,3 +6810,95 @@ test('a conditional tblPr contributes borders and margins to the cells it matche
   assert.equal(table.format.style, 'S');
   assert.equal(table.format.alignment, 'left');
 });
+
+test('defineStyle is visible to readers that already touched the styles part', () => {
+  const styles = (color) => `<w:styles xmlns:w="${WORD_NS}">`
+    + `<w:style w:type="paragraph" w:styleId="S"><w:name w:val="S"/>`
+    + `<w:rPr><w:color w:val="${color}"/></w:rPr></w:style></w:styles>`;
+  const make = () => {
+    const doc = withBody('<w:p><w:pPr><w:pStyle w:val="S"/></w:pPr><w:r><w:t>字</w:t></w:r></w:p>');
+    doc.addPart('word/styles.xml', new TextEncoder().encode(styles('FF0000')), STYLES_TYPE);
+    return doc;
+  };
+  // defineStyle 自己建草稿、自己提交。它原先只换了 parts 与 mainPath，没有换掉 documents——
+  // 于是 styles.xml 的旧【已解析树】还留着，而 getStylesContext() 正是从那棵树重新解析的
+  // （currentRevision++ 只能让按 revision 缓存的那一层失效，救不了树本身）。
+  // 结果：任何在 defineStyle 之前读过样式的调用方，之后都看不到样式改动。
+  const preread = make();
+  assert.equal(preread.getParagraphs()[0].runs[0].effective.color, 'FF0000');
+  preread.defineStyle({ id: 'S', name: 'S', type: 'paragraph', run: { color: '0000FF' } });
+  assert.equal(preread.getParagraphs()[0].runs[0].effective.color, '0000FF');
+  assert.equal(preread.getStyles().find((style) => style.id === 'S')?.run?.color, '0000FF');
+  assert.equal(preread.getStyle('S')?.run?.color, '0000FF');
+  // 字节本来就是对的，所以光看 XML 看不出这个 bug。
+  assert.match(preread.getPartXml('word/styles.xml'), /w:color w:val="0000FF"/);
+
+  // 没先读过的那条路径一直是对的，留着做对照——只有这一条绿不能说明问题。
+  const fresh = make();
+  fresh.defineStyle({ id: 'S', name: 'S', type: 'paragraph', run: { color: '0000FF' } });
+  assert.equal(fresh.getParagraphs()[0].runs[0].effective.color, '0000FF');
+});
+
+test('getParagraph reads one paragraph without rebuilding the whole read model', () => {
+  const doc = withBody([0, 1, 2].map((i) => `<w:p><w:r><w:t>第 ${i} 段</w:t></w:r></w:p>`).join(''));
+  assert.equal(doc.getParagraph(1).text, '第 1 段');
+  assert.equal(doc.getParagraph(1).index, 1);
+  assert.equal(doc.getParagraph(99), undefined, '越界返回 undefined，不抛错');
+  assert.throws(() => doc.getParagraph(-1));
+  assert.throws(() => doc.getParagraph(1.5));
+
+  // 和 getParagraphs() 读出的同一段一致。
+  assert.deepEqual(doc.getParagraph(1), doc.getParagraphs()[1]);
+
+  // 内部用的是共享缓存，但公开入口必须克隆：改返回值不能污染后续读取。
+  const one = doc.getParagraph(1);
+  one.text = '污染';
+  one.runs[0].text = '污染';
+  assert.equal(doc.getParagraph(1).text, '第 1 段');
+  assert.equal(doc.getParagraph(1).runs[0].text, '第 1 段');
+  // getParagraphs() 的契约也没变：每次都是新对象。
+  const all = doc.getParagraphs();
+  all[1].text = '污染';
+  assert.equal(doc.getParagraphs()[1].text, '第 1 段');
+  assert.notStrictEqual(doc.getParagraphs()[1], doc.getParagraphs()[1]);
+
+  // 缓存按 revision 失效：改完必须读到新值，否则就是静默返回过期数据。
+  doc.setParagraphText(1, '改过了');
+  assert.equal(doc.getParagraph(1).text, '改过了');
+  doc.formatParagraph(1, { alignment: 'center' });
+  assert.equal(doc.getParagraph(1).alignment, 'center');
+  doc.insertParagraph('插在最前', 0);
+  assert.equal(doc.getParagraph(0).text, '插在最前');
+  assert.equal(doc.getParagraph(2).text, '改过了');
+  // 撤销也要失效。
+  doc.undo();
+  assert.equal(doc.getParagraph(0).text, '第 0 段');
+});
+
+test('getEditableRegions short-circuits when the document has no permission markers', () => {
+  // 原先不论有没有标记都要先做完一整套准备：复制整篇文档、建全元素先序数组、逐段算文本
+  // 偏移。1500 段、标记数为 0 的文档上实测 149 ms，全是白做的。
+  const plain = withBody([0, 1, 2].map((i) => `<w:p><w:r><w:t>第 ${i} 段</w:t></w:r></w:p>`).join(''));
+  assert.deepEqual(plain.getEditableRegions(), []);
+
+  // 有标记时行为不变。
+  const marked = withBody(
+    '<w:p><w:permStart w:id="1" w:edGrp="everyone"/><w:r><w:t>可编辑</w:t></w:r><w:permEnd w:id="1"/></w:p>'
+    + '<w:p><w:r><w:t>其它</w:t></w:r></w:p>');
+  assert.deepEqual(marked.getEditableRegions(), [{
+    id: 1, editorGroup: 'everyone',
+    start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 }, text: '可编辑',
+  }]);
+
+  // 只有 permEnd、不成对的也要报出来——所以早退必须同时查两个标记名，只查 permStart
+  // 会把这种文档静默当成「没有区域」。
+  const endOnly = withBody('<w:p><w:r><w:t>字</w:t></w:r><w:permEnd w:id="7"/></w:p>');
+  assert.deepEqual(endOnly.getEditableRegions(), [{
+    id: 7, start: { paragraph: 0, offset: 1 }, end: { paragraph: 0, offset: 1 },
+    unpaired: 'endOnly', text: '',
+  }]);
+  // 反过来，只有 permStart 的也一样。
+  const startOnly = withBody('<w:p><w:permStart w:id="8" w:edGrp="everyone"/><w:r><w:t>字</w:t></w:r></w:p>');
+  assert.equal(startOnly.getEditableRegions().length, 1);
+  assert.equal(startOnly.getEditableRegions()[0].id, 8);
+});

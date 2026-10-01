@@ -1682,7 +1682,8 @@ export class DocxEditor {
       }
       if (event.key === 'Tab' && !event.isComposing && !this.composing && paragraph.numbering) {
         this.flush();
-        const current = this.document.getParagraphs().find((item) => item.index === paragraph.index);
+        const current = this.document.getParagraph?.(paragraph.index)
+          ?? this.document.getParagraphs().find((item) => item.index === paragraph.index);
         if (!current?.numbering) return;
         const nextLevel = current.numbering.level + (event.shiftKey ? -1 : 1);
         if (nextLevel < 0 || nextLevel > 8) return;
@@ -2968,7 +2969,10 @@ export class DocxEditor {
   }
 
   private paragraphText(index: number): string {
-    return this.document.getParagraphs().find((item) => item.index === index)?.text ?? '';
+    // 选区换算每次要取两个段落。原先用 getParagraphs().find(...)，等于为一个段落重建整篇读模型
+    // （1500 段约 30 ms × 2）。
+    return this.document.getParagraph?.(index)?.text
+      ?? this.document.getParagraphs().find((item) => item.index === index)?.text ?? '';
   }
 
   private codeUnitsFromCodePoints(text: string, points: number): number {

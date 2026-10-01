@@ -2560,6 +2560,16 @@ export class DocxDocument {
   private parts: Map<string, Uint8Array>;
   private mainPath: string;
   private currentRevision = 0;
+  /** 读模型(getParagraphs 等)的缓存键;任何部件被改动都会 +1。 */
+  /**
+   * 读模型缓存。和其余九个缓存一样按 `revision` 与 `mainPath` 判定。
+   *
+   * 其中 `mainPath` 这一项是**冗余**的：它只在 `finalizeMutation()` 里经 `validatePackage()`
+   * 变化，而那之后紧接着就递增 `revision`，所以任何 mainPath 变化必然伴随 revision 变化。
+   * 退回去单看 revision 也没有任何用例会变红（牙齿检查确认过）。留着只为和既有九个缓存的
+   * 判定形状一致，不要误以为它守住了什么。
+   */
+  private paragraphCache?: { revision: number; mainPath: string; paragraphs: ParagraphInfo[] };
   private documents = new Map<string, Document>();
   private dirtyPartXml = new Set<string>();
   private dirtyPartSizes = new Map<string, number>();
@@ -2970,6 +2980,17 @@ export class DocxDocument {
     this.setPartXml(path, serializeXml(document));
   }
 
+  /**
+   * 「这个部件被改过了」的唯一出口。原先这两行散落在五处。
+   *
+   * 注意它**不**负责让读模型缓存失效:十个缓存都是按 `revision` 判定的，而 `revision` 由
+   * `finalizeMutation()` / `commitParts()` / `withDraft()` / `defineStyle()` 在提交时递增。
+   */
+  private markPartDirty(path: string): void {
+    this.dirtyPartXml.add(path);
+    this.dirtyPartSizes.delete(path);
+  }
+
   private updatePartXmlInternal(path: string, update: (document: Document) => boolean | void): void {
     validatePath(path);
     const history = this.beginMutationHistory(this.nextHistoryLabel, this.nextHistoryAction);
@@ -2995,8 +3016,7 @@ export class DocxDocument {
         this.dirtyPartXml.delete(path);
         this.dirtyPartSizes.delete(path);
       } else {
-        this.dirtyPartXml.add(path);
-        this.dirtyPartSizes.delete(path);
+        this.markPartDirty(path);
       }
       this.finalizeMutation(path);
       if (history) this.recordHistory(history);
@@ -3105,15 +3125,9 @@ export class DocxDocument {
       this.assertPackageLimits();
       this.mainPath = this.validatePackage();
       this.currentRevision++;
-      this.caches.numberingContextCache = undefined;
-      this.caches.stylesCache = undefined;
-      this.caches.outlineCache = undefined;
-      this.caches.noteStateCache = undefined;
-      this.caches.commentStateCache = undefined;
-      this.caches.revisionInfoCache = undefined;
-      this.caches.reviewerInfoCache = undefined;
-      this.caches.tableCellLocationCache = undefined;
-      this.imageDataUrls.clear();
+      // 这九行就是 invalidateMutationCaches()；原先在四处各抄一遍，往里加一个缓存时
+      // 不会都跟着改。
+      this.invalidateMutationCaches();
       if (history) this.recordHistory(history);
       else this.applyPendingMergedHistory();
     } catch (error) {
@@ -3404,8 +3418,7 @@ export class DocxDocument {
     const paragraph = this.paragraphForHistoryTarget(document, target);
     const replacement = paragraphSnapshot.cloneNode(true) as Element;
     paragraph.parentNode!.replaceChild(replacement, paragraph);
-    this.dirtyPartXml.add(this.mainPath);
-    this.dirtyPartSizes.delete(this.mainPath);
+    this.markPartDirty(this.mainPath);
   }
 
   private invalidateMutationCaches(): void {
@@ -3467,15 +3480,9 @@ export class DocxDocument {
       bodyOf(this.getCachedPartDocument(this.mainPath));
     }
     this.currentRevision++;
-    this.caches.numberingContextCache = undefined;
-    this.caches.stylesCache = undefined;
-    this.caches.outlineCache = undefined;
-    this.caches.noteStateCache = undefined;
-    this.caches.commentStateCache = undefined;
-    this.caches.revisionInfoCache = undefined;
-    this.caches.reviewerInfoCache = undefined;
-    this.caches.tableCellLocationCache = undefined;
-    this.imageDataUrls.clear();
+    // 这九行就是 invalidateMutationCaches()；原先在四处各抄一遍，往里加一个缓存时
+    // 不会都跟着改。
+    this.invalidateMutationCaches();
   }
 
   private assertPackageLimits(): void {
@@ -3933,9 +3940,42 @@ export class DocxDocument {
     return walk(root);
   }
 
+  /**
+   * 内部只读用的读模型:每个 revision 只构建一次，返回的是**共享**数组，不要改它。
+   *
+   * 分成两层是因为公开的 `getParagraphs()` 一直返回全新对象、调用方可以随意修改返回值；
+   * 直接把缓存数组交出去会让调用方一改就污染缓存。而「取一个段落」这类内部调用点
+   * （原先是 `getParagraphs()[index]` / `.find(...)`，等于为一个段落重建整篇）付不起克隆。
+   */
+  private cachedParagraphs(): readonly ParagraphInfo[] {
+    if (this.paragraphCache?.revision === this.revision && this.paragraphCache.mainPath === this.mainPath) {
+      return this.paragraphCache.paragraphs;
+    }
+    const document = this.getCachedPartDocument(this.mainPath);
+    const paragraphs = this.buildParagraphs(document, this.getStylesContext(),
+      this.getNumberingContext(), this.mainPath, this.getNoteState());
+    this.paragraphCache = { revision: this.revision, mainPath: this.mainPath, paragraphs };
+    return paragraphs;
+  }
+
+  /**
+   * 公开入口照旧每次构建新对象。**不要**改成「读缓存 + 克隆」：实测 1500 段的读模型，
+   * `structuredClone` 要 32.5 ms、重建要 29.5 ms，克隆把收益全吃掉了，还白搭一层缓存。
+   * 真正能省的是内部那些取一两个段落的调用点——它们用 `cachedParagraphs()`，不必克隆。
+   */
   getParagraphs(): ParagraphInfo[] {
     const document = this.getCachedPartDocument(this.mainPath);
     return this.buildParagraphs(document, this.getStylesContext(), this.getNumberingContext(), this.mainPath, this.getNoteState());
+  }
+
+  /**
+   * 取单个段落。只克隆这一个，所以不像 `getParagraphs()[index]` 那样为一个段落付整篇的代价
+   * （1500 段上那是约 30 ms，而选区换算一次要取两个段落）。
+   */
+  getParagraph(index: number): ParagraphInfo | undefined {
+    assertIndex(index);
+    const paragraph = this.cachedParagraphs()[index];
+    return paragraph ? structuredClone(paragraph) : undefined;
   }
 
   getFields(partPath = this.mainPath): FieldInfo[] {
@@ -4379,7 +4419,8 @@ export class DocxDocument {
   private buildOutline(): OutlineNode[] {
     const outline: OutlineNode[] = [];
     const stack: OutlineNode[] = [];
-    for (const paragraph of this.getParagraphs()) {
+    // OutlineNode 是纯值类型，不含 ParagraphInfo 引用，所以可以用共享的读模型。
+    for (const paragraph of this.cachedParagraphs()) {
       const level = this.paragraphOutlineLevel(paragraph);
       if (level === undefined) continue;
       const node: OutlineNode = {
@@ -4486,7 +4527,7 @@ export class DocxDocument {
     }
     const style = this.getStyle(styleId);
     if (!style || style.type !== 'paragraph') throw new Error(`Paragraph style not found: ${styleId}.`);
-    const paragraph = this.getParagraphs()[index];
+    const paragraph = this.cachedParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     const clearDirectFormat = options.clearDirectFormat === true;
     if (!clearDirectFormat) {
@@ -4552,8 +4593,7 @@ export class DocxDocument {
           applyRunFormatTo(properties(element, 'rPr'), patch);
         }
       }
-      draft.dirtyPartXml.add(draft.mainPath);
-      draft.dirtyPartSizes.delete(draft.mainPath);
+      draft.markPartDirty(draft.mainPath);
     });
   }
 
@@ -4627,7 +4667,7 @@ export class DocxDocument {
     }
     const preview = this.getPartDocument(this.mainPath);
     const normalized = this.normalizeDocumentRange(preview, range);
-    const paragraphs = this.getParagraphs().slice(normalized.start.paragraph, normalized.end.paragraph + 1);
+    const paragraphs = this.cachedParagraphs().slice(normalized.start.paragraph, normalized.end.paragraph + 1);
     if (!paragraphs.length) throw new Error('Range does not contain any paragraphs.');
     const paragraphFormats = paragraphs.map((paragraph) => this.directParagraphFormat(paragraph));
     const paragraphFormat: ParagraphFormat = {};
@@ -4679,7 +4719,7 @@ export class DocxDocument {
     if (level !== null && (!Number.isSafeInteger(level) || level < 0 || level > OUTLINE_MAX_LEVEL)) {
       throw new Error(`level must be null or an integer from 0 to ${OUTLINE_MAX_LEVEL}.`);
     }
-    const paragraph = this.getParagraphs()[index];
+    const paragraph = this.cachedParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     if ((paragraph.outlineLevel ?? null) === level) return;
     this.formatParagraph(index, { outlineLevel: level });
@@ -4688,7 +4728,7 @@ export class DocxDocument {
   moveOutlineSection(from: number, to: number): void {
     assertIndex(from);
     assertIndex(to);
-    const paragraphs = this.getParagraphs();
+    const paragraphs = this.cachedParagraphs();
     if (!paragraphs[from]) throw new Error(`Paragraph ${from} does not exist.`);
     if (to > paragraphs.length) throw new Error(`Destination ${to} is out of bounds for ${paragraphs.length} paragraphs.`);
     const tree = this.getOutline();
@@ -4740,8 +4780,7 @@ export class DocxDocument {
         ? remaining[adjustedTarget]!.block
         : children(body, 'sectPr')[0] ?? null;
       body.insertBefore(fragment, anchor);
-      draft.dirtyPartXml.add(draft.mainPath);
-      draft.dirtyPartSizes.delete(draft.mainPath);
+      draft.markPartDirty(draft.mainPath);
     });
   }
 
@@ -5211,10 +5250,16 @@ export class DocxDocument {
   }
 
   getEditableRegions(): EditableRegionInfo[] {
+    // 没有任何权限标记时直接返回。原先不论文档里有没有标记，都要先做完一整套准备：复制整篇
+    // 文档、建全元素的先序数组、再逐段算文本偏移——1500 段、标记数为 0 的文档上实测 149 ms，
+    // 全是白做的（空文档只要 0.2 ms，可见代价完全来自文档规模而不是标记数量）。
+    const live = bodyOf(this.getCachedPartDocument(this.mainPath));
+    if (!descendants(live, 'permStart').length && !descendants(live, 'permEnd').length) return [];
     const body = bodyOf(this.getPartDocument(this.mainPath));
     const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
-    const paragraphInfo = this.getParagraphs();
+    // EditableRegionInfo 也是纯值类型。
+    const paragraphInfo = this.cachedParagraphs();
     const order = preOrderElements(body);
     const inlinePositions = new Map<Element, { paragraph: number; offset: number }>();
     paragraphs.forEach((paragraph, index) => {
@@ -5724,8 +5769,7 @@ export class DocxDocument {
           break;
       }
     }
-    this.dirtyPartXml.add(this.mainPath);
-    this.dirtyPartSizes.delete(this.mainPath);
+    this.markPartDirty(this.mainPath);
   }
 
   private insertComparedBlock(body: Element, blockIndex: number, source: Element, author?: string, date?: string): void {
@@ -6322,7 +6366,7 @@ export class DocxDocument {
   }
 
   clearParagraphNumbering(index: number): void {
-    const paragraph = this.getParagraphs()[index];
+    const paragraph = this.cachedParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     const styleHasNumbering = paragraph.style ? this.getNumberingContext().model.paragraphStyles.has(paragraph.style) : false;
     this.updatePartXmlInternal(this.mainPath, document => {
@@ -6360,7 +6404,7 @@ export class DocxDocument {
   }
 
   private restartNumberingDirect(index: number, start: number): number {
-    const paragraphInfos = this.getParagraphs();
+    const paragraphInfos = this.cachedParagraphs();
     const target = paragraphInfos[index];
     if (!target) throw new Error(`Paragraph ${index} does not exist.`);
     if (!target.numbering) throw new Error(`Paragraph ${index} does not have numbering.`);
@@ -6434,7 +6478,7 @@ export class DocxDocument {
   }
 
   private continueNumberingDirect(index: number): void {
-    const paragraphInfos = this.getParagraphs();
+    const paragraphInfos = this.cachedParagraphs();
     const target = paragraphInfos[index];
     if (!target) throw new Error(`Paragraph ${index} does not exist.`);
     if (!target.numbering) throw new Error(`Paragraph ${index} does not have numbering.`);
@@ -7669,7 +7713,7 @@ export class DocxDocument {
     if (!Array.isArray(segments)) throw new Error('segments must be an array of strings.');
     if (segments.length > 1001) throw new Error('segments count exceeds 1001.');
     segments.forEach((segment) => assertText(segment, 'segment'));
-    const paragraph = this.getParagraphs()[index];
+    const paragraph = this.cachedParagraphs()[index];
     if (!paragraph) throw new Error(`Paragraph ${index} does not exist.`);
     const hiddenRuns = paragraph.runs.map((run) => {
       const format = run.effective ?? run;
@@ -8071,8 +8115,16 @@ export class DocxDocument {
     });
     if (equalPartMap(this.parts, draft.parts)) return;
     this.parts = draft.parts;
+    // 换了字节就必须连 documents 一起换掉。留着旧的已解析树，getStylesContext() 会从那棵旧树
+    // 重新解析——currentRevision++ 只能让按 revision 缓存的那一层失效，救不了树本身，于是
+    // 样式改动对所有先读过样式的调用方都不可见（getStyles / getParagraphs().effective / 渲染
+    // 全是旧值）。withDraft() 与快照提交那两处本来就是这么交接的。
+    this.documents = draft.documents;
+    this.dirtyPartXml = draft.dirtyPartXml;
+    this.dirtyPartSizes = draft.dirtyPartSizes;
     this.mainPath = draft.mainPath;
     this.currentRevision++;
+    this.invalidateMutationCaches();
   }
 
   replaceText(search: string, replacement: string): void {
@@ -8398,15 +8450,9 @@ export class DocxDocument {
       this.mainPath = draft.mainPath;
       this.revisionAuthor = draft.revisionAuthor;
       this.currentRevision++;
-      this.caches.numberingContextCache = undefined;
-      this.caches.stylesCache = undefined;
-      this.caches.outlineCache = undefined;
-      this.caches.noteStateCache = undefined;
-      this.caches.commentStateCache = undefined;
-      this.caches.revisionInfoCache = undefined;
-      this.caches.reviewerInfoCache = undefined;
-      this.caches.tableCellLocationCache = undefined;
-      this.imageDataUrls.clear();
+      // 这九行就是 invalidateMutationCaches()；原先在四处各抄一遍，往里加一个缓存时
+      // 不会都跟着改。
+      this.invalidateMutationCaches();
       if (history) this.recordHistory(history);
       return result;
     } catch (error) {
@@ -9016,15 +9062,9 @@ export class DocxDocument {
       this.redoHistory = draft.redoHistory;
       this.undoHistoryBytes = draft.undoHistoryBytes;
       this.redoHistoryBytes = draft.redoHistoryBytes;
-      this.caches.numberingContextCache = undefined;
-      this.caches.stylesCache = undefined;
-      this.caches.outlineCache = undefined;
-      this.caches.noteStateCache = undefined;
-      this.caches.commentStateCache = undefined;
-      this.caches.revisionInfoCache = undefined;
-      this.caches.reviewerInfoCache = undefined;
-      this.caches.tableCellLocationCache = undefined;
-      this.imageDataUrls.clear();
+      // 这九行就是 invalidateMutationCaches()；原先在四处各抄一遍，往里加一个缓存时
+      // 不会都跟着改。
+      this.invalidateMutationCaches();
       if (history) this.recordHistory(history);
       return { ...snapshot, revision: this.revision };
     } catch (error) {

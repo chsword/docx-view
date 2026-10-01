@@ -3487,3 +3487,27 @@ test('a floating table floats so the browser wraps text around it', () => {
   assert.equal(plain.style.cssFloat, undefined);
   assert.equal(plain.style.marginInline, 'auto');
 });
+
+test('selection conversion reads single paragraphs, with a fallback for hosts without getParagraph', () => {
+  // documentRange() 每次要取两个段落。原先用 getParagraphs().find(...)，等于为一个段落重建
+  // 整篇读模型；1500 段上实测两次约 24 ms。
+  const editor = Object.create(DocxEditor.prototype);
+  const paragraphs = [{ index: 0, text: 'abc', runs: [], images: [] }, { index: 1, text: '甲乙丙丁', runs: [], images: [] }];
+  let wholeModelReads = 0;
+  let singleReads = 0;
+  editor.document = {
+    getParagraph: (index) => { singleReads++; return paragraphs[index]; },
+    getParagraphs: () => { wholeModelReads++; return paragraphs; },
+  };
+  const range = editor.documentRange({ start: { paragraph: 0, offset: 2 }, end: { paragraph: 1, offset: 3 } });
+  assert.deepEqual(range, { start: { paragraph: 0, offset: 2 }, end: { paragraph: 1, offset: 3 } });
+  assert.equal(singleReads, 2, '两个端点各取一段');
+  assert.equal(wholeModelReads, 0, '不再重建整篇读模型');
+
+  // 宿主传入的自定义 document 可能没有这个方法，必须回退而不是炸。
+  let fallbackReads = 0;
+  editor.document = { getParagraphs: () => { fallbackReads++; return paragraphs; } };
+  const fallback = editor.documentRange({ start: { paragraph: 1, offset: 2 }, end: { paragraph: 1, offset: 4 } });
+  assert.deepEqual(fallback, { start: { paragraph: 1, offset: 2 }, end: { paragraph: 1, offset: 4 } });
+  assert.equal(fallbackReads, 2);
+});

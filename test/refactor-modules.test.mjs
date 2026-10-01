@@ -107,3 +107,16 @@ test('only one place decides which elements carry paragraph text', () => {
   // ownRuns 只认最外层的 run：w:ruby 把注音和基字符各放在一个嵌套的 w:r 里。
   assert.match(leaf, /if \(localName === 'r'\) return false;/);
 });
+
+test('the mutation cache reset lives in exactly one place', () => {
+  // 这九行原先在四处各抄一遍（finalizeMutation、commitParts、withDraft，以及 helper 本体）。
+  // 十个缓存目前都按 revision 自失效，所以这些显式清理是冗余的防御代码、不是承重的；
+  // 但四份会各自走偏——往 helper 里新加一个缓存时，另外三处不会跟着改。
+  const text = source('../src/document.ts');
+  assert.match(text, /private invalidateMutationCaches\(\): void \{/);
+  // 只有 helper 本体列出这些字段；其余地方调它。
+  assert.equal(text.match(/this\.caches\.tableCellLocationCache = undefined;/g).length, 1);
+  assert.equal(text.match(/this\.caches\.reviewerInfoCache = undefined;/g).length, 1);
+  assert.ok(text.match(/this\.invalidateMutationCaches\(\);/g).length >= 4,
+    'finalizeMutation / commitParts / withDraft / defineStyle 都调同一处');
+});
