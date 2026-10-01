@@ -172,7 +172,26 @@ export interface MathMlNode {
   attrs?: Record<string, string>;
   children?: MathMlNode[];
   text?: string;
+  /**
+   * 读出来时记下原本的 OMML 元素名。MathML 的一个标签对应多个 OMML 元素——mover 可能来自
+   * bar / acc / groupChr / limUpp，mrow 可能来自 d / func / box / nary，mtable 可能来自
+   * m / eqArr——写回时只看标签必然猜错一部分，所以把来处带上。手工构造的节点没有这个字段，
+   * 写入侧照旧按标签猜。
+   */
+  source?: string;
 }
+
+export function assertText(text: unknown, name = 'text'): asserts text is string {
+  if (typeof text !== 'string' || text.length > 1_000_000 ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u.test(text) ||
+      /[\ud800-\udfff]/u.test(text)) {
+    throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
+  }
+}
+
+export type MathSource =
+  | { mathMl: MathMlNode }
+  | { linear: string };
 
 export interface MathInfo {
   runOffset: number;

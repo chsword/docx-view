@@ -1,5 +1,7 @@
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
+import { assertText } from './types.js';
+export { assertText } from './types.js';
 
 export const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 export const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
@@ -98,14 +100,6 @@ export function validatePath(path: string): void {
   if (typeof path !== 'string' || !path || path.startsWith('/') || /[\\\u0000-\u001f]/.test(path) ||
       path.split('/').some(segment => !segment || segment === '.' || segment === '..')) {
     throw new Error(`Invalid package part path: ${path}`);
-  }
-}
-
-export function assertText(text: unknown, name = 'text'): asserts text is string {
-  if (typeof text !== 'string' || text.length > MAX_XML_TEXT_LENGTH ||
-      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u.test(text) ||
-      /[\ud800-\udfff]/u.test(text)) {
-    throw new Error(`${name} must be valid XML text of at most 1,000,000 characters.`);
   }
 }
 

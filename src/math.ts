@@ -1,5 +1,5 @@
 import type { Element } from '@xmldom/xmldom';
-import type { MathMlNode } from './types.js';
+import { assertText, type MathMlNode } from './types.js';
 
 export const MATH_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
 const MAX_DEPTH = 64;
@@ -153,7 +153,7 @@ function convert(element: Element, depth: number, context: { maxDepth: number; t
     const operator = loc === 'subSup'
       ? { tag: 'msubsup', children: [op, sub ? childrenAsRow(sub, depth, context) : { tag: 'mrow', children: [] }, sup ? childrenAsRow(sup, depth, context) : { tag: 'mrow', children: [] }] }
       : { tag: 'munderover', children: [op, sub ? childrenAsRow(sub, depth, context) : { tag: 'mrow', children: [] }, sup ? childrenAsRow(sup, depth, context) : { tag: 'mrow', children: [] }] };
-    return [{ tag: 'mrow', children: [operator, body] }];
+    return [{ tag: 'mrow', children: [operator, body], source: 'nary' }];
   }
   if (name === 'd') {
     const props = first(element, 'dPr');
@@ -164,32 +164,40 @@ function convert(element: Element, depth: number, context: { maxDepth: number; t
       ...(index ? [{ tag: 'mo', attrs: { stretchy: 'true' }, text: sep }] : []),
       childrenAsRow(entry, depth, context),
     ]);
-    return [{ tag: 'mrow', children: [{ tag: 'mo', attrs: { stretchy: 'true' }, text: beg }, ...content, { tag: 'mo', attrs: { stretchy: 'true' }, text: end }] }];
+    return [{ tag: 'mrow', children: [{ tag: 'mo', attrs: { stretchy: 'true' }, text: beg }, ...content, { tag: 'mo', attrs: { stretchy: 'true' }, text: end }], source: 'd' }];
   }
   if (name === 'func') {
     const fname = first(element, 'fName');
     const expr = first(element, 'e');
-    return [{ tag: 'mrow', children: [fname ? childrenAsRow(fname, depth, context) : { tag: 'mi', text: '' }, expr ? childrenAsRow(expr, depth, context) : { tag: 'mrow', children: [] }] }];
+    return [{ tag: 'mrow', children: [fname ? childrenAsRow(fname, depth, context) : { tag: 'mi', text: '' }, expr ? childrenAsRow(expr, depth, context) : { tag: 'mrow', children: [] }], source: 'func' }];
   }
   if (name === 'limLow' || name === 'limUpp') {
     const base = first(element, 'e');
     const lim = first(element, 'lim');
-    return [{ tag: name === 'limLow' ? 'munder' : 'mover', children: [base ? childrenAsRow(base, depth, context) : { tag: 'mrow', children: [] }, lim ? childrenAsRow(lim, depth, context) : { tag: 'mrow', children: [] }] }];
+    return [{ tag: name === 'limLow' ? 'munder' : 'mover', children: [base ? childrenAsRow(base, depth, context) : { tag: 'mrow', children: [] }, lim ? childrenAsRow(lim, depth, context) : { tag: 'mrow', children: [] }], source: name }];
   }
   if (name === 'acc' || name === 'bar' || name === 'groupChr') {
     const props = first(element, `${name}Pr`);
     const base = first(element, 'e');
     const chr = directText(first(props ?? element, 'chr'), name === 'acc' ? '̂' : name === 'groupChr' ? '⏞' : '¯');
     const pos = prop(props ?? element, 'pos', 'top');
-    return [{ tag: name === 'acc' || pos === 'top' ? 'mover' : 'munder', children: [base ? childrenAsRow(base, depth, context) : { tag: 'mrow', children: [] }, { tag: 'mo', ...(name === 'acc' ? { attrs: { accent: 'true' } } : {}), text: chr }] }];
+    return [{ tag: name === 'acc' || pos === 'top' ? 'mover' : 'munder', children: [base ? childrenAsRow(base, depth, context) : { tag: 'mrow', children: [] }, { tag: 'mo', ...(name === 'acc' ? { attrs: { accent: 'true' } } : {}), text: chr }], source: name }];
   }
   if (name === 'm' || name === 'eqArr') {
-    const rows = name === 'm' ? mathChildren(element, 'mr') : mathChildren(element, 'e');
-    return [{ tag: 'mtable', children: rows.map(row => ({ tag: 'mtr', children: [({ tag: 'mtd', children: [childrenAsRow(row, depth, context)] })] })) }];
+    // m:m 的一行(m:mr)里每个 m:e 各是一个单元格;m:eqArr 的每个 m:e 本身就是一整行。
+    const rows = name === 'm'
+      ? mathChildren(element, 'mr').map(row => mathChildren(row, 'e'))
+      : mathChildren(element, 'e').map(row => [row]);
+    return [{ tag: 'mtable', source: name, children: rows.map(cells => ({ tag: 'mtr',
+      children: cells.map(cell => ({ tag: 'mtd', children: [childrenAsRow(cell, depth, context)] })) })) }];
   }
   if (name === 'borderBox') return [{ tag: 'menclose', children: [childrenAsRow(element, depth, context)] }];
   if (name === 'phant') return [{ tag: 'mphantom', children: [childrenAsRow(element, depth, context)] }];
-  if (name === 'box') return [{ tag: 'mrow', children: [childrenAsRow(element, depth, context)] }];
+  if (name === 'box') {
+    const inner = childrenAsRow(element, depth, context);
+    // inner 自己带 source 时（box 里只裹了一个 bar 之类），再包一层 mrow，别把它的来处覆盖掉。
+    return [inner.source === undefined ? { ...inner, source: 'box' } : { tag: 'mrow', children: [inner], source: 'box' }];
+  }
   return [{ tag: 'mrow', children: mathChildren(element).flatMap(child => convert(child, depth + 1, context)) }];
 }
 
@@ -207,7 +215,7 @@ function linear(node: MathMlNode): string {
   if (node.text !== undefined) return node.text;
   const c = (node.children ?? []).map(linear);
   switch (node.tag) {
-    case 'mfrac': return `(${c[0] ?? ''})/${c[1] ?? ''}`;
+    case 'mfrac': return `${node.children?.[0]?.tag === 'mrow' ? `(${c[0] ?? ''})` : c[0] ?? ''}/${c[1] ?? ''}`;
     case 'msup': return `${c[0] ?? ''}^${c[1] ?? ''}`;
     case 'msub': return `${c[0] ?? ''}_${c[1] ?? ''}`;
     case 'msubsup': return `${c[0] ?? ''}_${c[1] ?? ''}^${c[2] ?? ''}`;
@@ -231,4 +239,575 @@ export function ommlToLinearText(oMath: Element, options?: { maxDepth?: number }
 export function ommlToLinearTextWithInfo(oMath: Element, options?: { maxDepth?: number }): LinearConversion {
   const result = ommlToMathMlWithInfo(oMath, options);
   return { text: linear(result.node), truncated: result.truncated };
+}
+
+const MATHML_TAGS = new Set([
+  'math', 'mrow', 'mi', 'mn', 'mo', 'mfrac', 'msqrt', 'mroot', 'msup', 'msub', 'msubsup',
+  'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'menclose', 'mphantom', 'mtext',
+  'mmultiscripts', 'mprescripts',
+]);
+const MATHML_ATTRS = new Set(['mathvariant', 'display', 'linethickness', 'stretchy', 'accent', 'encoding']);
+const LINEAR_SUPPORT = 'a/b, a^b, a_b, a_b^c, √(a), sqrt(a), (…), and ∑_(a)^(b) c / ∫_(a)^(b) c';
+const MATH_VARIANTS: Record<string, string> = {
+  normal: 'p',
+  bold: 'b',
+  italic: 'i',
+  'bold-italic': 'bi',
+  'double-struck': 'double-struck',
+  script: 'script',
+  fraktur: 'fraktur',
+  monospace: 'monospace',
+  'sans-serif': 'sans-serif',
+};
+
+interface LinearParser {
+  source: string;
+  index: number;
+  maxDepth: number;
+}
+
+function parsedRow(children: MathMlNode[]): MathMlNode {
+  return children.length === 1 ? children[0]! : { tag: 'mrow', children };
+}
+
+function mathToken(source: string, index: number): { node: MathMlNode; end: number } | undefined {
+  const char = source[index]!;
+  if (/\d/.test(char)) {
+    let end = index + 1;
+    while (end < source.length && /[\d.,]/.test(source[end]!)) end++;
+    return { node: { tag: 'mn', text: source.slice(index, end) }, end };
+  }
+  if (/\s/.test(char)) return { node: { tag: 'mtext', text: char }, end: index + 1 };
+  if (char === ')' || char === '/' || char === '^' || char === '_') return undefined;
+  if (/[\p{Sm}\p{So}]/u.test(char) || '≠∈∉⊂⊆∪∩∀∃→←↔⇒⇔∞∂∇+-−×÷=<>≤≥±*,.;:|'.includes(char)) {
+    return { node: { tag: 'mo', text: char }, end: index + 1 };
+  }
+  if (/[\\{}[\]]/.test(char)) return undefined;
+  let end = index + 1;
+  while (end < source.length && !/[\d\s]/.test(source[end]!) &&
+      !(/[\p{Sm}\p{So}]/u.test(source[end]!) || '≠∈∉⊂⊆∪∩∀∃→←↔⇒⇔∞∂∇+-−×÷=<>≤≥±*/,;:|()_^√'.includes(source[end]!))) {
+    if (/[\\{}[\]]/.test(source[end]!)) break;
+    end++;
+  }
+  return { node: { tag: 'mi', attrs: { mathvariant: 'italic' }, text: source.slice(index, end) }, end };
+}
+
+function parseLinearExpression(parser: LinearParser, depth: number, stopAtParen = false): MathMlNode[] {
+  if (depth > parser.maxDepth) throw new Error(`Linear math exceeds the maximum depth of ${parser.maxDepth}.`);
+  const nodes: MathMlNode[] = [];
+  while (parser.index < parser.source.length) {
+    while (/\s/.test(parser.source[parser.index] ?? '')) parser.index++;
+    if (parser.index >= parser.source.length || (stopAtParen && parser.source[parser.index] === ')')) break;
+
+    const char = parser.source[parser.index]!;
+    if (char === '(') {
+      parser.index++;
+      const inside = parseLinearExpression(parser, depth + 1, true);
+      if (parser.source[parser.index] !== ')') throw new Error('Unclosed group in linear math.');
+      parser.index++;
+      nodes.push({ tag: 'mrow', children: [
+        { tag: 'mo', text: '(' }, ...inside, { tag: 'mo', text: ')' },
+      ] });
+      continue;
+    }
+    if (char === '√' || parser.source.startsWith('sqrt(', parser.index)) {
+      if (char === '√') parser.index++;
+      else parser.index += 4;
+      if (parser.source[parser.index] !== '(') throw new Error('Square roots must use √(a) or sqrt(a).');
+      parser.index++;
+      const inside = parseLinearExpression(parser, depth + 1, true);
+      if (parser.source[parser.index] !== ')') throw new Error('Unclosed square root in linear math.');
+      parser.index++;
+      nodes.push({ tag: 'msqrt', children: [parsedRow(inside)] });
+      continue;
+    }
+    if (char === '∑' || char === '∫') {
+      const operator = char;
+      parser.index++;
+      if (parser.source[parser.index] !== '_' || parser.source[parser.index + 1] !== '(') {
+        throw new Error('Summation and integral forms must use ∑_(a)^(b) c or ∫_(a)^(b) c.');
+      }
+      parser.index += 2;
+      const sub = parseLinearExpression(parser, depth + 1, true);
+      if (parser.source[parser.index] !== ')') throw new Error('Unclosed lower limit in linear math.');
+      parser.index++;
+      if (parser.source[parser.index] !== '^' || parser.source[parser.index + 1] !== '(') {
+        throw new Error('Summation and integral forms must use ∑_(a)^(b) c or ∫_(a)^(b) c.');
+      }
+      parser.index += 2;
+      const sup = parseLinearExpression(parser, depth + 1, true);
+      if (parser.source[parser.index] !== ')') throw new Error('Unclosed upper limit in linear math.');
+      parser.index++;
+      const body = parseLinearFactor(parser, depth + 1);
+      if (!body) throw new Error('Summation and integral forms must use ∑_(a)^(b) c or ∫_(a)^(b) c.');
+      nodes.push({ tag: 'mrow', children: [
+        { tag: 'munderover', children: [
+          { tag: 'mo', text: operator }, parsedRow(sub), parsedRow(sup),
+        ] },
+        body,
+      ] });
+      continue;
+    }
+    const factor = parseLinearFactor(parser, depth + 1);
+    if (!factor) throw new Error(`Unsupported linear math. Supported forms: ${LINEAR_SUPPORT}.`);
+    nodes.push(factor);
+  }
+  return nodes;
+}
+
+function parseLinearFactor(parser: LinearParser, depth: number, allowScripts = true): MathMlNode | undefined {
+  if (depth > parser.maxDepth) throw new Error(`Linear math exceeds the maximum depth of ${parser.maxDepth}.`);
+  while (/\s/.test(parser.source[parser.index] ?? '')) parser.index++;
+  let base: MathMlNode | undefined;
+  if (parser.source[parser.index] === '(') {
+    parser.index++;
+    const inside = parseLinearExpression(parser, depth + 1, true);
+    if (parser.source[parser.index] !== ')') throw new Error('Unclosed group in linear math.');
+    parser.index++;
+    base = { tag: 'mrow', children: [{ tag: 'mo', text: '(' }, ...inside, { tag: 'mo', text: ')' }] };
+  } else if (parser.source[parser.index] === '√' || parser.source.startsWith('sqrt(', parser.index)) {
+    if (parser.source[parser.index] === '√') parser.index++;
+    else parser.index += 4;
+    if (parser.source[parser.index] !== '(') throw new Error('Square roots must use √(a) or sqrt(a).');
+    parser.index++;
+    const inside = parseLinearExpression(parser, depth + 1, true);
+    if (parser.source[parser.index] !== ')') throw new Error('Unclosed square root in linear math.');
+    parser.index++;
+    base = { tag: 'msqrt', children: [parsedRow(inside)] };
+  } else {
+    const token = mathToken(parser.source, parser.index);
+    if (!token) return undefined;
+    base = token.node;
+    parser.index = token.end;
+  }
+
+  if (parser.source[parser.index] === '/') {
+    parser.index++;
+    const denominator = parseLinearFactor(parser, depth + 1);
+    if (!denominator) throw new Error('Fractions must use a/b.');
+    base = { tag: 'mfrac', children: [base, denominator] };
+  }
+  if (allowScripts && (parser.source[parser.index] === '_' || parser.source[parser.index] === '^')) {
+    let sub: MathMlNode | undefined;
+    let sup: MathMlNode | undefined;
+    for (let count = 0; count < 2; count++) {
+      const marker = parser.source[parser.index];
+      if (marker !== '_' && marker !== '^') break;
+      parser.index++;
+      const script = parseLinearFactor(parser, depth + 1, false);
+      if (!script) throw new Error('Scripts must use a_b, a^b, or a_b^c.');
+      if (marker === '_') {
+        if (sub) throw new Error('Only one subscript is supported per base.');
+        sub = script;
+      } else {
+        if (sup) throw new Error('Only one superscript is supported per base.');
+        sup = script;
+      }
+    }
+    base = sub && sup ? { tag: 'msubsup', children: [base, sub, sup] }
+      : sub ? { tag: 'msub', children: [base, sub] }
+        : { tag: 'msup', children: [base, sup!] };
+  }
+  return base;
+}
+
+export function linearToMathMl(source: string, options?: { maxDepth?: number }): MathMlNode {
+  assertText(source, 'linear math');
+  const maxDepth = options?.maxDepth ?? MAX_DEPTH;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 0) throw new Error('maxDepth must be a non-negative safe integer.');
+  const parser: LinearParser = { source, index: 0, maxDepth };
+  const children = parseLinearExpression(parser, 0);
+  while (/\s/.test(parser.source[parser.index] ?? '')) parser.index++;
+  if (!children.length || parser.index !== source.length) {
+    throw new Error(`Unsupported linear math. Supported forms: ${LINEAR_SUPPORT}.`);
+  }
+  return { tag: 'math', attrs: { display: 'inline' }, children };
+}
+
+function createOmmlElement(doc: import('@xmldom/xmldom').Document, name: string): Element {
+  return doc.createElementNS(MATH_NS, `m:${name}`);
+}
+
+function setOmmlValue(element: Element, value: string): void {
+  element.setAttributeNS(MATH_NS, 'm:val', value);
+}
+
+function appendOmmlTextRun(parent: Element, doc: import('@xmldom/xmldom').Document, text: string, variant?: string): void {
+  assertText(text, 'MathML text');
+  const run = createOmmlElement(doc, 'r');
+  if (variant && !(variant === 'italic')) {
+    const mapped = MATH_VARIANTS[variant];
+    if (!mapped) throw new Error(`Unsupported MathML mathvariant: ${variant}.`);
+    const properties = createOmmlElement(doc, 'rPr');
+    const style = createOmmlElement(doc, 'sty');
+    setOmmlValue(style, mapped);
+    properties.appendChild(style);
+    run.appendChild(properties);
+  }
+  const content = createOmmlElement(doc, 't');
+  if (/^\s|\s$/u.test(text)) content.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+  content.appendChild(doc.createTextNode(text));
+  run.appendChild(content);
+  parent.appendChild(run);
+}
+
+function elementText(node: MathMlNode): string {
+  if (node.text !== undefined) {
+    assertText(node.text, 'MathML text');
+    return node.text;
+  }
+  if (node.children?.length) throw new Error(`${node.tag} must contain text, not child elements.`);
+  return '';
+}
+
+function mathMlChildren(node: MathMlNode): MathMlNode[] {
+  if (node.children !== undefined && !Array.isArray(node.children)) throw new Error(`${node.tag}.children must be an array.`);
+  const children = node.children ?? [];
+  if (node.text !== undefined && children.length) throw new Error(`${node.tag} cannot contain both text and child elements.`);
+  return children;
+}
+
+function mathMlToOmmlNode(node: MathMlNode, doc: import('@xmldom/xmldom').Document, depth: number, maxDepth: number): Element {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) throw new Error('MathML nodes must be objects.');
+  if (typeof node.tag !== 'string' || !MATHML_TAGS.has(node.tag)) throw new Error(`Unsupported MathML tag: ${String(node.tag)}.`);
+  if (depth > maxDepth) throw new Error(`MathML exceeds the maximum depth of ${maxDepth}.`);
+  if (node.attrs !== undefined) {
+    if (!node.attrs || typeof node.attrs !== 'object' || Array.isArray(node.attrs)) throw new Error(`${node.tag}.attrs must be an object.`);
+    for (const [name, value] of Object.entries(node.attrs)) {
+      if (!MATHML_ATTRS.has(name)) throw new Error(`Unsupported MathML attribute: ${name}.`);
+      assertText(value, `MathML ${name}`);
+    }
+  }
+  const attrs = node.attrs ?? {};
+  const children = mathMlChildren(node);
+  // 读出来时记下的原 OMML 元素名。缺失(手工构造、linearToMathMl 的输出)时下面照旧按标签猜。
+  const source = typeof node.source === 'string' ? node.source : undefined;
+  if (node.text !== undefined && !['mi', 'mn', 'mo', 'mtext'].includes(node.tag)) {
+    throw new Error(`${node.tag} cannot contain text.`);
+  }
+  if (node.tag === 'math' && attrs.display !== undefined && attrs.display !== 'inline' && attrs.display !== 'block') {
+    throw new Error('MathML display must be inline or block.');
+  }
+  if (node.tag === 'math') {
+    const root = createOmmlElement(doc, 'oMath');
+    for (const child of children) root.appendChild(mathMlToOmmlNode(child, doc, depth + 1, maxDepth));
+    return root;
+  }
+  // 只裹一个子元素的 m:box 读出来会塌缩成那个子元素本身,标签上再也看不出曾经有个 box;
+  // mrow 走下面原来的分支,本来就写成 box。
+  if (source === 'box' && node.tag !== 'mrow') {
+    const row = createOmmlElement(doc, 'box');
+    const entry = createOmmlElement(doc, 'e');
+    appendMathMl(entry, { ...node, source: undefined }, doc, depth, maxDepth);
+    row.appendChild(entry);
+    return row;
+  }
+  if (node.tag === 'mi' || node.tag === 'mn' || node.tag === 'mo' || node.tag === 'mtext') {
+    if (children.length) throw new Error(`${node.tag} cannot contain child elements.`);
+    const text = elementText(node);
+    const container = createOmmlElement(doc, 'oMath');
+    appendOmmlTextRun(container, doc, text, node.tag === 'mi' && attrs.mathvariant === 'italic'
+      ? undefined : attrs.mathvariant);
+    return container.firstChild as Element;
+  }
+  if (node.tag === 'mprescripts') {
+    if (children.length || node.text !== undefined) throw new Error('mprescripts must be empty.');
+    return createOmmlElement(doc, 'sPre');
+  }
+  if (node.tag === 'mrow' && source === 'func') {
+    if (children.length !== 2) throw new Error('A function must contain a name and an expression.');
+    const func = createOmmlElement(doc, 'func');
+    for (const [name, child] of [['fName', children[0]!], ['e', children[1]!]] as const) {
+      const entry = createOmmlElement(doc, name);
+      appendMathMl(entry, child, doc, depth, maxDepth);
+      func.appendChild(entry);
+    }
+    return func;
+  }
+  if (node.tag === 'mrow' && source === 'nary' && children.length === 2) {
+    return buildNary([children[0]!, children[1]!], doc, depth, maxDepth);
+  }
+  if (node.tag === 'mrow' && isDelimiterRow(children)) {
+    const delimiters = createOmmlElement(doc, 'd');
+    const properties = createOmmlElement(doc, 'dPr');
+    // 读取侧把缺失的 begChr/endChr/sepChr 当作 ( ) ,,所以等于默认值时不写出来,
+    // 免得每次往返都凭空长出一个 dPr。显式的空括号(val="")不等于默认值,照写。
+    const beginChar = elementText(children[0]!);
+    const endChar = elementText(children.at(-1)!);
+    if (beginChar !== '(') {
+      const begin = createOmmlElement(doc, 'begChr');
+      setOmmlValue(begin, beginChar);
+      properties.appendChild(begin);
+    }
+    const segments: MathMlNode[][] = [[]];
+    let separator: string | undefined;
+    for (const child of children.slice(1, -1)) {
+      if (child.tag === 'mo' && child.attrs?.stretchy === 'true') {
+        const nextSeparator = elementText(child);
+        if (separator !== undefined && separator !== nextSeparator) throw new Error('A delimiter group can use only one separator.');
+        separator = nextSeparator;
+        segments.push([]);
+      } else segments[segments.length - 1]!.push(child);
+    }
+    if (segments.length > 1 && (separator ?? ',') !== ',') {
+      const sep = createOmmlElement(doc, 'sepChr');
+      setOmmlValue(sep, separator!);
+      properties.appendChild(sep);
+    }
+    if (endChar !== ')') {
+      const end = createOmmlElement(doc, 'endChr');
+      setOmmlValue(end, endChar);
+      properties.appendChild(end);
+    }
+    if (properties.firstChild) delimiters.appendChild(properties);
+    for (const segment of segments) {
+      const entry = createOmmlElement(doc, 'e');
+      for (const child of segment) appendMathMl(entry, child, doc, depth, maxDepth);
+      delimiters.appendChild(entry);
+    }
+    return delimiters;
+  }
+  if (node.tag === 'mrow') {
+    const row = createOmmlElement(doc, 'box');
+    const entry = createOmmlElement(doc, 'e');
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index]!;
+      if (child.tag === 'munderover' && children[index + 1]) {
+        entry.appendChild(buildNary([child, children[++index]!], doc, depth, maxDepth));
+      } else appendMathMl(entry, child, doc, depth, maxDepth);
+    }
+    row.appendChild(entry);
+    return row;
+  }
+  if (node.tag === 'mfrac') {
+    if (children.length !== 2) throw new Error('mfrac must contain a numerator and denominator.');
+    const fraction = createOmmlElement(doc, 'f');
+    if (attrs.linethickness === '0') {
+      const properties = createOmmlElement(doc, 'fPr');
+      const type = createOmmlElement(doc, 'type');
+      setOmmlValue(type, 'noBar');
+      properties.appendChild(type);
+      fraction.appendChild(properties);
+    } else if (attrs.linethickness !== undefined) throw new Error('Only linethickness="0" is supported.');
+    for (const [name, child] of [['num', children[0]!], ['den', children[1]!]] as const) {
+      const entry = createOmmlElement(doc, name);
+      appendMathMl(entry, child, doc, depth, maxDepth);
+      fraction.appendChild(entry);
+    }
+    return fraction;
+  }
+  if (node.tag === 'msup' || node.tag === 'msub' || node.tag === 'msubsup') {
+    const expected = node.tag === 'msubsup' ? 3 : 2;
+    if (children.length !== expected) throw new Error(`${node.tag} must contain ${expected} child elements.`);
+    const script = createOmmlElement(doc, node.tag === 'msup' ? 'sSup' : node.tag === 'msub' ? 'sSub' : 'sSubSup');
+    const base = createOmmlElement(doc, 'e');
+    appendMathMl(base, children[0]!, doc, depth, maxDepth);
+    script.appendChild(base);
+    const scriptChildren = node.tag === 'msup' ? [['sup', children[1]!]] :
+      node.tag === 'msub' ? [['sub', children[1]!]] : [['sub', children[1]!], ['sup', children[2]!]];
+    for (const [name, child] of scriptChildren as [string, MathMlNode][]) {
+      const entry = createOmmlElement(doc, name);
+      appendMathMl(entry, child, doc, depth, maxDepth);
+      script.appendChild(entry);
+    }
+    return script;
+  }
+  if (node.tag === 'mmultiscripts') {
+    const mark = children.findIndex(child => child.tag === 'mprescripts');
+    if (children.length < 2 || mark < 1 || children.length - mark !== 3) {
+      throw new Error('mmultiscripts must contain a base, mprescripts, and a presubscript/presuperscript pair.');
+    }
+    const script = createOmmlElement(doc, 'sPre');
+    // CT_SPre 的子元素顺序是 sPrePr?, sub, sup, e——底数在最后。
+    for (const [name, child] of [['sub', children[mark + 1]!], ['sup', children[mark + 2]!]] as const) {
+      const entry = createOmmlElement(doc, name);
+      appendMathMl(entry, child, doc, depth, maxDepth);
+      script.appendChild(entry);
+    }
+    const base = createOmmlElement(doc, 'e');
+    appendMathMl(base, children[0]!, doc, depth, maxDepth);
+    script.appendChild(base);
+    return script;
+  }
+  if (node.tag === 'msqrt' || node.tag === 'mroot') {
+    const expected = node.tag === 'msqrt' ? 1 : 2;
+    if (children.length !== expected) throw new Error(`${node.tag} must contain ${expected} child elements.`);
+    const radical = createOmmlElement(doc, 'rad');
+    // degHide 的默认值就是 0,m:deg 在场时不必再写一遍。
+    if (node.tag === 'mroot') {
+      const degree = createOmmlElement(doc, 'deg');
+      appendMathMl(degree, children[1]!, doc, depth, maxDepth);
+      radical.appendChild(degree);
+    }
+    const base = createOmmlElement(doc, 'e');
+    appendMathMl(base, children[0]!, doc, depth, maxDepth);
+    radical.appendChild(base);
+    return radical;
+  }
+  if (node.tag === 'munder' || node.tag === 'mover') {
+    if (children.length !== 2) throw new Error(`${node.tag} must contain a base and a limit.`);
+    if (source === 'bar' || source === 'groupChr') return buildOverChar(source, node, children, doc, depth, maxDepth);
+    const accent = source === 'acc' || (source === undefined && node.tag === 'mover'
+      && children[1]!.tag === 'mo' && children[1]!.attrs?.accent === 'true');
+    const limit = createOmmlElement(doc, accent ? 'acc' : node.tag === 'munder' ? 'limLow' : 'limUpp');
+    // 读取侧缺 chr 时默认用 U+0302,等于默认值就不写 accPr。
+    if (accent && elementText(children[1]!) !== '\u0302') {
+      const properties = createOmmlElement(doc, 'accPr');
+      const char = createOmmlElement(doc, 'chr');
+      setOmmlValue(char, elementText(children[1]!));
+      properties.appendChild(char);
+      limit.appendChild(properties);
+    }
+    const base = createOmmlElement(doc, 'e');
+    appendMathMl(base, children[0]!, doc, depth, maxDepth);
+    limit.appendChild(base);
+    if (!accent) {
+      const script = createOmmlElement(doc, 'lim');
+      appendMathMl(script, children[1]!, doc, depth, maxDepth);
+      limit.appendChild(script);
+    }
+    return limit;
+  }
+  if (node.tag === 'munderover') return buildNary([node, { tag: 'mrow', children: [] }], doc, depth, maxDepth);
+  if (node.tag === 'mtable' && source === 'eqArr') {
+    const array = createOmmlElement(doc, 'eqArr');
+    for (const rowNode of children) {
+      if (rowNode.tag !== 'mtr') throw new Error('mtable children must be mtr nodes.');
+      const entry = createOmmlElement(doc, 'e');
+      for (const cellNode of mathMlChildren(rowNode)) {
+        if (cellNode.tag !== 'mtd') throw new Error('mtr children must be mtd nodes.');
+        for (const content of mathMlChildren(cellNode)) entry.appendChild(mathMlToOmmlNode(content, doc, depth + 2, maxDepth));
+      }
+      array.appendChild(entry);
+    }
+    return array;
+  }
+  if (node.tag === 'mtable') {
+    const matrix = createOmmlElement(doc, 'm');
+    for (const rowNode of children) {
+      if (rowNode.tag !== 'mtr') throw new Error('mtable children must be mtr nodes.');
+      const row = createOmmlElement(doc, 'mr');
+      for (const cellNode of mathMlChildren(rowNode)) {
+        if (cellNode.tag !== 'mtd') throw new Error('mtr children must be mtd nodes.');
+        const cell = createOmmlElement(doc, 'e');
+        for (const content of mathMlChildren(cellNode)) cell.appendChild(mathMlToOmmlNode(content, doc, depth + 2, maxDepth));
+        row.appendChild(cell);
+      }
+      matrix.appendChild(row);
+    }
+    return matrix;
+  }
+  if (node.tag === 'mtr' || node.tag === 'mtd') {
+    const wrapper = createOmmlElement(doc, node.tag === 'mtr' ? 'mr' : 'e');
+    for (const child of children) appendMathMl(wrapper, child, doc, depth, maxDepth);
+    return wrapper;
+  }
+  if (node.tag === 'menclose' || node.tag === 'mphantom') {
+    const wrapper = createOmmlElement(doc, node.tag === 'menclose' ? 'borderBox' : 'phant');
+    const entry = createOmmlElement(doc, 'e');
+    for (const child of children) appendMathMl(entry, child, doc, depth, maxDepth);
+    wrapper.appendChild(entry);
+    return wrapper;
+  }
+  throw new Error(`Unsupported MathML tag: ${node.tag}.`);
+}
+
+/** children 首尾都是可伸缩的 mo —— 读取侧的 m:d 就长这样。 */
+function isDelimiterRow(children: MathMlNode[]): boolean {
+  return children.length >= 2 && children[0]!.tag === 'mo' && children.at(-1)!.tag === 'mo'
+    && children[0]!.attrs?.stretchy === 'true' && children.at(-1)!.attrs?.stretchy === 'true';
+}
+
+/** 下面的 mrow 分支会不会按形状把它认成 m:d 或 m:nary——会的话就不能摊开。 */
+function hasRowHeuristic(children: MathMlNode[]): boolean {
+  return isDelimiterRow(children)
+    || children.some((child, index) => child.tag === 'munderover' && children[index + 1] !== undefined);
+}
+
+/**
+ * 往容器元素(m:e / m:num / m:sub / m:lim …)里放一个节点。不带 source 的 mrow 只是读取侧
+ * 为了凑成单个节点而加的分组——容器本来就能直接装多个 run,所以摊开,别凭空写出一层 m:box。
+ */
+function appendMathMl(container: Element, node: MathMlNode,
+    doc: import('@xmldom/xmldom').Document, depth: number, maxDepth: number): void {
+  const children = node.children ?? [];
+  if (node.tag === 'mrow' && node.source === undefined && node.text === undefined && !hasRowHeuristic(children)) {
+    // 不写出元素,但这层 mrow 在输入树里确实存在,深度照记——否则 maxDepth 的防线会悄悄变松。
+    for (const child of mathMlChildren(node)) container.appendChild(mathMlToOmmlNode(child, doc, depth + 2, maxDepth));
+    return;
+  }
+  container.appendChild(mathMlToOmmlNode(node, doc, depth + 1, maxDepth));
+}
+
+/** 原文缺 m:sub / m:sup 时读出来是个空 mrow,写回时不该凭空造一个空元素。 */
+function isEmptyRow(node: MathMlNode): boolean {
+  return node.tag === 'mrow' && !node.children?.length && node.text === undefined;
+}
+
+/** m:bar 与 m:groupChr 读出来都是 munder/mover,和 limLow/limUpp 同形,只能靠 source 区分。 */
+function buildOverChar(name: 'bar' | 'groupChr', node: MathMlNode, children: MathMlNode[],
+    doc: import('@xmldom/xmldom').Document, depth: number, maxDepth: number): Element {
+  const wrapper = createOmmlElement(doc, name);
+  const properties = createOmmlElement(doc, `${name}Pr`);
+  // CT_GroupChrPr 的顺序是 chr?, pos?, vertJc?, ctrlPr?;CT_BarPr 里没有 chr。
+  const chr = elementText(children[1]!);
+  if (name === 'groupChr' && chr !== '⏞') {
+    const char = createOmmlElement(doc, 'chr');
+    setOmmlValue(char, chr);
+    properties.appendChild(char);
+  }
+  // 读取侧把 pos 缺省当作 top,所以只有 munder 需要写出 pos。
+  if (node.tag === 'munder') {
+    const pos = createOmmlElement(doc, 'pos');
+    setOmmlValue(pos, 'bot');
+    properties.appendChild(pos);
+  }
+  if (properties.firstChild) wrapper.appendChild(properties);
+  const base = createOmmlElement(doc, 'e');
+  appendMathMl(base, children[0]!, doc, depth, maxDepth);
+  wrapper.appendChild(base);
+  return wrapper;
+}
+
+function buildNary(nodes: MathMlNode[], doc: import('@xmldom/xmldom').Document, depth: number, maxDepth: number): Element {
+  const [operator, body] = nodes;
+  const parts = operator?.children ?? [];
+  // limLoc=subSup 的 nary 读出来是 msubsup 而不是 munderover。
+  const subSup = operator?.tag === 'msubsup';
+  if ((operator?.tag !== 'munderover' && !subSup) || parts.length !== 3 || parts[0]!.tag !== 'mo') {
+    throw new Error('N-ary operators must contain a symbol, lower limit, upper limit, and body.');
+  }
+  const nary = createOmmlElement(doc, 'nary');
+  const properties = createOmmlElement(doc, 'naryPr');
+  const char = createOmmlElement(doc, 'chr');
+  setOmmlValue(char, elementText(parts[0]!));
+  properties.appendChild(char);
+  if (subSup) {
+    const location = createOmmlElement(doc, 'limLoc');
+    setOmmlValue(location, 'subSup');
+    properties.appendChild(location);
+  }
+  nary.appendChild(properties);
+  for (const [name, child] of [['sub', parts[1]!], ['sup', parts[2]!], ['e', body!]] as const) {
+    if (name !== 'e' && isEmptyRow(child)) continue;
+    const entry = createOmmlElement(doc, name);
+    appendMathMl(entry, child, doc, depth, maxDepth);
+    nary.appendChild(entry);
+  }
+  return nary;
+}
+
+export function mathMlToOmml(node: MathMlNode, doc: import('@xmldom/xmldom').Document, options?: { maxDepth?: number }): Element {
+  const maxDepth = options?.maxDepth ?? MAX_DEPTH;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 0) throw new Error('maxDepth must be a non-negative safe integer.');
+  if (node?.tag === 'math') {
+    const math = mathMlToOmmlNode(node, doc, 0, maxDepth);
+    if (node.attrs?.display !== 'block') return math;
+    const paragraph = createOmmlElement(doc, 'oMathPara');
+    paragraph.appendChild(math);
+    return paragraph;
+  }
+  const root = createOmmlElement(doc, 'oMath');
+  root.appendChild(mathMlToOmmlNode(node, doc, 0, maxDepth));
+  return root;
 }

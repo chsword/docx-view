@@ -7,7 +7,7 @@ import type {
   CompatibilitySettings, DocumentProperties, DocumentProtection, EditableRegionEditorGroup, EditableRegionInfo, HistoryEntry, HyperlinkInfo, ImageInfo, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition,
   SectionType, ShapeInfo, Shading, StyleInfo, TabStop, TableFormat, TableInfo, TextRange, ThemeSettings,
   FieldInfo, FieldKind, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, RevisionInfo, ReviewerInfo, RowFormat, RunFormat, RunInfo, SectionInfo,
-  TableCellLocation,
+  TableCellLocation, MathMlNode, MathSource,
   MathInfo,
 } from './types.js';
 import {
@@ -38,7 +38,7 @@ import {
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { readRunShapes, shapeTextElements } from './shapes.js';
-import { ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
+import { MATH_NS, linearToMathMl, mathMlToOmml, ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
   validateBorderSide,
@@ -654,13 +654,53 @@ function mathElements(paragraph: Element): Element[] {
   return elements.filter(element =>
     element.namespaceURI === 'http://schemas.openxmlformats.org/officeDocument/2006/math' &&
     (element.localName === 'oMath' || element.localName === 'oMathPara') &&
-    !elements.some(ancestor => ancestor !== element && (() => {
+    !elements.some(ancestor => ancestor !== element &&
+      ancestor.namespaceURI === 'http://schemas.openxmlformats.org/officeDocument/2006/math' &&
+      (ancestor.localName === 'oMath' || ancestor.localName === 'oMathPara') && (() => {
       for (let parent = element.parentNode; parent; parent = parent.parentNode) {
         if (parent === ancestor) return true;
         if (parent === paragraph) break;
       }
       return false;
     })()));
+}
+
+function mathNodeFromSource(source: MathSource): MathMlNode {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('Math source must contain either mathMl or linear.');
+  }
+  const keys = Object.keys(source);
+  if (keys.length === 1 && keys[0] === 'mathMl') {
+    const mathMl = (source as { mathMl: MathMlNode }).mathMl;
+    if (!mathMl || typeof mathMl !== 'object') throw new Error('mathMl must be a MathMlNode.');
+    return mathMl;
+  }
+  if (keys.length === 1 && keys[0] === 'linear') return linearToMathMl((source as { linear: string }).linear);
+  throw new Error('Math source must contain exactly one of mathMl or linear.');
+}
+
+function mathElementFromSource(
+  source: MathMlNode,
+  doc: Document,
+  display: 'inline' | 'block',
+): Element {
+  const converted = mathMlToOmml(source, doc);
+  const math = converted.localName === 'oMathPara'
+    ? children(converted, 'oMath', MATH_NS)[0]!
+    : converted;
+  if (display === 'inline') return math;
+  if (converted.localName === 'oMathPara' && source.attrs?.display === 'block') return converted;
+  const paragraph = doc.createElementNS(MATH_NS, 'm:oMathPara');
+  paragraph.appendChild(math);
+  return paragraph;
+}
+
+function displayOfMathSource(source: MathMlNode): 'inline' | 'block' {
+  if (source.tag === 'math' && source.attrs?.display !== undefined &&
+      source.attrs.display !== 'inline' && source.attrs.display !== 'block') {
+    throw new Error('MathML display must be inline or block.');
+  }
+  return source.tag === 'math' && source.attrs?.display === 'block' ? 'block' : 'inline';
 }
 
 function textOffsetsInParagraph(paragraph: Element): Map<Element, number> {
@@ -7110,6 +7150,88 @@ export class DocxDocument {
       endChar.setAttributeNS(WORD_NS, 'w:fldCharType', 'end');
       end.appendChild(endChar);
       for (const run of [complex, instructionRun, separate, resultRun, end]) paragraph.appendChild(run);
+    });
+  }
+
+  insertMath(
+    paragraphIndex: number,
+    source: MathSource,
+    options: { runOffset?: number; display?: 'inline' | 'block' } = {},
+  ): void {
+    assertIndex(paragraphIndex);
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        Object.keys(options).some(key => key !== 'runOffset' && key !== 'display')) {
+      throw new Error('Math options may contain only runOffset and display.');
+    }
+    if (options.runOffset !== undefined) assertIndex(options.runOffset);
+    if (options.display !== undefined && options.display !== 'inline' && options.display !== 'block') {
+      throw new Error('Math display must be inline or block.');
+    }
+    const mathMl = mathNodeFromSource(source);
+    const display = options.display ?? displayOfMathSource(mathMl);
+    this.updatePartXmlInternal(this.mainPath, doc => {
+      const paragraph = paragraphAt(doc, paragraphIndex);
+      const runs = ownRuns(paragraph);
+      const runOffset = options.runOffset ?? runs.length;
+      if (runOffset > runs.length) throw new Error(`runOffset ${runOffset} is past the end of paragraph ${paragraphIndex}.`);
+      const formula = mathElementFromSource(mathMl, doc, display);
+      let inserted = formula;
+      if (this.trackChangesEnabled()) {
+        const revision = createRevisionWrapper(doc, 'ins', this.trackedRevisionAuthor());
+        revision.appendChild(formula);
+        inserted = revision;
+      }
+      const reference = runs[runOffset];
+      if (reference) reference.parentNode!.insertBefore(inserted, reference);
+      else paragraph.appendChild(inserted);
+    });
+  }
+
+  setMath(paragraphIndex: number, mathIndex: number, source: MathSource): void {
+    assertIndex(paragraphIndex);
+    assertIndex(mathIndex);
+    const mathMl = mathNodeFromSource(source);
+    this.updatePartXmlInternal(this.mainPath, doc => {
+      const paragraph = paragraphAt(doc, paragraphIndex);
+      const target = mathElements(paragraph)[mathIndex];
+      if (!target) throw new Error(`Math ${mathIndex} does not exist in paragraph ${paragraphIndex}.`);
+      const display = target.localName === 'oMathPara' ? 'block' : 'inline';
+      const replacement = mathElementFromSource(mathMl, doc, display);
+      const parent = target.parentNode;
+      if (!parent) throw new Error(`Math ${mathIndex} has no parent.`);
+      if (new XMLSerializer().serializeToString(target) === new XMLSerializer().serializeToString(replacement)) return false;
+      if (!this.trackChangesEnabled()) {
+        parent.replaceChild(replacement, target);
+        return true;
+      }
+      const following = target.nextSibling;
+      const deletion = createRevisionWrapper(doc, 'del', this.trackedRevisionAuthor());
+      parent.insertBefore(deletion, target);
+      deletion.appendChild(target);
+      const insertion = createRevisionWrapper(doc, 'ins', this.trackedRevisionAuthor());
+      insertion.appendChild(replacement);
+      parent.insertBefore(insertion, following);
+      return true;
+    });
+  }
+
+  deleteMath(paragraphIndex: number, mathIndex: number): void {
+    assertIndex(paragraphIndex);
+    assertIndex(mathIndex);
+    this.updatePartXmlInternal(this.mainPath, doc => {
+      const paragraph = paragraphAt(doc, paragraphIndex);
+      const target = mathElements(paragraph)[mathIndex];
+      if (!target) throw new Error(`Math ${mathIndex} does not exist in paragraph ${paragraphIndex}.`);
+      const parent = target.parentNode;
+      if (!parent) throw new Error(`Math ${mathIndex} has no parent.`);
+      if (!this.trackChangesEnabled()) {
+        parent.removeChild(target);
+        return true;
+      }
+      const deletion = createRevisionWrapper(doc, 'del', this.trackedRevisionAuthor());
+      parent.insertBefore(deletion, target);
+      deletion.appendChild(target);
+      return true;
     });
   }
 

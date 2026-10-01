@@ -2,7 +2,7 @@
 
 一个面向浏览器和 AI Agent 的 TypeScript / JavaScript DOCX 编辑组件库，包含无需后端的静态 `examples`。
 
-**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、编号 / 项目符号列表、表格、常见图片、分节页面设置与页眉页脚编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。OMML 公式支持读取和原生 MathML 渲染，并通过 API 提供线性文本兜底；不支持公式编辑。
+**当前是可运行的基础版本，不是 Microsoft Word 排版引擎，也不等同于 .NET Open XML SDK 的完整实现。** 支持段落、文字格式、编号 / 项目符号列表、表格、常见图片、分节页面设置与页眉页脚编辑；对于更细粒度的操作，可以直接访问 DOCX 包中的部件、关系 XML 和命名空间感知的 OOXML DOM。OMML 公式支持读取、原生 MathML 渲染，以及通过 API 写入结构化 MathML 数据或受限的线性文本；不支持在公式内部直接进行 WYSIWYG 编辑。
 
 ## 运行
 
@@ -134,6 +134,7 @@ console.log(reopened.getSnapshot());
 | `createHeader()` / `createFooter()` / `setHeaderText()` / `setFooterText()` | 创建并写入页眉页脚部件，自动维护 rels 与 content-types |
 | `insertPageNumberField(partPath, options)` | 在页眉/页脚部件写入 `PAGE` 或 `NUMPAGES` 域占位结构 |
 | `getFields(partPath?)` / `updateFields(options?)` | 按部件读取域；文档层可接收调用方提供的分页结果，写回 `PAGE` / `NUMPAGES` / `PAGEREF` 与受限的 `TOC` 域结果 |
+| `getMath(partPath?)` / `insertMath(paragraph, source, options?)` / `setMath(paragraph, mathIndex, source)` / `deleteMath(paragraph, mathIndex)` | 读取公式，按段落 run 偏移插入、替换或删除；`source` 接受 `MathMlNode` 数据或下列线性文本子集，不接受 MathML 标记字符串 |
 | `getDocumentProperties()` / `setDocumentProperties(patch)` | 读取和按字段更新 `docProps/core.xml` / `docProps/app.xml` 中的常用文档属性；缺失部件时自动补包级关系与 content-type，未知元素和未改字段原样保留 |
 | `getDocumentProtection()` / `setDocumentProtection(value)` | 读取和写入 `settings.xml` 中的 `w:documentProtection`（如只读 / 仅批注 / 仅修订 / 表单）；仅修改 `edit` / `enforcement`，保留已有 hash/salt 等密码相关属性 |
 | `getSettings()` / `setTrackChanges(enabled)` / `setRevisionAuthor(author)` | 读取常用文档设置（当前返回 `{ defaultTabStop, evenAndOddHeaders, trackChanges }`），显式开启/关闭 `w:trackChanges`（关闭时写 `w:val="0"`，不删除元素），并设置后续记录修订写入使用的作者名 |
@@ -332,6 +333,24 @@ console.log(tool, result.revision);
 
 `MERGEFIELD` 会分类并读取合并域名称，但不访问外部数据源或求值。旧式 `FORMTEXT`、`FORMCHECKBOX`、`FORMDROPDOWN` 读取 `w:ffData` 元数据，不提供填写交互；缓存结果缺失时显示默认值，复选框显示只读渲染方框。表单域的 `entryMacro` / `exitMacro` 仅作为文档声明读取，文档里的宏名声明不会被执行，也不会改变任何行为。上述用户填写或外部数据提供的域值都不会由 `updateFields()` 重算。
 
+### 公式写入
+
+`insertMath()` / `setMath()` 接受 `{ mathMl: MathMlNode }` 或 `{ linear: string }`。结构化 MathML 数据是主要输入；线性文本只支持以下明确子集，超出时会抛错：
+
+| 写法 | 结果 |
+| --- | --- |
+| `a/b` | `m:f` 分数 |
+| `a^b` | `m:sSup` |
+| `a_b` | `m:sSub` |
+| `a_b^c` | `m:sSubSup` |
+| `√(a)` 或 `sqrt(a)` | `m:rad` |
+| `(…)` | `m:d`，同时用于分组 |
+| `∑_(a)^(b) c` / `∫_(a)^(b) c` | `m:nary` |
+
+`MathMlNode` 只接受已支持的结构化标签与属性，不接受 MathML 标记字符串。前置上下标使用 `mmultiscripts` / `mprescripts` 数据映射为 OMML `m:sPre`；不支持完整 UnicodeMath。公式以不可编辑的 MathML 节点渲染，宿主可通过 `data-docx-math-index` 识别公式，并在自有界面编辑后调用 `setMath()`；不支持在公式内部直接输入或进行 WYSIWYG 编辑。
+
+MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / `m:acc` / `m:groupChr` / `m:limUpp`，`mrow` 可能来自 `m:d` / `m:func` / `m:box` / `m:nary`，`mtable` 可能来自 `m:m` / `m:eqArr`），因此 `getMath()` 读出的节点会在 `MathMlNode.source` 上带出原本的 OMML 元素名，`setMath()` 写回时据此还原，把读出来原样写回当作不改动处理。手工构造的节点和线性文本没有这个字段，此时按标签推断：首尾为 `stretchy` 的 `mo` 的 `mrow` 写成 `m:d`，`munderover` 后跟底数写成 `m:nary`，其余 `mrow` 由外层容器直接承载。行内文本按 MathML 语义拆分为 `mi` / `mn` / `mo`，因此写回时 run 的切分可能比原文更细，元素结构和渲染结果不变。
+
 `TOC` 域仅实现 `\o "1-3"` 层级过滤与 `\h` 条目超链接；其他开关（包括 `\z`、`\u`）会保留缓存结果并跳过更新。`DocxEditor.updateFields()` 最多执行 5 轮「分页→更新域→重排」；达到上限时不报错，并保留最后一轮的结果。`INDEX` 域本期不更新，始终保留缓存结果。
 
 域指令不会生成合成文本；没有缓存结果的 `PAGE` / `NUMPAGES` 域仍读作空字符串。文本框（`w:txbxContent`）里的域属于独立文字流，本期不读取也不更新。
@@ -353,7 +372,7 @@ console.log(tool, result.revision);
 
 - 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；分页预览是只读的，分页位置在常见文档上尽量贴近 Word，但**不承诺像素级一致**。
 - 图片项目符号使用包内图片渲染；外部图片只显示占位图、不联网，图片不可用时退回编号级别中的文字标记。
-- OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、矩阵、对齐数组、前置上下标（`mmultiscripts` / `mprescripts`）及盒 / phantom 等常见元素；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内公式目前不纳入 `getMath()`，也不在形状文字渲染中显示。
+- OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、横线、组合字符、矩阵、对齐数组、前置上下标（`mmultiscripts` / `mprescripts`）及盒 / 边框 / phantom 等常见元素；矩阵一行中的每个 `m:e` 各自成为一个单元格；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内公式目前不纳入 `getMath()`，也不在形状文字渲染中显示。
 - 分页预览按栏宽重新度量内容，支持等宽 / 指定宽度分栏与 `nextColumn`，并按表格行跨页 / 跨栏拆分；连续的 `w:tblHeader` 标题行会在每个片段重复，`cantSplit` 行保持完整。
 - run 着重号支持 `w:em` 的 `dot`、`comma`、`circle`、`underDot`（分别使用浏览器原生 `text-emphasis`）；显式 `none` 可关闭继承的着重号。不按竖排文字方向调整着重号位置。
 - run 文字效果按映射质量分档：`w:position` 以半磅映射到 `vertical-align`；`w:outline` 使用 `-webkit-text-stroke: 1px currentColor` 并透明化文字填充，描边保留原文字颜色；`w:shadow` 使用 `1px 1px 2px rgba(0, 0, 0, 0.45)` 阴影。
