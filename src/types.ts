@@ -258,11 +258,30 @@ export type FieldKind =
   | 'TOC' | 'INDEX' | 'INCLUDETEXT' | 'INCLUDEPICTURE' | 'LINK' | 'DDE' | 'DDEAUTO'
   | 'MACROBUTTON' | 'GOTOBUTTON' | 'FILLIN' | 'ASK' | 'DATABASE' | 'AUTOTEXT'
   | 'AUTOTEXTLIST' | 'HYPERLINK' | 'IF' | 'MERGEFIELD' | 'FORMTEXT' | 'FORMCHECKBOX'
-  | 'FORMDROPDOWN' | 'unknown';
+  | 'FORMDROPDOWN' | 'EQ' | 'unknown';
 
 export interface FieldSwitch {
   name: string;
   value?: string;
+}
+
+/**
+ * `EQ`（公式域）指令的结构。Word 的「合并字符」与「带圈字符」都是同一个机制：
+ * `\o` 是重叠排版（overstrike），把括号里各部分叠印在一处，各部分再用 `\s\up N` /
+ * `\s\do N` 上下位移——所以「合并字符」是两组文字一上一下叠出来的，「带圈字符」是
+ * 一个圈和一个字叠出来的。按这个机制实现，两个功能都落地，不必各自特判。
+ */
+export interface EquationNode {
+  /** 开关名，如 `o`（重叠）、`s`（升降）、`f`（分数）；纯文字节点没有。 */
+  switch?: string;
+  /** 开关后紧跟的子开关，如 `\o\ac` 的 `ac`（居中对齐）、`\s\up` 的 `up`。 */
+  options?: string[];
+  /** `\up` / `\do` 的位移量，单位磅；`do` 记为负数。 */
+  raisePoints?: number;
+  /** 括号里以分隔符隔开的各部分。 */
+  parts?: EquationNode[];
+  /** 纯文字。 */
+  text?: string;
 }
 
 export interface FieldInfo {
@@ -274,6 +293,8 @@ export interface FieldInfo {
   kind: FieldKind;
   instruction: string;
   argument?: string;
+  /** `EQ` 域的指令结构；其他域没有。`EQ` 的括号语法不是开关语法，所以 `switches` 对它为空。 */
+  equation?: EquationNode;
   mergeFieldName?: string;
   formField?: {
     name?: string;

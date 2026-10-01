@@ -3,14 +3,16 @@ export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export type {
-  EastAsianLayout, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource, PaginationInfo, RubyInfo,
+  EastAsianLayout, EquationNode, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource,
+  PaginationInfo, RubyInfo,
 } from './types.js';
 export {
   columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor,
-  paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx,
+  overstrikeLayers, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx,
 } from './layout.js';
 export type {
-  FlowItem, LayoutMeasurer, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea, WrapExclusion,
+  FlowItem, LayoutMeasurer, LayoutTable, LineBox, MeasureContext, OverstrikeLayer, PageBox,
+  ParagraphMeasureArea, WrapExclusion,
 } from './layout.js';
 export {
   A_NS, EMU_PER_INCH, IMAGE_REL, PIC_NS, PT_PER_INCH, PX_PER_INCH, V_NS, WP_NS,

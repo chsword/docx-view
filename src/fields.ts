@@ -1,5 +1,5 @@
 import type { Element, Node } from '@xmldom/xmldom';
-import type { FieldInfo, FieldKind, FieldSwitch } from './types.js';
+import type { EquationNode, FieldInfo, FieldKind, FieldSwitch } from './types.js';
 import { WORD_NS, children, descendants } from './xml.js';
 
 const PAGINATION = new Set<FieldKind>(['PAGE', 'NUMPAGES', 'PAGEREF', 'TOC', 'INDEX']);
@@ -7,7 +7,79 @@ const NEVER_EVALUATE = new Set<FieldKind>([
   'INCLUDETEXT', 'INCLUDEPICTURE', 'LINK', 'DDE', 'DDEAUTO', 'MACROBUTTON', 'GOTOBUTTON',
   'FILLIN', 'ASK', 'DATABASE', 'AUTOTEXT', 'AUTOTEXTLIST', 'MERGEFIELD',
   'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN',
+  // EQ 是排版域，不是取值域：它的「结果」就是 Word 缓存的那段文字，没有可重算的值。
+  'EQ',
 ]);
+
+/** EQ 指令的嵌套上限。和公式转换一样设一道硬界，不让文档内容决定递归多深。 */
+const MAX_EQUATION_DEPTH = 16;
+
+/**
+ * 解析 `EQ` 域的指令。EQ 用的是括号加分隔符的语法（`\o\ac(\s\up 10(○),甲)`），
+ * 不是「空白分词 + 反斜杠开关」那一套——按开关语法去读，`\o\ac(\s\up` 会被当成开关名，
+ * 还会凭空解析出一个 argument。所以 EQ 单独走这里。
+ *
+ * 分隔符按 Word 的区域设置可能是 `,` 也可能是 `;`，两个都认。
+ */
+export function parseEquationInstruction(instruction: string): EquationNode | undefined {
+  const body = instruction.replace(/^\s*EQ\b/i, '');
+  if (body === instruction) return undefined;
+  let cursor = 0;
+  const parseParts = (depth: number): EquationNode[] => {
+    const parts: EquationNode[] = [];
+    let current = parseElement(depth);
+    parts.push(current);
+    while (cursor < body.length && (body[cursor] === ',' || body[cursor] === ';')) {
+      cursor++;
+      current = parseElement(depth);
+      parts.push(current);
+    }
+    return parts;
+  };
+  const parseElement = (depth: number): EquationNode => {
+    while (body[cursor] === ' ') cursor++;
+    if (depth > MAX_EQUATION_DEPTH) {
+      // 超限时把剩下的原样当文字收掉，不继续递归，也不丢内容。
+      const rest = body.slice(cursor);
+      cursor = body.length;
+      return { text: rest };
+    }
+    const node: EquationNode = {};
+    while (body[cursor] === '\\') {
+      cursor++;
+      const name = /^[A-Za-z]+/.exec(body.slice(cursor))?.[0] ?? '';
+      cursor += name.length;
+      if (node.switch === undefined) node.switch = name.toLowerCase();
+      else (node.options ??= []).push(name.toLowerCase());
+      while (body[cursor] === ' ') cursor++;
+      const number = /^-?\d+(?:\.\d+)?/.exec(body.slice(cursor))?.[0];
+      if (number !== undefined) {
+        cursor += number.length;
+        const magnitude = Number(number);
+        // \do 是往下，记成负数，这样调用方只看一个数就够了。
+        node.raisePoints = node.options?.includes('do') ? -magnitude : magnitude;
+        while (body[cursor] === ' ') cursor++;
+      }
+    }
+    if (body[cursor] === '(') {
+      cursor++;
+      node.parts = parseParts(depth + 1);
+      if (body[cursor] === ')') cursor++;
+    } else {
+      const start = cursor;
+      while (cursor < body.length && !'(),;\\'.includes(body[cursor]!)) cursor++;
+      const text = body.slice(start, cursor);
+      if (text) node.text = text;
+    }
+    return node;
+  };
+  const parts = parseParts(0);
+  const meaningful = (node: EquationNode): boolean =>
+    node.switch !== undefined || node.text !== undefined || (node.parts?.length ?? 0) > 0;
+  const kept = parts.filter(meaningful);
+  if (!kept.length) return undefined;
+  return kept.length === 1 ? kept[0]! : { parts: kept };
+}
 
 export interface ParsedFields {
   fields: FieldInfo[];
@@ -66,7 +138,8 @@ function attr(element: Element, name: string): string | undefined {
   return element.getAttributeNS(WORD_NS, name) ?? element.getAttribute(`w:${name}`) ?? undefined;
 }
 
-function parseInstruction(instruction: string): { kind: FieldKind; argument?: string; switches: FieldSwitch[] } {
+function parseInstruction(instruction: string):
+  { kind: FieldKind; argument?: string; switches: FieldSwitch[]; equation?: EquationNode } {
   const tokens = instruction.match(/"[^"]*"|\S+/g) ?? [];
   const rawKind = tokens.shift() ?? '';
   const known = new Set<FieldKind>([
@@ -74,11 +147,14 @@ function parseInstruction(instruction: string): { kind: FieldKind; argument?: st
     'KEYWORDS', 'COMMENTS', 'LASTSAVEDBY', 'DOCPROPERTY', 'FILENAME', 'REF', 'PAGE', 'NUMPAGES',
     'PAGEREF', 'TOC', 'INDEX', 'INCLUDETEXT', 'INCLUDEPICTURE', 'LINK', 'DDE', 'DDEAUTO',
     'MACROBUTTON', 'GOTOBUTTON', 'FILLIN', 'ASK', 'DATABASE', 'AUTOTEXT', 'AUTOTEXTLIST',
-    'HYPERLINK', 'IF', 'MERGEFIELD', 'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN',
+    'HYPERLINK', 'IF', 'MERGEFIELD', 'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN', 'EQ',
   ]);
   const kind = (known.has(rawKind.toUpperCase() as FieldKind) ? rawKind.toUpperCase() : 'unknown') as FieldKind;
   const switches: FieldSwitch[] = [];
   let argument: string | undefined;
+  // EQ 的括号语法不是开关语法，下面这套按空白分词的读法会读出垃圾（开关名里带着半个括号，
+  // 还会凭空造出一个 argument），所以它走 parseEquationInstruction，switches 留空。
+  if (kind === 'EQ') return { kind, switches, equation: parseEquationInstruction(instruction) };
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.startsWith('\\')) {
@@ -208,6 +284,7 @@ export function parseFields(paragraphs: Element[], ownRuns: (paragraph: Element)
       kind: parsed.kind, instruction, ...(parsed.argument !== undefined ? { argument: parsed.argument } : {}),
       ...(parsed.kind === 'MERGEFIELD' && parsed.argument !== undefined ? { mergeFieldName: parsed.argument } : {}),
       ...(formField ? { formField } : {}),
+      ...(parsed.equation ? { equation: parsed.equation } : {}),
       switches: parsed.switches, result, requiresPagination: PAGINATION.has(parsed.kind),
       evaluable: !PAGINATION.has(parsed.kind) && !NEVER_EVALUATE.has(parsed.kind) &&
         ['SEQ', 'DATE', 'TIME', 'CREATEDATE', 'SAVEDATE', 'PRINTDATE', 'AUTHOR', 'TITLE', 'SUBJECT',

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, overstrikeLayers, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -492,4 +492,39 @@ test('combineBracketChars and rubyAlignToCss only claim what they can actually d
   assert.equal(rubyAlignToCss('right'), undefined);
   assert.equal(rubyAlignToCss('rightVertical'), undefined);
   assert.equal(rubyAlignToCss(undefined), undefined);
+});
+
+test('overstrikeLayers tells content apart from instruction-only glyphs', () => {
+  // 「合并字符」：两组文字拼起来正好是域结果，所以两层都是内容。
+  const combined = {
+    switch: 'o',
+    parts: [
+      { switch: 's', options: ['up'], raisePoints: 9, parts: [{ text: '股份' }] },
+      { switch: 's', options: ['do'], raisePoints: -3, parts: [{ text: '有限' }] },
+    ],
+  };
+  assert.deepEqual(overstrikeLayers(combined, '股份有限'), [
+    { text: '股份', content: true, raisePoints: 9 },
+    { text: '有限', content: true, raisePoints: -3 },
+  ]);
+
+  // 「带圈字符」：圈只在指令里，域结果只有那个字，所以圈只能当装饰画——否则编辑正文会把
+  // 它写回文档。
+  const circled = {
+    switch: 'o', options: ['ac'],
+    parts: [{ switch: 's', options: ['up'], raisePoints: 10, parts: [{ text: '○' }] }, { text: '甲' }],
+  };
+  assert.deepEqual(overstrikeLayers(circled, '甲'), [
+    { text: '○', content: false, raisePoints: 10 },
+    { text: '甲', content: true, raisePoints: 0 },
+  ]);
+
+  // 各层拼不满域结果时退回 undefined：指令和缓存结果不一致（域是脏的），此时宁可不叠印，
+  // 也不能把结果里的文字丢掉。
+  assert.equal(overstrikeLayers(combined, '股份有限公司'), undefined);
+  assert.equal(overstrikeLayers(combined, '完全不同'), undefined);
+  // 不是 \o 的 EQ 不接管渲染。
+  assert.equal(overstrikeLayers({ switch: 'f', parts: [{ text: '1' }, { text: '2' }] }, '1/2'), undefined);
+  assert.equal(overstrikeLayers(undefined, '甲'), undefined);
+  assert.equal(overstrikeLayers({ switch: 'o' }, ''), undefined);
 });

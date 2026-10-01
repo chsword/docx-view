@@ -331,6 +331,10 @@ console.log(tool, result.revision);
 
 `getFields()` 读取简单域和 `fldChar` 复杂域，并保留原始指令、缓存结果和域所在 run。`updateFields()` 重算安全的 `SEQ`、日期/时间、文档属性、`REF` 等域；提供 `pagination` 时也会写回 `PAGE`、`NUMPAGES` 和可解析到已存在书签的 `PAGEREF`，结果按所在节的页码格式化。页眉/页脚可用 `getFields(partPath)` 按部件读取，页码域也会随正文域一并写回；由于一个页眉/页脚部件由整节共享，持久化的 `PAGE` 缓存使用该节首段所在页的显示页码，分页预览仍会按实际页面单独显示。会拉取外部资源或执行宏、交互输入的域（例如 `INCLUDETEXT`、`LINK`、`MACROBUTTON`、`FILLIN`）明确不会求值，`insertField()` 也会拒绝写入这些类型。
 
+`EQ`（公式域）会分类并把指令按**括号语法**解析成 `FieldInfo.equation` 结构树（`switch` / `options` / `raisePoints` / `parts` / `text`，嵌套上限 16 层，超限处的文字原样保留）。EQ 用的是 `\o\ac(\s\up 10(○),甲)` 这类括号加分隔符的写法，不是「空白分词 + 反斜杠开关」那一套，所以它的 `switches` 为空数组、不提供 `argument`；分隔符按 Word 的区域设置可能是 `,` 也可能是 `;`，两者都认。EQ 是排版域而不是取值域，`evaluable` 为 `false`，`updateFields()` 不重算它——结果就是 Word 缓存的那段文字。
+
+Word 的「合并字符」与「带圈字符」都是同一个机制：`EQ \o` 是叠印（overstrike），把括号里各部分画在同一处，各部分再用 `\s\up N` / `\s\do N` 上下错开（`\do` 在 `raisePoints` 里记为负数），所以实现的是 `\o` 本身，两个功能一并落地。渲染用 `inline-grid` 把各层放进同一个网格单元，容器宽度自然取最宽那层。**只在指令里出现、域结果里没有的那一层**（「带圈字符」的那个圈就是）标为 `contentEditable="false"` 并被 `readText()` 跳过，不会写回文档；能对上域结果的那些层仍是可编辑正文。各层拼不满整个域结果时（指令与缓存结果不一致，例如域是脏的）退回普通行内文字，不做叠印，也不会丢掉结果里的文字；域结果跨多个 run 时同样退回，避免首个 run 重复画出整个结果。`\o` 之外的 EQ 开关（`\f`、`\r`、`\i`、`\a`、`\b`、`\d`、`\l`、`\x`）只按结构读出，渲染沿用缓存结果。
+
 `MERGEFIELD` 会分类并读取合并域名称，但不访问外部数据源或求值。旧式 `FORMTEXT`、`FORMCHECKBOX`、`FORMDROPDOWN` 读取 `w:ffData` 元数据，不提供填写交互；缓存结果缺失时显示默认值，复选框显示只读渲染方框。表单域的 `entryMacro` / `exitMacro` 仅作为文档声明读取，文档里的宏名声明不会被执行，也不会改变任何行为。上述用户填写或外部数据提供的域值都不会由 `updateFields()` 重算。
 
 ### 公式写入

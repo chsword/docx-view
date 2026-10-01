@@ -2,6 +2,7 @@ import type {
   CompatibilitySettings,
   DocumentBlock,
   EastAsianLayout,
+  EquationNode,
   ImageInfo,
   ParagraphInfo,
   RubyInfo,
@@ -596,4 +597,44 @@ export function rubyAlignToCss(align: RubyInfo['align']): string | undefined {
     case 'left': return 'start';
     default: return undefined;
   }
+}
+
+/** `EQ \o(…)` 叠印出来的一层。 */
+export interface OverstrikeLayer {
+  text: string;
+  /**
+   * 这段文字是不是域结果里的内容。不是的话，它只存在于指令里（「带圈字符」的那个圈就是
+   * 这种），只能当装饰画出来——否则编辑正文时会把它写回文档。
+   */
+  content: boolean;
+  /** 垂直位移，单位磅；正数向上，`\do` 来的是负数。 */
+  raisePoints: number;
+}
+
+function equationText(node: EquationNode): string {
+  return node.text ?? (node.parts ?? []).map(equationText).join('');
+}
+
+/**
+ * 把 `EQ \o(…)` 拆成要叠印的各层，并判断每层是域结果里的内容还是指令里的装饰字形。
+ *
+ * 判断办法是按顺序去对域结果：对得上的那段是内容，对不上的是装饰。「合并字符」的两组文字
+ * 拼起来正好是域结果，所以两层都是内容；「带圈字符」的圈只在指令里，所以是装饰。
+ *
+ * 各层拼起来覆盖不住整个域结果时返回 `undefined`（指令和缓存结果不一致，例如域是脏的）——
+ * 此时调用方按普通行内文字画，宁可不叠印也不能把结果里的文字丢掉。
+ */
+export function overstrikeLayers(equation: EquationNode | undefined, result: string): OverstrikeLayer[] | undefined {
+  if (equation?.switch !== 'o' || !equation.parts?.length) return undefined;
+  const layers: OverstrikeLayer[] = [];
+  let cursor = 0;
+  for (const part of equation.parts) {
+    const text = equationText(part);
+    if (!text) continue;
+    const content = result.startsWith(text, cursor);
+    if (content) cursor += text.length;
+    layers.push({ text, content, raisePoints: part.raisePoints ?? 0 });
+  }
+  if (cursor !== result.length) return undefined;
+  return layers.length ? layers : undefined;
 }

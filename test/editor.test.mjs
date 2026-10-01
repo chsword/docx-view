@@ -3220,3 +3220,72 @@ test('a stacked two-lines-in-one run advances by half its width, not its full wi
   assert.equal(noBrackets, 10);
   assert.ok(noBrackets < plain);
 });
+
+test('an EQ overstrike stacks its layers and keeps instruction-only glyphs out of the text', () => {
+  const editor = makeRunRenderEditor();
+  editor.runIsHidden = () => false;
+  editor.measure = (text) => text.length * 10;
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const newSpan = () => ({ nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [],
+    attributes: new Map(), append(...children) { this.childNodes.push(...children); } });
+  const render = (fieldInfo, run) => {
+    editor.renderFieldInfos = new Map([[0, fieldInfo]]);
+    const host = newSpan();
+    const advance = editor.appendRun(host, { index: 0, text: fieldInfo.result, runs: [], images: [] },
+      run, reviewContext, 720, 0);
+    return { runSpan: host.childNodes[0], advance };
+  };
+  const resultRun = { index: 3, text: '股份有限', field: { index: 0, role: 'result' } };
+
+  // 「合并字符」：两层都是域结果里的内容，上下错开后叠在同一处。
+  const combined = render({
+    index: 0, kind: 'EQ', result: '股份有限', resultRuns: [3],
+    equation: { switch: 'o', parts: [
+      { switch: 's', options: ['up'], raisePoints: 9, parts: [{ text: '股份' }] },
+      { switch: 's', options: ['do'], raisePoints: -3, parts: [{ text: '有限' }] },
+    ] },
+  }, resultRun);
+  const box = combined.runSpan.childNodes.find((child) => child.dataset?.docxEquation === 'o');
+  assert.ok(box, '\\o 是叠印，要有一个叠印容器');
+  assert.equal(box.style.display, 'inline-grid',
+    '各层都放进 1/1 格子，容器宽度才会取最宽那层；绝对定位会让宽度塌成 0');
+  assert.deepEqual(box.childNodes.map((cell) => cell.style.gridArea), ['1 / 1', '1 / 1']);
+  // raisePoints 为正是向上，所以 translateY 取负。
+  assert.deepEqual(box.childNodes.map((cell) => cell.style.transform),
+    ['translateY(-9pt)', 'translateY(3pt)']);
+  assert.equal(editor.readText(combined.runSpan), '股份有限');
+  assert.equal(combined.advance, 20, '最宽那层「股份」是 20');
+
+  // 「带圈字符」：圈只在指令里，域结果只有那个字。圈必须是装饰，不能流回文档。
+  const circled = render({
+    index: 0, kind: 'EQ', result: '甲', resultRuns: [3], equation: {
+      switch: 'o', options: ['ac'],
+      parts: [{ switch: 's', options: ['up'], raisePoints: 10, parts: [{ text: '○' }] }, { text: '甲' }],
+    },
+  }, { index: 3, text: '甲', field: { index: 0, role: 'result' } });
+  const circleBox = circled.runSpan.childNodes.find((child) => child.dataset?.docxEquation === 'o');
+  assert.equal(circleBox.style.justifyItems, 'center', '\\o\\ac 居中对齐');
+  const [circle, character] = circleBox.childNodes;
+  assert.equal(circle.contentEditable, 'false');
+  assert.equal(circle.dataset.docxEquationGlyph, '1');
+  assert.equal(circle.textContent, '○');
+  assert.equal(character.contentEditable, undefined, '域结果里的字仍然可编辑');
+  assert.equal(editor.readText(circled.runSpan), '甲', '圈不能进正文');
+
+  // 域结果跨多个 run 时不接管渲染：否则第一个 run 会把整个结果都画出来，后面的 run 再画一遍，
+  // 文字就重复了。
+  const split = render({
+    index: 0, kind: 'EQ', result: '股份有限', resultRuns: [3, 4],
+    equation: { switch: 'o', parts: [{ text: '股份' }, { text: '有限' }] },
+  }, { index: 3, text: '股份', field: { index: 0, role: 'result' } });
+  assert.equal(split.runSpan.childNodes.find((child) => child.dataset?.docxEquation), undefined);
+  assert.equal(editor.readText(split.runSpan), '股份');
+
+  // 指令和缓存结果对不上时退回普通行内文字，一个字也不能丢。
+  const stale = render({
+    index: 0, kind: 'EQ', result: '股份有限公司', resultRuns: [3],
+    equation: { switch: 'o', parts: [{ text: '股份' }, { text: '有限' }] },
+  }, { index: 3, text: '股份有限公司', field: { index: 0, role: 'result' } });
+  assert.equal(stale.runSpan.childNodes.find((child) => child.dataset?.docxEquation), undefined);
+  assert.equal(editor.readText(stale.runSpan), '股份有限公司');
+});

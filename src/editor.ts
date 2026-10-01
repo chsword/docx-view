@@ -34,7 +34,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -2266,6 +2266,12 @@ export class DocxEditor {
       annotation.textContent = run.ruby.text;
       rubyAnnotation = annotation;
     }
+    // EQ \o 的叠印只在「整个域结果都在这一个 run 里」时接管渲染；结果跨多个 run 时按原样
+    // 画，宁可不叠印也不去切分结果文本。
+    const equationLayers = run.field?.role === 'result' && fieldInfo?.kind === 'EQ'
+      && fieldInfo.resultRuns[0] === run.index && run.text === fieldInfo.result
+      ? overstrikeLayers(fieldInfo.equation, fieldInfo.result)
+      : undefined;
     const combine = run.effective?.eastAsianLayout ?? run.eastAsianLayout;
     if (combine?.combine) {
       // CSS 画不出双行合一，所以自己堆：两个 display:block 的 span（不能用 <br>，readText()
@@ -2293,6 +2299,34 @@ export class DocxEditor {
       // 按整段算会高估近一倍，让这种 run 过早换行。括号按原字号另计。
       currentLineOffsetPx += Math.max(...lines.map((line) => this.measure(line, run))) / 2;
       if (brackets) currentLineOffsetPx += brackets.reduce((total, bracket) => total + this.measure(bracket, run), 0);
+    } else if (equationLayers) {
+      // EQ 的 \o 是叠印：各层占同一个位置，各自按 \s\up / \s\do 上下错开。用 inline-grid
+      // 把每层都放进 1/1 这个格子——容器宽度自然取最宽那层；换成绝对定位宽度会塌成 0。
+      const box = this.root.ownerDocument.createElement('span');
+      box.dataset.docxEquation = 'o';
+      box.style.display = 'inline-grid';
+      // \o\ac 是居中对齐。
+      box.style.justifyItems = fieldInfo?.equation?.options?.includes('ac') ? 'center' : 'start';
+      for (const layer of equationLayers) {
+        const cell = this.root.ownerDocument.createElement('span');
+        cell.style.gridArea = '1 / 1';
+        if (layer.raisePoints) cell.style.transform = `translateY(${-layer.raisePoints}pt)`;
+        if (layer.content) {
+          cell.append(this.root.ownerDocument.createTextNode(layer.text));
+        } else {
+          // 这一层只在指令里，域结果里没有（「带圈字符」的那个圈）。必须当装饰：
+          // readText() 要跳过它，否则编辑正文会把它写回文档。
+          cell.contentEditable = 'false';
+          cell.dataset.docxEquationGlyph = '1';
+          cell.setAttribute('aria-hidden', 'true');
+          cell.style.userSelect = 'none';
+          cell.style.pointerEvents = 'none';
+          cell.textContent = layer.text;
+        }
+        box.append(cell);
+      }
+      textTarget.append(box);
+      currentLineOffsetPx += Math.max(...equationLayers.map((layer) => this.measure(layer.text, run)));
     } else {
     const segments = (run.field?.role === 'instruction' ? '' : run.text).split(/(\t|\n)/);
     for (let i = 0; i < segments.length; i++) {

@@ -8,6 +8,7 @@ import {
   dataUrlForBytes, decodeBase64, emuToPx, pxToEmu,
 } from '../dist/index.js';
 import { REL_NS, WORD_NS, descendants, parseXml } from '../dist/xml.js';
+import { parseEquationInstruction } from '../dist/fields.js';
 
 const RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
 const PNG_BYTES = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -6366,4 +6367,64 @@ test('eastAsianLayout reads and writes both of its display modes', () => {
   for (const invalid of [{ combineBrackets: 'oops' }, { combine: 'yes' }, { nope: 1 }, { id: -1 }]) {
     assert.throws(() => withBody(body).formatRun(0, 0, { eastAsianLayout: invalid }), undefined, JSON.stringify(invalid));
   }
+});
+
+test('EQ fields parse their bracket syntax instead of being read as switches', () => {
+  const field = (instruction, result) => '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    + `<w:r><w:instrText xml:space="preserve">${instruction}</w:instrText></w:r>`
+    + '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    + `<w:r><w:t>${result}</w:t></w:r>`
+    + '<w:r><w:fldChar w:fldCharType="end"/></w:r>';
+  // 「合并字符」与「带圈字符」都是 EQ \o（叠印），各部分再用 \s\up / \s\do 上下错开。
+  const combined = withBody(`<w:p>${field(' EQ \\o(\\s\\up 9(股份),\\s\\do 3(有限))', '股份有限')}</w:p>`)
+    .getFields()[0];
+  assert.equal(combined.kind, 'EQ');
+  // EQ 是排版域，没有可重算的值：结果就是 Word 缓存的那段文字。
+  assert.equal(combined.evaluable, false);
+  // 按空白分词的开关语法读 EQ 会得到垃圾（开关名里带半个括号，还凭空造出一个 argument），
+  // 所以 EQ 不走那条路。
+  assert.deepEqual(combined.switches, []);
+  assert.equal(combined.argument, undefined);
+  assert.deepEqual(combined.equation, {
+    switch: 'o',
+    parts: [
+      { switch: 's', options: ['up'], raisePoints: 9, parts: [{ text: '股份' }] },
+      // \do 记成负数，调用方只看一个数就够了。
+      { switch: 's', options: ['do'], raisePoints: -3, parts: [{ text: '有限' }] },
+    ],
+  });
+
+  const circled = withBody(`<w:p>${field(' eq \\o\\ac(\\s\\up 10(○),甲)', '甲')}</w:p>`).getFields()[0];
+  assert.equal(circled.kind, 'EQ', '域名大小写不敏感');
+  assert.equal(circled.equation.switch, 'o');
+  assert.deepEqual(circled.equation.options, ['ac'], '\\o\\ac 的 ac 是居中对齐');
+
+  // 分隔符按 Word 的区域设置可能是分号。
+  const semicolon = withBody(`<w:p>${field(' EQ \\o(\\s\\up 9(股份);\\s\\do 3(有限))', '股份有限')}</w:p>`)
+    .getFields()[0];
+  assert.deepEqual(semicolon.equation, combined.equation);
+
+  // 其他 EQ 开关也按结构读出来，不求值。
+  assert.deepEqual(withBody(`<w:p>${field(' EQ \\f(1,2)', '1/2')}</w:p>`).getFields()[0].equation,
+    { switch: 'f', parts: [{ text: '1' }, { text: '2' }] });
+
+  // 非 EQ 域的开关解析不受影响。
+  const toc = withBody(`<w:p>${field(' TOC \\o "1-3" \\h', '目录')}</w:p>`).getFields()[0];
+  assert.equal(toc.kind, 'TOC');
+  assert.deepEqual(toc.switches, [{ name: 'o', value: '1-3' }, { name: 'h' }]);
+  assert.equal(toc.equation, undefined);
+});
+
+test('EQ instruction nesting is bounded and keeps the text it stops at', () => {
+  // 嵌套深度由文档内容决定，所以要有硬上限。超限时把剩下的原样当文字收掉——既不继续递归，
+  // 也不丢内容。
+  const depthOf = (node, depth = 0) =>
+    Math.max(depth, ...(node.parts ?? []).map((part) => depthOf(part, depth + 1)));
+  const shallow = parseEquationInstruction(` EQ ${'\\o('.repeat(4)}x${')'.repeat(4)}`);
+  assert.equal(depthOf(shallow), 4);
+  const deep = parseEquationInstruction(` EQ ${'\\o('.repeat(40)}x${')'.repeat(40)}`);
+  assert.ok(depthOf(deep) <= 18, `嵌套深度被限住了，实际 ${depthOf(deep)}`);
+  const flatten = (node) => node.text ?? (node.parts ?? []).map(flatten).join('');
+  assert.match(flatten(deep), /x/, '超限处的文字仍然保留');
+  assert.equal(parseEquationInstruction(' TOC \\o "1-3"'), undefined, '不是 EQ 就不解析');
 });
