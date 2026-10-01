@@ -77,6 +77,36 @@ const reopened = await DocxDocument.load(bytes); // 也接受 ArrayBuffer / Blob
 console.log(reopened.getSnapshot());
 ```
 
+### 把存盘的压缩步骤搬到 Worker
+
+存盘有两步：把改过的部件序列化成字节，再把字节打成 ZIP。**序列化必须留在主线程**——它要读那棵活的 XML 树，而 xmldom 节点不是结构化可克隆的，传不进 Worker。**ZIP（DEFLATE）只依赖字节，可以搬**。1500 段文档实测：整条链约 138 ms，其中 DEFLATE 约 92 ms（占 37%~67%，随文档而变）。
+
+`toUint8Array()` / `toBlob()` 接受 `{ zip }`，由宿主决定在哪儿压。库**不替宿主创建 Worker**：那要替它决定打包器与 CSP 策略。宿主侧的 worker 就这几行：
+
+```js
+// zip-worker.js
+import { zipParts } from 'docx-view';
+self.onmessage = async (event) => {
+  self.postMessage(await zipParts(event.data));
+};
+```
+
+```js
+const worker = new Worker(new URL('./zip-worker.js', import.meta.url), { type: 'module' });
+const bytes = await doc.toUint8Array({
+  zip: (parts) => new Promise((resolve) => {
+    worker.onmessage = (event) => resolve(event.data);
+    worker.postMessage(parts);   // 结构化克隆会复制字节，本文档的部件不受影响
+  }),
+});
+```
+
+注意三点：
+
+- **不要转移 `parts` 里的 `ArrayBuffer`**（`postMessage(parts, [buffer])`）。那会把主线程这边的字节置为分离状态，文档随后就用不了了。结构化克隆的复制开销很小（实测交接约 0.4~10 ms）。
+- 收益是**主线程占用减半**，不是存盘变快：1500 段上主线程占用从约 57 ms 降到约 27~36 ms（剩下的是必须留在主线程的序列化），而墙钟因为多了一次往返反而略长。要的是「存盘时界面不卡」，不是「存盘更快」。
+- `zip` 必须返回 `Uint8Array`，否则 `toUint8Array()` 直接抛错——不然问题会推迟到宿主写文件时才暴露。
+
 | API | 用途 |
 | --- | --- |
 | `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、修订标记、样式清单、部件列表和修订号；`ParagraphInfo.text` 保留全部文字，隐藏 run 存在时另提供不含隐藏文字的 `visibleText` |

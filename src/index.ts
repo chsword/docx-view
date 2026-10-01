@@ -2,6 +2,8 @@ export { DocxDocument } from './document.js';
 export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
+export { zipParts } from './zip.js';
+export type { ZipParts } from './zip.js';
 export type {
   EastAsianLayout, EquationNode, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource,
   PaginationInfo, ParagraphFrame, RubyInfo, TableFloatingPosition,

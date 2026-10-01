@@ -1,4 +1,6 @@
 import JSZip from 'jszip';
+import { zipParts } from './zip.js';
+import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
@@ -9075,15 +9077,25 @@ export class DocxDocument {
     }
   }
 
-  async toUint8Array(): Promise<Uint8Array> {
+  /**
+   * `options.zip` 可以把 ZIP(DEFLATE)那一步交给别的线程。实测它占存盘耗时的 37%~67%
+   * （1500 段文档上 92 / 138 ms），而序列化那一半必须留在这里：它要读那棵活的 XML 树，
+   * 而 xmldom 节点不是结构化可克隆的，传不进 Worker。
+   *
+   * 传进去的是部件字节的**映射**，结构化克隆会复制它们，所以本文档自己的 `parts` 不受影响
+   * （不要转移 ArrayBuffer，那会把这边的字节置为分离状态）。
+   */
+  async toUint8Array(options: { zip?: ZipParts } = {}): Promise<Uint8Array> {
+    const zip = options.zip ?? zipParts;
+    if (typeof zip !== 'function') throw new Error('zip must be a function.');
     this.materializeAllParts();
-    const zip = new JSZip();
-    for (const [path, bytes] of this.parts) zip.file(path, bytes, { createFolders: false });
-    return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+    const bytes = await zip(this.parts);
+    if (!(bytes instanceof Uint8Array)) throw new Error('zip must resolve to a Uint8Array.');
+    return bytes;
   }
 
-  async toBlob(): Promise<Blob> {
-    const bytes = await this.toUint8Array();
+  async toBlob(options: { zip?: ZipParts } = {}): Promise<Blob> {
+    const bytes = await this.toUint8Array(options);
     return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: DOCX_TYPE });
   }
 }
