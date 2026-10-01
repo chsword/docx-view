@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, overstrikeLayers, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, frameWrapExclusion, overstrikeLayers, snapLineHeightPx } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -527,4 +527,95 @@ test('overstrikeLayers tells content apart from instruction-only glyphs', () => 
   assert.equal(overstrikeLayers({ switch: 'f', parts: [{ text: '1' }, { text: '2' }] }, '1/2'), undefined);
   assert.equal(overstrikeLayers(undefined, '甲'), undefined);
   assert.equal(overstrikeLayers({ switch: 'o' }, ''), undefined);
+});
+
+test('frameWrapExclusion takes the drop cap box from measurement and the frame box from w:w / w:h', () => {
+  const measured = { widthPx: 80, heightPx: 60 };
+  // 下沉字的尺寸不从 w:lines 反推：Word 已经把它的 w:sz 调到正好跨 lines 行，量出来的字框
+  // 就是排除区。
+  assert.deepEqual(frameWrapExclusion({ dropCap: 'drop', lines: 3 }, measured),
+    { widthPx: 80, heightPx: 60, wrap: 'square', carried: false });
+  assert.deepEqual(frameWrapExclusion({ dropCap: 'margin', lines: 2 }, measured),
+    { widthPx: 80, heightPx: 60, wrap: 'square', carried: false });
+  // 文档明写了尺寸就照它来，下沉字也不例外——这条分支以前被 dropCap 的特判盖掉了，而特判
+  // 本身没有理由：「文档说什么就读什么」。
+  assert.deepEqual(frameWrapExclusion({ dropCap: 'drop', lines: 3, widthTwips: 1500 }, measured),
+    { widthPx: 100, heightPx: 60, wrap: 'square', carried: false });
+  assert.deepEqual(frameWrapExclusion({ dropCap: 'drop', lines: 3, heightTwips: 1500 }, measured),
+    { widthPx: 80, heightPx: 100, wrap: 'square', carried: false });
+  // 定位文本框优先用 w:w / w:h（缇，15 缇 = 1px）。
+  assert.deepEqual(frameWrapExclusion({ widthTwips: 2880, heightTwips: 1440, wrap: 'around' }, measured),
+    { widthPx: 192, heightPx: 96, wrap: 'square', carried: false });
+  // 缺的那一维用量出来的。
+  assert.deepEqual(frameWrapExclusion({ widthTwips: 1500, wrap: 'around' }, measured),
+    { widthPx: 100, heightPx: 60, wrap: 'square', carried: false });
+
+  // w:wrap 的取值正好对上现有的排除区类型。
+  const wrapOf = (wrap) => frameWrapExclusion({ wrap, widthTwips: 1500 }, measured)?.wrap;
+  assert.equal(wrapOf('tight'), 'tight');
+  assert.equal(wrapOf('through'), 'through');
+  assert.equal(wrapOf('around'), 'square');
+  assert.equal(wrapOf('auto'), 'square');
+  // notBeside 的字面意思就是「旁边不许有文字」。
+  assert.equal(wrapOf('notBeside'), 'topAndBottom');
+  // none 是正文不绕它排，所以没有排除区。
+  assert.equal(frameWrapExclusion({ wrap: 'none', widthTwips: 1500 }, measured), undefined);
+  // 没写 w:wrap 时 Word 的缺省是绕排。
+  assert.equal(wrapOf(undefined), 'square');
+
+  assert.equal(frameWrapExclusion(undefined, measured), undefined);
+  assert.equal(frameWrapExclusion(null, measured), undefined);
+  // 宽度量不到又没给 w:w 时不编一个出来：不环绕只是少个效果，编错了会把正文挤歪。
+  assert.equal(frameWrapExclusion({ dropCap: 'drop' }, { heightPx: 60 }), undefined);
+  assert.equal(frameWrapExclusion({ dropCap: 'drop' }, { widthPx: 0, heightPx: 60 }), undefined);
+  assert.equal(frameWrapExclusion({ widthTwips: 1500 }, { heightPx: 0 }), undefined);
+});
+
+test('a framed paragraph floats out of the flow and leaves an exclusion for what follows', () => {
+  // 带 framePr 的段落自己不占纵向高度，只给后面的内容留出一块排除区——这正是浏览器 float
+  // 的行为，所以分页测量和实际渲染是同一套。
+  const areas = [];
+  const widthMeasurer = {
+    measureParagraph(p, area) {
+      areas.push({ paragraph: p.index, wraps: area.wraps.map((w) => ({ ...w })) });
+      return (p.lines ?? [10]).map((height, index) => ({
+        heightPx: height, startOffset: index, endOffset: index + 1, widthPx: p.widthPx ?? 0,
+      }));
+    },
+    measureTableRow(_table, row) { return row.height ?? 10; },
+  };
+  const dropCap = { index: 0, text: '从', runs: [], images: [], lines: [60], widthPx: 80,
+    frame: { dropCap: 'drop', lines: 3, wrap: 'around' } };
+  const bodyText = { index: 1, text: '前有座山。', runs: [], images: [], lines: [20, 20, 20] };
+  // 页高给足，这样「浮出流外」与「照常计入」的对比不被分页搅进来（默认页高只有 100px）。
+  const tall = [section({ pageHeight: 6000 })];
+  const pages = paginate([{ type: 'paragraph', paragraph: dropCap }, { type: 'paragraph', paragraph: bodyText }],
+    tall, widthMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(pages.length, 1);
+  // 下沉段的行照样进页面（要画出来），但不计入栏高：只有正文那 3 行 × 20 算进去。
+  assert.equal(pages[0].contentHeightPx, 60);
+  assert.deepEqual(pages[0].items.map((item) => item.paragraph), [0, 1, 1, 1]);
+  // 排除区带到了后面的段落。
+  const bodyArea = areas.find((entry) => entry.paragraph === 1);
+  assert.deepEqual(bodyArea.wraps, [{ widthPx: 80, heightPx: 60, wrap: 'square', carried: true }]);
+
+  // 排除区放不进本栏剩余高度、而本栏已经有内容时先换栏：否则它会跨到下一栏去挤正文，
+  // 而它自己又不占高度，错位不会有任何提示。
+  const before = { index: 0, text: '已有内容', runs: [], images: [], lines: [60] };
+  const framed = { index: 1, text: '从', runs: [], images: [], lines: [60], widthPx: 80,
+    frame: { dropCap: 'drop', wrap: 'around' } };
+  const moved = paginate([{ type: 'paragraph', paragraph: before }, { type: 'paragraph', paragraph: framed }],
+    [section({ pageHeight: 1500 })], widthMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(moved.length, 2, '页高 100px，60px 内容之后放不下 60px 的排除区');
+  assert.deepEqual(moved.map((page) => page.items.map((item) => item.paragraph)), [[0], [1]]);
+
+  // wrap="none" 的段落不脱离正常流，照常计入栏高。
+  areas.length = 0;
+  const plain = paginate([
+    { type: 'paragraph', paragraph: { ...dropCap, frame: { dropCap: 'drop', wrap: 'none' } } },
+    { type: 'paragraph', paragraph: bodyText },
+  ], tall, widthMeasurer, { defaultTabStopTwips: 720 });
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].contentHeightPx, 120, '60 + 3 × 20');
+  assert.deepEqual(areas.find((entry) => entry.paragraph === 1).wraps, []);
 });

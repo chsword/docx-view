@@ -1240,6 +1240,10 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     if (format.alignment === null) removeProperty(props, 'jc');
     else if (format.alignment !== undefined) setWordValue(property(props, 'jc'), format.alignment);
   }
+  if ('frame' in format) {
+    if (format.frame === null) removeProperty(props, 'framePr');
+    else if (format.frame !== undefined) setParagraphFrame(property(props, 'framePr'), format.frame);
+  }
   for (const [key, tag] of [
     ['keepNext', 'keepNext'],
     ['keepLines', 'keepLines'],
@@ -1491,6 +1495,25 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
 function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: string): void {
   for (const [key, value] of Object.entries(format)) {
     if (value === null) throw new Error(`${label}.${key} cannot be null in defineStyle().`);
+  }
+}
+
+const FRAME_ATTRIBUTES = [
+  ['dropCap', 'dropCap'], ['lines', 'lines'], ['widthTwips', 'w'], ['heightTwips', 'h'],
+  ['heightRule', 'hRule'], ['wrap', 'wrap'], ['verticalAnchor', 'vAnchor'], ['horizontalAnchor', 'hAnchor'],
+  ['xTwips', 'x'], ['yTwips', 'y'], ['xAlign', 'xAlign'], ['yAlign', 'yAlign'],
+  ['horizontalSpaceTwips', 'hSpace'], ['verticalSpaceTwips', 'vSpace'], ['anchorLock', 'anchorLock'],
+] as const;
+
+/** `w:framePr` 的信息全在属性上,和 eastAsianLayout 一样不能走 setWordValue。 */
+function setParagraphFrame(element: Element, frame: NonNullable<ParagraphFormat['frame']>): void {
+  for (const [key, attribute] of FRAME_ATTRIBUTES) {
+    const value = frame[key];
+    if (value === undefined) {
+      element.removeAttributeNS(WORD_NS, attribute);
+      continue;
+    }
+    setWordAttr(element, attribute, typeof value === 'boolean' ? (value ? '1' : '0') : String(value));
   }
 }
 
@@ -2056,7 +2079,7 @@ const PARAGRAPH_FORMAT_FIELDS = [
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
-  'outlineLevel', 'tabs', 'borders', 'shading',
+  'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
 interface CompareBlockInfo {
@@ -2078,7 +2101,7 @@ const PARAGRAPH_DIRECT_FIELDS = [
   'spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
-  'outlineLevel', 'tabs', 'borders', 'shading',
+  'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
 const OUTLINE_MAX_LEVEL = 8;

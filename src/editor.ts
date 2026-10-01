@@ -269,17 +269,54 @@ export function replacePageFields(blocks: DocumentBlock[], pageNumber: number, p
   });
 }
 
-export function deriveLineBoxes(rects: Array<{ top: number; height: number; start: number; end: number }>): LineBox[] {
-  const lines: Array<{ top: number; height: number; start: number; end: number }> = [];
+/**
+ * `w:framePr` 的段落浮出正常流，正文绕着它排。环绕交给浏览器的 float——测量分页时也是用
+ * float 占位（见 measureParagraphForPagination），两边是同一套行为，不会各算一套。
+ *
+ * `w:x` / `w:y` 那套按页面或页边距定位的绝对坐标本期不实现：那需要相对页框定位，而连续视图
+ * 没有页框。浮动方向按 `xAlign` 取左右，其余照左浮。
+ */
+function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['frame']): void {
+  if (!frame) return;
+  const wrap = frame.wrap ?? 'auto';
+  element.dataset.docxFrame = frame.dropCap === 'drop' || frame.dropCap === 'margin' ? 'dropCap' : 'frame';
+  if (frame.widthTwips !== undefined) element.style.width = `${frame.widthTwips / 15}px`;
+  if (frame.heightTwips !== undefined) {
+    const height = `${frame.heightTwips / 15}px`;
+    if (frame.heightRule === 'exact') element.style.height = height;
+    else element.style.minHeight = height;
+  }
+  if (frame.horizontalSpaceTwips !== undefined) {
+    element.style.marginLeft = `${frame.horizontalSpaceTwips / 15}px`;
+    element.style.marginRight = `${frame.horizontalSpaceTwips / 15}px`;
+  }
+  if (frame.verticalSpaceTwips !== undefined) {
+    element.style.marginTop = `${frame.verticalSpaceTwips / 15}px`;
+    element.style.marginBottom = `${frame.verticalSpaceTwips / 15}px`;
+  }
+  // notBeside 是「旁边不许有文字」，不浮动才是对的；none 也不浮。
+  if (wrap === 'none' || wrap === 'notBeside') return;
+  element.style.cssFloat = frame.xAlign === 'right' ? 'right' : 'left';
+}
+
+export function deriveLineBoxes(
+  rects: Array<{ top: number; height: number; start: number; end: number; width?: number }>,
+): LineBox[] {
+  const lines: Array<{ top: number; height: number; start: number; end: number; width?: number }> = [];
   for (const rect of rects) {
     const line = lines.find((entry) => Math.abs(entry.top - rect.top) < 1);
     if (line) {
       line.start = Math.min(line.start, rect.start);
       line.end = Math.max(line.end, rect.end);
       line.height = Math.max(line.height, rect.height);
+      if (rect.width !== undefined) line.width = Math.max(line.width ?? 0, rect.width);
     } else lines.push({ ...rect });
   }
-  return lines.sort((a, b) => a.start - b.start).map(({ height, start, end }) => ({ heightPx: height, startOffset: start, endOffset: end }));
+  return lines.sort((a, b) => a.start - b.start).map(({ height, start, end, width }) => ({
+    heightPx: height, startOffset: start, endOffset: end,
+    // 量不到宽度时不写这个字段，让调用方看得出是「没量到」而不是「宽度为 0」。
+    ...(width === undefined ? {} : { widthPx: width }),
+  }));
 }
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo, includeAfter = true,
@@ -1085,7 +1122,7 @@ export class DocxEditor {
       range.setEnd(end.node, end.offset);
       return Array.from(range.getClientRects())[0];
     };
-    const rects: Array<{ top: number; height: number; start: number; end: number }> = [];
+    const rects: Array<{ top: number; height: number; start: number; end: number; width?: number }> = [];
     for (const line of lineRects) {
       let start = 0;
       let end = paragraph.text.length;
@@ -1102,7 +1139,9 @@ export class DocxEditor {
         const rect = charRect(Math.max(lineStart, middle - 1));
         if (rect && Math.abs(rect.top - line.top) < 1) start = middle; else end = middle - 1;
       }
-      if (start > lineStart) rects.push({ top: line.top, height: line.height, start: lineStart, end: start });
+      if (start > lineStart) {
+        rects.push({ top: line.top, height: line.height, width: line.width, start: lineStart, end: start });
+      }
     }
     host.remove();
     if (!rects.length) return paragraph.text ? [{ heightPx: 18, startOffset: 0, endOffset: paragraph.text.length }] : [];
@@ -1405,6 +1444,7 @@ export class DocxEditor {
     element.dataset.paragraph = String(paragraph.index);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
+    applyParagraphFrameStyle(element, paragraph.frame);
     applyParagraphStyle(element, paragraph, previous, includeAfter, this.compatibilitySettings);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;

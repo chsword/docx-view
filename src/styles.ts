@@ -111,6 +111,42 @@ function readOnOffValue(raw: string | undefined): boolean {
 }
 
 const COMBINE_BRACKETS = ['none', 'round', 'square', 'angle', 'curly'] as const;
+const FRAME_ENUMS = {
+  dropCap: ['none', 'drop', 'margin'],
+  heightRule: ['auto', 'exact', 'atLeast'],
+  wrap: ['around', 'auto', 'none', 'notBeside', 'through', 'tight'],
+  verticalAnchor: ['margin', 'page', 'text'],
+  horizontalAnchor: ['margin', 'page', 'text'],
+  xAlign: ['center', 'inside', 'left', 'outside', 'right'],
+  yAlign: ['bottom', 'center', 'inline', 'inside', 'outside', 'top'],
+} as const;
+
+/** `w:framePr` 的全部信息都在属性上，没有 `w:val` 子元素。 */
+function readParagraphFrame(element: Element | undefined): ParagraphFormat['frame'] {
+  if (!element) return undefined;
+  const enumValue = (name: keyof typeof FRAME_ENUMS, attribute: string = name): string | undefined => {
+    const raw = wordAttr(element, attribute);
+    return raw !== undefined && (FRAME_ENUMS[name] as readonly string[]).includes(raw) ? raw : undefined;
+  };
+  const anchorLock = wordAttr(element, 'anchorLock');
+  return compactDefined({
+    dropCap: enumValue('dropCap'),
+    lines: readNumber(wordAttr(element, 'lines')),
+    widthTwips: readNumber(wordAttr(element, 'w')),
+    heightTwips: readNumber(wordAttr(element, 'h')),
+    heightRule: enumValue('heightRule', 'hRule'),
+    wrap: enumValue('wrap'),
+    verticalAnchor: enumValue('verticalAnchor', 'vAnchor'),
+    horizontalAnchor: enumValue('horizontalAnchor', 'hAnchor'),
+    xTwips: readNumber(wordAttr(element, 'x')),
+    yTwips: readNumber(wordAttr(element, 'y')),
+    xAlign: enumValue('xAlign'),
+    yAlign: enumValue('yAlign'),
+    horizontalSpaceTwips: readNumber(wordAttr(element, 'hSpace')),
+    verticalSpaceTwips: readNumber(wordAttr(element, 'vSpace')),
+    anchorLock: anchorLock === undefined ? undefined : readOnOffValue(anchorLock),
+  }) as ParagraphFormat['frame'];
+}
 
 /** `w:eastAsianLayout` 的开关放在属性上（`w:combine="true"`），不是 `w:val` 子元素。 */
 function readEastAsianLayout(element: Element | undefined): RunFormat['eastAsianLayout'] {
@@ -349,6 +385,7 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
   const spacing = children(props, 'spacing')[0];
   const indent = children(props, 'ind')[0];
   const alignment = wordValue(children(props, 'jc')[0]);
+  const frame = readParagraphFrame(children(props, 'framePr')[0]);
   const borders = children(props, 'pBdr')[0];
   const parsedBorders = borders ? {
     top: readBorderSide(children(borders, 'top')[0]),
@@ -360,6 +397,7 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
   } : undefined;
   return {
     style: wordValue(children(props, 'pStyle')[0]),
+    ...(frame ? { frame } : {}),
     alignment: ['left', 'center', 'right', 'both', 'distribute'].includes(alignment ?? '')
       ? alignment as ParagraphFormat['alignment'] : undefined,
     indentLeft: readNumber(wordAttr(indent, 'left') ?? wordAttr(indent, 'start')),

@@ -93,6 +93,12 @@ console.log(reopened.getSnapshot());
 
 分页与连续视图使用同一套段落间距计算：相邻段落的 `before` / `after` 取较大值（首段的 `before` 和末段的 `after` 仍保留）。`contextualSpacing` 在相邻段落样式相同处抑制该间距；`beforeLines` / `afterLines` 和 `autospacing` 会无损读取并写回，但当前不参与排版（行单位需要实际行高，autospacing 的 Word 算法也不在布局度量器中）。分页视图读取节级行号和页面边框；行号按分页后的行顺序（跨栏按流项目顺序）计算，`suppressLineNumbers` 的段落跳过且不占号，连续视图不显示行号。节的 `vAlign` 支持 `top`、`center`、`bottom`；`both` 当前退化为 `top`。
 
+`w:framePr` 读写为 `ParagraphFormat.frame`（全部属性，传 `null` 清除；非法枚举与非数字按未设置处理）。它盖着 Word 里两个看起来无关的功能——**首字下沉**（`dropCap` 为 `drop` / `margin`，下沉字自成一段）和**段落定位**（DrawingML 之前的浮动做法）——但在排版上是同一件事：这一段脱离正常流，给后面的内容留出一块排除区。实现上就走同一条路：渲染时给该段加 `float`，环绕交给浏览器；分页测量用同样的 float 占位，所以两边不会各算一套。
+
+尺寸的来源只有一条规则:文档明写了 `w:w` / `w:h` 就照它来，没写才用量出来的那一维。下沉字正是「没写」的那种——所以它的尺寸**不从 `w:lines` 反推**:Word 已经把那个字的 `w:sz` 调到正好跨 `lines` 行，量出来的字框就是排除区。宽度既量不到又没有 `w:w` 时不产生排除区（不环绕只是少个效果，尺寸编错了会把正文挤歪）。`w:wrap` 映射为排除区类型：`around` / `auto` → `square`，`tight`、`through` 原样，`notBeside` → `topAndBottom`（字面意思就是旁边不许有文字，因此也不浮动），`none` 不产生排除区也不浮动。`w:hRule` 为 `exact` 时用固定高度，否则用最小高度。排除区放不进本栏剩余高度而本栏已有内容时先换栏。
+
+**`w:x` / `w:y` 那套按页面或页边距定位的绝对坐标本期不实现**：那需要相对页框定位，而连续视图没有页框；这些值如实读取并原样写回，浮动方向按 `xAlign` 取左右，其余照左浮。`w:anchorLock`、`w:yAlign`、`w:vAnchor` / `w:hAnchor` 同样只读取保留，不参与排版。
+
 `getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
 
 `getThemeSettings()` 读取 `settings.xml` 的 `w:clrSchemeMapping` 和 `w:themeFontLang`，以及 `styles.xml` 的 `w:latentStyles`。颜色槽位映射参与主题色解析；替换主题关系指向的主题部件（通常名为 `theme1.xml`）即可切换当前主题。`themeFontLang` 与 `latentStyles` 只暴露为元数据，不参与字体选择或排版；主题字体仍按主题中声明的脚本槽位解析。

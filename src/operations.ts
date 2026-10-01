@@ -1,4 +1,4 @@
-import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, RowFormat, RunFormat, Shading, TabStop, TableFormat } from './types.js';
+import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, ParagraphFrame, RowFormat, RunFormat, Shading, TabStop, TableFormat } from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
@@ -135,6 +135,42 @@ export function validateRunFormat(value: unknown): asserts value is RunFormat {
   }
 }
 
+const FRAME_ENUM_VALUES: Record<string, readonly string[]> = {
+  dropCap: ['none', 'drop', 'margin'],
+  heightRule: ['auto', 'exact', 'atLeast'],
+  wrap: ['around', 'auto', 'none', 'notBeside', 'through', 'tight'],
+  verticalAnchor: ['margin', 'page', 'text'],
+  horizontalAnchor: ['margin', 'page', 'text'],
+  xAlign: ['center', 'inside', 'left', 'outside', 'right'],
+  yAlign: ['bottom', 'center', 'inline', 'inside', 'outside', 'top'],
+};
+const FRAME_NUMBERS = ['lines', 'widthTwips', 'heightTwips', 'xTwips', 'yTwips',
+  'horizontalSpaceTwips', 'verticalSpaceTwips'] as const;
+
+export function validateParagraphFrame(value: unknown): asserts value is ParagraphFrame {
+  object(value);
+  const frame = value as Record<string, unknown>;
+  keys(frame, [...Object.keys(FRAME_ENUM_VALUES), ...FRAME_NUMBERS, 'anchorLock']);
+  for (const [name, allowed] of Object.entries(FRAME_ENUM_VALUES)) {
+    if (name in frame && frame[name] !== undefined && !allowed.includes(frame[name] as string)) {
+      throw new Error(`frame.${name} must be one of ${allowed.join(', ')}.`);
+    }
+  }
+  for (const name of FRAME_NUMBERS) {
+    // x / y 可以是负数（往页边距外挪），其余的是尺寸，不能为负。
+    const signed = name === 'xTwips' || name === 'yTwips';
+    // lines 是行数，不是缇，错误信息别跟着说成缇。
+    const unit = name === 'lines' ? '' : ' in twips';
+    if (name in frame && frame[name] !== undefined &&
+        (!Number.isSafeInteger(frame[name]) || (!signed && (frame[name] as number) < 0))) {
+      throw new Error(`frame.${name} must be ${signed ? 'an integer' : 'a non-negative integer'}${unit}.`);
+    }
+  }
+  if ('anchorLock' in frame && frame.anchorLock !== undefined && typeof frame.anchorLock !== 'boolean') {
+    throw new Error('frame.anchorLock must be boolean.');
+  }
+}
+
 export function validateEastAsianLayout(value: unknown): asserts value is EastAsianLayout {
   object(value);
   const layout = value as Record<string, unknown>;
@@ -160,7 +196,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
     'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
     'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
     'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
-    'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens',
+    'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens', 'frame',
     'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   ]);
   if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
@@ -202,6 +238,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   if ('tabs' in value) maybeNull(value.tabs as TabStop[] | null | undefined, (entry) => validateTabs(entry));
   if ('borders' in value) maybeNull(value.borders as ParagraphFormat['borders'] | null | undefined, (entry) => validateParagraphBorders(entry));
   if ('shading' in value) maybeNull(value.shading as Shading | null | undefined, (entry) => validateDocShading(entry, 'shading'));
+  if ('frame' in value) maybeNull(value.frame as ParagraphFrame | null | undefined, (entry) => validateParagraphFrame(entry));
 }
 
 export function validateTabStop(value: unknown): asserts value is TabStop {

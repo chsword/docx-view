@@ -6428,3 +6428,87 @@ test('EQ instruction nesting is bounded and keeps the text it stops at', () => {
   assert.match(flatten(deep), /x/, '超限处的文字仍然保留');
   assert.equal(parseEquationInstruction(' TOC \\o "1-3"'), undefined, '不是 EQ 就不解析');
 });
+
+test('w:framePr reads and writes both of the features it carries', () => {
+  // framePr 盖着两个看起来无关的 Word 功能：首字下沉和段落定位。
+  const dropCap = '<w:framePr w:dropCap="drop" w:lines="3" w:wrap="around" w:vAnchor="text" w:hAnchor="text"/>';
+  const positioned = '<w:framePr w:w="2880" w:h="1440" w:hRule="exact" w:wrap="around" w:vAnchor="page"'
+    + ' w:hAnchor="page" w:x="1440" w:y="2880" w:hSpace="180" w:anchorLock="1"/>';
+  const body = `<w:p><w:pPr>${dropCap}<w:rPr><w:sz w:val="116"/></w:rPr></w:pPr>`
+    + '<w:r><w:rPr><w:sz w:val="116"/></w:rPr><w:t>从</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:t>前有座山。</w:t></w:r></w:p>'
+    + `<w:p><w:pPr>${positioned}</w:pPr><w:r><w:t>侧边注</w:t></w:r></w:p>`;
+  const paragraphs = withBody(body).getParagraphs();
+  assert.deepEqual(paragraphs[0].frame, {
+    dropCap: 'drop', lines: 3, wrap: 'around', verticalAnchor: 'text', horizontalAnchor: 'text',
+  });
+  assert.equal(paragraphs[1].frame, undefined, '正文段没有 framePr');
+  assert.deepEqual(paragraphs[2].frame, {
+    widthTwips: 2880, heightTwips: 1440, heightRule: 'exact', wrap: 'around',
+    verticalAnchor: 'page', horizontalAnchor: 'page', xTwips: 1440, yTwips: 2880,
+    horizontalSpaceTwips: 180, anchorLock: true,
+  });
+
+  // 非法枚举与非数字按未设置处理，不要带着垃圾值往下传。
+  assert.deepEqual(withBody('<w:p><w:pPr><w:framePr w:dropCap="oops" w:wrap="sideways" w:lines="abc"/>'
+    + '</w:pPr><w:r><w:t>x</w:t></w:r></w:p>').getParagraphs()[0].frame, {});
+
+  const written = withBody('<w:p><w:r><w:t>从</w:t></w:r></w:p>');
+  written.formatParagraph(0, { frame: { dropCap: 'drop', lines: 3, wrap: 'around' } });
+  assert.match(written.getPartXml('word/document.xml'),
+    /<w:framePr w:dropCap="drop" w:lines="3" w:wrap="around"\/>/);
+  assert.deepEqual(written.getParagraphs()[0].frame, { dropCap: 'drop', lines: 3, wrap: 'around' });
+  written.formatParagraph(0, { frame: null });
+  assert.doesNotMatch(written.getPartXml('word/document.xml'), /framePr/);
+
+  for (const invalid of [{ dropCap: 'oops' }, { wrap: 'sideways' }, { lines: -1 }, { widthTwips: -5 },
+    { anchorLock: 'yes' }, { nope: 1 }]) {
+    assert.throws(() => withBody(body).formatParagraph(0, { frame: invalid }), undefined, JSON.stringify(invalid));
+  }
+  // x / y 是坐标，往页边距外挪时是负数，不能按尺寸去卡。
+  assert.doesNotThrow(() => withBody(body).formatParagraph(0, { frame: { xTwips: -720, yTwips: -360 } }));
+});
+
+test('framePr counts as a paragraph format difference for compare and style application', () => {
+  // 这两条是 frame 进两张段落字段表的理由。牙齿检查显示光加进表里没有任何用例走到，
+  // 所以把两条行为本身钉住。
+  const frame = '<w:framePr w:dropCap="drop" w:lines="3" w:wrap="around"/>';
+
+  // compare：两份文档之间加上或去掉首字下沉，必须算作格式差异——否则会判成完全一致。
+  const base = withBody('<w:p><w:r><w:t>从前有座山</w:t></w:r></w:p>');
+  const revised = withBody(`<w:p><w:pPr>${frame}</w:pPr><w:r><w:t>从前有座山</w:t></w:r></w:p>`);
+  const compared = DocxDocument.compare(base, revised, { author: 'Alice' });
+  assert.deepEqual(compared.getParagraphs()[0].frame, { dropCap: 'drop', lines: 3, wrap: 'around' });
+  assert.match(compared.getPartXml(compared.mainDocumentPath), /<w:framePr/);
+
+  // applyParagraphStyle：样式没提供 framePr 时，段落自己的那个必须留着——清掉就把首字下沉
+  // 弄没了。
+  const styled = withStyles(
+    `<w:p><w:pPr>${frame}<w:jc w:val="right"/></w:pPr><w:r><w:t>从</w:t></w:r></w:p>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Framed">
+        <w:name w:val="Framed"/>
+        <w:pPr><w:jc w:val="center"/></w:pPr>
+      </w:style>
+    </w:styles>`,
+  );
+  styled.applyParagraphStyle(0, 'Framed', { clearDirectFormat: true });
+  assert.deepEqual(styled.getParagraphs()[0].frame, { dropCap: 'drop', lines: 3, wrap: 'around' });
+
+  // 样式自己定义了另一个 framePr 时，clearDirectFormat 要让样式胜出——和其他段落属性一致。
+  // 上面那一条分不出这件事：样式没有 framePr 时，判定直接值该不该清的那条分支根本走不到。
+  const conflicting = withStyles(
+    `<w:p><w:pPr>${frame}</w:pPr><w:r><w:t>从</w:t></w:r></w:p>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="paragraph" w:styleId="Boxed">
+        <w:name w:val="Boxed"/>
+        <w:pPr><w:framePr w:w="2880" w:h="1440" w:wrap="around"/></w:pPr>
+      </w:style>
+    </w:styles>`,
+  );
+  conflicting.applyParagraphStyle(0, 'Boxed', { clearDirectFormat: true });
+  assert.doesNotMatch(conflicting.getPartXml(conflicting.mainDocumentPath), /w:dropCap/,
+    '冲突的直接 framePr 被清掉，样式的那个生效');
+  assert.deepEqual(conflicting.getParagraphs()[0].effective?.frame,
+    { widthTwips: 2880, heightTwips: 1440, wrap: 'around' });
+});

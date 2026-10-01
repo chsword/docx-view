@@ -57,6 +57,8 @@ export interface Shading {
 
 export interface ParagraphFormat {
   alignment?: 'left' | 'center' | 'right' | 'both' | 'distribute' | null;
+  /** `w:framePr`；首字下沉与段落定位都在这里。 */
+  frame?: ParagraphFrame | null;
   style?: string | null;
   indentLeft?: number | null;
   indentRight?: number | null;
@@ -271,6 +273,35 @@ export interface FieldSwitch {
  * `\s\do N` 上下位移——所以「合并字符」是两组文字一上一下叠出来的，「带圈字符」是
  * 一个圈和一个字叠出来的。按这个机制实现，两个功能都落地，不必各自特判。
  */
+/**
+ * `w:framePr` —— 段落文本框。它盖着 Word 里两个看起来无关的功能：
+ *
+ * - **首字下沉**：`dropCap` 为 `drop`（落在正文里）或 `margin`（落到页边距外），下沉的那个字
+ *   自成一段，Word 同时把它的 `w:sz` 调大到正好跨 `lines` 行。
+ * - **段落定位**：DrawingML 之前的浮动做法——整段按 `x` / `y` 或 `xAlign` / `yAlign` 定位，
+ *   正文按 `wrap` 绕着它排。
+ *
+ * 两者在排版上是同一件事：这一段脱离正常流，给后面的内容留出一块排除区。
+ */
+export interface ParagraphFrame {
+  dropCap?: 'none' | 'drop' | 'margin';
+  /** 下沉字跨几行。 */
+  lines?: number;
+  widthTwips?: number;
+  heightTwips?: number;
+  heightRule?: 'auto' | 'exact' | 'atLeast';
+  wrap?: 'around' | 'auto' | 'none' | 'notBeside' | 'through' | 'tight';
+  verticalAnchor?: 'margin' | 'page' | 'text';
+  horizontalAnchor?: 'margin' | 'page' | 'text';
+  xTwips?: number;
+  yTwips?: number;
+  xAlign?: 'center' | 'inside' | 'left' | 'outside' | 'right';
+  yAlign?: 'bottom' | 'center' | 'inline' | 'inside' | 'outside' | 'top';
+  horizontalSpaceTwips?: number;
+  verticalSpaceTwips?: number;
+  anchorLock?: boolean;
+}
+
 export interface EquationNode {
   /** 开关名，如 `o`（重叠）、`s`（升降）、`f`（分数）；纯文字节点没有。 */
   switch?: string;

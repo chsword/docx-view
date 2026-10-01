@@ -3289,3 +3289,58 @@ test('an EQ overstrike stacks its layers and keeps instruction-only glyphs out o
   assert.equal(stale.runSpan.childNodes.find((child) => child.dataset?.docxEquation), undefined);
   assert.equal(editor.readText(stale.runSpan), '股份有限公司');
 });
+
+test('deriveLineBoxes carries the measured line width through', () => {
+  // 带 w:framePr 的段落靠这个宽度算排除区；getClientRects 本来就有 width，如实带出来而不是
+  // 按字号去猜。
+  assert.deepEqual(deriveLineBoxes([
+    { top: 0, height: 20, width: 120, start: 0, end: 5 },
+    { top: 0, height: 24, width: 40, start: 5, end: 8 },
+    { top: 30, height: 20, width: 60, start: 8, end: 12 },
+  ]), [
+    { heightPx: 24, startOffset: 0, endOffset: 8, widthPx: 120 },
+    { heightPx: 20, startOffset: 8, endOffset: 12, widthPx: 60 },
+  ]);
+  // 量不到宽度时不写这个字段，调用方才分得清「没量到」和「宽度为 0」。
+  assert.deepEqual(deriveLineBoxes([{ top: 0, height: 20, start: 0, end: 3 }]),
+    [{ heightPx: 20, startOffset: 0, endOffset: 3 }]);
+});
+
+test('a framed paragraph floats so the browser wraps the text around it', () => {
+  // 环绕交给浏览器的 float —— 分页测量也是用 float 占位，两边同一套行为。
+  const editor = makeRunRenderEditor();
+  editor.runIsHidden = () => false;
+  editor.measure = () => 10;
+  editor.compatibilitySettings = {};
+  editor.reviewScopedRun = (_paragraph, run) => run;
+  editor.measuring = true;
+  const make = (frame) => editor.makeParagraph(
+    { index: 0, text: '从', runs: [], images: [], frame },
+    720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+
+  const dropCap = make({ dropCap: 'drop', lines: 3, wrap: 'around' });
+  assert.equal(dropCap.dataset.docxFrame, 'dropCap');
+  assert.equal(dropCap.style.cssFloat, 'left');
+
+  const positioned = make({ widthTwips: 2880, heightTwips: 1440, heightRule: 'exact',
+    wrap: 'around', horizontalSpaceTwips: 180 });
+  assert.equal(positioned.dataset.docxFrame, 'frame');
+  assert.equal(positioned.style.cssFloat, 'left');
+  assert.equal(positioned.style.width, '192px', '2880 缇 ÷ 15');
+  assert.equal(positioned.style.height, '96px', 'hRule="exact" 用 height');
+  assert.equal(positioned.style.marginLeft, '12px');
+
+  // hRule 不是 exact 时是最小高度，不是固定高度。
+  const atLeast = make({ heightTwips: 1440, heightRule: 'atLeast' });
+  assert.equal(atLeast.style.height, undefined);
+  assert.equal(atLeast.style.minHeight, '96px');
+
+  assert.equal(make({ widthTwips: 1500, xAlign: 'right', wrap: 'around' }).style.cssFloat, 'right');
+  // notBeside 的意思就是旁边不许有文字，不浮动才对；none 也不浮。
+  assert.equal(make({ widthTwips: 1500, wrap: 'notBeside' }).style.cssFloat, undefined);
+  assert.equal(make({ widthTwips: 1500, wrap: 'none' }).style.cssFloat, undefined);
+  // 没有 framePr 的段落什么也不加。
+  const plain = make(undefined);
+  assert.equal(plain.dataset.docxFrame, undefined);
+  assert.equal(plain.style.cssFloat, undefined);
+});

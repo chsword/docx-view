@@ -3,6 +3,7 @@ import type {
   DocumentBlock,
   EastAsianLayout,
   EquationNode,
+  ParagraphFrame,
   ImageInfo,
   ParagraphInfo,
   RubyInfo,
@@ -19,6 +20,8 @@ export interface LineBox {
   heightPx: number;
   startOffset: number;
   endOffset: number;
+  /** 这一行实际占的宽度；量不到时没有。带 `w:framePr` 的段落靠它算排除区的宽度。 */
+  widthPx?: number;
 }
 
 export interface WrapExclusion {
@@ -335,6 +338,20 @@ export function paginate(
     }
     let lines = measureParagraph(paragraph);
     if (lines.length === 0) return;
+    // 带 w:framePr 的段落浮出正常流：自己不占纵向高度，只给后面的内容留出排除区。首字下沉
+    // 和定位文本框都走这里。
+    const frame = frameWrapExclusion(paragraph.frame, {
+      widthPx: lines.reduce<number | undefined>((widest, line) => line.widthPx === undefined ? widest
+        : Math.max(widest ?? 0, line.widthPx), undefined),
+      heightPx: lines.reduce((sum, line) => sum + Math.max(0, line.heightPx), 0),
+    });
+    if (frame) {
+      // 排除区放不进本栏剩余高度、而本栏已经有内容时先换栏，别让它跨到下一栏去挤正文。
+      if (frame.heightPx > remainingHeight() && hasContent(ensurePage(), currentColumn)) advanceColumn();
+      append(lines.map((line) => ({ type: 'line' as const, paragraph: paragraph.index, line })), 0);
+      wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...frame, carried: true }];
+      return;
+    }
     const spacing = paragraphSpacingPx(previousParagraph, paragraph, context.compatibilitySettings);
     const spacingContribution = spacing.beforePx + (nextParagraph ? 0 : spacing.afterPx);
     let total = lines.reduce((sum, line) => sum + Math.max(0, line.heightPx), 0) + Math.max(0, spacingContribution);
@@ -637,4 +654,35 @@ export function overstrikeLayers(equation: EquationNode | undefined, result: str
   }
   if (cursor !== result.length) return undefined;
   return layers.length ? layers : undefined;
+}
+
+/**
+ * `w:framePr` 的段落脱离正常流，给后面的内容留出一块排除区——这正是浏览器 float 的行为，
+ * 所以**首字下沉和段落定位走的是同一条路**，只是尺寸来源不同。
+ *
+ * 下沉字的尺寸不从 `w:lines` 反推：Word 已经把那个字的 `w:sz` 调到正好跨 `lines` 行，所以
+ * 量出来的字框就是排除区，和「读 Word 已经算好的结果」一个路子。定位文本框优先用 `w:w` /
+ * `w:h`，缺的那一维用量出来的。
+ *
+ * `w:wrap` 的取值正好能对上现有的排除区类型：`none` 不产生排除区（正文不绕它排），
+ * `notBeside` 是「旁边不许有文字」，也就是 `topAndBottom`。
+ */
+export function frameWrapExclusion(frame: ParagraphFrame | null | undefined,
+  measured: { widthPx?: number; heightPx: number }): WrapExclusion | undefined {
+  if (!frame) return undefined;
+  const wrap = frame.wrap ?? 'auto';
+  if (wrap === 'none') return undefined;
+  // 文档明写了 w:w / w:h 就照它来，没写才用量出来的。下沉字正是「没写」的那种：Word 不给
+  // 它写尺寸，而是把那个字的 w:sz 调到正好跨 lines 行，所以量出来的字框就是排除区。
+  const widthPx = frame.widthTwips === undefined ? measured.widthPx : frame.widthTwips / 15;
+  const heightPx = frame.heightTwips === undefined ? measured.heightPx : frame.heightTwips / 15;
+  // 宽度量不到又没给 w:w 时不编一个出来：没有排除区也只是不环绕，编错了会把正文挤歪。
+  if (widthPx === undefined || !(widthPx > 0) || !(heightPx > 0)) return undefined;
+  return {
+    widthPx,
+    heightPx,
+    wrap: wrap === 'tight' ? 'tight' : wrap === 'through' ? 'through'
+      : wrap === 'notBeside' ? 'topAndBottom' : 'square',
+    carried: false,
+  };
 }
