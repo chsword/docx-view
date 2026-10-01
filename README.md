@@ -158,7 +158,7 @@ const bytes = await doc.toUint8Array({
 | `getTable(index)` | 读取正文中第 N 个表格的 grid、跨度和表格/行/单元格格式信息 |
 | `insertTableRow()` / `deleteTableRow()` / `insertTableColumn()` / `deleteTableColumn()` | 行列编辑；同步维护 `w:tblGrid`，拒绝删成 0 行或 0 列 |
 | `mergeCells()` / `splitCell()` | 基于逻辑网格合并/拆分单元格，读写 `w:gridSpan` / `w:vMerge` |
-| `formatTable()` / `formatTableRow()` / `formatCell()` | 设置表格宽度、布局、边框、底纹、行高、标题行、单元格对齐和边距等显式属性 |
+| `formatTable()` / `formatTableRow()` / `formatCell()` | 设置表格宽度、布局、边框（含单元格对角线 `tl2br` / `tr2bl`）、底纹、单元格间距、浮动定位、行高、标题行、网格跳过、单元格对齐和边距等显式属性 |
 | `setCellText()` | 修改可见单元格文字，同时保留段落结构与其他未改内容 |
 | `getImages()` / `getImageBytes()` / `getImageDataUrl()` | 读取主文档中的图片元数据、二进制内容和可直接渲染的 `data:` URL |
 | `getShapes()` / `getShapeParagraphs(shapeId)` | 读取文本框、纯形状、SmartArt、图表等元数据及文本框独立文字流；形状由 SVG 绘制，文字流仍独立只读 |
@@ -434,10 +434,14 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 表格元素自身的格式（宽度、对齐、缩进、布局、底纹、单元格边距、框线）解析为 `TableInfo.effective`，由样式链的 `wholeTable` 层加表格自己的 `tblPr` 决定，**条件不参与**。合并时会跳过样式里的 `tblStyle` 与 `tblLook`：前者会反过来改写表格引用的样式 id，后者会把带状 / 首行这些开关搅乱，它们只能来自表格自己。
 - `w:tblLayout` 的值在 `w:type` 上（Word 写的是 `<w:tblLayout w:type="fixed"/>`），读写都按 `w:type`。
 - 浮动表格（`w:tblpPr`）读写为 `TableFormat.floatingPosition`（`leftFromText` / `rightFromText` / `topFromText` / `bottomFromText`、`verticalAnchor` / `horizontalAnchor`、`xSpec` / `x`、`ySpec` / `y`；传 `null` 清除，表格回到正常流）。它是表格版的 `w:framePr`：表格脱离正常流、正文绕着它排，所以走的是同一条路——渲染给表格加 `float`，环绕交给浏览器；分页测量用同样的 float 占位，两边不会各算一套。排除区宽度优先用 `w:tblW`，没有就用网格列宽合计。
-- **`w:tblpPr` 上没有 `w:wrap`**：浮动表格在 Word 里一定绕排，这正是它的用途，所以排除区类型固定为 `square`。`w:tblOverlap` 管的是能否与**其他浮动对象**重叠，与正文是否绕排无关，目前只读取保留。
+- **`w:tblpPr` 上没有 `w:wrap`**：浮动表格在 Word 里一定绕排，这正是它的用途，所以排除区类型固定为 `square`。`w:tblOverlap` 管的是能否与**其他浮动对象**重叠，与正文是否绕排无关：读写为 `TableFormat.overlap`（`never` / `overlap`，其余值按未设置处理），但**不影响排版**——环绕用的是浏览器 `float`，而浮动块本来就不互相重叠，所以 `never` 天然成立、`overlap` 无法实现。
 - `<w:tblpPr/>` 即便一个属性都没有也是浮动表格（全取默认值），所以读出来是空对象而不是 `undefined`——退化成 `undefined` 会把「浮动」这件事本身丢掉。非法枚举与非数字按未设置处理，但仍然是浮动表格。
 - **`w:tblpX` / `w:tblpY` 那套按页面或页边距定位的绝对坐标本期不实现**（与 `w:framePr` 同理：需要相对页框定位，而连续视图没有页框）。这些值如实读写，浮动方向按 `tblpXSpec` 取左右，其余照左浮。
 - 行的网格跳过（`w:gridBefore` / `w:wBefore` / `w:gridAfter` / `w:wAfter`）读写为 `RowFormat.gridBefore` / `widthBefore` / `gridAfter` / `widthAfter`；`0`、负数与非整数按未设置处理。**跳过的列算进网格列号**——跨行合并是靠网格起始列匹配的（`vMerge` 的 continue 要对上上面那个 restart），不算进去的话带 `gridBefore` 的行里合并会断掉，单元格的 `gridStart` / `gridEnd` 也会偏小。渲染时跳过的那块用一个空单元格占位，宽度取 `wBefore` / `wAfter`，标为 `contentEditable="false"` 且不画边框。
+- 单元格的两条对角线（`w:tl2br` / `w:tr2bl`）读写为 `CellFormat.borders.tl2br` / `.tr2bl`，并渲染出来。**它们只存在于 `w:tcBorders`**，`w:tblBorders` 的 schema 里没有，所以 `formatTable()` 传对角线会被拒绝，不会悄悄落到表格级边框上。渲染用角落关键字的 `linear-gradient`：CSS 规范让 `to bottom left` 的渐变线 50% 处恰好穿过左上和右下两个角（`to bottom right` 穿过右上与左下），所以一个硬色标就是一条精确的对角线，单元格不是正方形也对。用背景而不是插节点，装饰就不可能流回文档；代价是线型只能画成实线，渐变表达不了 dashed / dotted。
+- `w:tblCellSpacing` 读写为 `TableFormat.cellSpacing` 与 `RowFormat.cellSpacing`。ECMA-376 把「单元格之间」和「单元格与表格边缘之间」说成同一个值，这正是 CSS `border-spacing` 的语义，所以一对一映射；有间距时会同时设 `border-collapse: separate`（`collapse` 下 `border-spacing` 被忽略）。**行级的那个落不到渲染上**：CSS 的 `border-spacing` 只能加在表格上，没有行级对应物，读写仍然保真。
+- `w:tcFitText`（把单元格文字压缩 / 拉伸到正好占满格宽）读写为 `CellFormat.fitText`，**不参与渲染**——那需要按实测文本宽度反算字间距。它和 run 上的 `w:fitText`（`RunFormat.fitTextWidth`）是同一件事的两个层级，两者都只做读写保真。
+- `tcPr` / `trPr` 里只写了显式关闭（如 `<w:noWrap w:val="0"/>`）的单元格和行，读出来是带 `false` 的格式对象，不是 `undefined`——把 `false` 一并算成「什么都没有」的话，调用方分不出「关掉」和「没说」，原样写回时那条显式关闭就消失了。
 - 合并时 `borders` 与 `margin` 按**边**合并，`shading` 作为整体替换（`w:shd` 本就是单个元素）。按边合并是必须的：「整表定四边 + `firstRow` 只定下边框」是表格样式里最常见的组合，整块替换会把其余三边抹掉。
 - 表格样式的行格式（`trPr`：行高、`cantSplit`、`tblHeader` 等）解析为 `TableRowInfo.effective`，渲染与分页都用它。**只有由行位置决定的条件参与**：`firstRow` / `lastRow` / `band1Horz` / `band2Horz`；`firstCol` 之类是单元格范围的条件，对整行没有意义，其 `trPr` 不生效。叠加顺序同样是样式自身的 `trPr` → 条件的 `trPr` → 行自己的 `trPr`（最高）；`height` 对应单个 `w:trHeight` 元素，整体替换。因此由样式的 `firstRow` 条件提供 `w:tblHeader` 的表格，跨页时也会重复表头。`TableRowInfo.format` 的语义不变，仍只含行自己的直接格式。
 - `tblStyleRowBandSize` / `tblStyleColBandSize` 从**样式**的 `tblPr` 读取（Word 写在那里），表格实例上的同名属性作为直接格式优先；样式链里取最靠近的那个，都没有则为 1。首行 / 首列（以及末行 / 末列，当 `tblLook` 开了对应标志时）不参与带状计数，否则带的相位会偏一格；`useWord2002TableStyleRules` 下按 Word 的旧规则把它们一起算进去。

@@ -155,7 +155,7 @@ export const PROPERTY_ORDER = {
     'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar',
     'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange'],
   trPr: ['cnfStyle', 'divId', 'gridBefore', 'gridAfter', 'wBefore', 'wAfter', 'cantSplit', 'trHeight',
-    'tblHeader', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
+    'tblHeader', 'tblCellSpacing', 'jc', 'hidden', 'ins', 'del', 'trPrChange'],
   tcPr: ['cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders', 'shd', 'noWrap', 'tcMar',
     'textDirection', 'tcFitText', 'vAlign', 'hideMark', 'headers', 'cellIns', 'cellDel', 'cellMerge', 'tcPrChange'],
   tblBorders: ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'],
@@ -164,6 +164,14 @@ export const PROPERTY_ORDER = {
   tcMar: ['top', 'left', 'bottom', 'right'],
 };
 
+/**
+ * 按 schema 顺序取（没有就建）一个属性子元素。
+ *
+ * **名字不在 `PROPERTY_ORDER` 里就追加到末尾**，而且没有任何提示——写出来的 XML 是顺序
+ * 不合法的，Word 可能直接忽略那条属性。所以新增写入点时必须同时把元素名补进上面的表里；
+ * `test/table.test.mjs` 的 `every generated table property name is in PROPERTY_ORDER`
+ * 就是盯着这件事的（`w:trPr` 原先漏了 `w:tblCellSpacing`）。
+ */
 export function property(parent: Element, name: string): Element {
   let result = children(parent, name)[0];
   if (!result) {

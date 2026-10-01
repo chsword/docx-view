@@ -1,6 +1,7 @@
 import type { Element } from '@xmldom/xmldom';
 import type {
-  BorderFormat, BordersFormat, CellFormat, DocumentBlock, MarginFormat, RowFormat, TableCellInfo, TableFormat, WidthFormat,
+  BorderFormat, BordersFormat, CellBordersFormat, CellFormat, DocumentBlock, MarginFormat, RowFormat, TableCellInfo,
+  TableFormat, WidthFormat,
 } from './types.js';
 import { children, childrenThroughTransparent, WORD_NS, wordValue } from './xml.js';
 
@@ -88,6 +89,17 @@ function bordersOf(element: Element | undefined): BordersFormat | undefined {
   return Object.keys(borders).length ? borders : undefined;
 }
 
+/** `w:tcBorders`：四边 + 内侧，再加只有单元格才有的两条对角线。 */
+function cellBordersOf(element: Element | undefined): CellBordersFormat | undefined {
+  if (!element) return undefined;
+  const borders: CellBordersFormat = { ...bordersOf(element) };
+  for (const side of ['tl2br', 'tr2bl'] as const) {
+    const border = borderOf(children(element, side)[0]);
+    if (border) borders[side] = border;
+  }
+  return Object.keys(borders).length ? borders : undefined;
+}
+
 function shadingOf(element: Element | undefined): TableFormat['shading'] | CellFormat['shading'] {
   if (!element) return undefined;
   const fill = normalizeColor(element.getAttributeNS(WORD_NS, 'fill') ?? element.getAttribute('w:fill') ?? undefined);
@@ -137,6 +149,12 @@ function parseFloatingPosition(element: Element | undefined): TableFormat['float
     .filter(([, value]) => value !== undefined)) as NonNullable<TableFormat['floatingPosition']>;
 }
 
+/** `w:tblOverlap`，只有 never / overlap 两个值；别的照未设置处理。 */
+function overlapOf(element: Element | undefined): TableFormat['overlap'] {
+  const value = wordValue(element);
+  return value === 'never' || value === 'overlap' ? value : undefined;
+}
+
 export function parseTableFormat(tblPr: Element | undefined): TableFormat | undefined {
   if (!tblPr) return undefined;
   const alignment = wordValue(children(tblPr, 'jc')[0]);
@@ -153,6 +171,8 @@ export function parseTableFormat(tblPr: Element | undefined): TableFormat | unde
     shading: shadingOf(children(tblPr, 'shd')[0]),
     cellMargin: marginsOf(children(tblPr, 'tblCellMar')[0]),
     layout: ['fixed', 'autofit'].includes(layout ?? '') ? layout as TableFormat['layout'] : undefined,
+    cellSpacing: widthOf(children(tblPr, 'tblCellSpacing')[0]),
+    overlap: overlapOf(children(tblPr, 'tblOverlap')[0]),
     style: wordValue(children(tblPr, 'tblStyle')[0]) ?? undefined,
     look: wordValue(children(tblPr, 'tblLook')[0]) ?? undefined,
     caption: wordValue(children(tblPr, 'tblCaption')[0]) ?? undefined,
@@ -182,6 +202,7 @@ export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined
       value: number(height.getAttributeNS(WORD_NS, 'val') ?? height.getAttribute('w:val')) ?? 0,
       rule: rule === 'exact' || rule === 'atLeast' ? rule : undefined,
     } : undefined,
+    cellSpacing: widthOf(children(trPr, 'tblCellSpacing')[0]),
     cantSplit: boolValue(children(trPr, 'cantSplit')[0]),
     header: boolValue(children(trPr, 'tblHeader')[0]),
     alignment: ['left', 'center', 'right'].includes(alignment ?? '') ? alignment as RowFormat['alignment'] : undefined,
@@ -192,7 +213,7 @@ export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined
     gridAfter: gridSkip(trPr, 'gridAfter'),
     widthAfter: widthOf(children(trPr, 'wAfter')[0]),
   };
-  return Object.values(format).some(value => value !== undefined && value !== false) ? format : undefined;
+  return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }
 
 export function parseCellFormat(tcPr: Element | undefined): CellFormat | undefined {
@@ -200,17 +221,21 @@ export function parseCellFormat(tcPr: Element | undefined): CellFormat | undefin
   const vAlign = wordValue(children(tcPr, 'vAlign')[0]);
   const format: CellFormat = {
     width: widthOf(children(tcPr, 'tcW')[0]),
-    borders: bordersOf(children(tcPr, 'tcBorders')[0]),
+    borders: cellBordersOf(children(tcPr, 'tcBorders')[0]),
     shading: shadingOf(children(tcPr, 'shd')[0]),
     margin: marginsOf(children(tcPr, 'tcMar')[0]),
     verticalAlign: ['top', 'center', 'bottom'].includes(vAlign ?? '') ? vAlign as CellFormat['verticalAlign'] : undefined,
     textDirection: wordValue(children(tcPr, 'textDirection')[0]) ?? undefined,
     noWrap: boolValue(children(tcPr, 'noWrap')[0]),
+    fitText: boolValue(children(tcPr, 'tcFitText')[0]),
     hideMark: boolValue(children(tcPr, 'hideMark')[0]),
     hMerge: mergeValue(children(tcPr, 'hMerge')[0]),
     vMerge: mergeValue(children(tcPr, 'vMerge')[0]),
   };
-  return Object.values(format).some(value => value !== undefined && value !== false) ? format : undefined;
+  // 第 9 条：`w:val="0"` 是**显式关闭**，不是未设置。把 false 一并算成「什么都没有」的话，
+  // 只写了 `<w:noWrap w:val="0"/>` 的单元格读出来是 undefined，调用方分不出「关掉」和
+  // 「没说」，原样写回时那条显式关闭就消失了。
+  return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }
 
 export function tableGrid(table: Element): number[] {

@@ -14,9 +14,10 @@ function object(value: unknown): asserts value is Record<string, unknown> {
 }
 
 function keys(value: Record<string, unknown>, allowed: string[]): void {
-  if (Object.keys(value).some((key) => !allowed.includes(key))) {
-    throw new Error('Unknown operation or format property.');
-  }
+  // 把名字写进消息里：agent 拿到「Unknown property」是没法自己改对的，而这里本来就知道
+  // 是哪一个键不认（`w:tcBorders` 的 tl2br 写到 tblBorders 上就是这么被挡住的）。
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw new Error(`Unknown operation or format property: ${unknown.join(', ')}.`);
 }
 
 function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void): void {
@@ -319,11 +320,16 @@ function validateBorder(value: unknown, name: string): void {
   if ('none' in border && typeof border.none !== 'boolean') throw new Error(`${name}.none must be boolean.`);
 }
 
-function validateBorders(value: unknown, name: string): void {
+const BORDER_SIDES = ['top', 'right', 'bottom', 'left', 'insideH', 'insideV'];
+/** `w:tl2br` / `w:tr2bl` 只存在于 `w:tcBorders`，所以表格级边框不接受它们。 */
+const CELL_BORDER_SIDES = [...BORDER_SIDES, 'tl2br', 'tr2bl'];
+
+function validateBorders(value: unknown, name: string, diagonals = false): void {
   object(value as Record<string, unknown>);
   const borders = value as Record<string, unknown>;
-  keys(borders, ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']);
-  for (const side of ['top', 'right', 'bottom', 'left', 'insideH', 'insideV']) {
+  const sides = diagonals ? CELL_BORDER_SIDES : BORDER_SIDES;
+  keys(borders, sides);
+  for (const side of sides) {
     if (side in borders) validateBorder(borders[side], `${name}.${side}`);
   }
 }
@@ -349,8 +355,8 @@ function validateMargins(value: unknown, name: string): void {
 
 export function validateTableFormat(value: unknown): asserts value is TableFormat {
   object(value);
-  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look',
-    'caption', 'description', 'bidiVisual', 'floatingPosition']);
+  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'cellSpacing',
+    'overlap', 'style', 'look', 'caption', 'description', 'bidiVisual', 'floatingPosition']);
   if ('width' in value) validateWidth(value.width, 'width');
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
   if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
@@ -358,6 +364,8 @@ export function validateTableFormat(value: unknown): asserts value is TableForma
   if ('shading' in value) validateShading(value.shading, 'shading');
   if ('cellMargin' in value) validateMargins(value.cellMargin, 'cellMargin');
   if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
+  if ('cellSpacing' in value) validateWidth(value.cellSpacing, 'cellSpacing');
+  if ('overlap' in value && !['never', 'overlap'].includes(String(value.overlap))) throw new Error('overlap must be never or overlap.');
   if ('bidiVisual' in value && value.bidiVisual !== null && typeof value.bidiVisual !== 'boolean') throw new Error('bidiVisual must be boolean.');
   for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
   if ('floatingPosition' in value) {
@@ -395,7 +403,7 @@ export function validateTableFloatingPosition(value: unknown): asserts value is 
 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {
   object(value);
-  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
+  keys(value, ['height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
     'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter']);
   if ('height' in value) {
     object(value.height);
@@ -414,6 +422,7 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
       throw new Error(`${key} must be a non-negative integer number of grid columns.`);
     }
   }
+  if ('cellSpacing' in value) validateWidth(value.cellSpacing, 'cellSpacing');
   if ('widthBefore' in value) validateWidth(value.widthBefore, 'widthBefore');
   if ('widthAfter' in value) validateWidth(value.widthAfter, 'widthAfter');
   if ('revision' in value) {
@@ -427,14 +436,15 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
 
 export function validateCellFormat(value: unknown): asserts value is CellFormat {
   object(value);
-  keys(value, ['width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'hideMark', 'hMerge', 'vMerge']);
+  keys(value, ['width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'fitText',
+    'hideMark', 'hMerge', 'vMerge']);
   if ('width' in value) validateWidth(value.width, 'width');
-  if ('borders' in value) validateBorders(value.borders, 'borders');
+  if ('borders' in value) validateBorders(value.borders, 'borders', true);
   if ('shading' in value) validateShading(value.shading, 'shading');
   if ('margin' in value) validateMargins(value.margin, 'margin');
   if ('verticalAlign' in value && !['top', 'center', 'bottom'].includes(String(value.verticalAlign))) throw new Error('Invalid verticalAlign.');
   if ('textDirection' in value) assertText(value.textDirection, 'textDirection');
-  for (const key of ['noWrap', 'hideMark'] as const) {
+  for (const key of ['noWrap', 'fitText', 'hideMark'] as const) {
     if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   for (const key of ['hMerge', 'vMerge'] as const) {
@@ -951,26 +961,47 @@ const docTabs = {
 const borders = shape({
   top: border, right: border, bottom: border, left: border, insideH: border, insideV: border,
 }, []);
+/** 单元格边框多两条对角线；表格级没有，见 CELL_BORDER_SIDES。 */
+const cellBorders = shape({
+  top: border, right: border, bottom: border, left: border, insideH: border, insideV: border,
+  tl2br: border, tr2bl: border,
+}, []);
 const shading = shape({
   fill: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
   color: { type: 'string', pattern: '^(auto|[a-fA-F0-9]{6})$' },
   value: text,
 }, []);
 const margins = shape({ top: width, right: width, bottom: width, left: width }, []);
+/**
+ * `w:tblpPr`。坐标 `x` / `y` 可以为负（挪到页边距外），`*FromText` 是间距所以不能为负——
+ * 和 validateTableFloatingPosition 里的判断是同一条规则。
+ */
+const tableFloatingPosition = shape({
+  leftFromText: unsignedTwips, rightFromText: unsignedTwips,
+  topFromText: unsignedTwips, bottomFromText: unsignedTwips,
+  verticalAnchor: { enum: ['margin', 'page', 'text'] },
+  horizontalAnchor: { enum: ['margin', 'page', 'text'] },
+  xSpec: { enum: ['center', 'inside', 'left', 'outside', 'right'] }, x: signedInteger,
+  ySpec: { enum: ['bottom', 'center', 'inside', 'inline', 'outside', 'top'] }, y: signedInteger,
+}, []);
 const tableFormat = shape({
   width, alignment: { enum: ['left', 'center', 'right'] }, indent: { type: 'number', minimum: 0 },
   borders, shading, cellMargin: margins, layout: { enum: ['fixed', 'autofit'] },
+  cellSpacing: width, overlap: { enum: ['never', 'overlap'] },
   style: text, look: text, caption: text, description: text, bidiVisual: nullable({ type: 'boolean' }),
+  floatingPosition: nullable(tableFloatingPosition),
 }, []);
 const rowFormat = shape({
   height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
+  cellSpacing: width,
   cantSplit: { type: 'boolean' }, header: { type: 'boolean' }, alignment: { enum: ['left', 'center', 'right'] },
   deleted: { type: 'boolean' }, inserted: { type: 'boolean' },
+  gridBefore: index, widthBefore: width, gridAfter: index, widthAfter: width,
   revision: shape({ author: { type: 'string' }, date: { type: 'string' } }),
 }, []);
 const cellFormat = shape({
-  width, borders, shading, margin: margins, verticalAlign: { enum: ['top', 'center', 'bottom'] },
-  textDirection: text, noWrap: { type: 'boolean' }, hideMark: { type: 'boolean' },
+  width, borders: cellBorders, shading, margin: margins, verticalAlign: { enum: ['top', 'center', 'bottom'] },
+  textDirection: text, noWrap: { type: 'boolean' }, fitText: { type: 'boolean' }, hideMark: { type: 'boolean' },
   hMerge: { enum: ['restart', 'continue'] }, vMerge: { enum: ['restart', 'continue'] },
 }, []);
 

@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
-import { validateRowFormat, validateTableFormat } from '../dist/operations.js';
+import { AGENT_OPERATION_SCHEMA, validateCellFormat, validateRowFormat, validateTableFormat } from '../dist/operations.js';
+import { PROPERTY_ORDER } from '../dist/internal/elements.js';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -502,4 +503,163 @@ test('tblpPr reads, writes and clears floating table positioning', () => {
   }
   // x / y 是坐标，挪到页边距外时是负数，不能按间距去卡。
   assert.doesNotThrow(() => validateTableFormat({ floatingPosition: { x: -720, y: -360 } }));
+});
+
+function firstTable(doc) {
+  return doc.getBlocks().find((block) => block.type === 'table');
+}
+
+/** 一个 td 的子元素名序列，用来核对 schema 顺序。 */
+function childNames(element) {
+  return [...element.childNodes].filter((node) => node.nodeType === 1).map((node) => node.localName);
+}
+
+test('diagonal cell borders read, write back and stay inside tcBorders order', () => {
+  const doc = withBody(tableXml(`
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc><w:tcPr><w:tcBorders>
+      <w:top w:val="single" w:sz="4"/>
+      <w:tl2br w:val="single" w:sz="8" w:color="FF0000"/>
+      <w:tr2bl w:val="dashed" w:sz="12" w:color="00FF00"/>
+    </w:tcBorders></w:tcPr><w:p/></w:tc></w:tr>`));
+  const borders = firstTable(doc).rows[0].cells[0].format.borders;
+  assert.deepEqual(borders.tl2br, { style: 'single', size: 8, space: undefined, color: 'FF0000', none: false });
+  assert.deepEqual(borders.tr2bl, { style: 'dashed', size: 12, space: undefined, color: '00FF00', none: false });
+
+  // 第 5 条：读出来的格式对象原样写回，对角线不能丢。setBorders 是整块重建 tcBorders 的，
+  // 漏写哪条边，一次忠实的 read-modify-write 就会把那条边从文档里抹掉。
+  doc.formatCell(0, 0, 0, firstTable(doc).rows[0].cells[0].format);
+  const tcBorders = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'tcBorders')[0];
+  assert.deepEqual(childNames(tcBorders), ['top', 'tl2br', 'tr2bl']);
+  const written = firstTable(doc).rows[0].cells[0].format.borders;
+  assert.deepEqual([written.tl2br, written.tr2bl], [borders.tl2br, borders.tr2bl]);
+
+  // 顺序：对角线排在六条常规边之后。
+  doc.formatCell(0, 0, 0, { borders: { tl2br: { style: 'single' }, insideV: { style: 'single' }, left: { style: 'single' } } });
+  const reordered = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'tcBorders')[0];
+  assert.deepEqual(childNames(reordered), ['left', 'insideV', 'tl2br']);
+});
+
+test('diagonals belong to w:tcBorders only, never to w:tblBorders', () => {
+  // w:tblBorders 的 schema 里没有对角线，所以表格级必须拒，单元格级必须收。
+  assert.throws(() => validateTableFormat({ borders: { tl2br: { style: 'single' } } }), /tl2br/);
+  assert.throws(() => validateTableFormat({ borders: { tr2bl: { style: 'single' } } }), /tr2bl/);
+  assert.doesNotThrow(() => validateCellFormat({ borders: { tl2br: { style: 'single' }, tr2bl: { style: 'single' } } }));
+  assert.throws(() => validateCellFormat({ borders: { tl2br: { size: -1 } } }), /borders\.tl2br\.size/);
+
+  // 写入侧也要拒：formatTable 拿到对角线时不能悄悄落到 tblBorders 里。
+  const doc = withBody(tableXml('<w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr>'));
+  assert.throws(() => doc.formatTable(0, { borders: { tl2br: { style: 'single' } } }));
+  assert.equal(/tl2br/.test(doc.getPartXml(doc.mainDocumentPath)), false);
+});
+
+test('tblCellSpacing reads on table and row and writes in schema order', () => {
+  const doc = withBody(tableXml(`
+    <w:tblPr><w:tblCellSpacing w:w="30" w:type="dxa"/></w:tblPr>
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:trPr><w:tblCellSpacing w:w="45" w:type="dxa"/></w:trPr><w:tc><w:p/></w:tc></w:tr>`));
+  const table = firstTable(doc);
+  assert.deepEqual(table.format.cellSpacing, { type: 'dxa', value: 30 });
+  assert.deepEqual(table.rows[0].format.cellSpacing, { type: 'dxa', value: 45 });
+
+  // w:trPr 里 tblCellSpacing 排在 tblHeader 之后、jc 之前。PROPERTY_ORDER 漏掉它的话
+  // property() 会静默追加到末尾，落到 w:jc / w:del 后面，顺序就不合法了。
+  doc.formatTableRow(0, 0, { header: true, alignment: 'center', cellSpacing: { type: 'dxa', value: 60 }, cantSplit: true });
+  const trPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'trPr')[0];
+  assert.deepEqual(childNames(trPr), ['cantSplit', 'tblHeader', 'tblCellSpacing', 'jc']);
+  assert.deepEqual(firstTable(doc).rows[0].format.cellSpacing, { type: 'dxa', value: 60 });
+
+  // 表格级：排在 w:jc 之后、w:tblInd 之前。
+  doc.formatTable(0, { cellSpacing: { type: 'dxa', value: 15 }, alignment: 'center', indent: 120 });
+  const tblPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'tblPr')[0];
+  const written = childNames(tblPr);
+  assert.deepEqual(written.filter((name) => ['jc', 'tblCellSpacing', 'tblInd'].includes(name)),
+    ['jc', 'tblCellSpacing', 'tblInd']);
+});
+
+test('tblOverlap and tcFitText read, round-trip and reject nonsense', () => {
+  const doc = withBody(tableXml(`
+    <w:tblPr><w:tblOverlap w:val="never"/></w:tblPr>
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid>
+    <w:tr><w:tc><w:tcPr><w:tcFitText/></w:tcPr><w:p/></w:tc></w:tr>`));
+  assert.equal(firstTable(doc).format.overlap, 'never');
+  assert.equal(firstTable(doc).rows[0].cells[0].format.fitText, true);
+
+  doc.formatTable(0, { overlap: 'overlap' });
+  doc.formatCell(0, 0, 0, { fitText: false });
+  assert.equal(firstTable(doc).format.overlap, 'overlap');
+  assert.equal(firstTable(doc).rows[0].cells[0].format.fitText, false);
+  // w:tcFitText 排在 w:textDirection 之后、w:vAlign 之前。
+  doc.formatCell(0, 0, 0, { fitText: true, verticalAlign: 'center', textDirection: 'tbRl' });
+  const tcPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'tcPr')[0];
+  assert.deepEqual(childNames(tcPr).filter((name) => ['textDirection', 'tcFitText', 'vAlign'].includes(name)),
+    ['textDirection', 'tcFitText', 'vAlign']);
+
+  assert.throws(() => validateTableFormat({ overlap: 'sometimes' }), /overlap must be never or overlap/);
+  assert.throws(() => validateCellFormat({ fitText: 'yes' }), /fitText must be boolean/);
+  // 未知枚举值按未设置处理，不抛错（畸形输入降级）。
+  const degraded = withBody(tableXml(`
+    <w:tblPr><w:tblOverlap w:val="maybe"/></w:tblPr>
+    <w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr>`));
+  assert.equal(firstTable(degraded).format?.overlap, undefined);
+});
+
+test('every table property the writers emit is in PROPERTY_ORDER', () => {
+  // property() 对不在表里的名字是静默追加到末尾的——没有任何信号，而写出来的 XML 顺序
+  // 不合法。所以这里直接按 PROPERTY_ORDER 这一份真相核对，不另抄一份名单。
+  const doc = withBody(tableXml('<w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr>'));
+  doc.formatTable(0, {
+    width: { type: 'dxa', value: 4800 }, alignment: 'center', indent: 120, layout: 'fixed',
+    borders: { top: { style: 'single' }, insideV: { style: 'single' } }, shading: { fill: 'EEEEEE' },
+    cellMargin: { top: { type: 'dxa', value: 60 } }, cellSpacing: { type: 'dxa', value: 30 },
+    overlap: 'never', style: 'Grid', look: '04A0', caption: 'c', description: 'd', bidiVisual: true,
+    floatingPosition: { leftFromText: 180, xSpec: 'right' },
+  });
+  // 单元格先写：gridBefore 会把这一行的网格整体右移，之后 cellAt(0, 0) 就找不到单元格了。
+  doc.formatCell(0, 0, 0, {
+    width: { type: 'dxa', value: 2400 },
+    borders: { top: { style: 'single' }, tl2br: { style: 'single' }, tr2bl: { style: 'single' } },
+    shading: { fill: 'DDDDDD' }, margin: { left: { type: 'dxa', value: 60 } }, verticalAlign: 'center',
+    textDirection: 'tbRl', noWrap: true, fitText: true, hideMark: true,
+  });
+  doc.formatTableRow(0, 0, {
+    height: { value: 400, rule: 'atLeast' }, cellSpacing: { type: 'dxa', value: 45 }, cantSplit: true,
+    header: true, alignment: 'center', gridBefore: 1, widthBefore: { type: 'dxa', value: 600 },
+    gridAfter: 1, widthAfter: { type: 'dxa', value: 600 },
+  });
+  const xml = doc.getPartDocument(doc.mainDocumentPath);
+  for (const container of ['tblPr', 'trPr', 'tcPr', 'tblBorders', 'tcBorders', 'tblCellMar', 'tcMar']) {
+    const element = xml.getElementsByTagNameNS(WORD_NS, container)[0];
+    assert.ok(element, `${container} was not written`);
+    const order = PROPERTY_ORDER[container];
+    const positions = childNames(element).map((name) => [name, order.indexOf(name)]);
+    assert.deepEqual(positions.filter(([, position]) => position < 0), [],
+      `${container} wrote names that PROPERTY_ORDER does not know`);
+    assert.deepEqual(positions.map(([, position]) => position),
+      [...positions.map(([, position]) => position)].sort((left, right) => left - right),
+      `${container} children are out of schema order`);
+  }
+});
+
+test('table format fields accepted at runtime are also in the agent schema', () => {
+  // 第 13 条：schema 比运行时校验窄，等于这些字段对 agent 不存在。
+  const operations = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf;
+  const formatSchema = (name) => operations.find((operation) => operation.properties.type.const === name)
+    .properties.format.properties;
+  for (const key of ['cellSpacing', 'overlap', 'floatingPosition']) assert.ok(key in formatSchema('formatTable'), key);
+  for (const key of ['cellSpacing', 'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter']) {
+    assert.ok(key in formatSchema('formatTableRow'), key);
+  }
+  for (const key of ['fitText']) assert.ok(key in formatSchema('formatCell'), key);
+  for (const key of ['tl2br', 'tr2bl']) {
+    assert.ok(key in formatSchema('formatCell').borders.properties, key);
+    assert.equal(key in formatSchema('formatTable').borders.properties, false, `${key} must not be on tblBorders`);
+  }
+
+  const doc = withBody(tableXml('<w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr>'));
+  assert.doesNotThrow(() => doc.applyOperations({ operations: [
+    { type: 'formatTable', table: 0, format: { cellSpacing: { type: 'dxa', value: 30 }, overlap: 'never', floatingPosition: { leftFromText: 180 } } },
+    { type: 'formatCell', table: 0, row: 0, col: 0, format: { fitText: true, borders: { tl2br: { style: 'single' } } } },
+    { type: 'formatTableRow', table: 0, row: 0, format: { cellSpacing: { type: 'dxa', value: 45 }, gridBefore: 1 } },
+  ] }));
 });

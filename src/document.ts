@@ -1749,12 +1749,22 @@ function mergeElement(parent: Element, name: 'gridSpan' | 'vMerge' | 'hMerge', v
   else if (value === 'restart') setWordValue(element, value);
 }
 
+/**
+ * 整块重写 `w:tblBorders` / `w:tcBorders`。**两条对角线只能写进 `tcBorders`**：
+ * `w:tblBorders` 的 schema 里没有它们。
+ *
+ * 这个函数一上来就把整个元素删掉重建，所以它必须写回模型里的每一条边——漏掉哪一条，
+ * 一次「只改上边框」的调用就会把那一条从文档里抹掉（对角线原来就是这么丢的）。
+ */
 function setBorders(parent: Element, name: 'tblBorders' | 'tcBorders', borders: TableFormat['borders'] | CellFormat['borders'] | undefined): void {
   removeWordChildren(parent, name);
   if (!borders) return;
   const element = property(parent, name);
-  for (const side of ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'] as const) {
-    const border = borders[side];
+  const sides = name === 'tcBorders'
+    ? ['top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl'] as const
+    : ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'] as const;
+  for (const side of sides) {
+    const border = (borders as CellFormat['borders'])?.[side];
     if (!border) continue;
     const child = property(element, side);
     if (border.style) setWordValue(child, border.style);
@@ -1801,6 +1811,8 @@ function setTableFormat(tbl: Element, format: TableFormat): void {
   if (format.borders !== undefined) setBorders(props, 'tblBorders', format.borders);
   if (format.shading !== undefined) setShading(props, format.shading);
   if (format.cellMargin !== undefined) setMargins(props, 'tblCellMar', format.cellMargin);
+  if (format.cellSpacing !== undefined) widthValue(props, 'tblCellSpacing', format.cellSpacing ?? undefined);
+  if (format.overlap !== undefined) valueElement(props, 'tblOverlap', format.overlap ?? undefined);
   if (format.layout !== undefined) {
     // w:tblLayout 用 w:type 承载值，不是 w:val。
     setWordAttr(property(props, 'tblLayout'), 'type', format.layout);
@@ -1840,6 +1852,7 @@ function setRowFormat(row: Element, format: RowFormat): void {
     height.setAttributeNS(WORD_NS, 'w:val', String(format.height.value));
     if (format.height.rule) height.setAttributeNS(WORD_NS, 'w:hRule', format.height.rule);
   }
+  if (format.cellSpacing !== undefined) widthValue(props, 'tblCellSpacing', format.cellSpacing ?? undefined);
   if (format.cantSplit !== undefined) boolValue(props, 'cantSplit', format.cantSplit);
   if (format.header !== undefined) boolValue(props, 'tblHeader', format.header);
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
@@ -1871,6 +1884,7 @@ function setCellFormat(cell: Element, format: CellFormat): void {
   if (format.verticalAlign !== undefined) valueElement(props, 'vAlign', format.verticalAlign);
   if (format.textDirection !== undefined) valueElement(props, 'textDirection', format.textDirection);
   if (format.noWrap !== undefined) boolValue(props, 'noWrap', format.noWrap);
+  if (format.fitText !== undefined) boolValue(props, 'tcFitText', format.fitText);
   if (format.hideMark !== undefined) boolValue(props, 'hideMark', format.hideMark);
   if (format.hMerge !== undefined) mergeElement(props, 'hMerge', format.hMerge);
   if (format.vMerge !== undefined) mergeElement(props, 'vMerge', format.vMerge);

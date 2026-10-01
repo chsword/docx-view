@@ -936,6 +936,25 @@ export class DocxEditor {
     return `${width} solid ${color}`;
   }
 
+  /**
+   * `w:tl2br` / `w:tr2bl`：单元格里的对角线。CSS 没有对角边框，但角落关键字的
+   * `linear-gradient` 正好能画：规范规定 `to bottom left` 的渐变线 50% 处**恰好穿过
+   * 左上和右下两个角**（`to bottom right` 则穿过右上与左下），所以一个硬色标就是一条
+   * 精确的对角线，而且不管单元格是不是正方形都对。
+   *
+   * 用背景而不是插一个元素，还顺带躲开了第 4 条：背景不是节点，没法流回文档，也不需要
+   * `contentEditable=false`。代价是线型只能画成实线——渐变表达不了 dashed / dotted。
+   */
+  private diagonalCss(border: BorderFormat | undefined, direction: 'to bottom left' | 'to bottom right'): string | undefined {
+    if (!border) return undefined;
+    if (border.none || ['nil', 'none'].includes(border.style ?? '')) return undefined;
+    const half = Math.max(0.5, (border.size !== undefined ? Math.max(1, eighthPointsToPx(border.size)) : 1) / 2);
+    const color = border.color && /^[0-9a-f]{6}$/i.test(border.color) ? `#${border.color}` : '#dbe3ed';
+    const from = `calc(50% - ${half}px)`;
+    const to = `calc(50% + ${half}px)`;
+    return `linear-gradient(${direction}, transparent ${from}, ${color} ${from}, ${color} ${to}, transparent ${to})`;
+  }
+
   private cellBorder(side: 'top' | 'right' | 'bottom' | 'left', table: TableFormat | undefined, cell: CellFormat | undefined,
     row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): string | undefined {
     const explicit = cell?.borders?.[side];
@@ -970,6 +989,15 @@ export class DocxEditor {
     if (format.alignment === 'left') { table.style.marginLeft = '0'; table.style.marginRight = 'auto'; }
     if (format.indent !== undefined && (!format.alignment || format.alignment === 'left')) table.style.marginLeft = `${twipsToPx(format.indent)}px`;
     if (format.shading?.fill) table.style.backgroundColor = `#${format.shading.fill}`;
+    // w:tblCellSpacing：ECMA-376 把「单元格之间」和「单元格与表格边缘之间」说成同一个值，
+    // 这正是 CSS border-spacing 的语义，所以一对一映射。有间距就必须 separate —— collapse
+    // 下 border-spacing 被忽略。w:trPr 上的行级 cellSpacing 这里落不下来：CSS 的
+    // border-spacing 只能加在表格上，没有行级对应物。
+    const spacing = this.paddingCss(format.cellSpacing);
+    if (spacing) {
+      table.style.borderCollapse = 'separate';
+      table.style.borderSpacing = spacing;
+    }
     // w:tblpPr：浮动表格，正文绕着它排。和 framePr 一样把环绕交给浏览器 float —— 分页测量
     // 也是用 float 占位（见 measureParagraphForPagination），两边是同一套行为。
     // w:tblpX / w:tblpY 那套按页面或页边距定位的绝对坐标本期不实现：需要相对页框定位，而
@@ -1012,6 +1040,12 @@ export class DocxEditor {
     td.style.borderBottom = this.cellBorder('bottom', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderBottom;
     td.style.borderLeft = this.cellBorder('left', table, cell, row, col, rowSpan, colSpan, rowCount, colCount) ?? td.style.borderLeft;
     if (cell?.shading?.fill) td.style.backgroundColor = `#${cell.shading.fill}`;
+    // 两条对角线叠在底纹之上：background-image 画在 background-color 上面。
+    const diagonals = [
+      this.diagonalCss(cell?.borders?.tl2br, 'to bottom left'),
+      this.diagonalCss(cell?.borders?.tr2bl, 'to bottom right'),
+    ].filter((entry): entry is string => Boolean(entry));
+    if (diagonals.length) td.style.backgroundImage = diagonals.join(', ');
     if (cell?.verticalAlign) td.style.verticalAlign = cell.verticalAlign;
     if (cell?.width) td.style.width = this.widthCss(cell.width) ?? '';
     if (cell?.margin?.top) td.style.paddingTop = this.paddingCss(cell.margin.top) ?? '';

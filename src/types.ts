@@ -371,6 +371,17 @@ export interface BordersFormat {
   insideV?: BorderFormat;
 }
 
+/**
+ * 单元格边框。比 `w:tblBorders` 多两条对角线，而且**只有** `w:tcBorders` 有——所以类型上
+ * 分开，不要把它塞进 `BordersFormat`：写进 `tblBorders` 的对角线是 schema 不合法的。
+ */
+export interface CellBordersFormat extends BordersFormat {
+  /** `w:tl2br`：左上到右下。 */
+  tl2br?: BorderFormat;
+  /** `w:tr2bl`：右上到左下。 */
+  tr2bl?: BorderFormat;
+}
+
 export interface WidthFormat {
   type: 'auto' | 'dxa' | 'pct';
   value: number;
@@ -420,6 +431,17 @@ export interface TableFormat {
   shading?: ShadingFormat;
   cellMargin?: MarginFormat;
   layout?: 'fixed' | 'autofit';
+  /**
+   * `w:tblCellSpacing`：单元格之间、以及单元格与表格边缘之间的间距。ECMA-376 把这两处
+   * 说成同一个值，所以它和 CSS `border-spacing` 是一对一的。
+   */
+  cellSpacing?: WidthFormat;
+  /**
+   * `w:tblOverlap`：这张浮动表格能否和**其他浮动对象**重叠。渲染用的是浏览器 `float`，
+   * 而浮动块本来就不互相重叠，所以 `never` 天然成立、`overlap` 没法实现——读写忠实保留，
+   * 排版上不起作用。
+   */
+  overlap?: 'never' | 'overlap';
   style?: string;
   look?: string;
   caption?: string;
@@ -439,6 +461,8 @@ export interface RowFormat {
   gridAfter?: number;
   /** `w:wAfter`：末尾跳过那块空间的宽度。 */
   widthAfter?: WidthFormat;
+  /** `w:tblCellSpacing`：这一行的单元格间距，覆盖表格级的那个。 */
+  cellSpacing?: WidthFormat;
   cantSplit?: boolean;
   header?: boolean;
   alignment?: 'left' | 'center' | 'right';
@@ -449,12 +473,18 @@ export interface RowFormat {
 
 export interface CellFormat {
   width?: WidthFormat;
-  borders?: BordersFormat;
+  borders?: CellBordersFormat;
   shading?: ShadingFormat;
   margin?: MarginFormat;
   verticalAlign?: 'top' | 'center' | 'bottom';
   textDirection?: string;
   noWrap?: boolean;
+  /**
+   * `w:tcFitText`：把这一格的文字压缩 / 拉伸到正好占满单元格宽度。和 run 上的
+   * `w:fitText`（`RunFormat.fitTextWidth`）是同一件事的两个层级，两者都只做读写保真，
+   * 不参与渲染——那需要按实测文本宽度反算字间距。
+   */
+  fitText?: boolean;
   hideMark?: boolean;
   hMerge?: 'restart' | 'continue';
   vMerge?: 'restart' | 'continue';

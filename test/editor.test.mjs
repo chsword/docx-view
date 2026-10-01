@@ -3511,3 +3511,63 @@ test('selection conversion reads single paragraphs, with a fallback for hosts wi
   assert.deepEqual(fallback, { start: { paragraph: 1, offset: 2 }, end: { paragraph: 1, offset: 4 } });
   assert.equal(fallbackReads, 2);
 });
+
+test('diagonal cell borders render as corner-anchored gradients over the shading fill', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = (format) => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false, format });
+  const block = {
+    type: 'table',
+    grid: [1000, 1000, 1000, 1000],
+    rows: [{
+      cells: [
+        cell({ borders: { tl2br: { style: 'single', size: 8, color: 'FF0000' } }, shading: { fill: 'EEEEEE' } }),
+        cell({ borders: { tr2bl: { style: 'single', size: 8, color: '0000FF' } } }),
+        cell({ borders: { tl2br: { style: 'single' }, tr2bl: { style: 'single' } } }),
+        cell({ borders: { tl2br: { style: 'nil' }, tr2bl: { none: true } } }),
+      ],
+      format: {},
+    }],
+  };
+  const cells = editor.makeTable(block, [0], 720, { deletedTextByRun: new Map(), revisionColors: new Map() }).rows[0].childNodes;
+
+  // CSS 规范让角落关键字的渐变线 50% 处穿过另外两个角：`to bottom left` 画的是左上→右下
+  // 那条（tl2br），`to bottom right` 画的是右上→左下（tr2bl）。方向弄反了线就全反了。
+  assert.match(cells[0].style.backgroundImage, /^linear-gradient\(to bottom left, /);
+  assert.match(cells[0].style.backgroundImage, /#FF0000/);
+  // 底纹留在 background-color 上，所以对角线叠在它上面而不是把它顶掉。
+  assert.equal(cells[0].style.backgroundColor, '#EEEEEE');
+  assert.match(cells[1].style.backgroundImage, /^linear-gradient\(to bottom right, /);
+  assert.match(cells[1].style.backgroundImage, /#0000FF/);
+
+  // 两条都有就是两层背景，顺序是 tl2br、tr2bl。
+  const layers = cells[2].style.backgroundImage.split(/,\s*(?=linear-gradient)/);
+  assert.equal(layers.length, 2);
+  assert.match(layers[0], /^linear-gradient\(to bottom left, /);
+  assert.match(layers[1], /^linear-gradient\(to bottom right, /);
+
+  // nil / none 是「没有这条线」，不能画成默认灰线。
+  assert.equal(cells[3].style.backgroundImage, undefined);
+});
+
+test('tblCellSpacing renders as border-spacing, which needs border-collapse separate', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const block = (format) => ({
+    type: 'table', grid: [1000], format,
+    rows: [{ cells: [{ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false }], format: {} }],
+  });
+  const context = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const spaced = editor.makeTable(block({ cellSpacing: { type: 'dxa', value: 30 } }), [0], 720, context);
+  // 30 缇 = 2px。collapse 下 border-spacing 是被忽略的，所以两条必须一起设。
+  assert.equal(spaced.style.borderSpacing, '2px');
+  assert.equal(spaced.style.borderCollapse, 'separate');
+
+  const plain = editor.makeTable(block({}), [0], 720, context);
+  assert.equal(plain.style.borderSpacing, undefined);
+  assert.equal(plain.style.borderCollapse, undefined);
+});
