@@ -619,3 +619,33 @@ test('a framed paragraph floats out of the flow and leaves an exclusion for what
   assert.equal(plain[0].contentHeightPx, 120, '60 + 3 × 20');
   assert.deepEqual(areas.find((entry) => entry.paragraph === 1).wraps, []);
 });
+
+test('header rows repeat when the table style supplies tblHeader through a condition', () => {
+  // 表头行可能来自表格样式的 firstRow 条件，而不是行自己写的 w:tblHeader；分页重复表头必须
+  // 认这一种，否则用内置样式的长表格翻页后就没表头了。
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const build = (headerFrom) => ({
+    type: 'table',
+    index: 0,
+    grid: [1000],
+    rows: [
+      { cells: [cell()], height: 30, ...headerFrom },
+      ...Array.from({ length: 6 }, () => ({ cells: [cell()], format: {}, height: 30 })),
+    ],
+  });
+  const paginated = (table) => paginate([table], [section({ pageHeight: 1500 })], measurer,
+    { defaultTabStopTwips: 720 });
+  // 重复的表头没有专门的标志，就是第 0 行在每个片段上各出现一次，所以数它的出现次数。
+  const headerPerPage = (pages) => pages.map((page) => page.items
+    .filter((item) => item.type === 'tableRow' && item.row === 0).length);
+
+  const fromStyle = paginated(build({ format: {}, effective: { header: true } }));
+  const fromRow = paginated(build({ format: { header: true } }));
+  const plain = paginated(build({ format: {} }));
+  assert.ok(fromStyle.length > 1, '页高 100px、7 行 × 30px，必然跨页');
+  assert.deepEqual(headerPerPage(fromStyle), headerPerPage(fromRow),
+    '样式条件给的表头和行自己写的表头，重复行为必须一致');
+  // 没有表头时第 0 行只出现一次；有表头时后续页上会再出现。
+  assert.equal(headerPerPage(plain).reduce((sum, count) => sum + count, 0), 1);
+  assert.ok(headerPerPage(fromStyle).reduce((sum, count) => sum + count, 0) > 1, '后续页上重复了表头');
+});

@@ -109,7 +109,11 @@ function marginsOf(element: Element | undefined): MarginFormat | undefined {
 export function parseTableFormat(tblPr: Element | undefined): TableFormat | undefined {
   if (!tblPr) return undefined;
   const alignment = wordValue(children(tblPr, 'jc')[0]);
-  const layout = wordValue(children(tblPr, 'tblLayout')[0]);
+  // w:tblLayout 的值在 w:type 上，不是 w:val —— Word 写的就是 <w:tblLayout w:type="fixed"/>。
+  // 只读 w:val 的话这个属性永远读不出来，Word 按固定列宽排的表格在这里会退成 auto。
+  const layoutElement = children(tblPr, 'tblLayout')[0];
+  const layout = layoutElement?.getAttributeNS(WORD_NS, 'type') ?? layoutElement?.getAttribute('w:type')
+    ?? wordValue(layoutElement);
   const format: TableFormat = {
     width: widthOf(children(tblPr, 'tblW')[0]),
     alignment: ['left', 'center', 'right'].includes(alignment ?? '') ? alignment as TableFormat['alignment'] : undefined,
@@ -127,6 +131,15 @@ export function parseTableFormat(tblPr: Element | undefined): TableFormat | unde
   return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }
 
+/** `w:gridBefore` / `w:gridAfter` 跳过的网格列数；负数和非整数按未设置处理。 */
+function gridSkip(trPr: Element, name: string): number | undefined {
+  const element = children(trPr, name)[0];
+  if (!element) return undefined;
+  const raw = element.getAttributeNS(WORD_NS, 'val') ?? element.getAttribute('w:val');
+  const value = number(raw);
+  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined {
   if (!trPr) return undefined;
   const height = children(trPr, 'trHeight')[0];
@@ -142,6 +155,10 @@ export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined
     alignment: ['left', 'center', 'right'].includes(alignment ?? '') ? alignment as RowFormat['alignment'] : undefined,
     deleted: Boolean(children(trPr, 'del')[0]),
     inserted: Boolean(children(trPr, 'ins')[0]),
+    gridBefore: gridSkip(trPr, 'gridBefore'),
+    widthBefore: widthOf(children(trPr, 'wBefore')[0]),
+    gridAfter: gridSkip(trPr, 'gridAfter'),
+    widthAfter: widthOf(children(trPr, 'wAfter')[0]),
   };
   return Object.values(format).some(value => value !== undefined && value !== false) ? format : undefined;
 }
@@ -180,7 +197,10 @@ export function cellSpan(cell: Element): number {
 }
 
 export function rowCells(row: Element): TableCellPosition[] {
-  let start = 0;
+  // w:gridBefore 跳过的网格列也占位置。从 0 起算的话，带 gridBefore 的行里每个单元格的网格
+  // 列号都会偏小，而跨行合并是靠网格起始列匹配的（vMerge continue 要对上上面那个 restart），
+  // 列号一偏合并就断掉——这比少画一块空白严重得多。
+  let start = parseRowFormat(children(row, 'trPr')[0])?.gridBefore ?? 0;
   return childrenThroughTransparent(row, 'tc').map((cell) => {
     const tcPr = children(cell, 'tcPr')[0];
     const span = cellSpan(cell);
@@ -197,7 +217,17 @@ export function rowCells(row: Element): TableCellPosition[] {
   });
 }
 
-export function readTable(table: Element, walk: (parent: Element) => DocumentBlock[]): Extract<DocumentBlock, { type: 'table' }> {
+export function readTable(table: Element, walk: (parent: Element) => DocumentBlock[],
+  /**
+   * 算上表格样式之后的单元格格式。表格读取本身不碰样式（这个模块是结构读取的叶子），所以
+   * 由调用方注入；不给就只有单元格自己的直接格式。
+   */
+  effectiveCellFormat?: (cell: Element, direct: CellFormat | undefined) => CellFormat | undefined,
+  /** 同上，行格式。 */
+  effectiveRowFormat?: (row: Element, direct: RowFormat | undefined) => RowFormat | undefined,
+  /** 同上，表格级格式。 */
+  effectiveTableFormat?: (table: Element, direct: TableFormat | undefined) => TableFormat | undefined,
+): Extract<DocumentBlock, { type: 'table' }> {
   const grid = tableGrid(table);
   const active = new Map<number, { start: number; end: number; master: TableCellInfo }>();
   const rows = childrenThroughTransparent(table, 'tr').map((row) => {
@@ -210,6 +240,10 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
         rowSpan: 1,
         isMergeContinuation: position.hMerge === 'continue' || false,
         format: position.format,
+        ...(() => {
+          const effective = effectiveCellFormat?.(position.cell, position.format);
+          return effective ? { effective } : {};
+        })(),
       };
       const master = active.get(position.start);
       const sameMerge = master && master.start === position.start && master.end === position.start + position.span;
@@ -226,7 +260,14 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
     });
     for (const [start, merge] of nextActive) active.set(start, merge);
     for (const [start] of [...active]) if (!nextActive.has(start)) active.delete(start);
-    return { cells, format: parseRowFormat(children(row, 'trPr')[0]) };
+    const format = parseRowFormat(children(row, 'trPr')[0]);
+    const effective = effectiveRowFormat?.(row, format);
+    return { cells, format, ...(effective ? { effective } : {}) };
   });
-  return { type: 'table', rows, format: parseTableFormat(children(table, 'tblPr')[0]), grid };
+  const tableFormat = parseTableFormat(children(table, 'tblPr')[0]);
+  const effectiveTable = effectiveTableFormat?.(table, tableFormat);
+  return {
+    type: 'table', rows, format: tableFormat,
+    ...(effectiveTable ? { effective: effectiveTable } : {}), grid,
+  };
 }

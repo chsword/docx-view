@@ -1,7 +1,10 @@
 import type { Element } from '@xmldom/xmldom';
-import type { BorderSide, CompatibilitySettings, ColorSchemeMapping, LatentStyles, ParagraphFormat, RunFormat, Shading, StyleInfo, TabStop, ThemeFontLanguages, ThemeSettings } from './types.js';
+import type {
+  BorderSide, CellFormat, ColorSchemeMapping, CompatibilitySettings, LatentStyles, ParagraphFormat, RowFormat, RunFormat, Shading, StyleInfo, TabStop, TableFormat, ThemeFontLanguages, ThemeSettings,
+} from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 import { compactDefined } from './internal/elements.js';
+import { parseCellFormat, parseRowFormat, parseTableFormat } from './table.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 
@@ -32,7 +35,9 @@ const DEFAULT_THEME_FONTS: Record<string, string> = {
 };
 
 type StyleType = StyleInfo['type'];
-type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol' | 'band1Horz' | 'band2Horz';
+type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol'
+  | 'band1Horz' | 'band2Horz' | 'band1Vert' | 'band2Vert'
+  | 'nwCell' | 'neCell' | 'swCell' | 'seCell';
 
 export interface ThemeInfo {
   colors: Record<string, string>;
@@ -43,6 +48,15 @@ export interface ThemeInfo {
 interface TableStyleLayer {
   paragraph?: ParagraphFormat;
   run?: RunFormat;
+  /** `tblStylePr` 里的 `w:tcPr`：条件格式下的单元格底纹、边框等。 */
+  cell?: CellFormat;
+  /** `tblStylePr` 里的 `w:trPr`：条件格式下的行高、`cantSplit`、`tblHeader` 等。 */
+  row?: RowFormat;
+  /**
+   * `tblStylePr` 里的 `w:tblPr`。条件描述的是**匹配到的区域**，不是整张表，所以这里真正有
+   * 意义的是 `tblBorders` 与 `tblCellMar`——它们落到匹配到的那些单元格上。
+   */
+  table?: TableFormat;
 }
 
 interface TableMeta {
@@ -51,6 +65,8 @@ interface TableMeta {
   cellIndex: WeakMap<Element, number>;
   look?: Element;
   rowBandSize: number;
+  colBandSize: number;
+  chain: ParsedStyle[];
 }
 
 interface TableContext {
@@ -68,6 +84,18 @@ interface ParagraphContext {
 
 interface ParsedStyle extends StyleInfo {
   conditions?: Partial<Record<TableCondition, TableStyleLayer>>;
+  /**
+   * 样式 `tblPr` 里的 `tblStyleRowBandSize` / `tblStyleColBandSize`。Word 把带宽写在**样式**
+   * 里，不在表格实例上，只读实例的话真实文档里的带宽会被完全忽略（每一行都成了带）。
+   */
+  rowBandSize?: number;
+  colBandSize?: number;
+  /** 样式自身的 `w:tcPr`，相当于 `wholeTable` 层的单元格格式。 */
+  cell?: CellFormat;
+  /** 样式自身的 `w:trPr`，相当于 `wholeTable` 层的行格式。 */
+  row?: RowFormat;
+  /** 样式自身的 `w:tblPr`：全框线（「Table Grid」这类样式就在这里定）、单元格边距、底纹等。 */
+  table?: TableFormat;
 }
 
 export interface StylesContext {
@@ -224,6 +252,121 @@ function mergeParagraphFormats(...formats: Array<ParagraphFormat | undefined>): 
     }
   }
   return merged;
+}
+
+/**
+ * 合并单元格格式。`borders` 与 `margin` 要**按边**合并，不能整块替换——「整表定四边 +
+ * firstRow 只定下边框」是表格样式里最常见的组合，整块替换会把其余三边抹掉。`shading` 对应
+ * 单个 `w:shd` 元素，所以作为整体替换。
+ */
+function mergeCellFormats(...formats: Array<CellFormat | undefined>): CellFormat {
+  const merged: CellFormat = {};
+  const nested = new Set(['borders', 'margin']);
+  for (const format of formats) {
+    if (!format) continue;
+    for (const [key, value] of Object.entries(format)) {
+      if (value === undefined || value === null) continue;
+      if (nested.has(key) && typeof value === 'object' && !Array.isArray(value)) {
+        const previous = (merged as Record<string, unknown>)[key];
+        const base = previous && typeof previous === 'object' ? previous as Record<string, unknown> : {};
+        const next: Record<string, unknown> = { ...base };
+        for (const [side, sideValue] of Object.entries(value as Record<string, unknown>)) {
+          if (sideValue !== undefined && sideValue !== null) next[side] = sideValue;
+        }
+        (merged as Record<string, unknown>)[key] = next;
+        continue;
+      }
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
+/**
+ * 算上表格样式之后的表格级格式（宽度、对齐、缩进、布局、底纹、单元格边距、框线）。
+ *
+ * **条件不参与**：`firstRow` 之类描述的是表格里的一块区域，对表格元素自身没有意义；条件
+ * `tblPr` 的边框与边距走单元格那条路（见 computeEffectiveCellFormat）。
+ *
+ * 样式里的 `tblStyle` 与 `tblLook` 不参与合并：前者会反过来改写表格引用的样式 id，后者会把
+ * 带状 / 首行这些开关整个搅乱——它们只能来自表格自己。
+ */
+export function computeEffectiveTableFormat(context: StylesContext, table: Element,
+  direct: TableFormat | undefined): TableFormat | undefined {
+  const chain = resolveStyleChainOrDefault(context,
+    wordValue(children(children(table, 'tblPr')[0] ?? table, 'tblStyle')[0]) ?? undefined, 'table');
+  if (!chain.length) return direct;
+  const merged: TableFormat = {};
+  const apply = (format: TableFormat | undefined, skipIdentity = false) => {
+    if (!format) return;
+    for (const [key, value] of Object.entries(format)) {
+      if (value === undefined || value === null) continue;
+      if (skipIdentity && (key === 'style' || key === 'look')) continue;
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  };
+  for (const style of chain) apply(style.table, true);
+  apply(direct);
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+/**
+ * 算上表格样式之后的行格式。只有由行位置决定的条件参与——`firstCol` 之类是单元格范围的，
+ * 对整行没有意义。这一点靠「不给 `tableConditionsFor` 传单元格」做到：那时 `cellPosition`
+ * 留在 -1，所有跟列有关的判断都不命中。曾经在这里另加过一张 `ROW_SCOPED_CONDITIONS` 过滤表，
+ * 但它和上面那条是两份真相、互相兜底，结果两边的牙齿检查都没有信号，所以去掉了。
+ *
+ * `height` 对应单个 `w:trHeight` 元素，所以整体替换，不按字段合并。
+ */
+export function computeEffectiveRowFormat(context: StylesContext, row: Element,
+  direct: RowFormat | undefined): RowFormat | undefined {
+  const { conditions, chain } = tableConditionsFor(context, closestAncestor(row, 'tbl'), row);
+  if (!chain.length) return direct;
+  const merged: RowFormat = {};
+  const apply = (format: RowFormat | undefined) => {
+    if (!format) return;
+    for (const [key, value] of Object.entries(format)) {
+      if (value !== undefined && value !== null) (merged as Record<string, unknown>)[key] = value;
+    }
+  };
+  for (const style of chain) {
+    apply(style.row);
+    for (const condition of conditions) apply(style.conditions?.[condition]?.row);
+  }
+  apply(direct);
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+/**
+ * 算上表格样式之后的单元格格式。叠加顺序和段落 / 文字格式**用的是同一套条件与优先级**：
+ * 样式链的 wholeTable 层 → 各条件层（带状 / 首行 / 角单元格……）→ 单元格自己的直接格式。
+ *
+ * 样式 `tblPr` 里的 `tblBorders` 当作单元格的默认边框先垫在最下层——Word 的「Table Grid」
+ * 这类样式就是这么定全框线的，只看 `tcBorders` 的话那些表格一条线都没有。
+ */
+export function computeEffectiveCellFormat(context: StylesContext, cell: Element,
+  direct: CellFormat | undefined): CellFormat | undefined {
+  const { conditions, chain } = tableContextForCell(context, cell);
+  if (!chain.length) return direct;
+  // 每一级（样式自身、以及每个命中的条件）都是「先垫这一级 tblPr 给的默认值，再叠这一级
+  // 的 tcPr」：tblPr 描述区域的默认边框与边距，tcPr 是针对单元格的，更具体。
+  const fromTable = (table: TableFormat | undefined): CellFormat | undefined =>
+    table && (table.borders || table.cellMargin)
+      ? { ...(table.borders ? { borders: table.borders } : {}), ...(table.cellMargin ? { margin: table.cellMargin } : {}) }
+      : undefined;
+  const layers: Array<CellFormat | undefined> = [];
+  for (const style of chain) {
+    layers.push(fromTable(style.table));
+    layers.push(style.cell);
+    for (const condition of conditions) {
+      const layer = style.conditions?.[condition];
+      layers.push(fromTable(layer?.table));
+      layers.push(layer?.cell);
+    }
+  }
+  layers.push(direct);
+  const merged = mergeCellFormats(...layers);
+  return Object.keys(merged).length ? merged : undefined;
 }
 
 function mergeRunFormats(...formats: Array<RunFormat | undefined>): RunFormat {
@@ -645,13 +788,33 @@ export function parseStyles(stylesRoot: Element | undefined, themeRoot?: Element
       paragraph: cloneParagraphFormat(readParagraphProperties(children(styleElement, 'pPr')[0])),
       run: cloneRunFormat(readRunProperties(children(styleElement, 'rPr')[0], theme)),
       conditions: {},
+      ...(() => {
+        const styleTableProps = children(styleElement, 'tblPr')[0];
+        const bandSize = (name: string) => {
+          const value = readNumber(wordValue(children(styleTableProps ?? styleElement, name)[0]));
+          return value === undefined ? undefined : Math.max(1, value);
+        };
+        return compactDefined({
+          rowBandSize: bandSize('tblStyleRowBandSize'),
+          colBandSize: bandSize('tblStyleColBandSize'),
+          // 样式自身的 tcPr 相当于 wholeTable 层；tblBorders 是「Table Grid」这类样式的全框线。
+          cell: parseCellFormat(children(styleElement, 'tcPr')[0]),
+          row: parseRowFormat(children(styleElement, 'trPr')[0]),
+          table: parseTableFormat(styleTableProps),
+        });
+      })(),
     };
     for (const conditionElement of children(styleElement, 'tblStylePr')) {
       const condition = wordAttr(conditionElement, 'type') as TableCondition | undefined;
-      if (!condition || !['firstRow', 'lastRow', 'firstCol', 'lastCol', 'band1Horz', 'band2Horz'].includes(condition)) continue;
+      if (!condition || !['firstRow', 'lastRow', 'firstCol', 'lastCol',
+        'band1Horz', 'band2Horz', 'band1Vert', 'band2Vert',
+        'nwCell', 'neCell', 'swCell', 'seCell'].includes(condition)) continue;
       style.conditions![condition] = {
         paragraph: cloneParagraphFormat(readParagraphProperties(children(conditionElement, 'pPr')[0])),
         run: cloneRunFormat(readRunProperties(children(conditionElement, 'rPr')[0], theme)),
+        cell: parseCellFormat(children(conditionElement, 'tcPr')[0]),
+        row: parseRowFormat(children(conditionElement, 'trPr')[0]),
+        table: parseTableFormat(children(conditionElement, 'tblPr')[0]),
       };
     }
     if (style.isDefault && !defaults[type]) defaults[type] = id;
@@ -701,10 +864,25 @@ function closestAncestor(element: Element, localName: string): Element | undefin
   return undefined;
 }
 
+const TBL_LOOK_BITS: Record<string, number> = {
+  firstRow: 0x0020, lastRow: 0x0040, firstColumn: 0x0080, lastColumn: 0x0100,
+  noHBand: 0x0200, noVBand: 0x0400,
+};
+
+/**
+ * `w:tblLook` 有两种写法：Word 2010+ 写具名属性，Word 2007 只写 `w:val` 的十六进制位掩码
+ * （最常见的 `04A0` 就是 firstRow + firstColumn + noVBand）。只认具名属性的话，这类文档的
+ * 表头行会被当成普通带状行。现代 Word 两种都写，所以具名属性优先，掩码兜底。
+ */
 function readLookFlag(look: Element | undefined, name: string, defaultValue: boolean): boolean {
   const value = wordAttr(look, name);
-  if (value === undefined) return defaultValue;
-  return !['0', 'false', 'off'].includes(value.toLowerCase());
+  if (value !== undefined) return !['0', 'false', 'off'].includes(value.toLowerCase());
+  const raw = wordAttr(look, 'val');
+  const bit = TBL_LOOK_BITS[name];
+  if (raw !== undefined && bit !== undefined && /^[0-9a-f]{1,8}$/i.test(raw)) {
+    return (Number.parseInt(raw, 16) & bit) !== 0;
+  }
+  return defaultValue;
 }
 
 function tableMeta(context: StylesContext, table: Element): TableMeta {
@@ -719,8 +897,28 @@ function tableMeta(context: StylesContext, table: Element): TableMeta {
     childrenThroughTransparent(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
   });
   const tableProps = children(table, 'tblPr')[0];
-  const rowBandSize = Math.max(1, readNumber(wordValue(children(tableProps ?? table, 'tblStyleRowBandSize')[0])) ?? 1);
-  const meta = { rows, rowIndex, cellIndex, look: children(tableProps ?? table, 'tblLook')[0], rowBandSize };
+  const styleId = wordValue(children(tableProps ?? table, 'tblStyle')[0]) ?? undefined;
+  const chain = resolveStyleChainOrDefault(context, styleId, 'table');
+  // 带宽：表格实例上的是直接格式，优先；否则取样式链里最靠近的那个（链是从基样式到最具体
+  // 排的，所以从后往前找）；都没有就是 1。Word 把它写在样式里。
+  const bandSize = (own: string, pick: (style: ParsedStyle) => number | undefined): number => {
+    const direct = readNumber(wordValue(children(tableProps ?? table, own)[0]));
+    if (direct !== undefined) return Math.max(1, direct);
+    for (let index = chain.length - 1; index >= 0; index--) {
+      const value = pick(chain[index]!);
+      if (value !== undefined) return value;
+    }
+    return 1;
+  };
+  const meta: TableMeta = {
+    rows,
+    rowIndex,
+    cellIndex,
+    look: children(tableProps ?? table, 'tblLook')[0],
+    rowBandSize: bandSize('tblStyleRowBandSize', (style) => style.rowBandSize),
+    colBandSize: bandSize('tblStyleColBandSize', (style) => style.colBandSize),
+    chain,
+  };
   cache.set(table, meta);
   return meta;
 }
@@ -729,46 +927,79 @@ function tableContext(context: StylesContext, paragraph: Element): TableContext 
   const cache = context._tableContext ??= new WeakMap<Element, TableContext>();
   const existing = cache.get(paragraph);
   if (existing) return existing;
-  const table = closestAncestor(paragraph, 'tbl');
-  if (!table) {
-    const empty = { conditions: [], chain: [] };
-    cache.set(paragraph, empty);
-    return empty;
-  }
-  const cell = closestAncestor(paragraph, 'tc');
-  const row = closestAncestor(paragraph, 'tr');
-  if (!cell || !row) {
-    const empty = { conditions: [], chain: [] };
-    cache.set(paragraph, empty);
-    return empty;
-  }
+  const resolved = tableConditionsFor(context, closestAncestor(paragraph, 'tbl'),
+    closestAncestor(paragraph, 'tr'), closestAncestor(paragraph, 'tc'));
+  cache.set(paragraph, resolved);
+  return resolved;
+}
+
+/** 单元格自己就是 `tc`，所以不能走 closestAncestor（那会跳到外层嵌套表格的单元格上）。 */
+function tableContextForCell(context: StylesContext, cell: Element): TableContext {
+  const cache = context._tableContext ??= new WeakMap<Element, TableContext>();
+  const existing = cache.get(cell);
+  if (existing) return existing;
+  const resolved = tableConditionsFor(context, closestAncestor(cell, 'tbl'), closestAncestor(cell, 'tr'), cell);
+  cache.set(cell, resolved);
+  return resolved;
+}
+
+/**
+ * 不传 `cell` 时只算**由行位置决定**的条件（`firstRow` / `lastRow` / `band*Horz`）：
+ * `cellPosition` 留在 -1，下面所有跟列有关的判断都不会命中。行格式用的就是这个子集。
+ */
+function tableConditionsFor(context: StylesContext, table: Element | undefined,
+  row: Element | undefined, cell?: Element): TableContext {
+  if (!table || !row) return { conditions: [], chain: [] };
   const meta = tableMeta(context, table);
   const rowPosition = meta.rowIndex.get(row) ?? -1;
-  const cellPosition = meta.cellIndex.get(cell) ?? -1;
-  const conditions: TableCondition[] = [];
+  const cellPosition = cell ? meta.cellIndex.get(cell) ?? -1 : -1;
   const look = meta.look;
   const firstRow = readLookFlag(look, 'firstRow', false);
   const lastRow = readLookFlag(look, 'lastRow', false);
   const firstColumn = readLookFlag(look, 'firstColumn', false);
   const lastColumn = readLookFlag(look, 'lastColumn', false);
-  if (rowPosition === 0 && firstRow) conditions.push('firstRow');
-  if (rowPosition === meta.rows.length - 1 && lastRow) conditions.push('lastRow');
   const cellCount = childrenThroughTransparent(row, 'tc').length;
-  if (cellPosition === 0 && firstColumn) conditions.push('firstCol');
-  if (cellPosition === cellCount - 1 && lastColumn) conditions.push('lastCol');
-  if (!readLookFlag(look, 'noHBand', false)) {
   const legacyRules = context.compatibilitySettings?.useWord2002TableStyleRules === true;
-  const bandStart = !legacyRules && firstRow ? 1 : 0;
-  const bandEnd = !legacyRules ? meta.rows.length - (lastRow ? 1 : 0) : meta.rows.length;
-    if (rowPosition >= bandStart && rowPosition < bandEnd) {
-      const bandIndex = Math.floor((rowPosition - bandStart) / meta.rowBandSize);
-      conditions.push(bandIndex % 2 === 0 ? 'band1Horz' : 'band2Horz');
-    }
+  /**
+   * 这个数组的顺序就是套用顺序，后面的覆盖前面的。ECMA-376 的条件格式优先级从低到高是
+   * wholeTable → band*Vert → band*Horz → firstCol/lastCol → firstRow/lastRow → 四个角单元格。
+   * 原先正好反着排，于是 firstCol 压过 firstRow、band*Horz 压过 firstCol —— 而 Word 里表头行
+   * 是横贯整行（含第一列）的，第一列的特殊格式也压过带状。
+   */
+  const conditions: TableCondition[] = [];
+  const band = (position: number, count: number, size: number, skipFirst: boolean, skipLast: boolean,
+    odd: TableCondition, even: TableCondition) => {
+    // 首行 / 首列（以及末行 / 末列）有自己的条件格式，不参与带状计数，否则带的相位会偏一格。
+    // useWord2002TableStyleRules 下 Word 把它们一起算进去。
+    const start = !legacyRules && skipFirst ? 1 : 0;
+    const end = !legacyRules ? count - (skipLast ? 1 : 0) : count;
+    if (position < start || position >= end) return;
+    conditions.push(Math.floor((position - start) / size) % 2 === 0 ? odd : even);
+  };
+  if (!readLookFlag(look, 'noVBand', false)) {
+    band(cellPosition, cellCount, meta.colBandSize, firstColumn, lastColumn, 'band1Vert', 'band2Vert');
   }
-  const styleId = wordValue(children(children(table, 'tblPr')[0] ?? table, 'tblStyle')[0]) ?? undefined;
-  const resolved = { conditions, chain: resolveStyleChainOrDefault(context, styleId, 'table') };
-  cache.set(paragraph, resolved);
-  return resolved;
+  if (!readLookFlag(look, 'noHBand', false)) {
+    band(rowPosition, meta.rows.length, meta.rowBandSize, firstRow, lastRow, 'band1Horz', 'band2Horz');
+  }
+  const topRow = rowPosition === 0 && firstRow;
+  const bottomRow = rowPosition === meta.rows.length - 1 && lastRow;
+  const leftColumn = cellPosition === 0 && firstColumn;
+  // cellPosition 为 -1（没传单元格，或单元格不在索引里）时不能算成末列——空行的 cellCount
+  // 是 0，`-1 === 0 - 1` 会误判为 true。
+  const rightColumn = cellPosition >= 0 && cellPosition === cellCount - 1 && lastColumn;
+  if (leftColumn) conditions.push('firstCol');
+  if (rightColumn) conditions.push('lastCol');
+  if (topRow) conditions.push('firstRow');
+  if (bottomRow) conditions.push('lastRow');
+  // 四个角单元格优先级最高，而且只在对应的行、列条件都开着时才生效：关掉「第一列」就没有
+  // 特殊的第一列，左上角也就不该按 nwCell 画。1x1 表格四个标志全开时四条都命中，按下面的
+  // 顺序最后一条胜出——Word 在这种退化情形下的行为没有明确定义，这里取确定的顺序。
+  if (topRow && leftColumn) conditions.push('nwCell');
+  if (topRow && rightColumn) conditions.push('neCell');
+  if (bottomRow && leftColumn) conditions.push('swCell');
+  if (bottomRow && rightColumn) conditions.push('seCell');
+  return { conditions, chain: meta.chain };
 }
 
 function tableParagraphFormats(context: StylesContext, paragraph: Element): ParagraphFormat[] {

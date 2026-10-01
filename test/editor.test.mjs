@@ -3344,3 +3344,115 @@ test('a framed paragraph floats so the browser wraps the text around it', () => 
   assert.equal(plain.dataset.docxFrame, undefined);
   assert.equal(plain.style.cssFloat, undefined);
 });
+
+test('cells paint the table style background, not just their own direct shading', () => {
+  // 带状表格样式主要是靠单元格底纹做条纹的，所以渲染必须用算上样式之后的格式。
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const block = {
+    type: 'table',
+    grid: [1000, 1000],
+    rows: [
+      { cells: [
+        // 只有 effective：底色来自表格样式。
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false, effective: { shading: { fill: '4472C4' } } },
+        // 两者都有：直接格式本来就已经叠进 effective 了，所以按 effective 画。
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false,
+          format: { shading: { fill: 'FFCC00' } }, effective: { shading: { fill: 'FFCC00' } } },
+      ], format: {} },
+      { cells: [
+        // 没有 effective（调用方没注入解析器）时退回直接格式，老行为不变。
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false, format: { shading: { fill: 'D9E2F3' } } },
+        { blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false },
+      ], format: {} },
+    ],
+  };
+  const table = editor.makeTable(block, [0, 1], 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  assert.deepEqual(table.rows.map((tr) => tr.childNodes.map((td) => td.style.backgroundColor ?? '-')),
+    [['#4472C4', '#FFCC00'], ['#D9E2F3', '-']]);
+});
+
+test('rows use the table style row format for height and repeated-header marking', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const block = {
+    type: 'table',
+    grid: [1000],
+    rows: [
+      // 只有 effective：行高与表头标志来自表格样式的条件。
+      { cells: [cell()], format: {}, effective: { height: { value: 600 }, header: true } },
+      // 没有 effective 时退回直接格式，老行为不变。
+      { cells: [cell()], format: { height: { value: 300 } } },
+    ],
+  };
+  const table = editor.makeTable(block, [0, 1], 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  assert.deepEqual(table.rows.map((tr) => tr.style.height), ['40px', '20px'], '600 / 300 缇 ÷ 15');
+  assert.deepEqual(table.rows.map((tr) => tr.dataset.header ?? '-'), ['true', '-']);
+});
+
+test('a table paints the style-derived table format, not just its own tblPr', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const render = (block) => editor.makeTable(block, [0], 720,
+    { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const rows = [{ cells: [cell()], format: {} }];
+  // 只有 effective：底色、居中、固定布局都来自表格样式。
+  const styled = render({ type: 'table', grid: [1000], rows,
+    format: { style: 'S' }, effective: { style: 'S', shading: { fill: 'F2F2F2' }, alignment: 'center', layout: 'fixed' } });
+  assert.equal(styled.style.backgroundColor, '#F2F2F2');
+  assert.equal(styled.style.marginInline, 'auto');
+  assert.equal(styled.style.tableLayout, 'fixed');
+  // 没有 effective（调用方没注入解析器）时退回直接格式，老行为不变。
+  const plain = render({ type: 'table', grid: [1000], rows, format: { shading: { fill: 'D9E2F3' } } });
+  assert.equal(plain.style.backgroundColor, '#D9E2F3');
+
+  // 单元格边框要用算上样式之后的表格级边框：「Table Grid」这类样式的全框线就在样式的
+  // tblBorders 里，单元格自己什么都没写。只把直接格式传进去，这些表格一条线都画不出来。
+  const bordered = render({
+    type: 'table', grid: [1000], rows: [{ cells: [cell()], format: {} }], format: { style: 'G' },
+    effective: { style: 'G', borders: { top: { style: 'single', size: 8, color: '112233' } } },
+  });
+  assert.match(bordered.rows[0].childNodes[0].style.borderTop, /#112233/);
+});
+
+test('grid skips render as non-editable spacer cells and shift the grid datasets', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const block = {
+    type: 'table',
+    grid: [1000, 1000, 1000],
+    rows: [
+      { cells: [cell(), cell(), cell()], format: {} },
+      { cells: [cell()], format: { gridBefore: 2, widthBefore: { type: 'dxa', value: 2000 } } },
+      { cells: [cell()], format: { gridAfter: 2, widthAfter: { type: 'dxa', value: 2000 } } },
+    ],
+  };
+  const table = editor.makeTable(block, [0, 1, 2], 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const [plain, before, after] = table.rows;
+  assert.deepEqual(plain.childNodes.map((td) => td.dataset.docxGridSkip ?? '-'), ['-', '-', '-']);
+
+  // gridBefore：占位格在最前，宽度来自 wBefore，且不可编辑。
+  assert.deepEqual(before.childNodes.map((td) => td.dataset.docxGridSkip ?? '-'), ['2', '-']);
+  assert.equal(before.childNodes[0].contentEditable, 'false');
+  assert.equal(before.childNodes[0].colSpan, 2);
+  assert.equal(before.childNodes[0].style.width, '133.33333333333334px');
+  // 跳过的列也占列号，否则宿主按下标定位会落到错的列上。
+  assert.equal(before.childNodes[1].dataset.gridStart, '2');
+  assert.equal(before.childNodes[1].dataset.gridEnd, '3');
+
+  // gridAfter：占位格在最后。
+  assert.deepEqual(after.childNodes.map((td) => td.dataset.docxGridSkip ?? '-'), ['-', '2']);
+  assert.equal(after.childNodes[0].dataset.gridStart, '0');
+  assert.equal(after.childNodes[1].contentEditable, 'false');
+});

@@ -363,7 +363,8 @@ export function validateTableFormat(value: unknown): asserts value is TableForma
 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {
   object(value);
-  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision']);
+  keys(value, ['height', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
+    'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter']);
   if ('height' in value) {
     object(value.height);
     const height = value.height as Record<string, unknown>;
@@ -375,6 +376,14 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
     if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
+  for (const key of ['gridBefore', 'gridAfter'] as const) {
+    if (key in value && value[key] !== undefined &&
+        (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0)) {
+      throw new Error(`${key} must be a non-negative integer number of grid columns.`);
+    }
+  }
+  if ('widthBefore' in value) validateWidth(value.widthBefore, 'widthBefore');
+  if ('widthAfter' in value) validateWidth(value.widthAfter, 'widthAfter');
   if ('revision' in value) {
     object(value.revision);
     const revision = value.revision as Record<string, unknown>;

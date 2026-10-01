@@ -397,7 +397,18 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 **列表与表格**
 
 - 列表计数只在主文档正文（含表格单元格）内计算，支持常见 `numFmt`，未知格式回退为十进制。
-- 表格样式参与常用条件格式（`firstRow` / `lastRow` / `firstCol` / `lastCol` / `band1Horz` / `band2Horz`）的格式计算，其余条件样式尚未实现。
+- 表格样式参与全部条件格式的格式计算：`firstRow` / `lastRow` / `firstCol` / `lastCol`、`band1Horz` / `band2Horz`、`band1Vert` / `band2Vert`，以及四个角单元格 `nwCell` / `neCell` / `swCell` / `seCell`。
+- 条件格式按 ECMA-376 的优先级套用，从低到高：`wholeTable` → `band*Vert` → `band*Horz` → `firstCol` / `lastCol` → `firstRow` / `lastRow` → 四个角单元格。也就是说表头行横贯整行（含第一列），第一列的特殊格式压过带状，横向带压过纵向带，角单元格压过所有行列条件。角单元格要求对应的行、列条件都在 `tblLook` 里开着——关掉「第一列」就没有特殊的第一列，左上角也退回 `firstRow`。1×1 表格四个标志全开时四条角条件都命中，按 `nwCell` → `neCell` → `swCell` → `seCell` 的顺序最后一条胜出（Word 在这种退化情形下的行为没有明确定义，这里取确定的顺序）。
+- 表格样式的单元格格式（`tcPr` 的底纹、边框、边距、垂直对齐等）会解析为 `TableCellInfo.effective`，渲染即用它。叠加顺序按级进行，每一级都是「先垫这一级 `tblPr` 给的区域默认值（`tblBorders` / `tblCellMar`），再叠这一级的 `tcPr`」：样式自身一级（`tblBorders` 就是 Word 的「Table Grid」定全框线的地方）→ 各命中条件各一级，**顺序与段落 / 文字格式用的是同一套条件和同一套优先级** → 最后是单元格自己的 `tcPr`。`TableCellInfo.format` 的语义不变，仍只含单元格自己的直接格式。
+- 条件格式里的 `tblPr` 描述的是**该条件匹配到的区域**，所以它的 `tblBorders` 与 `tblCellMar` 落在那些单元格上，而不是整张表上。
+- 表格元素自身的格式（宽度、对齐、缩进、布局、底纹、单元格边距、框线）解析为 `TableInfo.effective`，由样式链的 `wholeTable` 层加表格自己的 `tblPr` 决定，**条件不参与**。合并时会跳过样式里的 `tblStyle` 与 `tblLook`：前者会反过来改写表格引用的样式 id，后者会把带状 / 首行这些开关搅乱，它们只能来自表格自己。
+- `w:tblLayout` 的值在 `w:type` 上（Word 写的是 `<w:tblLayout w:type="fixed"/>`），读写都按 `w:type`。
+- 行的网格跳过（`w:gridBefore` / `w:wBefore` / `w:gridAfter` / `w:wAfter`）读写为 `RowFormat.gridBefore` / `widthBefore` / `gridAfter` / `widthAfter`；`0`、负数与非整数按未设置处理。**跳过的列算进网格列号**——跨行合并是靠网格起始列匹配的（`vMerge` 的 continue 要对上上面那个 restart），不算进去的话带 `gridBefore` 的行里合并会断掉，单元格的 `gridStart` / `gridEnd` 也会偏小。渲染时跳过的那块用一个空单元格占位，宽度取 `wBefore` / `wAfter`，标为 `contentEditable="false"` 且不画边框。
+- 合并时 `borders` 与 `margin` 按**边**合并，`shading` 作为整体替换（`w:shd` 本就是单个元素）。按边合并是必须的：「整表定四边 + `firstRow` 只定下边框」是表格样式里最常见的组合，整块替换会把其余三边抹掉。
+- 表格样式的行格式（`trPr`：行高、`cantSplit`、`tblHeader` 等）解析为 `TableRowInfo.effective`，渲染与分页都用它。**只有由行位置决定的条件参与**：`firstRow` / `lastRow` / `band1Horz` / `band2Horz`；`firstCol` 之类是单元格范围的条件，对整行没有意义，其 `trPr` 不生效。叠加顺序同样是样式自身的 `trPr` → 条件的 `trPr` → 行自己的 `trPr`（最高）；`height` 对应单个 `w:trHeight` 元素，整体替换。因此由样式的 `firstRow` 条件提供 `w:tblHeader` 的表格，跨页时也会重复表头。`TableRowInfo.format` 的语义不变，仍只含行自己的直接格式。
+- `tblStyleRowBandSize` / `tblStyleColBandSize` 从**样式**的 `tblPr` 读取（Word 写在那里），表格实例上的同名属性作为直接格式优先；样式链里取最靠近的那个，都没有则为 1。首行 / 首列（以及末行 / 末列，当 `tblLook` 开了对应标志时）不参与带状计数，否则带的相位会偏一格；`useWord2002TableStyleRules` 下按 Word 的旧规则把它们一起算进去。
+- `w:tblLook` 的两种写法都读：Word 2010+ 的具名属性优先，缺失时回退到 Word 2007 的 `w:val` 十六进制位掩码（`firstRow` 0x0020、`lastRow` 0x0040、`firstColumn` 0x0080、`lastColumn` 0x0100、`noHBand` 0x0200、`noVBand` 0x0400）。只认具名属性的话，只写掩码的旧文档表头行会被当成普通带状行。
+- 带状按单元格在行内的序号计数，不按网格列号；含横向合并（`w:gridSpan`）的表格里带的相位可能与 Word 不一致。
 - 跨越分页或分栏边界的 `rowSpan` 合并区域会连同其覆盖的行整体移到下一页或下一栏，不会拆成断开的单元格；超高的单行或合并区域仍会完整放置并允许超出可用高度。
 
 **图片布局**

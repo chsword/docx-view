@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
+import { validateRowFormat } from '../dist/operations.js';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -52,7 +53,7 @@ test('table parser reads table, row, and cell formats', () => {
     <w:tblPr>
       <w:tblW w:type="pct" w:w="2500"/>
       <w:jc w:val="center"/>
-      <w:tblLayout w:val="fixed"/>
+      <w:tblLayout w:type="fixed"/>
       <w:tblBorders><w:insideH w:val="single" w:sz="8" w:color="FF0000"/></w:tblBorders>
       <w:shd w:fill="00FF00"/>
       <w:tblCaption w:val="caption"/>
@@ -90,7 +91,9 @@ test('insertTableAt inserts before a body block and applies format', () => {
   const blocks = doc.getBlocks();
   assert.equal(blocks[0].type, 'table');
   assert.equal(blocks[1].paragraph.text, 'tail');
-  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tblLayout w:val="fixed"/);
+  // w:tblLayout 的值在 w:type 上，不是 w:val —— 原来这里断言 w:val，把一个 Word 不认的
+  // 写法钉成了期望。
+  assert.match(doc.getPartXml(doc.mainDocumentPath), /w:tblLayout w:type="fixed"/);
 });
 
 test('insertTable fills all cells atomically in one revision', () => {
@@ -282,7 +285,7 @@ test('formatTable writes layout and border properties', () => {
   doc.insertTable([['A']]);
   doc.formatTable(0, { layout: 'fixed', borders: { top: { style: 'single', size: 8, color: '112233' } } });
   const xml = doc.getPartXml(doc.mainDocumentPath);
-  assert.match(xml, /w:tblLayout w:val="fixed"/);
+  assert.match(xml, /w:tblLayout w:type="fixed"/);
   assert.match(xml, /w:top w:val="single" w:sz="8" w:color="112233"/);
 });
 
@@ -399,4 +402,66 @@ test('table operations are available through atomic agent batches', () => {
   assert.equal(snapshot.revision, 1);
   assert.equal(doc.getTable(0).rows[0].cells[0].rowSpan, 2);
   assert.match(doc.getPartXml(doc.mainDocumentPath), /CCCCCC/);
+});
+
+test('tblLayout round-trips through w:type, the attribute Word actually writes', () => {
+  const doc = withBody(tableXml('<w:tblPr><w:tblLayout w:type="fixed"/></w:tblPr>'));
+  assert.equal(doc.getTable(0).format.layout, 'fixed');
+  doc.formatTable(0, { layout: 'autofit' });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:tblLayout w:type="autofit"\/>/);
+  assert.doesNotMatch(xml, /w:tblLayout w:val=/);
+  assert.equal(doc.getTable(0).format.layout, 'autofit');
+});
+
+test('gridBefore shifts the row grid so vertical merges still line up', () => {
+  const tc = (text, props = '') => `<w:tc>${props ? `<w:tcPr>${props}</w:tcPr>` : ''}`
+    + `<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  // 三列。第 0 行最后一格起跨行合并；第 1 行用 gridBefore 跳过前两列，只剩那一格续接。
+  const doc = withBody(
+    `<w:tbl><w:tblPr/><w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(3)}</w:tblGrid>
+      <w:tr>${tc('a0')}${tc('a1')}${tc('a2', '<w:vMerge w:val="restart"/>')}</w:tr>
+      <w:tr><w:trPr><w:gridBefore w:val="2"/><w:wBefore w:w="2000" w:type="dxa"/></w:trPr>
+        ${tc('', '<w:vMerge/>')}</w:tr>
+    </w:tbl>`);
+  const rows = doc.getTable(0).rows;
+  assert.deepEqual(rows[1].format.gridBefore, 2);
+  assert.deepEqual(rows[1].format.widthBefore, { type: 'dxa', value: 2000 });
+  // 跨行合并是靠网格起始列匹配的。gridBefore 不算进起始列，第 1 行那一格会被当成第 0 列，
+  // 对不上第 2 列登记的 restart，合并就断了。
+  assert.equal(rows[0].cells[2].rowSpan, 2);
+  assert.equal(rows[1].cells[0].isMergeContinuation, true);
+});
+
+test('row grid skips read, reject nonsense and round-trip', () => {
+  const row = (trPr) => withBody(
+    `<w:tbl><w:tblPr/><w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(3)}</w:tblGrid>
+      <w:tr><w:trPr>${trPr}</w:trPr><w:tc><w:p/></w:tc></w:tr></w:tbl>`).getTable(0).rows[0].format;
+  assert.equal(row('<w:gridAfter w:val="1"/><w:wAfter w:w="1000" w:type="dxa"/>').gridAfter, 1);
+  assert.deepEqual(row('<w:gridAfter w:val="1"/><w:wAfter w:w="1000" w:type="dxa"/>').widthAfter,
+    { type: 'dxa', value: 1000 });
+  // 0、负数、非数字都按未设置处理——跳过 0 列和没写是一回事。
+  for (const nonsense of ['<w:gridBefore w:val="0"/>', '<w:gridBefore w:val="-1"/>', '<w:gridBefore w:val="abc"/>']) {
+    assert.equal(row(nonsense)?.gridBefore, undefined, nonsense);
+  }
+
+  const doc = withBody(
+    `<w:tbl><w:tblPr/><w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(3)}</w:tblGrid>
+      <w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`);
+  doc.formatTableRow(0, 0, { gridBefore: 2, widthBefore: { type: 'dxa', value: 2000 } });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  assert.match(xml, /<w:gridBefore w:val="2"\/>/);
+  assert.match(xml, /<w:wBefore w:type="dxa" w:w="2000"\/>/);
+  assert.equal(doc.getTable(0).rows[0].format.gridBefore, 2);
+  // 传 0 表示清除。
+  doc.formatTableRow(0, 0, { gridBefore: 0 });
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /gridBefore/);
+
+  // 校验在 agent 操作那条路上（直接的 TS 方法对所有行格式字段都不校验，这是既有设计），
+  // 所以直接测导出的校验器。
+  for (const invalid of [{ gridBefore: -1 }, { gridBefore: 1.5 }, { gridAfter: 'x' },
+    { widthBefore: { type: 'nope', value: 1 } }, { gridNope: 1 }]) {
+    assert.throws(() => validateRowFormat(invalid), undefined, JSON.stringify(invalid));
+  }
+  assert.doesNotThrow(() => validateRowFormat({ gridBefore: 2, widthBefore: { type: 'dxa', value: 2000 } }));
 });

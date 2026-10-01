@@ -455,7 +455,9 @@ export function paginate(
       return height;
     };
     let headerCount = 0;
-    while (headerCount < table.rows.length && table.rows[headerCount]!.format?.header) headerCount++;
+    // 表头行可能是表格样式的 firstRow 条件给的 w:tblHeader，不只是行自己写的。
+    while (headerCount < table.rows.length
+      && (table.rows[headerCount]!.effective ?? table.rows[headerCount]!.format)?.header) headerCount++;
     const appendHeaders = () => {
       for (let index = 0; index < headerCount; index++) {
         const height = rowHeight(index);

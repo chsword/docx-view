@@ -6512,3 +6512,301 @@ test('framePr counts as a paragraph format difference for compare and style appl
   assert.deepEqual(conflicting.getParagraphs()[0].effective?.frame,
     { widthTwips: 2880, heightTwips: 1440, wrap: 'around' });
 });
+
+test('table styles band columns and apply conditional formatting in the documented precedence', () => {
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const row = (...texts) => `<w:tr>${texts.map(cell).join('')}</w:tr>`;
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="Banded"/>
+        <w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="0" w:noVBand="0"/></w:tblPr>
+      <w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(4)}</w:tblGrid>
+      ${row('h1', 'h2', 'h3', 'h4')}${row('a1', 'a2', 'a3', 'a4')}${row('b1', 'b2', 'b3', 'b4')}
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="Banded"><w:name w:val="Banded"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="FF0000"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="firstCol"><w:rPr><w:color w:val="00FF00"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Horz"><w:rPr><w:color w:val="0000FF"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Vert"><w:rPr><w:color w:val="FFFF00"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band2Vert"><w:rPr><w:color w:val="00FFFF"/></w:rPr></w:tblStylePr>
+      </w:style>
+    </w:styles>`,
+  );
+  const colors = doc.getParagraphs().map((paragraph) => paragraph.runs[0].effective.color);
+  const grid = [colors.slice(0, 4), colors.slice(4, 8), colors.slice(8, 12)];
+  // ECMA-376 的优先级从低到高：band*Vert → band*Horz → firstCol/lastCol → firstRow/lastRow。
+  // 表头行横贯整行，含第一列——firstRow 压过 firstCol。
+  assert.deepEqual(grid[0], ['FF0000', 'FF0000', 'FF0000', 'FF0000']);
+  // 第一列的特殊格式压过横向带状。
+  assert.deepEqual(grid[1], ['00FF00', '0000FF', '0000FF', '0000FF']);
+  // 第三行落在 band2Horz（样式没定义），所以露出纵向带；首列不参与带状计数，否则相位会偏。
+  assert.deepEqual(grid[2], ['00FF00', 'FFFF00', '00FFFF', 'FFFF00']);
+});
+
+test('table band size comes from the style, where Word writes it', () => {
+  const rows = (count) => Array.from({ length: count },
+    (_unused, index) => `<w:tr><w:tc><w:p><w:r><w:t>r${index}</w:t></w:r></w:p></w:tc></w:tr>`).join('');
+  const banded = (tableProps, styleProps) => withStyles(
+    `<w:tbl><w:tblPr><w:tblStyle w:val="S"/><w:tblLook w:noHBand="0"/>${tableProps}</w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid>${rows(6)}</w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/><w:tblPr>${styleProps}</w:tblPr>
+        <w:tblStylePr w:type="band1Horz"><w:rPr><w:color w:val="0000FF"/></w:rPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getParagraphs().map((paragraph) => (paragraph.runs[0].effective.color === '0000FF' ? '1' : '.')).join('');
+
+  // Word 把 tblStyleRowBandSize 写在【样式】的 tblPr 里。只读表格实例上的话，真实文档里的
+  // 带宽会被完全忽略，每一行都成了带。
+  assert.equal(banded('', '<w:tblStyleRowBandSize w:val="2"/>'), '11..11');
+  assert.equal(banded('', ''), '1.1.1.', '不写时默认 1');
+  // 表格实例上的是直接格式，压过样式。
+  assert.equal(banded('<w:tblStyleRowBandSize w:val="3"/>', '<w:tblStyleRowBandSize w:val="2"/>'), '111...');
+
+  // 列带宽同理，也是从样式读。
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const columns = (styleProps) => withStyles(
+    `<w:tbl><w:tblPr><w:tblStyle w:val="C"/><w:tblLook w:noVBand="0"/></w:tblPr>
+      <w:tblGrid>${'<w:gridCol w:w="500"/>'.repeat(6)}</w:tblGrid>
+      <w:tr>${[0, 1, 2, 3, 4, 5].map((index) => cell(`c${index}`)).join('')}</w:tr></w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="C"><w:name w:val="C"/><w:tblPr>${styleProps}</w:tblPr>
+        <w:tblStylePr w:type="band1Vert"><w:rPr><w:color w:val="FFFF00"/></w:rPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getParagraphs().map((paragraph) => (paragraph.runs[0].effective.color === 'FFFF00' ? '1' : '.')).join('');
+  assert.equal(columns('<w:tblStyleColBandSize w:val="2"/>'), '11..11');
+  assert.equal(columns(''), '1.1.1.', '不写时默认 1');
+});
+
+test('tblLook falls back to the Word 2007 bitmask when the named flags are absent', () => {
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const looked = (look) => withStyles(
+    `<w:tbl><w:tblPr><w:tblStyle w:val="S"/>${look}</w:tblPr>
+      <w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(3)}</w:tblGrid>
+      <w:tr>${cell('r0a')}${cell('r0b')}${cell('r0c')}</w:tr>
+      <w:tr>${cell('r1a')}${cell('r1b')}${cell('r1c')}</w:tr>
+      <w:tr>${cell('r2a')}${cell('r2b')}${cell('r2c')}</w:tr></w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="FF0000"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Horz"><w:rPr><w:color w:val="0000FF"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Vert"><w:rPr><w:color w:val="FFFF00"/></w:rPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getParagraphs().map((paragraph) => paragraph.runs[0].effective.color ?? '-');
+
+  // Word 2007 只写 w:val 的十六进制位掩码；04A0 = firstRow + firstColumn + noVBand。只认具名
+  // 属性的话，这类文档的表头行会被当成普通带状行。
+  // 第三行落在 band2Horz（样式没定义），所以它才是能看出纵向带有没有开的那一行。
+  const bitmask = looked('<w:tblLook w:val="04A0"/>');
+  assert.deepEqual(bitmask, [
+    'FF0000', 'FF0000', 'FF0000',
+    '0000FF', '0000FF', '0000FF',
+    '-', '-', '-', // 掩码里的 noVBand 关掉了纵向带
+  ]);
+  // 现代 Word 两种都写，结果必须一致。
+  assert.deepEqual(looked('<w:tblLook w:firstRow="1" w:firstColumn="1" w:noVBand="1" w:noHBand="0"/>'), bitmask);
+  // 具名属性优先于掩码：掩码说禁纵带，具名属性说开。首列不参与带状计数，所以第三行是
+  // 「-、band1Vert、band2Vert(未定义)」。
+  assert.deepEqual(looked('<w:tblLook w:val="04A0" w:noVBand="0"/>').slice(6), ['-', 'FFFF00', '-']);
+});
+
+test('corner cell conditions outrank row and column conditions and need both of them enabled', () => {
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const row = (...texts) => `<w:tr>${texts.map(cell).join('')}</w:tr>`;
+  const corners = (look) => withStyles(
+    `<w:tbl><w:tblPr><w:tblStyle w:val="S"/>${look}</w:tblPr>
+      <w:tblGrid>${'<w:gridCol w:w="1000"/>'.repeat(3)}</w:tblGrid>
+      ${row('h1', 'h2', 'h3')}${row('m1', 'm2', 'm3')}${row('f1', 'f2', 'f3')}</w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/>
+        <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="111111"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="lastRow"><w:rPr><w:color w:val="222222"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="firstCol"><w:rPr><w:color w:val="333333"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="lastCol"><w:rPr><w:color w:val="444444"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="nwCell"><w:rPr><w:color w:val="AA0000"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="neCell"><w:rPr><w:color w:val="00AA00"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="swCell"><w:rPr><w:color w:val="0000AA"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="seCell"><w:rPr><w:color w:val="AAAA00"/></w:rPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getParagraphs().map((paragraph) => paragraph.runs[0].effective.color ?? '-');
+
+  // 四个角单元格在 ECMA-376 里优先级最高，压过 firstRow / lastRow / firstCol / lastCol。
+  assert.deepEqual(corners('<w:tblLook w:firstRow="1" w:lastRow="1" w:firstColumn="1" w:lastColumn="1"'
+    + ' w:noHBand="1" w:noVBand="1"/>'), [
+    'AA0000', '111111', '00AA00',
+    '333333', '-', '444444',
+    '0000AA', '222222', 'AAAA00',
+  ]);
+
+  // 角单元格要求对应的行、列条件都开着：关掉「第一列」就没有特殊的第一列，左上角也就退回
+  // firstRow，左下角退回 lastRow。
+  assert.deepEqual(corners('<w:tblLook w:firstRow="1" w:lastRow="1" w:firstColumn="0" w:lastColumn="1"'
+    + ' w:noHBand="1" w:noVBand="1"/>'), [
+    '111111', '111111', '00AA00',
+    '-', '-', '444444',
+    '222222', '222222', 'AAAA00',
+  ]);
+
+  // 只开首行时四个角都不生效。
+  assert.deepEqual(corners('<w:tblLook w:firstRow="1" w:noHBand="1" w:noVBand="1"/>'), [
+    '111111', '111111', '111111', '-', '-', '-', '-', '-', '-',
+  ]);
+});
+
+test('table style cell formatting resolves through the style, its conditions and direct formatting', () => {
+  const cell = (text, props = '') => `<w:tc>${props}<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="S"/>
+        <w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="0" w:noVBand="1"/></w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>
+      <w:tr>${cell('h1')}${cell('h2')}</w:tr>
+      <w:tr>${cell('a1')}${cell('a2')}</w:tr>
+      <w:tr>${cell('b1')}${cell('b2', '<w:tcPr><w:shd w:val="clear" w:fill="FFCC00"/></w:tcPr>')}</w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/>
+        <w:tblPr><w:tblBorders>
+          <w:top w:val="single" w:sz="4" w:color="888888"/>
+          <w:bottom w:val="single" w:sz="4" w:color="888888"/>
+        </w:tblBorders></w:tblPr>
+        <w:tcPr><w:shd w:val="clear" w:fill="FAFAFA"/>
+          <w:tcBorders><w:top w:val="single" w:sz="12" w:color="C00000"/></w:tcBorders></w:tcPr>
+        <w:tblStylePr w:type="firstRow"><w:tcPr>
+          <w:shd w:val="clear" w:fill="4472C4"/>
+          <w:tcBorders><w:bottom w:val="single" w:sz="18" w:color="203864"/></w:tcBorders>
+        </w:tcPr></w:tblStylePr>
+        <w:tblStylePr w:type="firstCol"><w:tcPr><w:shd w:val="clear" w:fill="00B050"/></w:tcPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:val="clear" w:fill="D9E2F3"/></w:tcPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  );
+  const rows = doc.getTable(0).rows;
+  const shading = rows.map((row) => row.cells.map((entry) => entry.effective?.shading?.fill ?? '-'));
+  // 样式自身的 tcPr 相当于 wholeTable 层；firstRow 与带状各自覆盖它。左上格同时命中 firstRow
+  // 与 firstCol，必须按 ECMA-376 的优先级让 firstRow 胜出——和文字格式用的是同一套条件顺序。
+  assert.deepEqual(shading, [['4472C4', '4472C4'], ['00B050', 'D9E2F3'], ['00B050', 'FFCC00']]);
+  // 单元格自己的直接格式优先级最高。
+  assert.equal(rows[2].cells[1].effective.shading.fill, 'FFCC00');
+
+  // 边框按【边】合并：firstRow 只定了下边框，样式 tblBorders 的上边框必须留着——整块替换会
+  // 把其余三边抹掉，而「整表定四边 + firstRow 只定下边框」是表格样式里最常见的组合。
+  const header = rows[0].cells[0].effective.borders;
+  assert.equal(header.bottom.size, 18);
+  assert.equal(header.bottom.color, '203864');
+  // 没有条件覆盖的行，下边框来自样式的 tblBorders。
+  assert.equal(rows[1].cells[0].effective.borders.bottom.size, 4);
+  // 样式自身的 tcBorders 比 tblPr/tblBorders 更具体，同一边上要压过它：上边框是 12/C00000，
+  // 不是 tblBorders 的 4/888888。
+  assert.equal(header.top.size, 12);
+  assert.equal(header.top.color, 'C00000');
+
+  // format 仍然只含单元格自己的直接格式，语义不变。
+  assert.equal(rows[0].cells[0].format, undefined);
+  assert.equal(rows[2].cells[1].format.shading.fill, 'FFCC00');
+});
+
+test('conditional row formatting uses only the row-scoped conditions', () => {
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="S"/>
+        <w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="0" w:noVBand="0"/></w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid>
+      <w:tr>${cell('h')}</w:tr><w:tr>${cell('a')}</w:tr><w:tr>${cell('b')}</w:tr>
+      <w:tr><w:trPr><w:trHeight w:val="999"/></w:trPr>${cell('c')}</w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/>
+        <w:trPr><w:cantSplit/></w:trPr>
+        <w:tblStylePr w:type="firstRow"><w:trPr><w:tblHeader/><w:trHeight w:val="600"/></w:trPr></w:tblStylePr>
+        <w:tblStylePr w:type="band1Horz"><w:trPr><w:trHeight w:val="300"/></w:trPr></w:tblStylePr>
+        <w:tblStylePr w:type="firstCol"><w:trPr><w:trHeight w:val="7777"/></w:trPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  );
+  const rows = doc.getTable(0).rows;
+  // 样式自身的 trPr 垫在所有行上；firstRow 与带状各自覆盖高度，表头标志也来自 firstRow 条件。
+  assert.deepEqual(rows.map((row) => row.effective?.height?.value ?? null), [600, 300, null, 999]);
+  assert.deepEqual(rows.map((row) => row.effective?.cantSplit ?? null), [true, true, true, true]);
+  assert.equal(rows[0].effective.header, true);
+  assert.equal(rows[1].effective.header, undefined);
+  // 行自己的 trPr 优先级最高。
+  assert.equal(rows[3].effective.height.value, 999);
+  // firstCol 是单元格范围的条件，对整行没有意义，它的 trPr 一行都不该生效。
+  assert.ok(!rows.some((row) => row.effective?.height?.value === 7777));
+  // format 仍然只含行自己的直接格式。
+  assert.equal(rows[0].format, undefined);
+  assert.equal(rows[3].format.height.value, 999);
+
+  // 一个没有单元格的行：cellCount 是 0，若不防住就会出现 `-1 === 0 - 1` 把它算成末列，
+  // 于是 lastCol 的 trPr 落到空行上。
+  const empty = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="E"/><w:tblLook w:lastColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid>
+      <w:tr/>
+      <w:tr>${cell('x')}</w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="E"><w:name w:val="E"/>
+        <w:tblStylePr w:type="lastCol"><w:trPr><w:trHeight w:val="4321"/></w:trPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getTable(0);
+  assert.equal(empty.rows[0].effective?.height?.value, undefined, '空行不是末列');
+});
+
+test('a conditional tblPr contributes borders and margins to the cells it matches', () => {
+  const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const doc = withStyles(
+    `<w:tbl>
+      <w:tblPr><w:tblStyle w:val="S"/><w:jc w:val="left"/>
+        <w:tblLook w:firstRow="1" w:noHBand="1" w:noVBand="1"/></w:tblPr>
+      <w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid>
+      <w:tr>${cell('h')}</w:tr><w:tr>${cell('a')}</w:tr>
+    </w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="S"><w:name w:val="S"/>
+        <w:tblPr>
+          <w:jc w:val="center"/><w:tblInd w:w="360"/><w:tblLayout w:type="fixed"/>
+          <w:shd w:val="clear" w:fill="F2F2F2"/>
+          <w:tblCellMar><w:left w:w="108" w:type="dxa"/></w:tblCellMar>
+          <w:tblBorders><w:top w:val="single" w:sz="4" w:color="999999"/></w:tblBorders>
+          <w:tblStyle w:val="BAD"/><w:tblLook w:val="0000"/>
+        </w:tblPr>
+        <w:tblStylePr w:type="firstRow">
+          <w:tblPr>
+            <w:tblBorders>
+              <w:top w:val="single" w:sz="24" w:color="C00000"/>
+              <w:bottom w:val="single" w:sz="24" w:color="C00000"/>
+            </w:tblBorders>
+            <w:tblCellMar><w:left w:w="400" w:type="dxa"/></w:tblCellMar>
+          </w:tblPr>
+          <w:tcPr><w:tcBorders><w:top w:val="single" w:sz="36" w:color="00B050"/></w:tcBorders></w:tcPr>
+        </w:tblStylePr>
+      </w:style></w:styles>`,
+  );
+  const table = doc.getTable(0);
+  // 条件描述的是它匹配到的区域，所以条件 tblPr 的边框与边距落在那些单元格上。
+  // 同一级里 tcPr 比该级 tblPr 更具体：上边框两边都定义了，tcPr 的 36 胜出；tblPr 只定了的
+  // 下边框照样留着。
+  assert.equal(table.rows[0].cells[0].effective.borders.top.size, 36);
+  assert.equal(table.rows[0].cells[0].effective.borders.bottom.size, 24);
+  assert.equal(table.rows[0].cells[0].effective.margin.left.value, 400);
+  // 其余行用样式自身 tblPr 给的默认值。
+  assert.equal(table.rows[1].cells[0].effective.borders.top.size, 4);
+  assert.equal(table.rows[1].cells[0].effective.margin.left.value, 108);
+
+  // 表格元素自身的格式只由样式链加直接格式决定，条件不参与；表格自己的 tblPr 优先级最高，
+  // 所以对齐是它写的 left，不是样式的 center。
+  assert.equal(table.effective.alignment, 'left');
+  assert.equal(table.effective.indent, 360);
+  assert.equal(table.effective.shading.fill, 'F2F2F2');
+  // w:tblLayout 的值在 w:type 上，不是 w:val。
+  assert.equal(table.effective.layout, 'fixed');
+  // 样式里的 tblStyle / tblLook 不能混进来：前者会改写表格引用的样式 id，后者会把带状、
+  // 首行这些开关整个搅乱。style 仍是表格自己引用的 S，不是样式里写的 BAD。
+  assert.equal(table.effective.style, 'S');
+  assert.equal(table.effective.look, undefined);
+  // 直接格式的语义不变。
+  assert.equal(table.format.style, 'S');
+  assert.equal(table.format.alignment, 'left');
+});

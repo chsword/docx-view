@@ -406,6 +406,14 @@ export interface TableFormat {
 
 export interface RowFormat {
   height?: { value: number; rule?: 'atLeast' | 'exact' };
+  /** `w:gridBefore`：这一行开头跳过的网格列数，视觉上就是整行缩进。 */
+  gridBefore?: number;
+  /** `w:wBefore`：开头跳过那块空间的宽度。 */
+  widthBefore?: WidthFormat;
+  /** `w:gridAfter`：这一行末尾跳过的网格列数。 */
+  gridAfter?: number;
+  /** `w:wAfter`：末尾跳过那块空间的宽度。 */
+  widthAfter?: WidthFormat;
   cantSplit?: boolean;
   header?: boolean;
   alignment?: 'left' | 'center' | 'right';
@@ -432,18 +440,37 @@ export interface TableCellInfo {
   colSpan: number;
   rowSpan: number;
   isMergeContinuation: boolean;
+  /** 单元格自己的 `w:tcPr`，不含表格样式带来的部分。 */
   format?: CellFormat;
+  /**
+   * 算上表格样式之后的单元格格式：样式自身的 `tcPr`、各条件格式（`firstRow` / 带状 / 角单元格
+   * 等）的 `tcPr`，最后叠上单元格自己的直接格式。边框与边距按**边**合并——
+   * 「整表定四边 + firstRow 只定下边框」是最常见的组合，整块替换会把其余三边抹掉。
+   */
+  effective?: CellFormat;
 }
 
 export interface TableRowInfo {
   cells: TableCellInfo[];
+  /** 行自己的 `w:trPr`，不含表格样式带来的部分。 */
   format?: RowFormat;
+  /**
+   * 算上表格样式之后的行格式。只有**由行位置决定**的条件参与（`firstRow` / `lastRow` /
+   * `band*Horz`）——`firstCol` 之类是单元格范围的条件，对整行没有意义。
+   */
+  effective?: RowFormat;
 }
 
 export interface TableInfo {
   index: number;
   rows: TableRowInfo[];
+  /** 表格自己的 `w:tblPr`，不含表格样式带来的部分。 */
   format?: TableFormat;
+  /**
+   * 算上表格样式之后的表格级格式。**条件不参与**——`firstRow` 之类描述的是表格里的一块区域，
+   * 对表格元素自身没有意义；条件 `tblPr` 的边框与边距落在 `TableCellInfo.effective` 上。
+   */
+  effective?: TableFormat;
   grid: number[];
 }
 
@@ -626,7 +653,7 @@ export interface PageSetup {
 
 export type DocumentBlock =
   | { type: 'paragraph'; paragraph: ParagraphInfo }
-  | { type: 'table'; rows: TableRowInfo[]; format?: TableFormat; grid: number[] }
+  | { type: 'table'; rows: TableRowInfo[]; format?: TableFormat; effective?: TableFormat; grid: number[] }
   | { type: 'sectionBreak'; section: number; breakType: SectionType }
   | { type: 'pageBreak' };
 

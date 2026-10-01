@@ -50,7 +50,8 @@ import { fieldKindFromInstruction, formatPageNumber, NEVER_EVALUATE, pageFieldRe
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
-  computeEffectiveRunFormat,
+  computeEffectiveCellFormat, computeEffectiveRowFormat, computeEffectiveRunFormat,
+  computeEffectiveTableFormat,
   parseStyles,
   readParagraphProperties,
   readRunProperties,
@@ -1798,7 +1799,10 @@ function setTableFormat(tbl: Element, format: TableFormat): void {
   if (format.borders !== undefined) setBorders(props, 'tblBorders', format.borders);
   if (format.shading !== undefined) setShading(props, format.shading);
   if (format.cellMargin !== undefined) setMargins(props, 'tblCellMar', format.cellMargin);
-  if (format.layout !== undefined) valueElement(props, 'tblLayout', format.layout);
+  if (format.layout !== undefined) {
+    // w:tblLayout 用 w:type 承载值，不是 w:val。
+    setWordAttr(property(props, 'tblLayout'), 'type', format.layout);
+  }
   if (format.style !== undefined) valueElement(props, 'tblStyle', format.style);
   if (format.look !== undefined) valueElement(props, 'tblLook', format.look);
   if (format.caption !== undefined) valueElement(props, 'tblCaption', format.caption);
@@ -1824,6 +1828,15 @@ function setRowFormat(row: Element, format: RowFormat): void {
     removeWordChildren(props, 'ins');
     if (format.inserted) markRevision(props, 'ins', format.revision?.author, format.revision?.date);
   }
+  // w:gridBefore / w:gridAfter 跳过的网格列数，以及跳过那块空间的宽度。
+  for (const [key, tag] of [['gridBefore', 'gridBefore'], ['gridAfter', 'gridAfter']] as const) {
+    const value = format[key];
+    if (value === undefined) continue;
+    if (value === 0) removeWordChildren(props, tag);
+    else valueElement(props, tag, String(value));
+  }
+  if (format.widthBefore !== undefined) widthValue(props, 'wBefore', format.widthBefore);
+  if (format.widthAfter !== undefined) widthValue(props, 'wAfter', format.widthAfter);
 }
 
 function setCellFormat(cell: Element, format: CellFormat): void {
@@ -3821,6 +3834,27 @@ export class DocxDocument {
       ]));
   }
 
+  /**
+   * 注入给 `readTable()` 的解析器。表格读取是结构读取的叶子、不碰样式，所以「算上表格样式
+   * 之后的单元格格式」在这里接上样式上下文。
+   */
+  private get cellFormatResolver(): (cell: Element, direct: CellFormat | undefined) => CellFormat | undefined {
+    const owner = this;
+    return (cell, direct) => computeEffectiveCellFormat(owner.getStylesContext(), cell, direct);
+  }
+
+  /** 同 cellFormatResolver，行格式。 */
+  private get rowFormatResolver(): (row: Element, direct: RowFormat | undefined) => RowFormat | undefined {
+    const owner = this;
+    return (row, direct) => computeEffectiveRowFormat(owner.getStylesContext(), row, direct);
+  }
+
+  /** 同 cellFormatResolver，表格级格式。 */
+  private get tableFormatResolver(): (table: Element, direct: TableFormat | undefined) => TableFormat | undefined {
+    const owner = this;
+    return (table, direct) => computeEffectiveTableFormat(owner.getStylesContext(), table, direct);
+  }
+
   private buildBlocksFrom(document: Document, paragraphs: ParagraphInfo[]): DocumentBlock[] {
     const body = blockContainerOf(document);
     const paragraphElements = mainParagraphElements(body);
@@ -3832,7 +3866,7 @@ export class DocxDocument {
         const paragraph = paragraphByElement.get(child);
         return paragraph ? [{ type: 'paragraph', paragraph }] : [];
       }
-      if (child.localName === 'tbl') return [readTable(child, walk)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
       if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
@@ -3872,7 +3906,7 @@ export class DocxDocument {
       if (child.localName === 'p') {
         return [{ type: 'paragraph', paragraph: readParagraph(child, -1, styles, undefined, imageContext, noteNumber) }];
       }
-      if (child.localName === 'tbl') return [readTable(child, walk)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
       return [];
     });
     return walk(root);
@@ -8074,12 +8108,15 @@ export class DocxDocument {
     const indices = new Map(mainParagraphElements(body).map((paragraph, i) => [paragraph, paragraphs[i]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
-      if (child.localName === 'tbl') return [readTable(child, walk)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
       if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
-    const table = readTable(tableAt(document, index), walk);
-    return { index, rows: table.rows, format: table.format, grid: table.grid };
+    const table = readTable(tableAt(document, index), walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver);
+    return {
+      index, rows: table.rows, format: table.format,
+      ...(table.effective ? { effective: table.effective } : {}), grid: table.grid,
+    };
   }
 
   insertTableRow(table: number, at: number): void {

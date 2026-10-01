@@ -977,9 +977,11 @@ export class DocxEditor {
   }
 
   private applyRowStyle(tr: HTMLTableRowElement, row: TableRowInfo): void {
-    if (!row.format) return;
-    if (row.format.height) tr.style.height = `${twipsToPx(row.format.height.value)}px`;
-    if (row.format.header) tr.dataset.header = 'true';
+    // 优先用算上表格样式之后的行格式；没有（调用方没注入解析器）才退回直接格式。
+    const format = row.effective ?? row.format;
+    if (!format) return;
+    if (format.height) tr.style.height = `${twipsToPx(format.height.value)}px`;
+    if (format.header) tr.dataset.header = 'true';
   }
 
   private applyCellStyle(td: HTMLTableCellElement, cell: CellFormat | undefined, table: TableFormat | undefined,
@@ -1003,14 +1005,31 @@ export class DocxEditor {
     reviewContext: ReviewRenderContext): HTMLTableElement {
     const table = this.root.ownerDocument.createElement('table');
     table.className = 'docx-table';
-    this.applyTableStyle(table, block.format);
+    // 优先用算上表格样式之后的表格级格式；没有（调用方没注入解析器）才退回直接格式。
+    this.applyTableStyle(table, block.effective ?? block.format);
     const body = table.createTBody();
     for (const rowIndex of rowIndices) {
       const row = block.rows[rowIndex];
       if (!row) continue;
       const tr = body.insertRow();
       this.applyRowStyle(tr, row);
-      let colIndex = 0;
+      const rowFormat = row.effective ?? row.format;
+      // w:gridBefore 跳过的网格列也占列号。从 0 起算的话，这一行所有 gridStart / gridEnd
+      // 都会偏小，宿主按下标定位单元格就会落到错的列上。
+      let colIndex = rowFormat?.gridBefore ?? 0;
+      // 跳过的那块在 Word 里是实打实的空白，用一个空 td 占住。它不是文档内容，所以标成
+      // contentEditable=false，也不画边框。
+      const gridSkip = (span: number, width: WidthFormat | undefined) => {
+        const td = tr.insertCell();
+        td.colSpan = Math.max(1, span);
+        td.contentEditable = 'false';
+        td.dataset.docxGridSkip = String(span);
+        td.setAttribute('aria-hidden', 'true');
+        td.style.borderStyle = 'none';
+        const css = this.widthCss(width);
+        if (css) td.style.width = css;
+      };
+      if (rowFormat?.gridBefore) gridSkip(rowFormat.gridBefore, rowFormat.widthBefore);
       for (const cell of row.cells) {
         const logicalStart = colIndex;
         colIndex += Math.max(1, cell.colSpan);
@@ -1023,10 +1042,12 @@ export class DocxEditor {
         td.dataset.rowEnd = String(rowIndex + Math.max(1, cell.rowSpan));
         td.colSpan = Math.max(1, cell.colSpan);
         if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
-        this.applyCellStyle(td, cell.format, block.format, rowIndex, logicalStart,
+        // 优先用算上表格样式之后的格式；没有（调用方没注入解析器）才退回直接格式。
+        this.applyCellStyle(td, cell.effective ?? cell.format, block.effective ?? block.format, rowIndex, logicalStart,
           Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
         this.appendBlocks(td, cell.blocks, defaultTabStopTwips, reviewContext);
       }
+      if (rowFormat?.gridAfter) gridSkip(rowFormat.gridAfter, rowFormat.widthAfter);
     }
     return table;
   }
