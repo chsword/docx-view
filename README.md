@@ -403,6 +403,10 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 条件格式里的 `tblPr` 描述的是**该条件匹配到的区域**，所以它的 `tblBorders` 与 `tblCellMar` 落在那些单元格上，而不是整张表上。
 - 表格元素自身的格式（宽度、对齐、缩进、布局、底纹、单元格边距、框线）解析为 `TableInfo.effective`，由样式链的 `wholeTable` 层加表格自己的 `tblPr` 决定，**条件不参与**。合并时会跳过样式里的 `tblStyle` 与 `tblLook`：前者会反过来改写表格引用的样式 id，后者会把带状 / 首行这些开关搅乱，它们只能来自表格自己。
 - `w:tblLayout` 的值在 `w:type` 上（Word 写的是 `<w:tblLayout w:type="fixed"/>`），读写都按 `w:type`。
+- 浮动表格（`w:tblpPr`）读写为 `TableFormat.floatingPosition`（`leftFromText` / `rightFromText` / `topFromText` / `bottomFromText`、`verticalAnchor` / `horizontalAnchor`、`xSpec` / `x`、`ySpec` / `y`；传 `null` 清除，表格回到正常流）。它是表格版的 `w:framePr`：表格脱离正常流、正文绕着它排，所以走的是同一条路——渲染给表格加 `float`，环绕交给浏览器；分页测量用同样的 float 占位，两边不会各算一套。排除区宽度优先用 `w:tblW`，没有就用网格列宽合计。
+- **`w:tblpPr` 上没有 `w:wrap`**：浮动表格在 Word 里一定绕排，这正是它的用途，所以排除区类型固定为 `square`。`w:tblOverlap` 管的是能否与**其他浮动对象**重叠，与正文是否绕排无关，目前只读取保留。
+- `<w:tblpPr/>` 即便一个属性都没有也是浮动表格（全取默认值），所以读出来是空对象而不是 `undefined`——退化成 `undefined` 会把「浮动」这件事本身丢掉。非法枚举与非数字按未设置处理，但仍然是浮动表格。
+- **`w:tblpX` / `w:tblpY` 那套按页面或页边距定位的绝对坐标本期不实现**（与 `w:framePr` 同理：需要相对页框定位，而连续视图没有页框）。这些值如实读写，浮动方向按 `tblpXSpec` 取左右，其余照左浮。
 - 行的网格跳过（`w:gridBefore` / `w:wBefore` / `w:gridAfter` / `w:wAfter`）读写为 `RowFormat.gridBefore` / `widthBefore` / `gridAfter` / `widthAfter`；`0`、负数与非整数按未设置处理。**跳过的列算进网格列号**——跨行合并是靠网格起始列匹配的（`vMerge` 的 continue 要对上上面那个 restart），不算进去的话带 `gridBefore` 的行里合并会断掉，单元格的 `gridStart` / `gridEnd` 也会偏小。渲染时跳过的那块用一个空单元格占位，宽度取 `wBefore` / `wAfter`，标为 `contentEditable="false"` 且不画边框。
 - 合并时 `borders` 与 `margin` 按**边**合并，`shading` 作为整体替换（`w:shd` 本就是单个元素）。按边合并是必须的：「整表定四边 + `firstRow` 只定下边框」是表格样式里最常见的组合，整块替换会把其余三边抹掉。
 - 表格样式的行格式（`trPr`：行高、`cantSplit`、`tblHeader` 等）解析为 `TableRowInfo.effective`，渲染与分页都用它。**只有由行位置决定的条件参与**：`firstRow` / `lastRow` / `band1Horz` / `band2Horz`；`firstCol` 之类是单元格范围的条件，对整行没有意义，其 `trPr` 不生效。叠加顺序同样是样式自身的 `trPr` → 条件的 `trPr` → 行自己的 `trPr`（最高）；`height` 对应单个 `w:trHeight` 元素，整体替换。因此由样式的 `firstRow` 条件提供 `w:tblHeader` 的表格，跨页时也会重复表头。`TableRowInfo.format` 的语义不变，仍只含行自己的直接格式。

@@ -106,6 +106,37 @@ function marginsOf(element: Element | undefined): MarginFormat | undefined {
   return Object.keys(margin).length ? margin : undefined;
 }
 
+const FLOAT_ANCHORS = ['margin', 'page', 'text'];
+const FLOAT_X_SPEC = ['center', 'inside', 'left', 'outside', 'right'];
+const FLOAT_Y_SPEC = ['bottom', 'center', 'inside', 'inline', 'outside', 'top'];
+
+/** `w:tblpPr` 的信息全在属性上，没有 `w:val` 子元素。 */
+function parseFloatingPosition(element: Element | undefined): TableFormat['floatingPosition'] {
+  if (!element) return undefined;
+  const attr = (name: string) =>
+    element.getAttributeNS(WORD_NS, name) ?? element.getAttribute(`w:${name}`) ?? undefined;
+  const pick = (name: string, allowed: string[]) => {
+    const raw = attr(name);
+    return raw !== undefined && allowed.includes(raw) ? raw : undefined;
+  };
+  const position = {
+    leftFromText: number(attr('leftFromText') ?? null),
+    rightFromText: number(attr('rightFromText') ?? null),
+    topFromText: number(attr('topFromText') ?? null),
+    bottomFromText: number(attr('bottomFromText') ?? null),
+    verticalAnchor: pick('vertAnchor', FLOAT_ANCHORS),
+    horizontalAnchor: pick('horzAnchor', FLOAT_ANCHORS),
+    xSpec: pick('tblpXSpec', FLOAT_X_SPEC),
+    x: number(attr('tblpX') ?? null),
+    ySpec: pick('tblpYSpec', FLOAT_Y_SPEC),
+    y: number(attr('tblpY') ?? null),
+  } as NonNullable<TableFormat['floatingPosition']>;
+  // w:tblpPr 在场就是浮动表格，即便一个属性都没给（都取默认值），所以不因为空对象而返回
+  // undefined —— 那会把「浮动」这件事本身丢掉。
+  return Object.fromEntries(Object.entries(position)
+    .filter(([, value]) => value !== undefined)) as NonNullable<TableFormat['floatingPosition']>;
+}
+
 export function parseTableFormat(tblPr: Element | undefined): TableFormat | undefined {
   if (!tblPr) return undefined;
   const alignment = wordValue(children(tblPr, 'jc')[0]);
@@ -127,6 +158,7 @@ export function parseTableFormat(tblPr: Element | undefined): TableFormat | unde
     caption: wordValue(children(tblPr, 'tblCaption')[0]) ?? undefined,
     description: wordValue(children(tblPr, 'tblDescription')[0]) ?? undefined,
     bidiVisual: boolValue(children(tblPr, 'bidiVisual')[0]),
+    floatingPosition: parseFloatingPosition(children(tblPr, 'tblpPr')[0]),
   };
   return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }

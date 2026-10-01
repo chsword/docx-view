@@ -3456,3 +3456,34 @@ test('grid skips render as non-editable spacer cells and shift the grid datasets
   assert.equal(after.childNodes[0].dataset.gridStart, '0');
   assert.equal(after.childNodes[1].contentEditable, 'false');
 });
+
+test('a floating table floats so the browser wraps text around it', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const render = (format) => editor.makeTable(
+    { type: 'table', grid: [2880], rows: [{ cells: [cell()], format: {} }], format },
+    [0], 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+
+  const floated = render({ floatingPosition: { leftFromText: 180, rightFromText: 180, xSpec: 'left' } });
+  assert.equal(floated.dataset.docxFloating, '1');
+  assert.equal(floated.style.cssFloat, 'left');
+  assert.equal(floated.style.marginLeft, '12px', '180 缇 ÷ 15');
+  assert.equal(floated.style.marginRight, '12px');
+  assert.equal(render({ floatingPosition: { xSpec: 'right' } }).style.cssFloat, 'right');
+
+  // 居中的浮动表格不能被 jc 的 marginInline:auto 抵消掉浮动；margin-inline 是 marginLeft /
+  // marginRight 的简写，清它的时机错了会把间距一起清掉。
+  const centered = render({ alignment: 'center', floatingPosition: { leftFromText: 180 } });
+  assert.equal(centered.style.cssFloat, 'left');
+  assert.equal(centered.style.marginInline, '');
+  assert.equal(centered.style.marginLeft, '12px');
+
+  // 不浮动的表格什么都不加，居中照旧。
+  const plain = render({ alignment: 'center' });
+  assert.equal(plain.dataset.docxFloating, undefined);
+  assert.equal(plain.style.cssFloat, undefined);
+  assert.equal(plain.style.marginInline, 'auto');
+});

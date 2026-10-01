@@ -389,6 +389,29 @@ export interface MarginFormat {
   left?: WidthFormat;
 }
 
+/**
+ * `w:tblpPr` —— 浮动表格定位。它是表格版的 `w:framePr`：表格脱离正常流，正文绕着它排，
+ * 所以排版上走的是同一条路（给后面的内容留出一块排除区，环绕交给浏览器 `float`）。
+ *
+ * `w:tblpPr` 上没有 `w:wrap`：浮动表格在 Word 里一定是绕排的，这正是它的用途；
+ * `w:tblOverlap` 管的是能否与**其他浮动对象**重叠，不是正文是否绕排。
+ */
+export interface TableFloatingPosition {
+  /** 与周围正文的间距，单位缇。 */
+  leftFromText?: number;
+  rightFromText?: number;
+  topFromText?: number;
+  bottomFromText?: number;
+  verticalAnchor?: 'margin' | 'page' | 'text';
+  horizontalAnchor?: 'margin' | 'page' | 'text';
+  xSpec?: 'center' | 'inside' | 'left' | 'outside' | 'right';
+  /** 绝对横坐标，单位缇。 */
+  x?: number;
+  ySpec?: 'bottom' | 'center' | 'inside' | 'inline' | 'outside' | 'top';
+  /** 绝对纵坐标，单位缇。 */
+  y?: number;
+}
+
 export interface TableFormat {
   width?: WidthFormat;
   alignment?: 'left' | 'center' | 'right';
@@ -402,6 +425,8 @@ export interface TableFormat {
   caption?: string;
   description?: string;
   bidiVisual?: boolean | null;
+  /** `w:tblpPr`；有它就是浮动表格。 */
+  floatingPosition?: TableFloatingPosition | null;
 }
 
 export interface RowFormat {

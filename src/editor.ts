@@ -970,6 +970,27 @@ export class DocxEditor {
     if (format.alignment === 'left') { table.style.marginLeft = '0'; table.style.marginRight = 'auto'; }
     if (format.indent !== undefined && (!format.alignment || format.alignment === 'left')) table.style.marginLeft = `${twipsToPx(format.indent)}px`;
     if (format.shading?.fill) table.style.backgroundColor = `#${format.shading.fill}`;
+    // w:tblpPr：浮动表格，正文绕着它排。和 framePr 一样把环绕交给浏览器 float —— 分页测量
+    // 也是用 float 占位（见 measureParagraphForPagination），两边是同一套行为。
+    // w:tblpX / w:tblpY 那套按页面或页边距定位的绝对坐标本期不实现：需要相对页框定位，而
+    // 连续视图没有页框；浮动方向按 tblpXSpec 取左右，其余照左浮。
+    const floating = format.floatingPosition;
+    if (floating) {
+      table.dataset.docxFloating = '1';
+      table.style.cssFloat = floating.xSpec === 'right' ? 'right' : 'left';
+      // 先清掉 jc 可能设下的 marginInline:auto（它会抵消浮动），再设间距 —— margin-inline 是
+      // marginLeft / marginRight 的简写，顺序反了会把刚设的间距一起清掉。
+      table.style.marginInline = '';
+      const gap = (value: number | undefined) => (value === undefined ? undefined : `${twipsToPx(value)}px`);
+      const left = gap(floating.leftFromText);
+      const right = gap(floating.rightFromText);
+      const top = gap(floating.topFromText);
+      const bottom = gap(floating.bottomFromText);
+      if (left) table.style.marginLeft = left;
+      if (right) table.style.marginRight = right;
+      if (top) table.style.marginTop = top;
+      if (bottom) table.style.marginBottom = bottom;
+    }
     if (format.caption) {
       const caption = table.createCaption();
       caption.textContent = format.caption;

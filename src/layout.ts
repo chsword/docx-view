@@ -4,6 +4,7 @@ import type {
   EastAsianLayout,
   EquationNode,
   ParagraphFrame,
+  TableFloatingPosition,
   ImageInfo,
   ParagraphInfo,
   RubyInfo,
@@ -436,6 +437,7 @@ export function paginate(
     }
   };
   const addTable = (table: LayoutTable, blockIndex: number) => {
+    const floating = (table.effective ?? table.format)?.floatingPosition;
     // A table row is the smallest table FlowItem, so cantSplit rows are always
     // atomic; rowSpan extends that atomic group through every covered row.
     const heightCache = new Map<number, Map<number, number>>();
@@ -454,6 +456,24 @@ export function paginate(
       byWidth.set(widthPx, height);
       return height;
     };
+    if (floating) {
+      // 浮动表格整块脱离正常流：自己不占纵向高度，只给后面的内容留出排除区。宽度优先用
+      // w:tblW，没有就用网格列宽合计（gridCol 的 w:w 是缇）。
+      const heightPx = table.rows.reduce((sum, _row, index) => sum + rowHeight(index), 0);
+      const widthTwips = (table.effective ?? table.format)?.width?.type === 'dxa'
+        ? (table.effective ?? table.format)!.width!.value
+        : table.grid.reduce((sum, column) => sum + Math.max(0, column), 0);
+      const exclusion = tableWrapExclusion(floating, { widthPx: widthTwips / 15, heightPx });
+      if (exclusion) {
+        // 排除区放不进本栏剩余高度、而本栏已经有内容时先换栏，和带 framePr 的段落一样。
+        if (exclusion.heightPx > remainingHeight() && hasContent(ensurePage(), currentColumn)) advanceColumn();
+        append(table.rows.map((_row, index) => ({
+          type: 'tableRow' as const, table: blockIndex, row: index, heightPx: rowHeight(index),
+        })), 0);
+        wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...exclusion, carried: true }];
+        return;
+      }
+    }
     let headerCount = 0;
     // 表头行可能是表格样式的 firstRow 条件给的 w:tblHeader，不只是行自己写的。
     while (headerCount < table.rows.length
@@ -669,6 +689,22 @@ export function overstrikeLayers(equation: EquationNode | undefined, result: str
  * `w:wrap` 的取值正好能对上现有的排除区类型：`none` 不产生排除区（正文不绕它排），
  * `notBeside` 是「旁边不许有文字」，也就是 `topAndBottom`。
  */
+/**
+ * 浮动表格（`w:tblpPr`）的排除区。和 `frameWrapExclusion` 是同一件事：这一块脱离正常流，
+ * 给后面的内容留出空间，环绕交给浏览器 `float`。
+ *
+ * `w:tblpPr` 上没有 `w:wrap` —— 浮动表格在 Word 里一定绕排，这正是它的用途，所以排除区
+ * 类型固定是 `square`；`w:tblOverlap` 管的是能否与其他浮动对象重叠，与正文绕排无关。
+ */
+export function tableWrapExclusion(position: TableFloatingPosition | null | undefined,
+  measured: { widthPx?: number; heightPx: number }): WrapExclusion | undefined {
+  if (!position) return undefined;
+  const { widthPx, heightPx } = measured;
+  // 宽度算不出来时不编一个：不环绕只是少个效果，编错了会把正文挤歪。
+  if (widthPx === undefined || !(widthPx > 0) || !(heightPx > 0)) return undefined;
+  return { widthPx, heightPx, wrap: 'square', carried: false };
+}
+
 export function frameWrapExclusion(frame: ParagraphFrame | null | undefined,
   measured: { widthPx?: number; heightPx: number }): WrapExclusion | undefined {
   if (!frame) return undefined;

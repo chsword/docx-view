@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, frameWrapExclusion, overstrikeLayers, snapLineHeightPx } from '../dist/layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, frameWrapExclusion, overstrikeLayers, snapLineHeightPx, tableWrapExclusion } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -648,4 +648,59 @@ test('header rows repeat when the table style supplies tblHeader through a condi
   // 没有表头时第 0 行只出现一次；有表头时后续页上会再出现。
   assert.equal(headerPerPage(plain).reduce((sum, count) => sum + count, 0), 1);
   assert.ok(headerPerPage(fromStyle).reduce((sum, count) => sum + count, 0) > 1, '后续页上重复了表头');
+});
+
+test('a floating table leaves the flow and leaves an exclusion for what follows', () => {
+  // 浮动表格和带 framePr 的段落是同一件事：整块脱离正常流，只给后面的内容留出排除区，
+  // 环绕交给浏览器 float。
+  assert.deepEqual(tableWrapExclusion({ leftFromText: 180 }, { widthPx: 192, heightPx: 60 }),
+    { widthPx: 192, heightPx: 60, wrap: 'square', carried: false });
+  // w:tblpPr 上没有 w:wrap —— 浮动表格一定绕排，所以类型固定是 square；空对象也是浮动。
+  assert.equal(tableWrapExclusion({}, { widthPx: 100, heightPx: 50 })?.wrap, 'square');
+  assert.equal(tableWrapExclusion(undefined, { widthPx: 100, heightPx: 50 }), undefined);
+  assert.equal(tableWrapExclusion(null, { widthPx: 100, heightPx: 50 }), undefined);
+  // 宽高算不出来时不编一个出来。
+  assert.equal(tableWrapExclusion({}, { heightPx: 50 }), undefined);
+  assert.equal(tableWrapExclusion({}, { widthPx: 0, heightPx: 50 }), undefined);
+  assert.equal(tableWrapExclusion({}, { widthPx: 100, heightPx: 0 }), undefined);
+
+  const areas = [];
+  const watcher = {
+    measureParagraph(p, area) {
+      areas.push({ paragraph: p.index, wraps: area.wraps.map((w) => ({ ...w })) });
+      return (p.lines ?? [10]).map((height, index) => ({ heightPx: height, startOffset: index, endOffset: index + 1 }));
+    },
+    measureTableRow(_table, row) { return row.height ?? 10; },
+  };
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const floatingTable = {
+    type: 'table', index: 0, grid: [2880],
+    format: { floatingPosition: { leftFromText: 180 }, width: { type: 'dxa', value: 2880 } },
+    rows: [{ cells: [cell()], format: {}, height: 30 }, { cells: [cell()], format: {}, height: 30 }],
+  };
+  const body = { index: 1, text: '正文', runs: [], images: [], lines: [20, 20] };
+  const pages = paginate([floatingTable, { type: 'paragraph', paragraph: body }],
+    [section({ pageHeight: 6000 })], watcher, { defaultTabStopTwips: 720 });
+  assert.equal(pages.length, 1);
+  // 表格的行照样进页面（要画出来），但不计入栏高：只有正文那 2 行 × 20 算进去。
+  assert.equal(pages[0].contentHeightPx, 40);
+  assert.deepEqual(pages[0].items.filter((item) => item.type === 'tableRow').map((item) => item.row), [0, 1]);
+  // 排除区带到了后面的段落：宽度来自 w:tblW（2880 缇 ÷ 15），高度是两行合计。
+  assert.deepEqual(areas.find((entry) => entry.paragraph === 1).wraps,
+    [{ widthPx: 192, heightPx: 60, wrap: 'square', carried: true }]);
+
+  // 没有 w:tblW 时用网格列宽合计。
+  areas.length = 0;
+  paginate([{ ...floatingTable, grid: [1500, 1500], format: { floatingPosition: {} } },
+    { type: 'paragraph', paragraph: body }], [section({ pageHeight: 6000 })], watcher,
+    { defaultTabStopTwips: 720 });
+  assert.equal(areas.find((entry) => entry.paragraph === 1).wraps[0].widthPx, 200, '3000 缇 ÷ 15');
+
+  // 不浮动的表格照常计入栏高。
+  areas.length = 0;
+  const plain = paginate([{ ...floatingTable, format: { width: { type: 'dxa', value: 2880 } } },
+    { type: 'paragraph', paragraph: body }], [section({ pageHeight: 6000 })], watcher,
+    { defaultTabStopTwips: 720 });
+  assert.equal(plain[0].contentHeightPx, 100, '60 + 2 × 20');
+  assert.deepEqual(areas.find((entry) => entry.paragraph === 1).wraps, []);
 });

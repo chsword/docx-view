@@ -1,4 +1,4 @@
-import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, ParagraphFrame, RowFormat, RunFormat, Shading, TabStop, TableFormat } from './types.js';
+import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, ParagraphFrame, RowFormat, RunFormat, Shading, TabStop, TableFloatingPosition, TableFormat } from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
@@ -349,7 +349,8 @@ function validateMargins(value: unknown, name: string): void {
 
 export function validateTableFormat(value: unknown): asserts value is TableFormat {
   object(value);
-  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look', 'caption', 'description', 'bidiVisual']);
+  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'style', 'look',
+    'caption', 'description', 'bidiVisual', 'floatingPosition']);
   if ('width' in value) validateWidth(value.width, 'width');
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
   if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
@@ -359,6 +360,37 @@ export function validateTableFormat(value: unknown): asserts value is TableForma
   if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
   if ('bidiVisual' in value && value.bidiVisual !== null && typeof value.bidiVisual !== 'boolean') throw new Error('bidiVisual must be boolean.');
   for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
+  if ('floatingPosition' in value) {
+    maybeNull(value.floatingPosition as TableFloatingPosition | null | undefined,
+      (entry) => validateTableFloatingPosition(entry));
+  }
+}
+
+const FLOAT_NUMBERS = ['leftFromText', 'rightFromText', 'topFromText', 'bottomFromText', 'x', 'y'] as const;
+const FLOAT_ENUMS: Record<string, readonly string[]> = {
+  verticalAnchor: ['margin', 'page', 'text'],
+  horizontalAnchor: ['margin', 'page', 'text'],
+  xSpec: ['center', 'inside', 'left', 'outside', 'right'],
+  ySpec: ['bottom', 'center', 'inside', 'inline', 'outside', 'top'],
+};
+
+export function validateTableFloatingPosition(value: unknown): asserts value is TableFloatingPosition {
+  object(value);
+  const position = value as Record<string, unknown>;
+  keys(position, [...FLOAT_NUMBERS, ...Object.keys(FLOAT_ENUMS)]);
+  for (const [name, allowed] of Object.entries(FLOAT_ENUMS)) {
+    if (name in position && position[name] !== undefined && !allowed.includes(position[name] as string)) {
+      throw new Error(`floatingPosition.${name} must be one of ${allowed.join(', ')}.`);
+    }
+  }
+  for (const name of FLOAT_NUMBERS) {
+    // x / y 是坐标，可以为负（挪到页边距外）；FromText 是间距，不能为负。
+    const signed = name === 'x' || name === 'y';
+    if (name in position && position[name] !== undefined &&
+        (!Number.isSafeInteger(position[name]) || (!signed && (position[name] as number) < 0))) {
+      throw new Error(`floatingPosition.${name} must be ${signed ? 'an integer' : 'a non-negative integer'} in twips.`);
+    }
+  }
 }
 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {

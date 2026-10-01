@@ -1807,6 +1807,27 @@ function setTableFormat(tbl: Element, format: TableFormat): void {
   if (format.look !== undefined) valueElement(props, 'tblLook', format.look);
   if (format.caption !== undefined) valueElement(props, 'tblCaption', format.caption);
   if (format.description !== undefined) valueElement(props, 'tblDescription', format.description);
+  if (format.floatingPosition !== undefined) {
+    // null 清除浮动定位，表格回到正常流。
+    if (format.floatingPosition === null) removeWordChildren(props, 'tblpPr');
+    else setFloatingPosition(property(props, 'tblpPr'), format.floatingPosition);
+  }
+}
+
+const FLOAT_ATTRIBUTES = [
+  ['leftFromText', 'leftFromText'], ['rightFromText', 'rightFromText'],
+  ['topFromText', 'topFromText'], ['bottomFromText', 'bottomFromText'],
+  ['verticalAnchor', 'vertAnchor'], ['horizontalAnchor', 'horzAnchor'],
+  ['xSpec', 'tblpXSpec'], ['x', 'tblpX'], ['ySpec', 'tblpYSpec'], ['y', 'tblpY'],
+] as const;
+
+/** `w:tblpPr` 的信息全在属性上，和 framePr / eastAsianLayout 一样不能走 setWordValue。 */
+function setFloatingPosition(element: Element, position: NonNullable<TableFormat['floatingPosition']>): void {
+  for (const [key, attribute] of FLOAT_ATTRIBUTES) {
+    const value = position[key];
+    if (value === undefined) element.removeAttributeNS(WORD_NS, attribute);
+    else setWordAttr(element, attribute, String(value));
+  }
 }
 
 function setRowFormat(row: Element, format: RowFormat): void {

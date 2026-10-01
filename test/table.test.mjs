@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
-import { validateRowFormat } from '../dist/operations.js';
+import { validateRowFormat, validateTableFormat } from '../dist/operations.js';
 
 function withBody(xml) {
   const doc = DocxDocument.create();
@@ -464,4 +464,42 @@ test('row grid skips read, reject nonsense and round-trip', () => {
     assert.throws(() => validateRowFormat(invalid), undefined, JSON.stringify(invalid));
   }
   assert.doesNotThrow(() => validateRowFormat({ gridBefore: 2, widthBefore: { type: 'dxa', value: 2000 } }));
+});
+
+test('tblpPr reads, writes and clears floating table positioning', () => {
+  const floating = (tblPr) => withBody(
+    `<w:tbl><w:tblPr>${tblPr}</w:tblPr><w:tblGrid><w:gridCol w:w="2880"/></w:tblGrid>
+      <w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`).getTable(0).format?.floatingPosition;
+
+  assert.deepEqual(floating('<w:tblpPr w:leftFromText="180" w:rightFromText="180" w:vertAnchor="text"'
+    + ' w:horzAnchor="margin" w:tblpXSpec="right" w:tblpY="1"/>'), {
+    leftFromText: 180, rightFromText: 180, verticalAnchor: 'text',
+    horizontalAnchor: 'margin', xSpec: 'right', y: 1,
+  });
+  // w:tblpPr 在场就是浮动表格，即便一个属性都没给——空对象也不能退化成 undefined，
+  // 那会把「浮动」这件事本身丢掉。
+  assert.deepEqual(floating('<w:tblpPr/>'), {});
+  // 非法枚举与非数字按未设置处理，但仍然是浮动表格。
+  assert.deepEqual(floating('<w:tblpPr w:vertAnchor="nope" w:tblpXSpec="sideways" w:tblpX="abc"/>'), {});
+  assert.equal(floating(''), undefined);
+
+  const doc = withBody(
+    `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2880"/></w:tblGrid>
+      <w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>`);
+  doc.formatTable(0, { floatingPosition: { leftFromText: 180, horizontalAnchor: 'margin', xSpec: 'right', y: 1 } });
+  assert.match(doc.getPartXml(doc.mainDocumentPath),
+    /<w:tblpPr w:leftFromText="180" w:horzAnchor="margin" w:tblpXSpec="right" w:tblpY="1"\/>/);
+  assert.deepEqual(doc.getTable(0).format.floatingPosition,
+    { leftFromText: 180, horizontalAnchor: 'margin', xSpec: 'right', y: 1 });
+  // null 清除浮动定位，表格回到正常流。
+  doc.formatTable(0, { floatingPosition: null });
+  assert.doesNotMatch(doc.getPartXml(doc.mainDocumentPath), /tblpPr/);
+  assert.equal(doc.getTable(0).format?.floatingPosition, undefined);
+
+  for (const invalid of [{ verticalAnchor: 'nope' }, { xSpec: 'sideways' }, { leftFromText: -1 },
+    { leftFromText: 1.5 }, { vertAnchor: 'margin' }]) {
+    assert.throws(() => validateTableFormat({ floatingPosition: invalid }), undefined, JSON.stringify(invalid));
+  }
+  // x / y 是坐标，挪到页边距外时是负数，不能按间距去卡。
+  assert.doesNotThrow(() => validateTableFormat({ floatingPosition: { x: -720, y: -360 } }));
 });

@@ -4,11 +4,12 @@ export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export type {
   EastAsianLayout, EquationNode, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource,
-  PaginationInfo, ParagraphFrame, RubyInfo,
+  PaginationInfo, ParagraphFrame, RubyInfo, TableFloatingPosition,
 } from './types.js';
 export {
   columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor,
   frameWrapExclusion, overstrikeLayers, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx,
+  tableWrapExclusion,
 } from './layout.js';
 export type {
   FlowItem, LayoutMeasurer, LayoutTable, LineBox, MeasureContext, OverstrikeLayer, PageBox,
