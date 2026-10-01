@@ -163,10 +163,10 @@ function parseFormField(begin: Element, kind: FieldKind): FieldInfo['formField']
       const entries = children(dropDown, 'listEntry')
         .map((entry) => attr(entry, 'val'))
         .filter((entry): entry is string => entry !== undefined);
-      const defaultValue = Number.isSafeInteger(Number(attr(dropDown, 'default')))
-        ? Number(attr(dropDown, 'default')) : undefined;
-      const result = Number.isSafeInteger(Number(attr(dropDown, 'result')))
-        ? Number(attr(dropDown, 'result')) : undefined;
+      // w:default 与 w:result 是 w:ddList 的子元素（<w:result w:val="1"/>），不是它的属性，
+      // 所以要用读子元素 w:val 的 integer()，和上面 checkBox 的 size 一样。
+      const defaultValue = integer(dropDown, 'default');
+      const result = integer(dropDown, 'result');
       formField.dropDown = {
         entries,
         ...(defaultValue !== undefined ? { default: defaultValue } : {}),

@@ -2190,7 +2190,7 @@ test('fields classify merge and legacy form fields and preserve user values on u
     complexField(' MERGEFIELD 姓名 \\* MERGEFORMAT ', '', '«姓名»'),
     complexField(' FORMTEXT ', '<w:ffData><w:name w:val="name"/><w:enabled w:val="0"/><w:helpText w:val="Help"/><w:statusText w:val="Status"/><w:entryMacro w:val="EnterMacro"/><w:exitMacro w:val="ExitMacro"/><w:textInput><w:type w:val="text"/><w:default w:val="Default name"/><w:maxLength w:val="40"/><w:format w:val="0"/></w:textInput></w:ffData>', 'User name'),
     complexField(' FORMCHECKBOX ', '<w:ffData><w:name w:val="terms"/><w:checkBox><w:sizeAuto/><w:size w:val="20"/><w:default w:val="0"/><w:checked w:val="1"/></w:checkBox></w:ffData>', ''),
-    complexField(' FORMDROPDOWN ', '<w:ffData><w:name w:val="choice"/><w:ddList w:default="1" w:result="0"><w:listEntry w:val="First"/><w:listEntry w:val="Second"/></w:ddList></w:ffData>', 'First'),
+    complexField(' FORMDROPDOWN ', '<w:ffData><w:name w:val="choice"/><w:ddList><w:result w:val="0"/><w:default w:val="1"/><w:listEntry w:val="First"/><w:listEntry w:val="Second"/></w:ddList></w:ffData>', 'First'),
   ].join(''));
   const fields = doc.getFields();
   assert.deepEqual(fields.map(field => field.kind), ['MERGEFIELD', 'FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN']);
