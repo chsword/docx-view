@@ -17,12 +17,13 @@ export const HYPERLINK_REL = 'http://schemas.openxmlformats.org/officeDocument/2
 
 type Bound<F> = F extends (ctx: HyperlinkContext, ...args: infer A) => infer R ? (...args: A) => R : never;
 
-export interface HyperlinkContext extends Pick<PartAccess, 'mainPath' | 'getPartDocument' | 'updatePartXml' | 'hasPart' | 'addPart'>,
-  HistoryRecorder<HyperlinkContext> {
+export interface HyperlinkContext
+  extends Pick<PartAccess,
+    'mainPath' | 'hasPart' | 'addPart' | 'partDocumentCopy' | 'updatePartXmlFromCopy' | 'writePartXml'>,
+    HistoryRecorder<HyperlinkContext> {
   relationshipsFor(partPath: string): Map<string, RelationshipTarget>;
   nextRelationshipId(rels: Document): string;
   splitRunAtOffset(paragraph: Element, offset: number): void;
-  setPartXml(path: string, xml: string): void;
   getHyperlinks: Bound<typeof getHyperlinks>;
   hyperlinkNode: Bound<typeof hyperlinkNode>;
   resolveHyperlink: Bound<typeof resolveHyperlink>;
@@ -118,7 +119,7 @@ export function parseFldSimpleHyperlink(instruction: string): HyperlinkTarget | 
 }
 
 export function getHyperlinks(ctx: HyperlinkContext): HyperlinkInfo[] {
-    const main = ctx.getPartDocument(ctx.mainPath);
+    const main = ctx.partDocumentCopy(ctx.mainPath);
     const body = bodyOf(main);
     const paragraphs = mainParagraphElements(body);
     const relationships = ctx.relationshipsFor(ctx.mainPath);
@@ -221,7 +222,7 @@ export function insertHyperlink(
       if (link.url) {
         relationshipPath = resolveRelationshipsPath(draft.mainPath);
         relationships = draft.hasPart(relationshipPath)
-          ? draft.getPartDocument(relationshipPath)
+          ? draft.partDocumentCopy(relationshipPath)
           : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
         createdId = draft.nextRelationshipId(relationships);
         const relationship = relationships.createElementNS(REL_NS, 'Relationship');
@@ -231,7 +232,7 @@ export function insertHyperlink(
         relationship.setAttribute('TargetMode', 'External');
         relationships.documentElement!.appendChild(relationship);
       }
-      draft.updatePartXml(draft.mainPath, document => {
+      draft.updatePartXmlFromCopy(draft.mainPath, document => {
         const setHyperlinkAttributes = (node: Element): void => {
           if (createdId) node.setAttributeNS(OFFICE_REL_NS, 'r:id', createdId);
           else { node.removeAttributeNS(OFFICE_REL_NS, 'id'); node.removeAttribute('r:id'); }
@@ -318,7 +319,7 @@ export function insertHyperlink(
       });
       if (relationshipPath && relationships) {
         if (draft.hasPart(relationshipPath)) {
-          draft.setPartXml(relationshipPath, serializeXml(relationships));
+          draft.writePartXml(relationshipPath, serializeXml(relationships));
         } else {
           draft.addPart(relationshipPath, encodeXml(serializeXml(relationships)), 'application/vnd.openxmlformats-package.relationships+xml');
         }
@@ -338,7 +339,7 @@ export function updateHyperlink(
 ): void {
     assertHyperlinkInput(link);
     const current = ctx.resolveHyperlink(hyperlink);
-    const currentNodeName = ctx.hyperlinkNode(current, ctx.getPartDocument(ctx.mainPath)).localName;
+    const currentNodeName = ctx.hyperlinkNode(current, ctx.partDocumentCopy(ctx.mainPath)).localName;
     ctx.withDraft((draft) => {
       let nextRelationshipId = current.relationshipId;
       const currentRelationshipUsers = current.relationshipId
@@ -346,7 +347,7 @@ export function updateHyperlink(
         : 0;
       if (currentNodeName !== 'fldSimple' && link.url && link.url !== current.url) {
         const relPath = resolveRelationshipsPath(draft.mainPath);
-        const rels = draft.hasPart(relPath) ? draft.getPartDocument(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+        const rels = draft.hasPart(relPath) ? draft.partDocumentCopy(relPath) : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
         const canReuse = Boolean(current.relationshipId && currentRelationshipUsers <= 1);
         nextRelationshipId = canReuse ? current.relationshipId : draft.nextRelationshipId(rels);
         const existing = canReuse
@@ -360,12 +361,12 @@ export function updateHyperlink(
         relationship.setAttribute('TargetMode', 'External');
         if (!existing) rels.documentElement!.appendChild(relationship);
         if (draft.hasPart(relPath)) {
-          draft.setPartXml(relPath, serializeXml(rels));
+          draft.writePartXml(relPath, serializeXml(rels));
         } else {
           draft.addPart(relPath, encodeXml(serializeXml(rels)), 'application/vnd.openxmlformats-package.relationships+xml');
         }
       }
-      draft.updatePartXml(draft.mainPath, document => {
+      draft.updatePartXmlFromCopy(draft.mainPath, document => {
         const node = draft.hyperlinkNode(current, document);
         if (node.localName === 'fldSimple') {
           node.setAttributeNS(WORD_NS, 'w:instr', fieldInstruction(link));
@@ -385,7 +386,7 @@ export function updateHyperlink(
         if (!stillUsed) {
           const relPath = resolveRelationshipsPath(draft.mainPath);
           if (draft.hasPart(relPath)) {
-            draft.updatePartXml(relPath, rels => {
+            draft.updatePartXmlFromCopy(relPath, rels => {
               for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
                 if (relationship.getAttribute('Id') === current.relationshipId) {
                   rels.documentElement!.removeChild(relationship);
@@ -406,7 +407,7 @@ export function removeHyperlink(
 ): void {
     const link = ctx.resolveHyperlink(hyperlink);
     ctx.withDraft((draft) => {
-      draft.updatePartXml(draft.mainPath, document => {
+      draft.updatePartXmlFromCopy(draft.mainPath, document => {
         const node = draft.hyperlinkNode(link, document);
         const parent = node.parentNode as Element;
         if (options.keepText === false) parent.removeChild(node);
@@ -420,7 +421,7 @@ export function removeHyperlink(
         if (!stillUsed) {
           const relPath = resolveRelationshipsPath(draft.mainPath);
           if (draft.hasPart(relPath)) {
-            draft.updatePartXml(relPath, rels => {
+            draft.updatePartXmlFromCopy(relPath, rels => {
               for (const relationship of children(rels.documentElement!, 'Relationship', REL_NS)) {
                 if (relationship.getAttribute('Id') === link.relationshipId) {
                   rels.documentElement!.removeChild(relationship);

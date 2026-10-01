@@ -7,7 +7,7 @@ import { bodyOf, mainParagraphElements, nearestParagraph, paragraphAt, preOrderE
 
 type Bound<F> = F extends (ctx: BookmarkContext, ...args: infer A) => infer R ? (...args: A) => R : never;
 
-export interface BookmarkContext extends Pick<PartAccess, 'mainPath' | 'getPartDocument' | 'updatePartXml'> {
+export interface BookmarkContext extends Pick<PartAccess, 'mainPath' | 'partDocumentCopy' | 'updatePartXmlFromCopy'> {
   getBookmarks: Bound<typeof getBookmarks>;
 }
 
@@ -16,7 +16,7 @@ export function isInternalBookmark(name: string): boolean {
 }
 
 export function getBookmarks(ctx: BookmarkContext, options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
-    const body = bodyOf(ctx.getPartDocument(ctx.mainPath));
+    const body = bodyOf(ctx.partDocumentCopy(ctx.mainPath));
     const paragraphs = mainParagraphElements(body);
     const paragraphIndex = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     const order = preOrderElements(body);
@@ -75,7 +75,7 @@ export function insertBookmark(
       throw new Error(`Bookmark "${name}" already exists.`);
     }
     let bookmark: BookmarkInfo | undefined;
-    ctx.updatePartXml(ctx.mainPath, document => {
+    ctx.updatePartXmlFromCopy(ctx.mainPath, document => {
       const start = paragraphAt(document, range.startParagraph);
       const end = paragraphAt(document, range.endParagraph ?? range.startParagraph);
       const ids = descendants(bodyOf(document), 'bookmarkStart')
@@ -102,7 +102,7 @@ export function insertBookmark(
 
 export function deleteBookmark(ctx: BookmarkContext, name: string): void {
     assertText(name, 'name');
-    ctx.updatePartXml(ctx.mainPath, document => {
+    ctx.updatePartXmlFromCopy(ctx.mainPath, document => {
       const starts = descendants(bodyOf(document), 'bookmarkStart')
         .filter(start => (start.getAttributeNS(WORD_NS, 'name') ?? start.getAttribute('w:name')) === name);
       if (!starts.length) throw new Error(`Bookmark "${name}" does not exist.`);

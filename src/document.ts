@@ -2463,9 +2463,9 @@ export class DocxDocument {
       forgetPartDocument: (path) => { owner.documents.delete(path); },
       forgetDirtyPartXml: (path) => { owner.dirtyPartXml.delete(path); },
       forgetDirtyPartSize: (path) => { owner.dirtyPartSizes.delete(path); },
-      getPartDocument: (path) => owner.getPartDocument(path),
-      partDocumentOrUndefined: (path) => owner.partDocumentOrUndefined(path),
-      updatePartXml: (path, update) => owner.updatePartXml(path, update),
+      partDocumentCopy: (path) => owner.getPartDocument(path),
+      partDocumentCopyOrUndefined: (path) => owner.partDocumentOrUndefined(path),
+      updatePartXmlFromCopy: (path, update) => owner.updatePartXml(path, update),
       addPart: (path, bytes, contentType) => owner.addPart(path, bytes, contentType),
       relatedPartPathFor: (source, type) => owner.relatedPartPathFor(source, type),
       contentPartPaths: () => owner.contentPartPaths(),
@@ -2501,6 +2501,44 @@ export class DocxDocument {
       normalizeRangeOn: (...args) => owner.normalizeRangeOn(...args),
       normalizeDocumentRange: (...args) => owner.normalizeDocumentRange(...args),
       splitRunAtOffset: (...args) => owner.splitRunAtOffset(...args),
+    };
+  }
+
+  private get bookmarkContext(): BookmarkContext {
+    const owner = this;
+    return {
+      get mainPath() { return owner.mainPath; },
+      partDocumentCopy: (path) => owner.getPartDocument(path),
+      updatePartXmlFromCopy: (path, update) => owner.updatePartXml(path, update),
+      getBookmarks: (...args) => owner.getBookmarks(...args),
+    };
+  }
+
+  private get contentControlContext(): ContentControlContext {
+    const owner = this;
+    return {
+      get mainPath() { return owner.mainPath; },
+      livePartDocument: (path) => owner.getCachedPartDocument(path),
+      mutateLivePartXml: (path, update) => owner.updatePartXmlInternal(path, update),
+    };
+  }
+
+  private get hyperlinkContext(): HyperlinkContext {
+    const owner = this;
+    return {
+      get mainPath() { return owner.mainPath; },
+      hasPart: (path) => owner.parts.has(path),
+      addPart: (path, bytes, contentType) => owner.addPart(path, bytes, contentType),
+      partDocumentCopy: (path) => owner.getPartDocument(path),
+      updatePartXmlFromCopy: (path, update) => owner.updatePartXml(path, update),
+      writePartXml: (path, xml) => owner.setPartXml(path, xml),
+      relationshipsFor: (partPath) => owner.relationshipsFor(partPath),
+      nextRelationshipId: (rels) => owner.nextRelationshipId(rels),
+      splitRunAtOffset: (paragraph, offset) => owner.splitRunAtOffset(paragraph, offset),
+      withDraft: (action) => owner.withDraft((draft) => action(draft.hyperlinkContext)),
+      getHyperlinks: (...args) => owner.getHyperlinks(...args),
+      hyperlinkNode: (...args) => owner.hyperlinkNode(...args),
+      resolveHyperlink: (...args) => owner.resolveHyperlink(...args),
     };
   }
 
@@ -3838,26 +3876,26 @@ export class DocxDocument {
   }
 
   getContentControls(): ContentControlInfo[] {
-    return readContentControls(this as unknown as ContentControlContext);
+    return readContentControls(this.contentControlContext);
   }
 
   setContentControlText(id: number, text: string): void {
-    setContentControlTextDirect(this as unknown as ContentControlContext, id, text);
+    setContentControlTextDirect(this.contentControlContext, id, text);
   }
 
   setContentControlChecked(id: number, checked: boolean): void {
-    setContentControlCheckedDirect(this as unknown as ContentControlContext, id, checked);
+    setContentControlCheckedDirect(this.contentControlContext, id, checked);
   }
 
   setContentControlProperties(
     id: number,
     patch: { alias?: string | null; tag?: string | null; lock?: ContentControlInfo['lock'] },
   ): void {
-    setContentControlPropertiesDirect(this as unknown as ContentControlContext, id, patch);
+    setContentControlPropertiesDirect(this.contentControlContext, id, patch);
   }
 
   removeContentControl(id: number, options: { keepContent?: boolean } = {}): void {
-    removeContentControlDirect(this as unknown as ContentControlContext, id, options);
+    removeContentControlDirect(this.contentControlContext, id, options);
   }
 
   getBlocks(): DocumentBlock[] {
@@ -4544,7 +4582,7 @@ export class DocxDocument {
   }
 
   getHyperlinks(): HyperlinkInfo[] {
-    return readHyperlinks(this as unknown as HyperlinkContext);
+    return readHyperlinks(this.hyperlinkContext);
   }
 
   getRevisions(filter: { authors?: string[]; kinds?: RevisionInfo['kind'][] } = {}): RevisionInfo[] {
@@ -5005,7 +5043,7 @@ export class DocxDocument {
   }
 
   getBookmarks(options: { includeInternal?: boolean } = {}): BookmarkInfo[] {
-    return readBookmarks(this as unknown as BookmarkContext, options);
+    return readBookmarks(this.bookmarkContext, options);
   }
 
   getEditableRegions(): EditableRegionInfo[] {
@@ -5250,11 +5288,11 @@ export class DocxDocument {
   }
 
   private hyperlinkNode(hyperlink: HyperlinkInfo, document: Document): Element {
-    return hyperlinkNodeDirect(this as unknown as HyperlinkContext, hyperlink, document);
+    return hyperlinkNodeDirect(this.hyperlinkContext, hyperlink, document);
   }
 
   private resolveHyperlink(reference: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string }): HyperlinkInfo {
-    return resolveHyperlinkDirect(this as unknown as HyperlinkContext, reference);
+    return resolveHyperlinkDirect(this.hyperlinkContext, reference);
   }
 
   private splitRunAtOffset(paragraph: Element, offset: number): void {
@@ -6078,29 +6116,29 @@ export class DocxDocument {
     target: { paragraph: number; start: number; end: number },
     link: { url?: string; anchor?: string; tooltip?: string },
   ): HyperlinkInfo {
-    return insertHyperlinkDirect(this as unknown as HyperlinkContext, target, link);
+    return insertHyperlinkDirect(this.hyperlinkContext, target, link);
   }
 
   updateHyperlink(
     hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
     link: { url?: string; anchor?: string; tooltip?: string },
   ): void {
-    updateHyperlinkDirect(this as unknown as HyperlinkContext, hyperlink, link);
+    updateHyperlinkDirect(this.hyperlinkContext, hyperlink, link);
   }
 
   removeHyperlink(
     hyperlink: HyperlinkInfo | number | { paragraph: number; runs: number[]; text: string },
     options: { keepText?: boolean } = {},
   ): void {
-    removeHyperlinkDirect(this as unknown as HyperlinkContext, hyperlink, options);
+    removeHyperlinkDirect(this.hyperlinkContext, hyperlink, options);
   }
 
   insertBookmark(name: string, range: { startParagraph: number; endParagraph?: number }): BookmarkInfo {
-    return insertBookmarkDirect(this as unknown as BookmarkContext, name, range);
+    return insertBookmarkDirect(this.bookmarkContext, name, range);
   }
 
   deleteBookmark(name: string): void {
-    deleteBookmarkDirect(this as unknown as BookmarkContext, name);
+    deleteBookmarkDirect(this.bookmarkContext, name);
   }
 
   setParagraphNumbering(index: number, numId: number, level = 0): void {

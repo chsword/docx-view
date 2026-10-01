@@ -8,9 +8,8 @@ import { visibleTextOf } from './revisions.js';
 
 const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
 
-export interface ContentControlContext extends Pick<PartAccess, 'mainPath'> {
-  getCachedPartDocument(path: string): Document;
-  updatePartXmlInternal(path: string, update: (document: Document) => boolean | void): void;
+export interface ContentControlContext
+  extends Pick<PartAccess, 'mainPath' | 'livePartDocument' | 'mutateLivePartXml'> {
 }
 
 export function textElements(element: Element): Element[] {
@@ -238,7 +237,7 @@ function ensureW14Namespace(control: Element): void {
 }
 
 export function getContentControls(ctx: ContentControlContext): ContentControlInfo[] {
-    const body = bodyOf(ctx.getCachedPartDocument(ctx.mainPath));
+    const body = bodyOf(ctx.livePartDocument(ctx.mainPath));
     const paragraphs = mainParagraphElements(body);
     const paragraphIndexes = new Map(paragraphs.map((paragraph, index) => [paragraph, index]));
     return descendants(body, 'sdt').map((control) => {
@@ -313,7 +312,7 @@ export function getContentControls(ctx: ContentControlContext): ContentControlIn
 export function setContentControlText(ctx: ContentControlContext, id: number, text: string): void {
     assertIndex(id);
     assertText(text);
-    ctx.updatePartXmlInternal(ctx.mainPath, (document) => {
+    ctx.mutateLivePartXml(ctx.mainPath, (document) => {
       const body = bodyOf(document);
       const control = descendants(body, 'sdt').find((candidate) => {
         const properties = children(candidate, 'sdtPr')[0];
@@ -343,7 +342,7 @@ export function setContentControlText(ctx: ContentControlContext, id: number, te
 export function setContentControlChecked(ctx: ContentControlContext, id: number, checked: boolean): void {
     assertIndex(id);
     if (typeof checked !== 'boolean') throw new Error('checked must be boolean.');
-    ctx.updatePartXmlInternal(ctx.mainPath, (document) => {
+    ctx.mutateLivePartXml(ctx.mainPath, (document) => {
       const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
         const properties = children(candidate, 'sdtPr')[0];
         const value = wordValue(children(properties ?? candidate, 'id')[0]);
@@ -385,7 +384,7 @@ export function setContentControlProperties(
         !['sdtLocked', 'contentLocked', 'sdtContentLocked', 'unlocked'].includes(patch.lock)) {
       throw new Error('Invalid content control lock.');
     }
-    ctx.updatePartXmlInternal(ctx.mainPath, (document) => {
+    ctx.mutateLivePartXml(ctx.mainPath, (document) => {
       const control = descendants(bodyOf(document), 'sdt').find((candidate) => {
         const properties = children(candidate, 'sdtPr')[0];
         const value = wordValue(children(properties ?? candidate, 'id')[0]);
@@ -436,7 +435,7 @@ export function removeContentControl(ctx: ContentControlContext, id: number, opt
         ('keepContent' in options && typeof options.keepContent !== 'boolean')) {
       throw new Error('Invalid content control removal options.');
     }
-    ctx.updatePartXmlInternal(ctx.mainPath, (document) => {
+    ctx.mutateLivePartXml(ctx.mainPath, (document) => {
       const body = bodyOf(document);
       const control = descendants(body, 'sdt').find((candidate) => {
         const properties = children(candidate, 'sdtPr')[0];

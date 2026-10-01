@@ -47,7 +47,13 @@ export interface CommentCaches {
   commentBindingsCache?: { revision: number; bindings: CommentPartBinding[] };
 }
 
-export interface CommentContext extends PartAccess, HistoryRecorder<CommentContext> {
+export interface CommentContext
+  extends Pick<PartAccess,
+    'mainPath' | 'revision' | 'hasPart' | 'readPart' | 'deletePart'
+    | 'forgetPartDocument' | 'forgetDirtyPartXml' | 'forgetDirtyPartSize'
+    | 'partDocumentCopy' | 'partDocumentCopyOrUndefined' | 'updatePartXmlFromCopy'
+    | 'addPart' | 'relatedPartPathFor' | 'contentPartPaths' | 'ensurePartRelationship'>,
+    HistoryRecorder<CommentContext> {
   caches: CacheBundle & CommentCaches;
   mayContainComments: Bound<typeof mayContainComments>;
   commentBindings: Bound<typeof commentBindings>;
@@ -209,7 +215,7 @@ export function commentBindings(ctx: CommentContext): CommentPartBinding[] {
 }
 
 export function collectCommentLocations(ctx: CommentContext, sourcePartPath: string): Map<number, CommentLocation> {
-    const document = ctx.partDocumentOrUndefined(sourcePartPath);
+    const document = ctx.partDocumentCopyOrUndefined(sourcePartPath);
     if (!document) return new Map();
     let container: Element;
     try {
@@ -326,13 +332,13 @@ export function getAllComments(ctx: CommentContext): CommentInfo[] {
     for (const binding of bindings) {
       if (binding.commentsPath && !parsedCommentsPaths.has(binding.commentsPath) && ctx.hasPart(binding.commentsPath)) {
         parsedCommentsPaths.add(binding.commentsPath);
-        for (const entry of parseCommentEntries(ctx.partDocumentOrUndefined(binding.commentsPath) ?? null)) {
+        for (const entry of parseCommentEntries(ctx.partDocumentCopyOrUndefined(binding.commentsPath) ?? null)) {
           if (!entries.has(entry.id)) entries.set(entry.id, { entry, commentsPath: binding.commentsPath });
         }
       }
       if (binding.commentsExtendedPath && !parsedExtendedPaths.has(binding.commentsExtendedPath) && ctx.hasPart(binding.commentsExtendedPath)) {
         parsedExtendedPaths.add(binding.commentsExtendedPath);
-        for (const entry of parseCommentExEntries(ctx.partDocumentOrUndefined(binding.commentsExtendedPath) ?? null)) exEntries.set(entry.paraId, entry);
+        for (const entry of parseCommentExEntries(ctx.partDocumentCopyOrUndefined(binding.commentsExtendedPath) ?? null)) exEntries.set(entry.paraId, entry);
       }
     }
     const paraToId = new Map<string, number>();
@@ -448,12 +454,12 @@ export function nextCommentParaId(ctx: CommentContext): string {
     const used = new Set<number>();
     for (const binding of ctx.commentBindings()) {
       if (binding.commentsPath && ctx.hasPart(binding.commentsPath)) {
-        for (const entry of parseCommentEntries(ctx.partDocumentOrUndefined(binding.commentsPath) ?? null)) {
+        for (const entry of parseCommentEntries(ctx.partDocumentCopyOrUndefined(binding.commentsPath) ?? null)) {
           if (entry.paraId && /^[0-9a-f]{8}$/i.test(entry.paraId)) used.add(Number.parseInt(entry.paraId, 16));
         }
       }
       if (binding.commentsExtendedPath && ctx.hasPart(binding.commentsExtendedPath)) {
-        for (const entry of parseCommentExEntries(ctx.partDocumentOrUndefined(binding.commentsExtendedPath) ?? null)) {
+        for (const entry of parseCommentExEntries(ctx.partDocumentCopyOrUndefined(binding.commentsExtendedPath) ?? null)) {
           used.add(Number.parseInt(entry.paraId, 16));
           if (entry.paraIdParent) used.add(Number.parseInt(entry.paraIdParent, 16));
         }
@@ -470,7 +476,7 @@ export function locateComment(ctx: CommentContext, id: number): { sourcePartPath
     for (const binding of ctx.commentBindings()) {
       if (!binding.commentsPath || parsed.has(binding.commentsPath) || !ctx.hasPart(binding.commentsPath)) continue;
       parsed.add(binding.commentsPath);
-      const entry = parseCommentEntries(ctx.partDocumentOrUndefined(binding.commentsPath) ?? null).find((item) => item.id === id);
+      const entry = parseCommentEntries(ctx.partDocumentCopyOrUndefined(binding.commentsPath) ?? null).find((item) => item.id === id);
       if (entry) return { sourcePartPath: binding.sourcePartPath, commentsPath: binding.commentsPath, commentsExtendedPath: binding.commentsExtendedPath, entry };
     }
     throw new Error(`Comment ${id} does not exist.`);
@@ -478,7 +484,7 @@ export function locateComment(ctx: CommentContext, id: number): { sourcePartPath
 
 export function ensureCommentParaId(ctx: CommentContext, commentsPath: string, id: number): string {
     let resolved = '';
-    ctx.updatePartXml(commentsPath, (document) => {
+    ctx.updatePartXmlFromCopy(commentsPath, (document) => {
       const entry = parseCommentEntries(document).find((item) => item.id === id);
       if (!entry) throw new Error(`Comment ${id} does not exist.`);
       if (entry.paraId) {
@@ -513,7 +519,7 @@ export function writeCommentBody(ctx: CommentContext, commentElement: Element, p
 }
 
 export function upsertCommentEx(ctx: CommentContext, commentsExtendedPath: string, paraId: string, patch: { parentParaId?: string | null; done?: boolean }): void {
-    ctx.updatePartXml(commentsExtendedPath, (document) => {
+    ctx.updatePartXmlFromCopy(commentsExtendedPath, (document) => {
       const root = document.documentElement!;
       let entry = parseCommentExEntries(document).find((item) => item.paraId === paraId)?.element;
       if (!entry) {
@@ -534,7 +540,7 @@ export function upsertCommentEx(ctx: CommentContext, commentsExtendedPath: strin
 export function removeRelationshipTarget(ctx: CommentContext, sourcePartPath: string, relationType: string, targetPath: string): void {
     const relationshipPath = relsPath(sourcePartPath);
     if (!ctx.hasPart(relationshipPath)) return;
-    ctx.updatePartXml(relationshipPath, (document) => {
+    ctx.updatePartXmlFromCopy(relationshipPath, (document) => {
       for (const relation of children(document.documentElement!, 'Relationship', REL_NS)) {
         if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') continue;
         const target = relation.getAttribute('Target');
@@ -555,7 +561,7 @@ export function relationshipCount(ctx: CommentContext, targetPath: string, relat
     for (const sourcePartPath of ctx.contentPartPaths()) {
       const relationshipPath = relsPath(sourcePartPath);
       if (!ctx.hasPart(relationshipPath)) continue;
-      const document = ctx.partDocumentOrUndefined(relationshipPath)?.documentElement;
+      const document = ctx.partDocumentCopyOrUndefined(relationshipPath)?.documentElement;
       if (!document) continue;
       for (const relation of children(document, 'Relationship', REL_NS)) {
         if (relation.getAttribute('Type') !== relationType || relation.getAttribute('TargetMode') === 'External') continue;
@@ -574,14 +580,14 @@ export function relationshipCount(ctx: CommentContext, targetPath: string, relat
 }
 
 export function cleanupCommentParts(ctx: CommentContext, commentsPath: string, commentsExtendedPath?: string): void {
-    const hasComments = ctx.hasPart(commentsPath) && parseCommentEntries(ctx.partDocumentOrUndefined(commentsPath) ?? null).length > 0;
+    const hasComments = ctx.hasPart(commentsPath) && parseCommentEntries(ctx.partDocumentCopyOrUndefined(commentsPath) ?? null).length > 0;
     if (!hasComments) {
       for (const binding of ctx.commentBindings()) {
         ctx.removeRelationshipTarget(binding.sourcePartPath, COMMENTS_REL, commentsPath);
       }
       if (ctx.relationshipCount(commentsPath, COMMENTS_REL) === 0) ctx.removePartAndOverride(commentsPath);
     }
-    if (commentsExtendedPath && ctx.hasPart(commentsExtendedPath) && parseCommentExEntries(ctx.partDocumentOrUndefined(commentsExtendedPath) ?? null).length === 0) {
+    if (commentsExtendedPath && ctx.hasPart(commentsExtendedPath) && parseCommentExEntries(ctx.partDocumentCopyOrUndefined(commentsExtendedPath) ?? null).length === 0) {
       for (const binding of ctx.commentBindings()) {
         ctx.removeRelationshipTarget(binding.sourcePartPath, COMMENTS_EXTENDED_REL, commentsExtendedPath);
       }
@@ -600,7 +606,7 @@ export function addCommentDirect(ctx: CommentContext, range: TextRange | Documen
     if (comment.author !== undefined) assertText(comment.author, 'comment.author');
     if (comment.initials !== undefined) assertText(comment.initials, 'comment.initials');
     assertText(comment.text, 'comment.text');
-    const preview = ctx.getPartDocument(ctx.mainPath);
+    const preview = ctx.partDocumentCopy(ctx.mainPath);
     const normalized = 'paragraph' in range
       ? (() => {
           const current = ctx.normalizeRangeOn(preview, range);
@@ -623,7 +629,7 @@ export function addCommentDirect(ctx: CommentContext, range: TextRange | Documen
     const id = ctx.nextCommentId();
     const paraId = ctx.nextCommentParaId();
     const date = new Date().toISOString();
-    ctx.updatePartXml(ctx.mainPath, (document) => {
+    ctx.updatePartXmlFromCopy(ctx.mainPath, (document) => {
       const startParagraph = paragraphAt(document, normalized.startParagraph);
       const endParagraph = paragraphAt(document, normalized.endParagraph);
       const collapsed = normalized.startParagraph === normalized.endParagraph && normalized.startOffset === normalized.endOffset;
@@ -664,7 +670,7 @@ export function addCommentDirect(ctx: CommentContext, range: TextRange | Documen
       }
     });
     const { commentsPath, commentsExtendedPath } = ctx.ensureCommentsParts(ctx.mainPath, true);
-    ctx.updatePartXml(commentsPath, (document) => {
+    ctx.updatePartXmlFromCopy(commentsPath, (document) => {
       const root = document.documentElement!;
       const commentElement = wordElement(document, 'comment');
       commentElement.setAttributeNS(WORD_NS, 'w:id', String(id));
@@ -691,7 +697,7 @@ export function replyCommentDirect(ctx: CommentContext, parentId: number, commen
     const id = ctx.nextCommentId();
     const paraId = ctx.nextCommentParaId();
     const { commentsPath, commentsExtendedPath } = ctx.ensureCommentsParts(parent.sourcePartPath, true);
-    ctx.updatePartXml(commentsPath, (document) => {
+    ctx.updatePartXmlFromCopy(commentsPath, (document) => {
       const root = document.documentElement!;
       const commentElement = wordElement(document, 'comment');
       commentElement.setAttributeNS(WORD_NS, 'w:id', String(id));
@@ -727,7 +733,7 @@ export function setCommentTextDirect(ctx: CommentContext, id: number, text: stri
     assertText(text, 'text');
     const target = ctx.locateComment(id);
     const paraId = ctx.ensureCommentParaId(target.commentsPath, id);
-    ctx.updatePartXml(target.commentsPath, (document) => {
+    ctx.updatePartXmlFromCopy(target.commentsPath, (document) => {
       const entry = parseCommentEntries(document).find((item) => item.id === id);
       if (!entry) throw new Error(`Comment ${id} does not exist.`);
       ctx.writeCommentBody(entry.element, paraId, text);
@@ -767,7 +773,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
       paraIds.set(commentId, { commentsPath: target.commentsPath, commentsExtendedPath: target.commentsExtendedPath, paraId, sourcePartPath: target.sourcePartPath });
     }
     for (const [commentsPath, ids] of byCommentsPath) {
-      ctx.updatePartXml(commentsPath, (document) => {
+      ctx.updatePartXmlFromCopy(commentsPath, (document) => {
         for (const entry of parseCommentEntries(document)) {
           if (ids.includes(entry.id)) entry.element.parentNode?.removeChild(entry.element);
         }
@@ -780,7 +786,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
       const deletedParaIds = new Set([...paraIds.values()]
         .filter((entry) => entry.commentsExtendedPath === info.commentsExtendedPath)
         .map((entry) => entry.paraId));
-      ctx.updatePartXml(info.commentsExtendedPath, (document) => {
+      ctx.updatePartXmlFromCopy(info.commentsExtendedPath, (document) => {
         for (const entry of parseCommentExEntries(document)) {
           if (deletedParaIds.has(entry.paraId)) entry.element.parentNode?.removeChild(entry.element);
         }
@@ -788,7 +794,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
     }
     const affectedSourceParts = new Set([...paraIds.values()].map((info) => info.sourcePartPath));
     for (const sourcePartPath of affectedSourceParts) {
-      ctx.updatePartXml(sourcePartPath, (document) => {
+      ctx.updatePartXmlFromCopy(sourcePartPath, (document) => {
         const container = blockContainerOf(document);
         for (const nodeName of ['commentRangeStart', 'commentRangeEnd'] as const) {
           for (const node of descendants(container, nodeName)) {
@@ -815,7 +821,7 @@ export function deleteCommentDirect(ctx: CommentContext, id: number, options: { 
 }
 
 export function removePartOverride(ctx: CommentContext, path: string): void {
-    ctx.updatePartXml('[Content_Types].xml', (document) => {
+    ctx.updatePartXmlFromCopy('[Content_Types].xml', (document) => {
       for (const override of children(document.documentElement!, 'Override', CONTENT_TYPES_NS)) {
         if (override.getAttribute('PartName') === `/${path}`) override.parentNode?.removeChild(override);
       }
