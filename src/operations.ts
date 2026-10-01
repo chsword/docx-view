@@ -147,11 +147,15 @@ const FRAME_ENUM_VALUES: Record<string, readonly string[]> = {
 };
 const FRAME_NUMBERS = ['lines', 'widthTwips', 'heightTwips', 'xTwips', 'yTwips',
   'horizontalSpaceTwips', 'verticalSpaceTwips'] as const;
+/** `w:framePr` 的字段名，校验、schema 与用例共用一份。 */
+export const PARAGRAPH_FRAME_KEYS = [
+  ...Object.keys(FRAME_ENUM_VALUES), ...FRAME_NUMBERS, 'anchorLock',
+] as readonly (keyof ParagraphFrame)[];
 
 export function validateParagraphFrame(value: unknown): asserts value is ParagraphFrame {
   object(value);
   const frame = value as Record<string, unknown>;
-  keys(frame, [...Object.keys(FRAME_ENUM_VALUES), ...FRAME_NUMBERS, 'anchorLock']);
+  keys(frame, [...PARAGRAPH_FRAME_KEYS]);
   for (const [name, allowed] of Object.entries(FRAME_ENUM_VALUES)) {
     if (name in frame && frame[name] !== undefined && !allowed.includes(frame[name] as string)) {
       throw new Error(`frame.${name} must be one of ${allowed.join(', ')}.`);
@@ -191,15 +195,41 @@ export function validateEastAsianLayout(value: unknown): asserts value is EastAs
   }
 }
 
+/**
+ * 四张格式的**字段名**只有这一份，运行时校验与 agent JSON Schema 共用它。
+ *
+ * 这件事栽过三次：`floatingPosition`、行的 `gridBefore` / `wBefore` / `gridAfter` /
+ * `wAfter`、段落的 `frame` 都被运行时校验收下、却没写进 schema——**schema 比校验窄，等于
+ * 这些字段对 agent 根本不存在**，而两边都是绿的，没有任何信号（第 13 条 + 第 24 条）。
+ * 名字从此只有一处；`test/operations.test.mjs` 有一条用例按这份名单核对 schema 的属性集。
+ */
+export const PARAGRAPH_FORMAT_KEYS = [
+  'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
+  'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
+  'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
+  'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens', 'frame',
+  'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
+  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap',
+] as const satisfies readonly (keyof ParagraphFormat)[];
+
+export const TABLE_FORMAT_KEYS = [
+  'width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'cellSpacing',
+  'overlap', 'style', 'look', 'caption', 'description', 'bidiVisual', 'floatingPosition',
+] as const satisfies readonly (keyof TableFormat)[];
+
+export const ROW_FORMAT_KEYS = [
+  'height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
+  'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter',
+] as const satisfies readonly (keyof RowFormat)[];
+
+export const CELL_FORMAT_KEYS = [
+  'width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'fitText',
+  'hideMark', 'hMerge', 'vMerge',
+] as const satisfies readonly (keyof CellFormat)[];
+
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {
   object(value);
-  keys(value, [
-    'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging', 'spacingBefore',
-    'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
-    'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
-    'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens', 'frame',
-    'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
-  ]);
+  keys(value, [...PARAGRAPH_FORMAT_KEYS]);
   if ('alignment' in value && value.alignment !== null && !['left', 'center', 'right', 'both', 'distribute'].includes(String(value.alignment))) {
     throw new Error('Invalid paragraph alignment.');
   }
@@ -229,8 +259,17 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   for (const key of [
     'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
     'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi',
+    'adjustRightInd', 'suppressOverlap',
   ]) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+  }
+  if ('textAlignment' in value && value.textAlignment !== null &&
+      !['auto', 'baseline', 'bottom', 'center', 'top'].includes(String(value.textAlignment))) {
+    throw new Error('textAlignment must be one of auto, baseline, bottom, center, top.');
+  }
+  if ('textboxTightWrap' in value && value.textboxTightWrap !== null &&
+      !['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'].includes(String(value.textboxTightWrap))) {
+    throw new Error('textboxTightWrap must be one of none, allLines, firstAndLastLine, firstLineOnly, lastLineOnly.');
   }
   for (const key of ['spacingBeforeAuto', 'spacingAfterAuto', 'contextualSpacing', 'mirrorIndents']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
@@ -355,8 +394,7 @@ function validateMargins(value: unknown, name: string): void {
 
 export function validateTableFormat(value: unknown): asserts value is TableFormat {
   object(value);
-  keys(value, ['width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'cellSpacing',
-    'overlap', 'style', 'look', 'caption', 'description', 'bidiVisual', 'floatingPosition']);
+  keys(value, [...TABLE_FORMAT_KEYS]);
   if ('width' in value) validateWidth(value.width, 'width');
   if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
   if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
@@ -403,8 +441,7 @@ export function validateTableFloatingPosition(value: unknown): asserts value is 
 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {
   object(value);
-  keys(value, ['height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
-    'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter']);
+  keys(value, [...ROW_FORMAT_KEYS]);
   if ('height' in value) {
     object(value.height);
     const height = value.height as Record<string, unknown>;
@@ -436,8 +473,7 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
 
 export function validateCellFormat(value: unknown): asserts value is CellFormat {
   object(value);
-  keys(value, ['width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'fitText',
-    'hideMark', 'hMerge', 'vMerge']);
+  keys(value, [...CELL_FORMAT_KEYS]);
   if ('width' in value) validateWidth(value.width, 'width');
   if ('borders' in value) validateBorders(value.borders, 'borders', true);
   if ('shading' in value) validateShading(value.shading, 'shading');
@@ -984,6 +1020,17 @@ const tableFloatingPosition = shape({
   xSpec: { enum: ['center', 'inside', 'left', 'outside', 'right'] }, x: signedInteger,
   ySpec: { enum: ['bottom', 'center', 'inside', 'inline', 'outside', 'top'] }, y: signedInteger,
 }, []);
+/**
+ * `w:framePr`。**从 `validateParagraphFrame` 用的那两张表直接推出来**，不另抄一份属性名：
+ * 枚举取 `FRAME_ENUM_VALUES`，数值取 `FRAME_NUMBERS`，`xTwips` / `yTwips` 可负（挪到
+ * 页边距外），其余是尺寸所以不可负——与运行时校验里的判断同源。
+ */
+const paragraphFrame = shape({
+  ...Object.fromEntries(Object.entries(FRAME_ENUM_VALUES).map(([name, allowed]) => [name, { enum: [...allowed] }])),
+  ...Object.fromEntries(FRAME_NUMBERS.map((name) =>
+    [name, name === 'xTwips' || name === 'yTwips' ? signedInteger : unsignedTwips])),
+  anchorLock: { type: 'boolean' },
+}, []);
 const tableFormat = shape({
   width, alignment: { enum: ['left', 'center', 'right'] }, indent: { type: 'number', minimum: 0 },
   borders, shading, cellMargin: margins, layout: { enum: ['fixed', 'autofit'] },
@@ -1056,6 +1103,11 @@ export const AGENT_OPERATION_SCHEMA = {
             autoSpaceDN: nullable({ type: 'boolean' }),
             bidi: nullable({ type: 'boolean' }),
             textDirection: nullable(text),
+            textAlignment: nullable({ enum: ['auto', 'baseline', 'bottom', 'center', 'top'] }),
+            adjustRightInd: nullable({ type: 'boolean' }),
+            suppressOverlap: nullable({ type: 'boolean' }),
+            textboxTightWrap: nullable({ enum: ['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'] }),
+            frame: nullable(paragraphFrame),
             outlineLevel: nullable(outlineLevel),
             tabs: nullable(docTabs),
             borders: nullable(shape({

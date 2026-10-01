@@ -1261,14 +1261,17 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     ['autoSpaceDE', 'autoSpaceDE'],
     ['autoSpaceDN', 'autoSpaceDN'],
     ['bidi', 'bidi'],
+    ['adjustRightInd', 'adjustRightInd'],
+    ['suppressOverlap', 'suppressOverlap'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
     else if (format[key] !== undefined) setOnOff(props, tag, format[key]!);
   }
-  if ('textDirection' in format) {
-    if (format.textDirection === null) removeProperty(props, 'textDirection');
-    else if (format.textDirection !== undefined) setWordValue(property(props, 'textDirection'), format.textDirection);
+  for (const key of ['textDirection', 'textAlignment', 'textboxTightWrap'] as const) {
+    if (!(key in format)) continue;
+    if (format[key] === null) removeProperty(props, key);
+    else if (format[key] !== undefined) setWordValue(property(props, key), format[key]!);
   }
   if ('tabs' in format) {
     if (format.tabs === null || (Array.isArray(format.tabs) && format.tabs.length === 0)) {
@@ -2123,12 +2126,21 @@ const RUN_FORMAT_FIELDS = [
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
   'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
 ] as const satisfies readonly (keyof RunFormat)[];
+/**
+ * 段落直接格式的**全部**字段，一份。原先这里有两份：`PARAGRAPH_FORMAT_FIELDS`（`compare()`
+ * 做格式差异用）和 `PARAGRAPH_DIRECT_FIELDS`（`applyParagraphStyle(clearDirectFormat)` 与
+ * 剪贴板用），后者少了 `kinsoku` / `wordWrap` / `overflowPunct` / `topLinePunct` /
+ * `autoSpaceDE` / `autoSpaceDN` / `bidi` / `textDirection` 八个——不是故意的：这份名单建于
+ * 2026-09-28，CJK 那批字段次日才加，只补了第一份。后果是清直接格式时**清不掉与样式冲突的
+ * CJK 设置**，剪贴板也带不走它们。两份名单必然走偏，所以合成一份（第 20 条）。
+ */
 const PARAGRAPH_FORMAT_FIELDS = [
   'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
   'spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
+  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap',
   'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
@@ -2145,14 +2157,6 @@ type CompareStep =
   | { kind: 'modify'; baseIndex: number; revisedIndex: number }
   | { kind: 'delete'; baseIndex: number }
   | { kind: 'insert'; revisedIndex: number };
-
-const PARAGRAPH_DIRECT_FIELDS = [
-  'alignment', 'style', 'indentLeft', 'indentRight', 'indentFirstLine', 'indentHanging',
-  'spacingBefore', 'spacingAfter', 'spacingBeforeLines', 'spacingAfterLines', 'spacingBeforeAuto', 'spacingAfterAuto',
-  'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
-  'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
-  'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
-] as const satisfies readonly (keyof ParagraphFormat)[];
 
 const OUTLINE_MAX_LEVEL = 8;
 
@@ -4554,7 +4558,7 @@ export class DocxDocument {
     const preview = this.getPartDocument(this.mainPath);
     const previewParagraph = paragraphAt(preview, index);
     applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { style: styleId });
-    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+    for (const field of PARAGRAPH_FORMAT_FIELDS) {
       if (field === 'style' || paragraph[field] === undefined) continue;
       applyParagraphFormatTo(properties(previewParagraph, 'pPr'), { [field]: null } as ParagraphFormat);
     }
@@ -4569,7 +4573,7 @@ export class DocxDocument {
     const targetRuns = previewRuns.map((run) => computeEffectiveRunFormat(this.getStylesContext(), previewParagraph, run));
     const paragraphPatch: ParagraphFormat = { style: styleId };
     let paragraphChanged = paragraph.style !== styleId;
-    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+    for (const field of PARAGRAPH_FORMAT_FIELDS) {
       if (field === 'style') continue;
       const direct = paragraph[field];
       const target = targetParagraph[field];
@@ -4687,7 +4691,7 @@ export class DocxDocument {
     if (!paragraphs.length) throw new Error('Range does not contain any paragraphs.');
     const paragraphFormats = paragraphs.map((paragraph) => this.directParagraphFormat(paragraph));
     const paragraphFormat: ParagraphFormat = {};
-    for (const field of PARAGRAPH_DIRECT_FIELDS) {
+    for (const field of PARAGRAPH_FORMAT_FIELDS) {
       if (field === 'style') continue;
       const first = paragraphFormats[0]?.[field];
       if (first === undefined) continue;
@@ -5965,7 +5969,7 @@ export class DocxDocument {
 
   private directParagraphFormat(paragraph: ParagraphInfo): ParagraphFormat {
     const format: ParagraphFormat = {};
-    for (const key of PARAGRAPH_DIRECT_FIELDS) {
+    for (const key of PARAGRAPH_FORMAT_FIELDS) {
       const value = paragraph[key];
       if (value !== undefined) (format as Record<string, unknown>)[key] = cloneRunFormatValue(value);
     }

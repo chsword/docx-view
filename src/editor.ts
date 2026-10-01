@@ -14,6 +14,7 @@ import type {
   ImageInfo,
   MathInfo,
   MathMlNode,
+  ParagraphFormat,
   ParagraphInfo,
   PaginationInfo,
   ShapeInfo,
@@ -360,7 +361,18 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, pre
   }
 }
 
-function applyRunStyle(span: HTMLElement, run: RunInfo): void {
+/**
+ * `w:textAlignment` → CSS `vertical-align`。它管的是一行里字符的**垂直**位置（字号不一时
+ * 怎么对齐），和 `w:jc` 的左右对齐是两件事。
+ *
+ * `center` 只是近似：CSS 的 `middle` 对的是基线加半个 x-height，Word 对的是行的正中。
+ * `auto` 是 Word 的默认，不设任何东西、交给浏览器。
+ */
+const LINE_TEXT_ALIGNMENT_CSS: Record<string, string> = {
+  top: 'top', center: 'middle', bottom: 'bottom', baseline: 'baseline',
+};
+
+function applyRunStyle(span: HTMLElement, run: RunInfo, lineTextAlignment?: ParagraphFormat['textAlignment']): void {
   const effective = run.effective ?? run;
   if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
   if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
@@ -383,6 +395,11 @@ function applyRunStyle(span: HTMLElement, run: RunInfo): void {
       .map((name) => `"${name}"`).join(', ');
   }
   if (effective.color && /^[0-9a-f]{6}$/i.test(effective.color)) span.style.color = `#${effective.color}`;
+  // 段落的 textAlignment 是这一行的默认，**run 自己的上下标 / position 压过它**：两者都落在
+  // 同一个 vertical-align 上，而 run 级是更具体的那一层，所以先垫段落级再让 run 级覆盖。
+  if (lineTextAlignment && LINE_TEXT_ALIGNMENT_CSS[lineTextAlignment]) {
+    span.style.verticalAlign = LINE_TEXT_ALIGNMENT_CSS[lineTextAlignment]!;
+  }
   if (effective.verticalAlign === 'subscript' || effective.verticalAlign === 'superscript') span.style.verticalAlign = effective.verticalAlign;
   if (effective.position !== undefined && effective.position !== null) span.style.verticalAlign = `${effective.position / 2}pt`;
   if (effective.smallCaps || effective.allCaps) span.style.fontVariantCaps = effective.allCaps ? 'all-small-caps' : 'small-caps';
@@ -2340,7 +2357,7 @@ export class DocxEditor {
       if (run.hyperlink.tooltip) runSpan.title = run.hyperlink.tooltip;
       if (unsafe) runSpan.style.textDecoration = 'underline wavy red';
     }
-    applyRunStyle(runSpan, run);
+    applyRunStyle(runSpan, run, (paragraph.effective ?? paragraph).textAlignment ?? undefined);
     if (run.revisions?.length && this.reviewFilter.showRevisions && this.reviewFilter.revisionView === 'markup') {
       const hasInsertion = run.revisions.some((revision) => revision.kind === 'insertion');
       const hasDeletion = run.revisions.some((revision) => revision.kind === 'deletion');

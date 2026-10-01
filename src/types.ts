@@ -88,6 +88,29 @@ export interface ParagraphFormat {
   autoSpaceDN?: boolean | null;
   bidi?: boolean | null;
   textDirection?: string | null;
+  /**
+   * `w:textAlignment`：一行里字符的**垂直**对齐（字号不一的字符怎么在行内对齐），
+   * 不是 `w:jc` 的左右对齐。渲染落在 run 的 `vertical-align` 上。
+   */
+  textAlignment?: 'auto' | 'baseline' | 'bottom' | 'center' | 'top' | null;
+  /**
+   * `w:adjustRightInd`：用文档网格时自动调整右缩进，使行正好容纳整数个网格字符。
+   * **不参与渲染**：这里的 `w:docGrid` 只做了行高吸附（`snapLineHeightPx`），没有横向的
+   * 字符格，没有可调的那个量。
+   */
+  adjustRightInd?: boolean | null;
+  /**
+   * `w:suppressOverlap`：禁止这段（`w:framePr` 的文本框）与其他框重叠。和表格的
+   * `w:tblOverlap` 是同一回事：环绕用浏览器 `float`，浮动块本来就不互相重叠，所以这条
+   * 天然成立，**不参与渲染**。
+   */
+  suppressOverlap?: boolean | null;
+  /**
+   * `w:textboxTightWrap`：允许周围段落按文本框**内容的实际行宽**紧密绕排。
+   * **不参与渲染**：那需要逐行量文本框里的内容，而这里的排除区是个矩形——与 `w:framePr`、
+   * `w:tblpPr` 一样的 `square` 简化。
+   */
+  textboxTightWrap?: 'none' | 'allLines' | 'firstAndLastLine' | 'firstLineOnly' | 'lastLineOnly' | null;
   outlineLevel?: number | null;
   tabs?: TabStop[] | null;
   borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>> | null;

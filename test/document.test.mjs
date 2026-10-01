@@ -6902,3 +6902,65 @@ test('getEditableRegions short-circuits when the document has no permission mark
   assert.equal(startOnly.getEditableRegions().length, 1);
   assert.equal(startOnly.getEditableRegions()[0].id, 8);
 });
+
+test('textAlignment, adjustRightInd, suppressOverlap and textboxTightWrap read, write and keep pPr order', () => {
+  const doc = withBody(`<w:p><w:pPr>
+    <w:bidi/><w:adjustRightInd/><w:mirrorIndents/><w:suppressOverlap/>
+    <w:jc w:val="center"/><w:textAlignment w:val="center"/><w:textboxTightWrap w:val="firstLineOnly"/>
+  </w:pPr><w:r><w:t>x</w:t></w:r></w:p>`);
+  const read = doc.getParagraph(0);
+  assert.equal(read.textAlignment, 'center');
+  assert.equal(read.adjustRightInd, true);
+  assert.equal(read.suppressOverlap, true);
+  assert.equal(read.textboxTightWrap, 'firstLineOnly');
+
+  // 原样写回不变；再改成另一组值。
+  doc.formatParagraph(0, { textAlignment: 'bottom', adjustRightInd: false, suppressOverlap: false, textboxTightWrap: 'allLines' });
+  const written = doc.getParagraph(0);
+  assert.deepEqual(
+    [written.textAlignment, written.adjustRightInd, written.suppressOverlap, written.textboxTightWrap],
+    ['bottom', false, false, 'allLines']);
+
+  // CT_PPrBase 的顺序：adjustRightInd 在 bidi 之后、spacing 之前；suppressOverlap 在
+  // mirrorIndents 之后、jc 之前；textAlignment / textboxTightWrap 在 textDirection 之后。
+  const pPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'pPr')[0];
+  const names = [...pPr.childNodes].filter((node) => node.nodeType === 1).map((node) => node.localName);
+  const order = ['bidi', 'adjustRightInd', 'mirrorIndents', 'suppressOverlap', 'jc', 'textAlignment', 'textboxTightWrap'];
+  assert.deepEqual(names.filter((name) => order.includes(name)), order);
+
+  // null 清除
+  doc.formatParagraph(0, { textAlignment: null, adjustRightInd: null, suppressOverlap: null, textboxTightWrap: null });
+  const cleared = doc.getPartXml(doc.mainDocumentPath);
+  for (const tag of ['textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap']) {
+    assert.equal(new RegExp(`w:${tag}`).test(cleared), false, tag);
+  }
+});
+
+test('nonsense textAlignment and textboxTightWrap values degrade to unset instead of throwing', () => {
+  const doc = withBody('<w:p><w:pPr><w:textAlignment w:val="sideways"/><w:textboxTightWrap w:val="someLines"/></w:pPr></w:p>');
+  assert.equal(doc.getParagraph(0).textAlignment, undefined);
+  assert.equal(doc.getParagraph(0).textboxTightWrap, undefined);
+  assert.throws(() => doc.formatParagraph(0, { textAlignment: 'sideways' }), /textAlignment must be one of/);
+  assert.throws(() => doc.formatParagraph(0, { textboxTightWrap: 'someLines' }), /textboxTightWrap must be one of/);
+  assert.throws(() => doc.formatParagraph(0, { adjustRightInd: 'yes' }), /adjustRightInd must be boolean/);
+});
+
+test('clearing direct format and the clipboard cover every paragraph format field, not a stale subset', () => {
+  // 原先这里有两份字段名单，清直接格式 / 剪贴板用的那份少了 CJK 与 bidi 八项（那份建得更早，
+  // CJK 那批字段次日才加，只补了另一份）。于是与样式冲突的 kinsoku / bidi 清不掉、剪贴板也带不走。
+  const doc = withBody('<w:p><w:pPr><w:kinsoku/><w:bidi/><w:textAlignment w:val="top"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>');
+  doc.defineStyle({ id: 'NoKinsoku', name: 'No Kinsoku', type: 'paragraph', paragraph: { kinsoku: false, bidi: false, textAlignment: 'bottom' } });
+  doc.applyParagraphStyle(0, 'NoKinsoku', { clearDirectFormat: true });
+  const pPr = doc.getPartXml(doc.mainDocumentPath).match(/<w:pPr>.*?<\/w:pPr>/s)?.[0] ?? '';
+  // 样式给了相反的值，所以这三条直接格式都该被清掉。
+  assert.equal(/w:kinsoku/.test(pPr), false, 'kinsoku');
+  assert.equal(/w:bidi/.test(pPr), false, 'bidi');
+  assert.equal(/w:textAlignment/.test(pPr), false, 'textAlignment');
+  assert.match(pPr, /w:pStyle/);
+
+  // 剪贴板同理：带得走才粘得出来。
+  const source = withBody('<w:p><w:pPr><w:kinsoku/><w:textAlignment w:val="top"/></w:pPr><w:r><w:t>abc</w:t></w:r></w:p>');
+  const fragment = source.copyClipboardFragment({ start: { paragraph: 0, offset: 0 }, end: { paragraph: 0, offset: 3 } });
+  assert.equal(fragment.paragraphs[0].format.kinsoku, true);
+  assert.equal(fragment.paragraphs[0].format.textAlignment, 'top');
+});

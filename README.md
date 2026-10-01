@@ -129,6 +129,12 @@ const bytes = await doc.toUint8Array({
 
 **`w:x` / `w:y` 那套按页面或页边距定位的绝对坐标本期不实现**：那需要相对页框定位，而连续视图没有页框；这些值如实读取并原样写回，浮动方向按 `xAlign` 取左右，其余照左浮。`w:anchorLock`、`w:yAlign`、`w:vAnchor` / `w:hAnchor` 同样只读取保留，不参与排版。
 
+`w:textAlignment` 读写为 `ParagraphFormat.textAlignment`（`auto` / `baseline` / `bottom` / `center` / `top`），管的是**一行里字符的垂直对齐**（字号不一时怎么在行内对齐），和 `w:jc` 的左右对齐是两件事。渲染落在 run 的 `vertical-align` 上——段落是块级元素，`vertical-align` 设在它身上没有效果。**run 自己的上下标与 `w:position` 压过它**：三者落在同一个 CSS 属性上，而 run 级是更具体的那一层。`center` 只是近似（CSS 的 `middle` 对的是基线加半个 x-height，Word 对的是行的正中），`auto` 是 Word 的默认、不设任何东西。
+
+另外三个段落属性**只做读写保真、不参与渲染**，理由各自不同：`w:adjustRightInd`（用文档网格时自动调整右缩进）—— 这里的 `w:docGrid` 只做了行高吸附，没有横向字符格，也就没有那个可调的量；`w:suppressOverlap`（禁止 `w:framePr` 文本框互相重叠）—— 和表格的 `w:tblOverlap` 同理，环绕用浏览器 `float`，浮动块本来就不互相重叠；`w:textboxTightWrap`（周围段落按文本框内容的实际行宽紧密绕排）—— 那需要逐行量文本框内容，而这里的排除区是矩形，与 `w:framePr` / `w:tblpPr` 一样的 `square` 简化。四个属性的非法枚举值都按未设置处理，写入时则拒绝。
+
+`clearDirectFormat` 与剪贴板覆盖**全部**段落格式字段。这两处原先用的是一份更早建立的字段名单，少了 `kinsoku` / `wordWrap` / `overflowPunct` / `topLinePunct` / `autoSpaceDE` / `autoSpaceDN` / `bidi` / `textDirection` 八项，于是与样式冲突的东亚排版设置清不掉、剪贴板也带不走；现在名单只有一份。
+
 `getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
 
 `getThemeSettings()` 读取 `settings.xml` 的 `w:clrSchemeMapping` 和 `w:themeFontLang`，以及 `styles.xml` 的 `w:latentStyles`。颜色槽位映射参与主题色解析；替换主题关系指向的主题部件（通常名为 `theme1.xml`）即可切换当前主题。`themeFontLang` 与 `latentStyles` 只暴露为元数据，不参与字体选择或排版；主题字体仍按主题中声明的脚本槽位解析。

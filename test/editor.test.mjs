@@ -3571,3 +3571,33 @@ test('tblCellSpacing renders as border-spacing, which needs border-collapse sepa
   assert.equal(plain.style.borderSpacing, undefined);
   assert.equal(plain.style.borderCollapse, undefined);
 });
+
+test('textAlignment renders as the line default and run superscript overrides it', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const render = (paragraph, run) => {
+    const element = editor.root.ownerDocument.createElement('span');
+    editor.appendRun(element, paragraph, run, { deletedTextByRun: new Map(), revisionColors: new Map() }, 720, 0);
+    return element.childNodes[0];
+  };
+  const plain = { index: 0, text: 'x', images: [] };
+
+  // w:textAlignment 管的是行内字符的垂直位置，所以落在 run 的 vertical-align 上 ——
+  // 段落是块级元素，vertical-align 设在它身上没有任何效果。
+  for (const [value, css] of [['top', 'top'], ['center', 'middle'], ['bottom', 'bottom'], ['baseline', 'baseline']]) {
+    assert.equal(render({ index: 0, textAlignment: value }, plain).style.verticalAlign, css, value);
+  }
+  // auto 是 Word 的默认，不设任何东西。
+  assert.equal(render({ index: 0, textAlignment: 'auto' }, plain).style.verticalAlign, undefined);
+  assert.equal(render({ index: 0 }, plain).style.verticalAlign, undefined);
+  // effective 优先于直接格式，和其它段落属性一致。
+  assert.equal(render({ index: 0, textAlignment: 'top', effective: { textAlignment: 'bottom' } }, plain).style.verticalAlign, 'bottom');
+
+  // run 自己的上下标与 position 落在同一个 vertical-align 上，而它们更具体，必须压过段落级。
+  const superscript = { index: 0, text: 'x', images: [], effective: { verticalAlign: 'superscript' } };
+  assert.equal(render({ index: 0, textAlignment: 'bottom' }, superscript).style.verticalAlign, 'superscript');
+  const raised = { index: 0, text: 'x', images: [], effective: { position: 12 } };
+  assert.equal(render({ index: 0, textAlignment: 'bottom' }, raised).style.verticalAlign, '6pt');
+});

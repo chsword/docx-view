@@ -523,6 +523,10 @@ function readFontFamily(theme: ThemeInfo, fonts: Element | undefined): { fontFam
   return { fontFamily, fontFamilyEastAsia };
 }
 
+/** 枚举外的值按未设置处理（畸形输入降级，不抛错）。 */
+const TEXT_ALIGNMENTS = new Set(['auto', 'baseline', 'bottom', 'center', 'top']);
+const TEXTBOX_TIGHT_WRAPS = new Set(['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly']);
+
 export function readParagraphProperties(props: Element | undefined): ParagraphFormat {
   if (!props) return {};
   const spacing = children(props, 'spacing')[0];
@@ -571,6 +575,12 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
     autoSpaceDN: readOnOff(children(props, 'autoSpaceDN')[0]),
     bidi: readOnOff(children(props, 'bidi')[0]),
     textDirection: wordValue(children(props, 'textDirection')[0]) ?? undefined,
+    textAlignment: TEXT_ALIGNMENTS.has(wordValue(children(props, 'textAlignment')[0]) ?? '')
+      ? wordValue(children(props, 'textAlignment')[0]) as ParagraphFormat['textAlignment'] : undefined,
+    adjustRightInd: readOnOff(children(props, 'adjustRightInd')[0]),
+    suppressOverlap: readOnOff(children(props, 'suppressOverlap')[0]),
+    textboxTightWrap: TEXTBOX_TIGHT_WRAPS.has(wordValue(children(props, 'textboxTightWrap')[0]) ?? '')
+      ? wordValue(children(props, 'textboxTightWrap')[0]) as ParagraphFormat['textboxTightWrap'] : undefined,
     outlineLevel: readNumber(wordValue(children(props, 'outlineLvl')[0])),
     tabs: readTabs(props),
     borders: parsedBorders && Object.values(parsedBorders).some((entry) => entry !== undefined) ? parsedBorders : undefined,
