@@ -565,6 +565,14 @@ export interface CellFormat {
   vMerge?: 'restart' | 'continue';
 }
 
+/**
+ * 表格样式的条件格式名（`w:tblStylePr/@w:type` 的取值，去掉 `wholeTable`）。数组里的顺序就是
+ * 套用顺序，后面的覆盖前面的：带状 → 首末列 → 首末行 → 四个角。
+ */
+export type TableConditionName = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol'
+  | 'band1Horz' | 'band2Horz' | 'band1Vert' | 'band2Vert'
+  | 'nwCell' | 'neCell' | 'swCell' | 'seCell';
+
 export interface TableCellInfo {
   blocks: DocumentBlock[];
   colSpan: number;
@@ -578,6 +586,17 @@ export interface TableCellInfo {
    * 「整表定四边 + firstRow 只定下边框」是最常见的组合，整块替换会把其余三边抹掉。
    */
   effective?: CellFormat;
+  /**
+   * 按 `tblLook` 与单元格位置**算出来**的条件，`effective` 用的就是它。表格没有样式时为空数组
+   * 也照样给出（开关与位置仍然有定义，只是没有格式可套）。
+   */
+  conditions?: TableConditionName[];
+  /**
+   * `w:tcPr/w:cnfStyle`：Word 存盘时**记下**的条件。它是缓存——Word 打开时按 `tblLook` 重算，
+   * 所以渲染以 `conditions` 为准；两者不一致说明文件被别的程序改过结构或开关而没刷新这个缓存。
+   * 只读：写回一个过期缓存没有意义。
+   */
+  recordedConditions?: TableConditionName[];
 }
 
 export interface TableRowInfo {
@@ -589,6 +608,10 @@ export interface TableRowInfo {
    * `band*Horz`）——`firstCol` 之类是单元格范围的条件，对整行没有意义。
    */
   effective?: RowFormat;
+  /** 同 `TableCellInfo.conditions`，只含由行位置决定的条件。 */
+  conditions?: TableConditionName[];
+  /** 同 `TableCellInfo.recordedConditions`，读 `w:trPr/w:cnfStyle`。 */
+  recordedConditions?: TableConditionName[];
 }
 
 export interface TableInfo {

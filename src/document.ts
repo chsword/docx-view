@@ -4,7 +4,7 @@ import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableFormat, TableInfo, TextRange, ThemeSettings,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -56,7 +56,7 @@ import { fieldKindFromInstruction, formatPageNumber, NEVER_EVALUATE, pageFieldRe
 import {
   cloneStyleInfo,
   computeEffectiveParagraphFormat,
-  computeEffectiveCellFormat, computeEffectiveRowFormat, computeEffectiveRunFormat,
+  computeEffectiveCellFormat, computeEffectiveRowFormat, computeEffectiveRunFormat, tableConditionsOf,
   computeEffectiveTableFormat,
   parseStyles,
   readParagraphProperties,
@@ -3925,6 +3925,12 @@ export class DocxDocument {
     return (row, direct) => computeEffectiveRowFormat(owner.getStylesContext(), row, direct);
   }
 
+  /** 同 cellFormatResolver，行与单元格命中的条件格式。 */
+  private get tableConditionsResolver(): (element: Element) => TableConditionName[] {
+    const owner = this;
+    return (element) => tableConditionsOf(owner.getStylesContext(), element);
+  }
+
   /** 同 cellFormatResolver，表格级格式。 */
   private get tableFormatResolver(): (table: Element, direct: TableFormat | undefined) => TableFormat | undefined {
     const owner = this;
@@ -3942,7 +3948,7 @@ export class DocxDocument {
         const paragraph = paragraphByElement.get(child);
         return paragraph ? [{ type: 'paragraph', paragraph }] : [];
       }
-      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver, this.tableConditionsResolver)];
       if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
@@ -3982,7 +3988,7 @@ export class DocxDocument {
       if (child.localName === 'p') {
         return [{ type: 'paragraph', paragraph: readParagraph(child, -1, styles, undefined, imageContext, noteNumber) }];
       }
-      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver, this.tableConditionsResolver)];
       return [];
     });
     return walk(root);
@@ -8337,11 +8343,11 @@ export class DocxDocument {
     const indices = new Map(mainParagraphElements(body).map((paragraph, i) => [paragraph, paragraphs[i]!]));
     const walk = (parent: Element): DocumentBlock[] => children(parent).flatMap((child): DocumentBlock[] => {
       if (child.localName === 'p') return [{ type: 'paragraph', paragraph: indices.get(child)! }];
-      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver)];
+      if (child.localName === 'tbl') return [readTable(child, walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver, this.tableConditionsResolver)];
       if (isTransparentWordWrapper(child)) return walk(child);
       return [];
     });
-    const table = readTable(tableAt(document, index), walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver);
+    const table = readTable(tableAt(document, index), walk, this.cellFormatResolver, this.rowFormatResolver, this.tableFormatResolver, this.tableConditionsResolver);
     return {
       index, rows: table.rows, format: table.format,
       ...(table.effective ? { effective: table.effective } : {}), grid: table.grid,

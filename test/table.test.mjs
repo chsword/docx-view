@@ -11,6 +11,13 @@ function withBody(xml) {
   return doc;
 }
 
+function withStyles(bodyXml, stylesXml) {
+  const doc = withBody(bodyXml);
+  doc.addPart('word/styles.xml', new TextEncoder().encode(`<w:styles xmlns:w="${WORD_NS}">${stylesXml}</w:styles>`),
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml');
+  return doc;
+}
+
 function tableXml(inner) {
   return `<w:tbl>${inner}</w:tbl>`;
 }
@@ -709,4 +716,32 @@ test('formatTableRow and formatCell validate on the public API, not only in agen
   assert.throws(() => doc.formatTableRow(0, 0, { tableException: { shading: { value: 'clear', fill: 'nope' } } }));
   assert.throws(() => doc.formatCell(0, 0, 0, { verticalAlign: 'middle' }), /verticalAlign/);
   assert.equal(doc.revision, revision);
+});
+
+test('cnfStyle reads as the conditions Word recorded, next to the ones computed from tblLook', () => {
+  // Word 2010+ 同时写位串和具名属性；Word 2007 只写位串。照这两种真实形状写 fixture。
+  const named = (flags) => `<w:cnfStyle w:val="${flags.bits}" ${Object.entries(flags.attrs).map(([key, value]) => `w:${key}="${value}"`).join(' ')}/>`;
+  const doc = withStyles(`<w:tbl><w:tblPr><w:tblStyle w:val="Grid"/>
+      <w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr>
+    <w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>
+    <w:tr><w:trPr>${named({ bits: '100000000000', attrs: { firstRow: 1, lastRow: 0, firstColumn: 0, lastColumn: 0, oddVBand: 0, evenVBand: 0, oddHBand: 0, evenHBand: 0, firstRowFirstColumn: 0, firstRowLastColumn: 0, lastRowFirstColumn: 0, lastRowLastColumn: 0 } })}</w:trPr>
+      <w:tc><w:tcPr>${named({ bits: '101000000100', attrs: { firstRow: 1, lastRow: 0, firstColumn: 1, lastColumn: 0, oddVBand: 0, evenVBand: 0, oddHBand: 0, evenHBand: 0, firstRowFirstColumn: 1, firstRowLastColumn: 0, lastRowFirstColumn: 0, lastRowLastColumn: 0 } })}</w:tcPr><w:p/></w:tc>
+      <w:tc><w:tcPr><w:cnfStyle w:val="100000000000"/></w:tcPr><w:p/></w:tc></w:tr>
+    <w:tr><w:tc><w:tcPr><w:cnfStyle w:val="001000100000"/></w:tcPr><w:p/></w:tc>
+      <w:tc><w:tcPr><w:cnfStyle w:val="000001000000"/></w:tcPr><w:p/></w:tc></w:tr></w:tbl>`,
+  `<w:style w:type="table" w:styleId="Grid"><w:name w:val="Grid"/></w:style>`);
+  const [header, body] = doc.getBlocks().find((block) => block.type === 'table').rows;
+
+  assert.deepEqual(header.recordedConditions, ['firstRow']);
+  assert.deepEqual(header.conditions, ['firstRow']);
+  assert.deepEqual(header.cells[0].recordedConditions, ['firstCol', 'firstRow', 'nwCell'], '具名属性优先');
+  assert.deepEqual(header.cells[0].conditions, ['firstCol', 'firstRow', 'nwCell']);
+  assert.deepEqual(header.cells[1].recordedConditions, ['firstRow'], '只有位串时读位串');
+  assert.deepEqual(body.cells[0].recordedConditions, ['band1Horz', 'firstCol']);
+  assert.deepEqual(body.cells[0].conditions, ['band1Horz', 'firstCol']);
+  // 这一格 Word 记的是 evenVBand，但 tblLook 关了纵向带（noVBand="1"）：缓存过期了。
+  // 渲染按算出来的走，两边都暴露出来，宿主自己能看到不一致。
+  assert.deepEqual(body.cells[1].recordedConditions, ['band2Vert']);
+  assert.deepEqual(body.cells[1].conditions, ['band1Horz']);
+  assert.equal(body.recordedConditions, undefined, '没写 cnfStyle 就没有');
 });

@@ -1,6 +1,6 @@
 import type { Element } from '@xmldom/xmldom';
 import type {
-  BorderSide, CellFormat, ColorSchemeMapping, CompatibilitySettings, LatentStyles, ParagraphFormat, RowFormat, RunFormat, Shading, StyleInfo, TabStop, TableFormat, ThemeFontLanguages, ThemeSettings,
+  BorderSide, CellFormat, ColorSchemeMapping, CompatibilitySettings, LatentStyles, ParagraphFormat, RowFormat, RunFormat, Shading, StyleInfo, TabStop, TableConditionName, TableFormat, ThemeFontLanguages, ThemeSettings,
 } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 import { compactDefined } from './internal/elements.js';
@@ -35,9 +35,7 @@ const DEFAULT_THEME_FONTS: Record<string, string> = {
 };
 
 type StyleType = StyleInfo['type'];
-type TableCondition = 'firstRow' | 'lastRow' | 'firstCol' | 'lastCol'
-  | 'band1Horz' | 'band2Horz' | 'band1Vert' | 'band2Vert'
-  | 'nwCell' | 'neCell' | 'swCell' | 'seCell';
+type TableCondition = TableConditionName;
 
 export interface ThemeInfo {
   colors: Record<string, string>;
@@ -1034,6 +1032,14 @@ function tableConditionsFor(context: StylesContext, table: Element | undefined,
   if (bottomRow && leftColumn) conditions.push('swCell');
   if (bottomRow && rightColumn) conditions.push('seCell');
   return { conditions, chain: meta.chain };
+}
+
+/** 行或单元格命中的条件（读模型用；返回副本，内部缓存不外泄）。 */
+export function tableConditionsOf(context: StylesContext, element: Element): TableCondition[] {
+  const resolved = element.localName === 'tc'
+    ? tableContextForCell(context, element)
+    : tableConditionsFor(context, closestAncestor(element, 'tbl'), element);
+  return [...resolved.conditions];
 }
 
 function tableParagraphFormats(context: StylesContext, paragraph: Element): ParagraphFormat[] {

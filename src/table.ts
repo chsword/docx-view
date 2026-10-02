@@ -1,7 +1,7 @@
 import type { Element } from '@xmldom/xmldom';
 import type {
   BorderFormat, BordersFormat, CellBordersFormat, CellFormat, DocumentBlock, MarginFormat, RowFormat, TableCellInfo,
-  TableException, TableFormat, WidthFormat,
+  TableConditionName, TableException, TableFormat, WidthFormat,
 } from './types.js';
 import { children, childrenThroughTransparent, WORD_NS, wordValue } from './xml.js';
 import { TABLE_EXCEPTION_KEYS } from './operations.js';
@@ -290,6 +290,38 @@ export function rowCells(row: Element): TableCellPosition[] {
   });
 }
 
+/**
+ * `w:cnfStyle` 的命名属性与条件名的对应，顺序就是 Word 2007 写的 12 位 `w:val` 位串的顺序。
+ * 输出时再按套用优先级排（`CNF_OUTPUT_ORDER`），和算出来的 `conditions` 可以直接比较。
+ */
+const CNF_ATTRIBUTES: ReadonlyArray<readonly [string, TableConditionName]> = [
+  ['firstRow', 'firstRow'], ['lastRow', 'lastRow'], ['firstColumn', 'firstCol'], ['lastColumn', 'lastCol'],
+  ['oddVBand', 'band1Vert'], ['evenVBand', 'band2Vert'], ['oddHBand', 'band1Horz'], ['evenHBand', 'band2Horz'],
+  ['firstRowFirstColumn', 'nwCell'], ['firstRowLastColumn', 'neCell'],
+  ['lastRowFirstColumn', 'swCell'], ['lastRowLastColumn', 'seCell'],
+];
+const CNF_OUTPUT_ORDER: TableConditionName[] = [
+  'band1Vert', 'band2Vert', 'band1Horz', 'band2Horz', 'firstCol', 'lastCol', 'firstRow', 'lastRow',
+  'nwCell', 'neCell', 'swCell', 'seCell',
+];
+
+/** 具名属性优先（Word 2010+），没有就读 `w:val` 位串（Word 2007），与 `tblLook` 同一个做法。 */
+export function parseCnfStyle(cnfStyle: Element | undefined): TableConditionName[] | undefined {
+  if (!cnfStyle) return undefined;
+  const bits = cnfStyle.getAttributeNS(WORD_NS, 'val') ?? cnfStyle.getAttribute('w:val') ?? '';
+  const named = CNF_ATTRIBUTES.some(([attribute]) => cnfStyle.hasAttributeNS(WORD_NS, attribute));
+  const on = new Set<TableConditionName>();
+  CNF_ATTRIBUTES.forEach(([attribute, condition], index) => {
+    if (named) {
+      const value = cnfStyle.getAttributeNS(WORD_NS, attribute);
+      if (value !== null && !['0', 'false', 'off'].includes(value.toLowerCase())) on.add(condition);
+    } else if (/^[01]{12}$/.test(bits) && bits[index] === '1') {
+      on.add(condition);
+    }
+  });
+  return CNF_OUTPUT_ORDER.filter((condition) => on.has(condition));
+}
+
 export function readTable(table: Element, walk: (parent: Element) => DocumentBlock[],
   /**
    * 算上表格样式之后的单元格格式。表格读取本身不碰样式（这个模块是结构读取的叶子），所以
@@ -300,6 +332,8 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
   effectiveRowFormat?: (row: Element, direct: RowFormat | undefined) => RowFormat | undefined,
   /** 同上，表格级格式。 */
   effectiveTableFormat?: (table: Element, direct: TableFormat | undefined) => TableFormat | undefined,
+  /** 行或单元格按 `tblLook` 与位置命中的条件格式；同样由调用方注入。 */
+  conditionsOf?: (element: Element) => TableConditionName[],
 ): Extract<DocumentBlock, { type: 'table' }> {
   const grid = tableGrid(table);
   const active = new Map<number, { start: number; end: number; master: TableCellInfo }>();
@@ -316,6 +350,11 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
         ...(() => {
           const effective = effectiveCellFormat?.(position.cell, position.format);
           return effective ? { effective } : {};
+        })(),
+        ...(conditionsOf ? { conditions: conditionsOf(position.cell) } : {}),
+        ...(() => {
+          const recorded = parseCnfStyle(children(children(position.cell, 'tcPr')[0] ?? position.cell, 'cnfStyle')[0]);
+          return recorded ? { recordedConditions: recorded } : {};
         })(),
       };
       const master = active.get(position.start);
@@ -337,7 +376,12 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
     const exception = parseTableException(children(row, 'tblPrEx')[0]);
     const format = exception ? { ...direct, tableException: exception } : direct;
     const effective = effectiveRowFormat?.(row, format);
-    return { cells, format, ...(effective ? { effective } : {}) };
+    const recorded = parseCnfStyle(children(children(row, 'trPr')[0] ?? row, 'cnfStyle')[0]);
+    return {
+      cells, format, ...(effective ? { effective } : {}),
+      ...(conditionsOf ? { conditions: conditionsOf(row) } : {}),
+      ...(recorded ? { recordedConditions: recorded } : {}),
+    };
   });
   const tableFormat = parseTableFormat(children(table, 'tblPr')[0]);
   const effectiveTable = effectiveTableFormat?.(table, tableFormat);
