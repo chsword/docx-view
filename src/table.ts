@@ -184,6 +184,13 @@ export function parseTableFormat(tblPr: Element | undefined): TableFormat | unde
   return Object.values(format).some(value => value !== undefined) ? format : undefined;
 }
 
+/** `w:divId` 是 ST_DecimalNumber；负数、非整数按未设置处理。段落与行共用。 */
+export function readDivId(element: Element | undefined): number | undefined {
+  const raw = wordValue(element);
+  const value = raw === undefined || !raw.trim() ? NaN : Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 /** `w:gridBefore` / `w:gridAfter` 跳过的网格列数；负数和非整数按未设置处理。 */
 function gridSkip(trPr: Element, name: string): number | undefined {
   const element = children(trPr, name)[0];
@@ -224,6 +231,7 @@ export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined
     alignment: ['left', 'center', 'right'].includes(alignment ?? '') ? alignment as RowFormat['alignment'] : undefined,
     deleted: Boolean(children(trPr, 'del')[0]),
     inserted: Boolean(children(trPr, 'ins')[0]),
+    divId: readDivId(children(trPr, 'divId')[0]),
     gridBefore: gridSkip(trPr, 'gridBefore'),
     widthBefore: widthOf(children(trPr, 'wBefore')[0]),
     gridAfter: gridSkip(trPr, 'gridAfter'),

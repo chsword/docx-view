@@ -137,6 +137,8 @@ const bytes = await doc.toUint8Array({
 
 Agent JSON Schema 里 `formatParagraph` / `formatRun` / `formatRange` / `formatDocumentRange` / `formatTable` / `formatTableRow` / `formatCell` 的 `format` 属性集与运行时校验**共用同一份字段名**（`operations.ts` 导出的 `PARAGRAPH_FORMAT_KEYS` / `RUN_FORMAT_FIELDS` / `TABLE_FORMAT_KEYS` / `ROW_FORMAT_KEYS` / `CELL_FORMAT_KEYS`），嵌套的 `frame` / `eastAsianLayout` / `floatingPosition` 也各有一份。此前 `frame`、`eastAsianLayout`、`floatingPosition` 和行的 `gridBefore` / `wBefore` / `gridAfter` / `wAfter` 都是校验收、schema 不声明——schema 比校验窄，等于这些字段对 agent 不存在，而两边都是绿的。
 
+`getWebDivs()` 读取 `webSettings.xml`（经主文档关系解析）里的 `w:divs`：文档经 HTML 往返（另存为网页、邮件回复）时 Word 把 `<div>` / `<blockquote>` 的嵌套结构记在这里。树形结构摊平成数组，`parentId` 还原层级，边距单位为缇。段落与表格行的 `w:divId` 读写为 `ParagraphFormat.divId` / `RowFormat.divId`（`null` 清除）；段落所在 div 及其所有祖先的左右边距累加在段落自己的缩进之外渲染，悬空的 id 按没有 div 处理。div 的上下边距与框线（邮件引用的那条竖线）只读不渲染：它们属于一组连续段落而不是单个段落。`divId` 只在本文档内有意义，所以剪贴板与「从选区建样式」不带它。
+
 `getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
 
 `getThemeSettings()` 读取 `settings.xml` 的 `w:clrSchemeMapping` 和 `w:themeFontLang`，以及 `styles.xml` 的 `w:latentStyles`。颜色槽位映射参与主题色解析；替换主题关系指向的主题部件（通常名为 `theme1.xml`）即可切换当前主题。`themeFontLang` 与 `latentStyles` 只暴露为元数据，不参与字体选择或排版；主题字体仍按主题中声明的脚本槽位解析。

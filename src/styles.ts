@@ -4,7 +4,7 @@ import type {
 } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 import { compactDefined } from './internal/elements.js';
-import { parseCellFormat, parseRowFormat, parseTableFormat, rowCells } from './table.js';
+import { parseCellFormat, parseRowFormat, parseTableFormat, readDivId, rowCells } from './table.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 
@@ -586,6 +586,7 @@ export function readParagraphProperties(props: Element | undefined): ParagraphFo
     textboxTightWrap: TEXTBOX_TIGHT_WRAPS.has(wordValue(children(props, 'textboxTightWrap')[0]) ?? '')
       ? wordValue(children(props, 'textboxTightWrap')[0]) as ParagraphFormat['textboxTightWrap'] : undefined,
     outlineLevel: readNumber(wordValue(children(props, 'outlineLvl')[0])),
+    divId: readDivId(children(props, 'divId')[0]),
     tabs: readTabs(props),
     borders: parsedBorders && Object.values(parsedBorders).some((entry) => entry !== undefined) ? parsedBorders : undefined,
     shading: readShading(children(props, 'shd')[0]),

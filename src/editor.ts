@@ -7,6 +7,7 @@ import type {
   BordersFormat,
   CellFormat,
   TableException,
+  WebDivInfo,
   DocumentRange,
   DocumentBlock,
   DocumentSnapshot,
@@ -39,6 +40,7 @@ import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
+import { webDivIndents } from './web-divs.js';
 
 export { formatPageNumber };
 
@@ -322,7 +324,7 @@ export function deriveLineBoxes(
 }
 
 function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, previous?: ParagraphInfo, includeAfter = true,
-  compatibilitySettings?: CompatibilitySettings): void {
+  compatibilitySettings?: CompatibilitySettings, divIndents?: Map<number, { left: number; right: number }>): void {
   const effective = paragraph.effective ?? paragraph;
   const spacing = paragraphSpacingPx(previous, { ...paragraph, ...effective }, compatibilitySettings);
   const kinsoku = effectiveKinsoku(effective.kinsoku, compatibilitySettings);
@@ -330,8 +332,12 @@ function applyParagraphStyle(element: HTMLElement, paragraph: ParagraphInfo, pre
     element.style.lineBreak = kinsoku ? 'strict' : 'auto';
   }
   if (effective.alignment) element.style.textAlign = ['both', 'distribute'].includes(effective.alignment) ? 'justify' : effective.alignment;
-  if (effective.indentLeft !== undefined && effective.indentLeft !== null) element.style.marginLeft = twipsToPoints(effective.indentLeft)!;
-  if (effective.indentRight !== undefined && effective.indentRight !== null) element.style.marginRight = twipsToPoints(effective.indentRight)!;
+  // w:divId：HTML div 的累计边距加在段落自己的缩进之外（邮件里层层引用的回复就是这么缩进的）。
+  const div = effective.divId !== undefined && effective.divId !== null ? divIndents?.get(effective.divId) : undefined;
+  const indentLeft = div?.left ? (effective.indentLeft ?? 0) + div.left : effective.indentLeft;
+  const indentRight = div?.right ? (effective.indentRight ?? 0) + div.right : effective.indentRight;
+  if (indentLeft !== undefined && indentLeft !== null) element.style.marginLeft = twipsToPoints(indentLeft)!;
+  if (indentRight !== undefined && indentRight !== null) element.style.marginRight = twipsToPoints(indentRight)!;
   if (spacing.beforePx > 0) element.style.marginTop = `${spacing.beforePx}px`;
   if (includeAfter && spacing.afterPx > 0) element.style.marginBottom = `${spacing.afterPx}px`;
   if ((effective.indentFirstLine !== undefined && effective.indentFirstLine !== null) ||
@@ -492,6 +498,13 @@ export class DocxEditor {
   private viewMode: 'continuous' | 'paginated';
   private measuring = false;
   private compatibilitySettings: CompatibilitySettings = {};
+  private divIndents = new Map<number, { left: number; right: number }>();
+
+  /** 同 readCompatibilitySettings：宿主通过 setDocument() 传入的文档对象未必实现它。 */
+  private readDivIndents(): Map<number, { left: number; right: number }> {
+    const getter = (this.document as DocxDocument & { getWebDivs?: () => WebDivInfo[] }).getWebDivs;
+    return typeof getter === 'function' ? webDivIndents(getter.call(this.document)) : new Map();
+  }
 
   private readCompatibilitySettings(): CompatibilitySettings {
     const getter = (this.document as DocxDocument & { getCompatibilitySettings?: () => CompatibilitySettings }).getCompatibilitySettings;
@@ -544,6 +557,7 @@ export class DocxEditor {
     container.append(this.root);
     this.metrics = this.root.ownerDocument.createElement('canvas').getContext('2d');
     this.compatibilitySettings = this.readCompatibilitySettings();
+    this.divIndents = this.readDivIndents();
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.root.addEventListener('keydown', this.handleRootKeydown);
     this.render();
@@ -629,6 +643,7 @@ export class DocxEditor {
     if (this.destroyed) return;
     this.flush();
     this.compatibilitySettings = this.readCompatibilitySettings();
+    this.divIndents = this.readDivIndents();
     this.document = document;
     this.selected = null;
     this.selectedImageInfo = null;
@@ -1423,6 +1438,7 @@ export class DocxEditor {
 
   private paginateDocument(blocks: DocumentBlock[], sections: SectionInfo[], defaultTabStopTwips: number): PageBox[] {
     this.compatibilitySettings = this.readCompatibilitySettings();
+    this.divIndents = this.readDivIndents();
     const measurer = {
       measureParagraph: (paragraph: ParagraphInfo, area: ParagraphMeasureArea, context: MeasureContext) =>
         this.measureParagraphForPagination(paragraph, area, context),
@@ -1586,7 +1602,7 @@ export class DocxEditor {
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
     applyParagraphFrameStyle(element, paragraph.frame);
-    applyParagraphStyle(element, paragraph, previous, includeAfter, this.compatibilitySettings);
+    applyParagraphStyle(element, paragraph, previous, includeAfter, this.compatibilitySettings, this.divIndents);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;
       element.style.minHeight = `${lineHeightPx}px`;
@@ -2007,7 +2023,7 @@ export class DocxEditor {
         element.style.whiteSpace = 'pre-wrap';
         element.style.position = 'relative';
         element.style.zIndex = '1';
-        applyParagraphStyle(element, paragraph, undefined, true, this.compatibilitySettings);
+        applyParagraphStyle(element, paragraph, undefined, true, this.compatibilitySettings, this.divIndents);
         let offset = 0;
         for (const run of paragraph.runs) offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
         if (!paragraph.runs.length) element.textContent = paragraph.text;

@@ -3681,3 +3681,30 @@ test('a row table-property exception (w:tblPrEx) paints over the table and its s
   assert.doesNotMatch(plainRow.childNodes[0].style.borderTop ?? '', /#FF0000/);
   assert.equal(plainRow.childNodes[0].style.backgroundColor ?? '', '');
 });
+
+test('a paragraph inside an HTML div renders with the div margins on top of its own indent', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.readText = (content) => content.textContent ?? '';
+  editor.renderShapeInfos = [];
+  // readDivIndents 从文档的 getWebDivs() 读；宿主传入的文档没有这个方法时不渲染 div 边距。
+  editor.document = {
+    getShapeParagraphs: () => [],
+    getWebDivs: () => [
+      { id: 7, blockQuote: true, bodyDiv: false, marginLeft: 720, marginRight: 120, marginTop: 0, marginBottom: 0 },
+      { id: 8, parentId: 7, blockQuote: false, bodyDiv: false, marginLeft: 360, marginRight: 0, marginTop: 0, marginBottom: 0 },
+    ],
+  };
+  editor.divIndents = editor.readDivIndents();
+  const render = (format) => editor.makeParagraph({ index: 0, text: '', runs: [], images: [], ...format }, 720,
+    { deletedTextByRun: new Map(), revisionColors: new Map() }).style;
+  // 段落自己 200 + div 720 = 920 缇 = 46pt；右边只有 div 的 120 缇 = 6pt。
+  assert.deepEqual([render({ divId: 7, indentLeft: 200 }).marginLeft, render({ divId: 7, indentLeft: 200 }).marginRight], ['46pt', '6pt']);
+  assert.equal(render({ divId: 8 }).marginLeft, '54pt', '嵌套 div 累加：360 + 720 = 1080 缇');
+  assert.equal(render({ divId: 99, indentLeft: 200 }).marginLeft, '10pt', '悬空的 divId 按没有 div 处理');
+  assert.equal(render({ indentLeft: 200 }).marginLeft, '10pt');
+
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.divIndents = editor.readDivIndents();
+  assert.equal(render({ divId: 7 }).marginLeft, undefined);
+});

@@ -132,6 +132,11 @@ export interface ParagraphFormat {
    */
   textboxTightWrap?: 'none' | 'allLines' | 'firstAndLastLine' | 'firstLineOnly' | 'lastLineOnly' | null;
   /**
+   * `w:divId`：这一段属于 `webSettings.xml` 里哪个 HTML `<div>`（见 `getWebDivs()`）。div 的
+   * 左右边距累加在段落自己的缩进之外渲染；悬空的 id 按没有 div 处理。
+   */
+  divId?: number | null;
+  /**
    * `w:snapToGrid`（段落级）：这段的行是否吸附到文档网格的行距（`w:docGrid`）。默认开；
    * 显式关掉的段落在分页与渲染里都**不做**行高吸附——这是 `snapLineHeightPx` 的开关。
    */
@@ -140,6 +145,22 @@ export interface ParagraphFormat {
   tabs?: TabStop[] | null;
   borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>> | null;
   shading?: Shading | null;
+}
+
+/** `webSettings.xml` 的 `w:divs` 里的一个 div，见 `getWebDivs()`。边距单位是缇。 */
+export interface WebDivInfo {
+  id: number;
+  /** 外层 div 的 id（`w:divsChild` 嵌套）；顶层 div 没有。 */
+  parentId?: number;
+  /** HTML `<blockquote>`。 */
+  blockQuote: boolean;
+  /** HTML `<body>` 本身。 */
+  bodyDiv: boolean;
+  marginLeft: number;
+  marginRight: number;
+  marginTop: number;
+  marginBottom: number;
+  borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right', BorderFormat>>;
 }
 
 export interface StyleInfo {
@@ -525,6 +546,8 @@ export type TableException = Pick<TableFormat,
   'width' | 'alignment' | 'indent' | 'borders' | 'shading' | 'cellMargin' | 'layout' | 'cellSpacing' | 'look'>;
 
 export interface RowFormat {
+  /** `w:trPr/w:divId`：这一行属于哪个 HTML `<div>`，同 `ParagraphFormat.divId`。只读写，不渲染。 */
+  divId?: number | null;
   /** 见 `TableException`。写入时 `null` 删除整个 `w:tblPrEx`。 */
   tableException?: TableException | null;
   height?: { value: number; rule?: 'atLeast' | 'exact' };

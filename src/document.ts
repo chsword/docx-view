@@ -4,7 +4,7 @@ import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, TableFormat, TableInfo, TextRange, ThemeSettings,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, WebDivInfo, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -34,6 +34,7 @@ import {
   WORD_NS, wordElement, wordValue,
 } from './xml.js';
 import { readRunShapes, shapeTextElements } from './shapes.js';
+import { parseWebDivs } from './web-divs.js';
 import { MATH_NS, linearToMathMl, mathMlToOmml, ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
@@ -203,6 +204,7 @@ const NUMBERING_TYPE = 'application/vnd.openxmlformats-officedocument.wordproces
 const NUMBERING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering';
 const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
 const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
+const WEB_SETTINGS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings';
 const THEME_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const encoder = new TextEncoder();
 const IMAGE_LIMIT = 16 * 1024 * 1024;
@@ -1376,6 +1378,10 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     }
     removeIfEmpty(spacing);
   }
+  if ('divId' in format) {
+    if (format.divId === null) removeProperty(props, 'divId');
+    else if (format.divId !== undefined) setWordValue(property(props, 'divId'), String(format.divId));
+  }
   if ('outlineLevel' in format) {
     if (format.outlineLevel === null) removeProperty(props, 'outlineLvl');
     else if (format.outlineLevel !== undefined) setWordValue(property(props, 'outlineLvl'), String(format.outlineLevel));
@@ -1908,6 +1914,8 @@ function setRowFormat(row: Element, format: RowFormat): void {
     if (value === 0) removeWordChildren(props, tag);
     else valueElement(props, tag, String(value));
   }
+  if (format.divId === null) removeWordChildren(props, 'divId');
+  else if (format.divId !== undefined) valueElement(props, 'divId', String(format.divId));
   if (format.widthBefore !== undefined) widthValue(props, 'wBefore', format.widthBefore);
   if (format.widthAfter !== undefined) widthValue(props, 'wAfter', format.widthAfter);
 }
@@ -2169,7 +2177,7 @@ const PARAGRAPH_FORMAT_FIELDS = [
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
   'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap', 'snapToGrid',
-  'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
+  'outlineLevel', 'tabs', 'borders', 'shading', 'frame', 'divId',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
 interface CompareBlockInfo {
@@ -6001,9 +6009,14 @@ export class DocxDocument {
     return format;
   }
 
+  /**
+   * 剪贴板与「从选区建样式」用。`divId` 不带：它指向**本文档** `webSettings.xml` 里的 div，
+   * 粘到别的文档里要么悬空、要么恰好撞上一个无关的 div，样式里写它更没有意义。
+   */
   private directParagraphFormat(paragraph: ParagraphInfo): ParagraphFormat {
     const format: ParagraphFormat = {};
     for (const key of PARAGRAPH_FORMAT_FIELDS) {
+      if (key === 'divId') continue;
       const value = paragraph[key];
       if (value !== undefined) (format as Record<string, unknown>)[key] = cloneRunFormatValue(value);
     }
@@ -8646,6 +8659,21 @@ export class DocxDocument {
   getNoteSettings(): NoteSettings {
     const settingsPath = this.getSettingsPath();
     return parseDocumentNoteSettings(settingsPath && this.parts.has(settingsPath) ? this.getPartDocument(settingsPath) : null);
+  }
+
+  /**
+   * `webSettings.xml` 里的 HTML div 结构（`w:divs`），摊平成数组，`parentId` 还原嵌套。段落与
+   * 表格行的 `divId` 指向这里的 `id`。没有这个部件或部件损坏时返回空数组。
+   */
+  getWebDivs(): WebDivInfo[] {
+    const conventional = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}webSettings.xml`;
+    const path = this.getRelatedPartPath(WEB_SETTINGS_REL, this.parts.has(conventional) ? conventional : undefined);
+    if (!path || !this.parts.has(path)) return [];
+    try {
+      return parseWebDivs(this.getCachedPartDocument(path).documentElement ?? undefined);
+    } catch {
+      return [];
+    }
   }
 
   getCompatibilitySettings(): CompatibilitySettings {

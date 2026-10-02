@@ -212,7 +212,7 @@ export const PARAGRAPH_FORMAT_KEYS = [
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
   'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens', 'frame',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
-  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap', 'snapToGrid',
+  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap', 'snapToGrid', 'divId',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
 export const TABLE_FORMAT_KEYS = [
@@ -226,7 +226,7 @@ export const TABLE_EXCEPTION_KEYS = [
 ] as const satisfies readonly (keyof TableFormat)[];
 
 export const ROW_FORMAT_KEYS = [
-  'tableException', 'height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
+  'tableException', 'divId', 'height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
   'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter',
 ] as const satisfies readonly (keyof RowFormat)[];
 
@@ -234,6 +234,11 @@ export const CELL_FORMAT_KEYS = [
   'width', 'borders', 'shading', 'margin', 'verticalAlign', 'textDirection', 'noWrap', 'fitText',
   'hideMark', 'hMerge', 'vMerge',
 ] as const satisfies readonly (keyof CellFormat)[];
+
+/** `w:divId` 是 ST_DecimalNumber；指向 `w:divs` 里的 `w:div/@w:id`，Word 写的是大正整数。 */
+function validateDivId(value: unknown): void {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error('divId must be a non-negative integer.');
+}
 
 export function validateParagraphFormat(value: unknown): asserts value is ParagraphFormat {
   object(value);
@@ -282,6 +287,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   for (const key of ['spacingBeforeAuto', 'spacingAfterAuto', 'contextualSpacing', 'mirrorIndents']) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
+  if ('divId' in value) maybeNull(value.divId as number | null | undefined, (entry) => validateDivId(entry));
   if ('textDirection' in value) maybeNull(value.textDirection as string | null | undefined, (entry) => assertText(entry, 'textDirection'));
   if ('tabs' in value) maybeNull(value.tabs as TabStop[] | null | undefined, (entry) => validateTabs(entry));
   if ('borders' in value) maybeNull(value.borders as ParagraphFormat['borders'] | null | undefined, (entry) => validateParagraphBorders(entry));
@@ -473,6 +479,7 @@ export function validateRowFormat(value: unknown): asserts value is RowFormat {
     keys(value.tableException, [...TABLE_EXCEPTION_KEYS]);
     validateTableFormat(value.tableException);
   }
+  if (value.divId !== undefined && value.divId !== null) validateDivId(value.divId);
   if (value.cellSpacing !== undefined) validateWidth(value.cellSpacing, 'cellSpacing');
   if (value.widthBefore !== undefined) validateWidth(value.widthBefore, 'widthBefore');
   if (value.widthAfter !== undefined) validateWidth(value.widthAfter, 'widthAfter');
@@ -1184,6 +1191,7 @@ const tableFormat = shape({
   floatingPosition: nullable(tableFloatingPosition),
 }, []);
 const rowFormat = shape({
+  divId: nullable(index),
   tableException: nullable(shape(Object.fromEntries(TABLE_EXCEPTION_KEYS.map((key) => [key, tableFormat.properties[key]])), [])),
   height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
   cellSpacing: width,
@@ -1234,6 +1242,7 @@ const paragraphFormat = shape({
   suppressOverlap: nullable({ type: 'boolean' }),
   textboxTightWrap: nullable({ enum: ['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'] }),
   snapToGrid: nullable({ type: 'boolean' }),
+  divId: nullable(index),
   frame: nullable(paragraphFrame),
   outlineLevel: nullable(outlineLevel),
   tabs: nullable(docTabs),
