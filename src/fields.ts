@@ -1,5 +1,5 @@
 import type { Element, Node } from '@xmldom/xmldom';
-import type { EquationNode, FieldInfo, FieldKind, FieldSwitch } from './types.js';
+import type { EquationNode, FieldInfo, FieldKind, FieldSwitch, MathMlNode } from './types.js';
 import { WORD_NS, children, descendants } from './xml.js';
 
 const PAGINATION = new Set<FieldKind>(['PAGE', 'NUMPAGES', 'PAGEREF', 'TOC', 'INDEX']);
@@ -10,6 +10,9 @@ const NEVER_EVALUATE = new Set<FieldKind>([
   // EQ 是排版域，不是取值域：它的「结果」就是 Word 缓存的那段文字，没有可重算的值。
   'EQ',
 ]);
+
+/** 接一个字符参数的子开关：括号的左 / 右 / 两侧字符，积分的定长 / 可变长符号。 */
+const CHARACTER_OPTIONS = new Set(['lc', 'rc', 'bc', 'fc', 'vc']);
 
 /** EQ 指令的嵌套上限。和公式转换一样设一道硬界，不让文档内容决定递归多深。 */
 const MAX_EQUATION_DEPTH = 16;
@@ -26,15 +29,26 @@ export function parseEquationInstruction(instruction: string): EquationNode | un
   if (body === instruction) return undefined;
   let cursor = 0;
   const parseParts = (depth: number): EquationNode[] => {
-    const parts: EquationNode[] = [];
-    let current = parseElement(depth);
-    parts.push(current);
+    const parts: EquationNode[] = [parseSequence(depth)];
     while (cursor < body.length && (body[cursor] === ',' || body[cursor] === ';')) {
       cursor++;
-      current = parseElement(depth);
-      parts.push(current);
+      parts.push(parseSequence(depth));
     }
     return parts;
+  };
+  /**
+   * 一个参数可以是几个元素并排（`x\s\up8(2)`、`a\f(1,2)b`）。原先只读一个元素，后面的
+   * 一声不响地丢了。并排的几个包成一个没有开关的组，转 MathML 时就是 mrow。
+   */
+  const parseSequence = (depth: number): EquationNode => {
+    const sequence: EquationNode[] = [];
+    do {
+      const before = cursor;
+      sequence.push(parseElement(depth));
+      if (cursor === before) break;
+    } while (cursor < body.length && !',;)'.includes(body[cursor]!));
+    const kept = sequence.filter((node) => node.switch !== undefined || node.text !== undefined || (node.parts?.length ?? 0) > 0);
+    return kept.length === 1 ? kept[0]! : kept.length ? { parts: kept } : sequence[0] ?? {};
   };
   const parseElement = (depth: number): EquationNode => {
     while (body[cursor] === ' ') cursor++;
@@ -45,17 +59,33 @@ export function parseEquationInstruction(instruction: string): EquationNode | un
       return { text: rest };
     }
     const node: EquationNode = {};
+    let last: string | undefined;
     while (body[cursor] === '\\') {
-      cursor++;
-      const name = /^[A-Za-z]+/.exec(body.slice(cursor))?.[0] ?? '';
-      cursor += name.length;
-      if (node.switch === undefined) node.switch = name.toLowerCase();
-      else (node.options ??= []).push(name.toLowerCase());
+      const name = /^[A-Za-z]+/.exec(body.slice(cursor + 1))?.[0] ?? '';
+      if (!name) {
+        // 反斜杠后跟非字母：要么是上一个子开关的字符参数（`\lc\{`），要么是正文里转义的
+        // 字面字符（`\,`、`\(`）——后者交给下面的文字分支。
+        if (last && CHARACTER_OPTIONS.has(last) && cursor + 1 < body.length) {
+          const character = Array.from(body.slice(cursor + 1))[0]!;
+          (node.characters ??= {})[last] = character;
+          cursor += 1 + character.length;
+          last = undefined;
+          while (body[cursor] === ' ') cursor++;
+          continue;
+        }
+        break;
+      }
+      cursor += 1 + name.length;
+      const lower = name.toLowerCase();
+      if (node.switch === undefined) node.switch = lower;
+      else (node.options ??= []).push(lower);
+      last = lower;
       while (body[cursor] === ' ') cursor++;
       const number = /^-?\d+(?:\.\d+)?/.exec(body.slice(cursor))?.[0];
       if (number !== undefined) {
         cursor += number.length;
         const magnitude = Number(number);
+        (node.values ??= {})[lower] = magnitude;
         // \do 是往下，记成负数，这样调用方只看一个数就够了。
         node.raisePoints = node.options?.includes('do') ? -magnitude : magnitude;
         while (body[cursor] === ' ') cursor++;
@@ -66,9 +96,19 @@ export function parseEquationInstruction(instruction: string): EquationNode | un
       node.parts = parseParts(depth + 1);
       if (body[cursor] === ')') cursor++;
     } else {
-      const start = cursor;
-      while (cursor < body.length && !'(),;\\'.includes(body[cursor]!)) cursor++;
-      const text = body.slice(start, cursor);
+      let text = '';
+      while (cursor < body.length && !'(),;'.includes(body[cursor]!)) {
+        if (body[cursor] === '\\') {
+          // 转义的字面字符：`\,` 是逗号本身而不是分隔符。后面是字母就是下一个开关，停下。
+          const next = body[cursor + 1];
+          if (next === undefined || /[A-Za-z]/.test(next)) break;
+          text += next;
+          cursor += 2;
+          continue;
+        }
+        text += body[cursor]!;
+        cursor++;
+      }
       if (text) node.text = text;
     }
     return node;
@@ -79,6 +119,104 @@ export function parseEquationInstruction(instruction: string): EquationNode | un
   const kept = parts.filter(meaningful);
   if (!kept.length) return undefined;
   return kept.length === 1 ? kept[0]! : { parts: kept };
+}
+
+/** 括号字符的配对：`\bc\{` 只给左边，右边由它推出来。 */
+const CLOSING_BRACKET: Record<string, string> = { '(': ')', '[': ']', '{': '}', '<': '>', '〈': '〉', '|': '|', '‖': '‖' };
+
+/**
+ * 把 `EQ` 指令的结构转成 MathML 节点树，交给浏览器排版——和 OMML 公式走同一条路，不自己算
+ * 分数线、根号的位置。生成的树只来自这里（不是文档里的 MathML 字符串），所以可以带少量排版用
+ * 的属性（`voffset`、`columnalign`、内联 `style`）而不经过 `MATHML_ATTRS` 白名单——那份白名单
+ * 是给宿主通过 API 传进来的结构化公式用的。
+ *
+ * 各开关的语义按 Word 的 EQ 域：
+ * - `\f(a,b)` 分数；`\r(x)` 平方根，`\r(n,x)` n 次根（**第一个参数是根指数**）；
+ * - `\i(下限,上限,被积式)` 积分，`\su` / `\pr` 换成求和 / 求积并把上下限放到符号上下，
+ *   `\in` 把上下限放成行内上下标，`\fc\c` / `\vc\c` 换成自定义符号；
+ * - `\b(x)` 括号，`\lc` / `\rc` / `\bc` 指定字符；`\a(…)` 数组，`\co` 列数、
+ *   `\al` / `\ac` / `\ar` 对齐；`\l(a,b)` 逗号列表；
+ * - `\s\up n(x)` / `\s\do n(x)` 上下移 n 磅；`\x(x)` 方框，`\to` / `\bo` / `\le` / `\ri`
+ *   只画对应的边；`\d\fo n()` / `\d\ba n()` 前移 / 后退 n 磅；
+ * - `\o(…)` 叠印：顶层的 `\o` 由编辑器按层叠画（见 `overstrikeLayers`），嵌在别的开关里时
+ *   这里退化为并排。
+ *
+ * 不认识的开关退化为参数并排，内容不丢。
+ */
+export function equationToMathMl(node: EquationNode, depth = 0): MathMlNode {
+  if (depth > MAX_EQUATION_DEPTH) return { tag: 'mtext', text: node.text ?? '' };
+  const parts = (node.parts ?? []).map((part) => equationToMathMl(part, depth + 1));
+  const part = (index: number): MathMlNode => parts[index] ?? { tag: 'mrow' };
+  const row = (children: MathMlNode[]): MathMlNode => (children.length === 1 ? children[0]! : { tag: 'mrow', children });
+  const options = new Set(node.options ?? []);
+  const value = (name: string) => node.values?.[name];
+  const operator = (text: string, stretchy?: boolean): MathMlNode =>
+    ({ tag: 'mo', text, ...(stretchy === undefined ? {} : { attrs: { stretchy: String(stretchy) } }) });
+  if (node.switch === undefined) {
+    if (node.text !== undefined) return { tag: 'mtext', text: node.text };
+    return row(parts);
+  }
+  switch (node.switch) {
+    case 'f':
+      return { tag: 'mfrac', children: [part(0), part(1)] };
+    case 'r':
+      return parts.length >= 2 ? { tag: 'mroot', children: [part(1), part(0)] } : { tag: 'msqrt', children: [part(0)] };
+    case 'i': {
+      const symbol = node.characters?.fc ?? node.characters?.vc
+        ?? (options.has('su') ? '∑' : options.has('pr') ? '∏' : '∫');
+      const largeOperator = options.has('su') || options.has('pr');
+      const tag = largeOperator && !options.has('in') ? 'munderover' : 'msubsup';
+      return { tag: 'mrow', children: [{ tag, children: [operator(symbol), part(0), part(1)] }, part(2)] };
+    }
+    case 'b': {
+      const open = node.characters?.lc ?? node.characters?.bc ?? '(';
+      const close = node.characters?.rc ?? (node.characters?.bc ? CLOSING_BRACKET[node.characters.bc] ?? node.characters.bc : ')');
+      // \\lc 只给了左边时右边不画（Word 就是这样：只指定一侧时另一侧为空）。
+      const onlyLeft = node.characters?.lc !== undefined && node.characters?.rc === undefined && node.characters?.bc === undefined;
+      const onlyRight = node.characters?.rc !== undefined && node.characters?.lc === undefined && node.characters?.bc === undefined;
+      return {
+        tag: 'mrow',
+        children: [
+          ...(onlyRight ? [] : [operator(open, true)]),
+          row(parts),
+          ...(onlyLeft ? [] : [operator(close, true)]),
+        ],
+      };
+    }
+    case 'a': {
+      const columns = Math.max(1, Math.min(parts.length || 1, Math.trunc(value('co') ?? 1)));
+      const align = options.has('al') ? 'left' : options.has('ar') ? 'right' : 'center';
+      const rows: MathMlNode[] = [];
+      for (let start = 0; start < parts.length; start += columns) {
+        rows.push({ tag: 'mtr', children: parts.slice(start, start + columns).map((cell) => ({ tag: 'mtd', children: [cell] })) });
+      }
+      return { tag: 'mtable', attrs: { columnalign: align }, children: rows };
+    }
+    case 'l':
+      return { tag: 'mrow', children: parts.flatMap((entry, index) => (index ? [operator(','), entry] : [entry])) };
+    case 's': {
+      const up = value('up') ?? value('ai');
+      const down = value('do') ?? value('di');
+      const shift = options.has('up') ? (up ?? 2) : options.has('do') ? -(down ?? 2) : 0;
+      return { tag: 'mpadded', attrs: { voffset: `${shift}pt` }, children: [row(parts)] };
+    }
+    case 'x': {
+      const sides = ['to', 'bo', 'le', 'ri'].filter((side) => options.has(side));
+      const css = (sides.length ? sides : ['to', 'bo', 'le', 'ri'])
+        .map((side) => `border-${({ to: 'top', bo: 'bottom', le: 'left', ri: 'right' } as Record<string, string>)[side]}:1px solid`)
+        .join(';');
+      return { tag: 'mrow', attrs: { style: `${css};padding:0 2px` }, children: [row(parts)] };
+    }
+    case 'd': {
+      const forward = value('fo');
+      const back = value('ba');
+      if (forward !== undefined) return { tag: 'mspace', attrs: { width: `${Math.max(0, forward)}pt` } };
+      if (back !== undefined) return { tag: 'mspace', attrs: { style: `margin-inline-start:-${Math.max(0, back)}pt` } };
+      return { tag: 'mrow' };
+    }
+    default:
+      return row(parts);
+  }
 }
 
 export interface ParsedFields {

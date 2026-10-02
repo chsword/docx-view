@@ -6388,9 +6388,9 @@ test('EQ fields parse their bracket syntax instead of being read as switches', (
   assert.deepEqual(combined.equation, {
     switch: 'o',
     parts: [
-      { switch: 's', options: ['up'], raisePoints: 9, parts: [{ text: '股份' }] },
-      // \do 记成负数，调用方只看一个数就够了。
-      { switch: 's', options: ['do'], raisePoints: -3, parts: [{ text: '有限' }] },
+      { switch: 's', options: ['up'], raisePoints: 9, values: { up: 9 }, parts: [{ text: '股份' }] },
+      // \do 记成负数，调用方只看一个数就够了；values 里保留原值。
+      { switch: 's', options: ['do'], raisePoints: -3, values: { do: 3 }, parts: [{ text: '有限' }] },
     ],
   });
 

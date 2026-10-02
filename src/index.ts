@@ -27,6 +27,7 @@ export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS }
 export { readRunShapes } from './shapes.js';
 export { customGeometryPath, presetGeometryPath } from './geometry.js';
 export { axisTicks, barRects, pieSlicePath, valueToPx } from './chart.js';
+export { equationToMathMl, parseEquationInstruction } from './fields.js';
 export {
   MATH_NS, linearToMathMl, mathMlToOmml, ommlToLinearText, ommlToLinearTextWithInfo, ommlToMathMl, ommlToMathMlWithInfo,
 } from './math.js';

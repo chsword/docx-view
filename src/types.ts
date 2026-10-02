@@ -395,6 +395,10 @@ export interface EquationNode {
   options?: string[];
   /** `\up` / `\do` 的位移量，单位磅；`do` 记为负数。 */
   raisePoints?: number;
+  /** 带数值的开关与子开关各自的数值，如 `\a\co2\hs3` → `{ co: 2, hs: 3 }`。 */
+  values?: Record<string, number>;
+  /** 带字符参数的子开关，如 `\b\lc\{` → `{ lc: '{' }`；`\i\fc\∮` → `{ fc: '∮' }`。 */
+  characters?: Record<string, string>;
   /** 括号里以分隔符隔开的各部分。 */
   parts?: EquationNode[];
   /** 纯文字。 */

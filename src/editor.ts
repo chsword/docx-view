@@ -6,6 +6,7 @@ import type {
   ClipboardRun,
   BordersFormat,
   CellFormat,
+  EquationNode,
   TableException,
   WebDivInfo,
   DocumentRange,
@@ -39,7 +40,7 @@ import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './t
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
 import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
-import { formatPageNumber, pageFieldResult } from './fields.js';
+import { equationToMathMl, formatPageNumber, pageFieldResult } from './fields.js';
 import { webDivIndents } from './web-divs.js';
 
 export { formatPageNumber };
@@ -2391,6 +2392,22 @@ export class DocxEditor {
       }
     }
     const fieldInfo = run.field ? this.renderFieldInfos?.get(run.field.index) : undefined;
+    // EQ 域除顶层 \o（下面按层叠画）以外的开关：按指令结构画成 MathML。画出来的公式是**装饰**
+    // ——指令才是内容，所以 contentEditable=false 加 data-docx-mark，readText() 跳过它。Word
+    // 缓存的域结果（常常为空，有时是压平的文字）照样留在 DOM 里让 readText() 读到，只是不显示：
+    // 拿掉它的话 flush() 会以为用户删了这段文字，把它从文档里删掉。
+    const equation = fieldInfo?.kind === 'EQ' && fieldInfo.equation && fieldInfo.equation.switch !== 'o'
+      ? fieldInfo.equation : undefined;
+    const equationAnchor = equation && fieldInfo
+      ? fieldInfo.resultRuns[0] ?? Math.max(...fieldInfo.runs)
+      : undefined;
+    if (equation && run.index === equationAnchor) paragraphElement.append(this.makeEquation(equation));
+    const hideEquationResult = equation !== undefined && run.field?.role === 'result';
+    const startOffsetPx = currentLineOffsetPx;
+    if (hideEquationResult) {
+      runSpan.dataset.docxEquationResult = '1';
+      runSpan.style.display = 'none';
+    }
     if (run.revisions?.length) runSpan.dataset.docxRevisionIds = run.revisions.map((revision) => revision.id).join(',');
     const commentIds = [...new Set([...(this.commentParagraphIds.get(paragraph.index) ?? []), ...(this.commentRunIds.get(`${paragraph.index}:${run.index}`) ?? [])])];
     if (commentIds.length) {
@@ -2594,7 +2611,25 @@ export class DocxEditor {
       }
     }
     paragraphElement.append(runSpan);
-    return currentLineOffsetPx;
+    return hideEquationResult ? startOffsetPx : currentLineOffsetPx;
+  }
+
+  private makeEquation(equation: EquationNode): HTMLElement {
+    const ns = 'http://www.w3.org/1998/Math/MathML';
+    const build = (node: MathMlNode): Element => {
+      const element = this.root.ownerDocument.createElementNS(ns, node.tag);
+      for (const [name, value] of Object.entries(node.attrs ?? {})) element.setAttribute(name, value);
+      if (node.text !== undefined) element.textContent = node.text;
+      for (const child of node.children ?? []) element.append(build(child));
+      return element;
+    };
+    const root = this.root.ownerDocument.createElementNS(ns, 'math') as unknown as HTMLElement;
+    root.append(build(equationToMathMl(equation)));
+    root.contentEditable = 'false';
+    root.dataset.docxEquation = 'math';
+    root.setAttribute('data-docx-mark', '1');
+    root.style.userSelect = 'none';
+    return root;
   }
 
   private makeImage(paragraph: number, image: ImageInfo): HTMLElement {

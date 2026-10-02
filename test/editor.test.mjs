@@ -3708,3 +3708,49 @@ test('a paragraph inside an HTML div renders with the div margins on top of its 
   editor.divIndents = editor.readDivIndents();
   assert.equal(render({ divId: 7 }).marginLeft, undefined);
 });
+
+test('EQ switches other than a top-level overstrike render as decorative MathML, keeping the cached result', () => {
+  const editor = makeRunRenderEditor();
+  editor.runIsHidden = () => false;
+  editor.measure = (text) => text.length * 10;
+  const reviewContext = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const newSpan = () => ({ nodeType: 1, tagName: 'SPAN', dataset: {}, style: {}, childNodes: [],
+    attributes: new Map(), append(...children) { this.childNodes.push(...children); } });
+  const fraction = { switch: 'f', parts: [{ text: '1' }, { text: '2' }] };
+
+  // 没有缓存结果（Word 常这样写 EQ）：公式挂在最后一个指令 run 上。
+  editor.renderFieldInfos = new Map([[0, { index: 0, kind: 'EQ', result: '', runs: [1, 2, 3], resultRuns: [], equation: fraction }]]);
+  const empty = newSpan();
+  const paragraph = { index: 0, text: '', runs: [], images: [] };
+  for (const index of [1, 2, 3]) {
+    editor.appendRun(empty, paragraph, { index, text: '', field: { index: 0, role: 'instruction' } }, reviewContext, 720, 0);
+  }
+  const maths = empty.childNodes.filter((child) => child.dataset?.docxEquation === 'math');
+  assert.equal(maths.length, 1, '只画一次');
+  assert.equal(empty.childNodes.indexOf(maths[0]), 2, '在第三个 run（索引 3）之前');
+  assert.equal(maths[0].tagName, 'MATH');
+  assert.equal(maths[0].childNodes[0].tagName, 'MFRAC');
+  assert.equal(maths[0].contentEditable, 'false');
+  assert.equal(maths[0].attributes.get('data-docx-mark'), '1');
+  assert.equal(editor.readText(empty), '', '公式是装饰，不进正文');
+
+  // 有缓存结果：结果文字留在 DOM 里给 readText() 读（否则 flush() 会把它从文档里删掉），只是不显示，
+  // 也不占行宽。
+  editor.renderFieldInfos = new Map([[0, { index: 0, kind: 'EQ', result: '12', runs: [1, 2], resultRuns: [2], equation: fraction }]]);
+  const cached = newSpan();
+  const advance = editor.appendRun(cached, { ...paragraph, text: '12' },
+    { index: 2, text: '12', field: { index: 0, role: 'result' } }, reviewContext, 720, 5);
+  const [math, result] = cached.childNodes;
+  assert.equal(math.dataset.docxEquation, 'math', '公式在结果之前');
+  assert.equal(result.style.display, 'none');
+  assert.equal(result.dataset.docxEquationResult, '1');
+  assert.equal(editor.readText(cached), '12');
+  assert.equal(advance, 5);
+
+  // 顶层 \o 仍走叠印那条路。
+  editor.renderFieldInfos = new Map([[0, { index: 0, kind: 'EQ', result: '甲', runs: [2], resultRuns: [2],
+    equation: { switch: 'o', parts: [{ text: '○' }, { text: '甲' }] } }]]);
+  const overstrike = newSpan();
+  editor.appendRun(overstrike, { ...paragraph, text: '甲' }, { index: 2, text: '甲', field: { index: 0, role: 'result' } }, reviewContext, 720, 0);
+  assert.equal(overstrike.childNodes.filter((child) => child.dataset?.docxEquation === 'math').length, 0);
+});
