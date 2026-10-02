@@ -132,7 +132,7 @@ const bytes = await doc.toUint8Array({
 
 尺寸的来源只有一条规则:文档明写了 `w:w` / `w:h` 就照它来，没写才用量出来的那一维。下沉字正是「没写」的那种——所以它的尺寸**不从 `w:lines` 反推**:Word 已经把那个字的 `w:sz` 调到正好跨 `lines` 行，量出来的字框就是排除区。宽度既量不到又没有 `w:w` 时不产生排除区（不环绕只是少个效果，尺寸编错了会把正文挤歪）。`w:wrap` 映射为排除区类型：`around` / `auto` → `square`，`tight`、`through` 原样，`notBeside` → `topAndBottom`（字面意思就是旁边不许有文字，因此也不浮动），`none` 不产生排除区也不浮动。`w:hRule` 为 `exact` 时用固定高度，否则用最小高度。排除区放不进本栏剩余高度而本栏已有内容时先换栏。
 
-**`w:x` / `w:y` 那套按页面或页边距定位的绝对坐标本期不实现**：那需要相对页框定位，而连续视图没有页框；这些值如实读取并原样写回，浮动方向按 `xAlign` 取左右，其余照左浮。`w:anchorLock`、`w:yAlign`、`w:vAnchor` / `w:hAnchor` 同样只读取保留，不参与排版。
+**`w:x` / `w:y` 按锚点换算成偏移**：浮动块仍然是 `float`，用外边距挪到文档指定的位置，再用 `shape-outside: inset(…)` 把挪出来的那块空白从浮动形状里扣掉——否则偏移本身会把正文挤开，左边和上边留出一大片空白。分页测量的排除区用同样的形状，两边算法一致。只在文档**写明了**锚点（`w:hAnchor` / `w:vAnchor`）时换算：锚点的默认值各处说法不一，猜错会让整块错位，不如保持原样。写了 `w:xAlign` / `w:yAlign`（`inline` 除外）时按对齐处理，不读 x / y。水平方向 `text`（栏）在两种视图都生效，`margin` / `page` 只在分页视图生效（要知道栏和页边距的位置）；竖直方向 `text`（相对段落）两种视图都生效，`margin` / `page` 只在分页视图生效，且只能往下挪——目标在当前位置之上时取 0，浮动块不能放回已经排过的地方。环绕仍是单侧：浮动块左边挪出来的地方不排字（Word 会两侧绕排）。`w:anchorLock` 只读取保留，不参与排版。
 
 `w:textAlignment` 读写为 `ParagraphFormat.textAlignment`（`auto` / `baseline` / `bottom` / `center` / `top`），管的是**一行里字符的垂直对齐**（字号不一时怎么在行内对齐），和 `w:jc` 的左右对齐是两件事。渲染落在 run 的 `vertical-align` 上——段落是块级元素，`vertical-align` 设在它身上没有效果。**run 自己的上下标与 `w:position` 压过它**：三者落在同一个 CSS 属性上，而 run 级是更具体的那一层。`center` 只是近似（CSS 的 `middle` 对的是基线加半个 x-height，Word 对的是行的正中），`auto` 是 Word 的默认、不设任何东西。
 
@@ -464,7 +464,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 浮动表格（`w:tblpPr`）读写为 `TableFormat.floatingPosition`（`leftFromText` / `rightFromText` / `topFromText` / `bottomFromText`、`verticalAnchor` / `horizontalAnchor`、`xSpec` / `x`、`ySpec` / `y`；传 `null` 清除，表格回到正常流）。它是表格版的 `w:framePr`：表格脱离正常流、正文绕着它排，所以走的是同一条路——渲染给表格加 `float`，环绕交给浏览器；分页测量用同样的 float 占位，两边不会各算一套。排除区宽度优先用 `w:tblW`，没有就用网格列宽合计。
 - **`w:tblpPr` 上没有 `w:wrap`**：浮动表格在 Word 里一定绕排，这正是它的用途，所以排除区类型固定为 `square`。`w:tblOverlap` 管的是能否与**其他浮动对象**重叠，与正文是否绕排无关：读写为 `TableFormat.overlap`（`never` / `overlap`，其余值按未设置处理），但**不影响排版**——环绕用的是浏览器 `float`，而浮动块本来就不互相重叠，所以 `never` 天然成立、`overlap` 无法实现。
 - `<w:tblpPr/>` 即便一个属性都没有也是浮动表格（全取默认值），所以读出来是空对象而不是 `undefined`——退化成 `undefined` 会把「浮动」这件事本身丢掉。非法枚举与非数字按未设置处理，但仍然是浮动表格。
-- **`w:tblpX` / `w:tblpY` 那套按页面或页边距定位的绝对坐标本期不实现**（与 `w:framePr` 同理：需要相对页框定位，而连续视图没有页框）。这些值如实读写，浮动方向按 `tblpXSpec` 取左右，其余照左浮。
+- **`w:tblpX` / `w:tblpY` 按锚点换算成偏移**，规则与 `w:framePr` 的 `w:x` / `w:y` 完全相同（`horzAnchor` / `vertAnchor` 写明时才换算，`tblpXSpec` / `tblpYSpec` 优先于坐标，页面 / 页边距锚点只在分页视图生效）。偏移取代 `leftFromText` / `topFromText` 那一侧的间距，而不是叠加在上面。
 - 行与单元格的读模型带两份条件格式：`conditions` 是按 `tblLook` 与位置**算出来**的（`effective` 与渲染用的就是它），`recordedConditions` 是 Word 存盘时写进 `w:cnfStyle` 的（具名属性优先，没有就读 Word 2007 的 12 位 `w:val` 位串）。`cnfStyle` 是缓存，Word 打开时会重算，所以以算出来的为准；两者不一致说明文件被别的程序改过结构或开关而没刷新缓存。`recordedConditions` 只读，不进格式对象；段落 `pPr` 里的 `cnfStyle` 不读。
 - 行级表格属性例外 `w:tblPrEx` 读写为 `RowFormat.tableException`（`tblPr` 的子集：宽度、对齐、缩进、框线、底纹、单元格边距、布局、单元格间距、`tblLook`；传 `null` 删除）。它不在 `w:trPr` 里，而是 `w:tr` 的第一个子元素，写入时排在 `trPr` 之前。优先级是单元格自己的 `tcPr` > 行的 `tblPrEx` > 表格的 `tblPr` 与表格样式：框线、底纹、单元格边距按这个顺序渲染到这一行的单元格上；对齐、缩进、宽度、单元格间距是整行平移或加宽，HTML 表格的行做不到，只读写、不渲染。
 - 行的网格跳过（`w:gridBefore` / `w:wBefore` / `w:gridAfter` / `w:wAfter`）读写为 `RowFormat.gridBefore` / `widthBefore` / `gridAfter` / `widthAfter`；`0`、负数与非整数按未设置处理。**跳过的列算进网格列号**——跨行合并是靠网格起始列匹配的（`vMerge` 的 continue 要对上上面那个 restart），不算进去的话带 `gridBefore` 的行里合并会断掉，单元格的 `gridStart` / `gridEnd` 也会偏小。渲染时跳过的那块用一个空单元格占位，宽度取 `wBefore` / `wAfter`，标为 `contentEditable="false"` 且不画边框。

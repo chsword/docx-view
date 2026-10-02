@@ -3895,3 +3895,32 @@ test('a shape shadow renders as an SVG drop-shadow filter on the shape path', ()
   assert.equal(drop.tagName, 'FEDROPSHADOW');
   assert.deepEqual(['dx', 'dy', 'stdDeviation', 'flood-color'].map((name) => drop.attributes.get(name)), ['0', '2', '3', 'rgba(0, 0, 0, 0.63)']);
 });
+
+test('positioned frames and floating tables render their x / y offsets as margins with a matching shape-outside', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.readText = (content) => content.textContent ?? '';
+  editor.renderShapeInfos = [];
+  editor.document = { getShapeParagraphs: () => [] };
+  const frame = { widthTwips: 1800, wrap: 'around', horizontalAnchor: 'text', xTwips: 300, verticalAnchor: 'text', yTwips: 150, horizontalSpaceTwips: 150 };
+  const context = { deletedTextByRun: new Map(), revisionColors: new Map() };
+  const paragraph = { index: 0, text: 'b', runs: [], images: [], frame };
+  // 连续视图（不传）：相对正文的偏移自己算；x 取代左侧的 hSpace，而不是叠在它上面。
+  const continuous = editor.makeParagraph(paragraph, 720, context);
+  assert.deepEqual([continuous.style.marginLeft, continuous.style.marginTop], ['20px', '10px']);
+  // 偏移出来的那块不排除文字：shape-outside 把它从浮动形状里扣掉。
+  assert.equal(continuous.style.shapeOutside, 'inset(10px 0 0 20px)');
+  // 分页视图传布局算好的：用它，不再自己算；传 null 表示没有偏移。
+  const paginated = editor.makeParagraph(paragraph, 720, context, undefined, undefined, true, { xPx: 96, yPx: 0 });
+  assert.equal(paginated.style.marginLeft, '96px');
+  assert.equal(paginated.style.shapeOutside, 'inset(0px 0 0 96px)');
+  const none = editor.makeParagraph(paragraph, 720, context, undefined, undefined, true, null);
+  assert.equal(none.style.marginLeft, '10px');
+  assert.equal(none.style.shapeOutside ?? '', '');
+
+  const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
+  const table = editor.makeTable({ type: 'table', grid: [1000], rows: [{ cells: [cell()], format: {} }],
+    format: { floatingPosition: { leftFromText: 150, horizontalAnchor: 'text', x: 600, verticalAnchor: 'text', y: 300 } } }, [0], 720, context);
+  assert.deepEqual([table.style.marginLeft, table.style.marginTop], ['40px', '20px']);
+  assert.equal(table.style.shapeOutside, 'inset(20px 0 0 40px)');
+});

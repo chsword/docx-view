@@ -30,6 +30,12 @@ export interface WrapExclusion {
   heightPx: number;
   wrap: 'square' | 'tight' | 'through' | 'topAndBottom';
   carried: boolean;
+  /**
+   * 按 x / y 定位的浮动块：真正挡字的矩形从这个偏移处开始，偏移推出的那块空白里照样排字。
+   * 测量占位与渲染都用 `shape-outside: inset(y 0 0 x)` 实现，两边一致。
+   */
+  offsetXPx?: number;
+  offsetYPx?: number;
 }
 
 export interface ParagraphMeasureArea {
@@ -44,9 +50,15 @@ export interface LayoutMeasurer {
   measureTableRow(table: LayoutTable, row: TableRowInfo, rowIndex: number, widthPx: number, context: MeasureContext): number;
 }
 
+/** 浮动块（`w:framePr` 段落、`w:tblpPr` 表格）按 x/y 定位时，相对它在正常流里位置的偏移。 */
+export interface FloatOffset {
+  xPx: number;
+  yPx: number;
+}
+
 export type FlowItem =
-  | { type: 'line'; paragraph: number; line: LineBox; column?: number }
-  | { type: 'tableRow'; table: number; row: number; heightPx: number; column?: number }
+  | { type: 'line'; paragraph: number; line: LineBox; column?: number; floatOffset?: FloatOffset }
+  | { type: 'tableRow'; table: number; row: number; heightPx: number; column?: number; floatOffset?: FloatOffset }
   | { type: 'break'; kind: 'page' | 'section'; column?: number };
 
 export interface PageBox {
@@ -275,6 +287,12 @@ export function paginate(
     page.contentHeightPx = Math.max(...columnHeights, 0);
   };
   const remainingHeight = () => Math.max(0, heightLimit() - usedHeight());
+  const floatGeometry = () => {
+    const section = sectionAt(sectionIndex);
+    const gap = Math.max(0, section.columns.space * TWIPS_TO_PX);
+    const columnLeftPx = widths().slice(0, currentColumn).reduce((sum, columnWidth) => sum + columnWidth + gap, 0);
+    return { marginLeftPx: section.margins.left / 15, marginTopPx: section.margins.top / 15, columnLeftPx, consumedPx: usedHeight() };
+  };
 
   const measureParagraph = (paragraph: ParagraphInfo) => {
     const carried = wrapsByColumn[currentColumn] ?? [];
@@ -290,7 +308,11 @@ export function paginate(
   };
   const updateWraps = (paragraph: ParagraphInfo, consumedHeight: number, includeOwn = true) => {
     const carried = (wrapsByColumn[currentColumn] ?? [])
-      .map((wrap) => ({ ...wrap, heightPx: wrap.heightPx - consumedHeight, carried: true }))
+      .map((wrap) => ({
+        ...wrap, heightPx: wrap.heightPx - consumedHeight, carried: true,
+        // 上方那段空白也随排过的高度一起缩短。
+        ...(wrap.offsetYPx !== undefined ? { offsetYPx: Math.max(0, wrap.offsetYPx - consumedHeight) } : {}),
+      }))
       .filter((wrap) => wrap.heightPx > 0);
     const own = includeOwn ? wrappingImages(paragraph)
       .map((image): WrapExclusion => ({
@@ -356,8 +378,12 @@ export function paginate(
     if (frame) {
       // 排除区放不进本栏剩余高度、而本栏已经有内容时先换栏，别让它跨到下一栏去挤正文。
       if (frame.heightPx > remainingHeight() && hasContent(ensurePage(), currentColumn)) advanceColumn();
-      append(lines.map((line) => ({ type: 'line' as const, paragraph: paragraph.index, line })), 0);
-      wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...frame, carried: true }];
+      const offset = paragraph.frame ? floatOffset({
+        horizontalAnchor: paragraph.frame.horizontalAnchor, x: paragraph.frame.xTwips, xAlign: paragraph.frame.xAlign,
+        verticalAnchor: paragraph.frame.verticalAnchor, y: paragraph.frame.yTwips, yAlign: paragraph.frame.yAlign,
+      }, floatGeometry()) : undefined;
+      append(lines.map((line) => ({ type: 'line' as const, paragraph: paragraph.index, line, ...(offset ? { floatOffset: offset } : {}) })), 0);
+      wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...shiftExclusion(frame, offset), carried: true }];
       return;
     }
     const spacing = paragraphSpacingPx(previousParagraph, paragraph, context.compatibilitySettings);
@@ -474,10 +500,14 @@ export function paginate(
       if (exclusion) {
         // 排除区放不进本栏剩余高度、而本栏已经有内容时先换栏，和带 framePr 的段落一样。
         if (exclusion.heightPx > remainingHeight() && hasContent(ensurePage(), currentColumn)) advanceColumn();
+        const offset = floatOffset({
+          horizontalAnchor: floating.horizontalAnchor, x: floating.x, xAlign: floating.xSpec,
+          verticalAnchor: floating.verticalAnchor, y: floating.y, yAlign: floating.ySpec,
+        }, floatGeometry());
         append(table.rows.map((_row, index) => ({
-          type: 'tableRow' as const, table: blockIndex, row: index, heightPx: rowHeight(index),
+          type: 'tableRow' as const, table: blockIndex, row: index, heightPx: rowHeight(index), ...(offset ? { floatOffset: offset } : {}),
         })), 0);
-        wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...exclusion, carried: true }];
+        wrapsByColumn[currentColumn] = [...(wrapsByColumn[currentColumn] ?? []), { ...shiftExclusion(exclusion, offset), carried: true }];
         return;
       }
     }
@@ -683,6 +713,54 @@ export function overstrikeLayers(equation: EquationNode | undefined, result: str
   }
   if (cursor !== result.length) return undefined;
   return layers.length ? layers : undefined;
+}
+
+/**
+ * 浮动块按 `x` / `y` 定位的偏移，用外边距实现：块仍然是 float，正文照样绕它排，只是挪到了
+ * 文档指定的位置。原先 x / y 完全不读，浮动块总在它出现的地方靠左或靠右。
+ *
+ * - 只在文档**写明了**锚点时才换算：`framePr` / `tblpPr` 锚点的默认值各处说法不一，猜错会让
+ *   整块错位，不如保持原样。写了 `xAlign` / `yAlign`（`inline` 除外）时按对齐处理，不读 x / y。
+ * - 水平：锚点是 `text`（栏）时 x 就是偏移；`margin` 要减去所在栏离左页边距的距离；`page` 再减去
+ *   左页边距。
+ * - 竖直：`text` 是相对段落，y 就是偏移；`margin` / `page` 相对页面，要知道这一栏已经排了多高
+ *   （`consumedPx`）——只有分页布局知道，连续视图不传就不处理。目标在当前位置之上时够不到
+ *   （浮动块不能往回放），偏移取 0。
+ */
+export function floatOffset(
+  spec: {
+    horizontalAnchor?: 'margin' | 'page' | 'text'; x?: number; xAlign?: string;
+    verticalAnchor?: 'margin' | 'page' | 'text'; y?: number; yAlign?: string;
+  },
+  geometry: { marginLeftPx: number; marginTopPx: number; columnLeftPx: number; consumedPx?: number } | undefined,
+): FloatOffset | undefined {
+  const toPx = (twips: number) => twips / 15;
+  let xPx = 0;
+  if (spec.xAlign === undefined && spec.x !== undefined && Number.isFinite(spec.x)) {
+    if (spec.horizontalAnchor === 'text') xPx = toPx(spec.x);
+    else if (spec.horizontalAnchor === 'margin' && geometry) xPx = toPx(spec.x) - geometry.columnLeftPx;
+    else if (spec.horizontalAnchor === 'page' && geometry) xPx = toPx(spec.x) - geometry.marginLeftPx - geometry.columnLeftPx;
+  }
+  let yPx = 0;
+  if ((spec.yAlign === undefined || spec.yAlign === 'inline') && spec.y !== undefined && Number.isFinite(spec.y)) {
+    if (spec.verticalAnchor === 'text') yPx = toPx(spec.y);
+    else if (geometry?.consumedPx !== undefined && (spec.verticalAnchor === 'margin' || spec.verticalAnchor === 'page')) {
+      const target = toPx(spec.y) - (spec.verticalAnchor === 'page' ? geometry.marginTopPx : 0);
+      yPx = Math.max(0, target - geometry.consumedPx);
+    }
+  }
+  return xPx || yPx ? { xPx, yPx } : undefined;
+}
+
+/**
+ * 带偏移的排除区：外框从流里的位置一直延伸到浮动块的右下角，挡字的只是 inset 之后的那块矩形。
+ * 负的偏移（挪进页边距或往上挪）只影响画在哪儿，不再缩小排除区。
+ */
+function shiftExclusion(exclusion: WrapExclusion, offset: FloatOffset | undefined): WrapExclusion {
+  if (!offset) return exclusion;
+  const x = Math.max(0, offset.xPx);
+  const y = Math.max(0, offset.yPx);
+  return { ...exclusion, widthPx: exclusion.widthPx + x, heightPx: exclusion.heightPx + y, ...(x ? { offsetXPx: x } : {}), ...(y ? { offsetYPx: y } : {}) };
 }
 
 /**

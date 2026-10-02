@@ -42,8 +42,8 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss } from './layout.js';
-import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, floatOffset, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss } from './layout.js';
+import type { FloatOffset, FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { equationToMathMl, formatPageNumber, pageFieldResult } from './fields.js';
 import { webDivIndents } from './web-divs.js';
 
@@ -290,8 +290,27 @@ export function replacePageFields(blocks: DocumentBlock[], pageNumber: number, p
  * `w:x` / `w:y` 那套按页面或页边距定位的绝对坐标本期不实现：那需要相对页框定位，而连续视图
  * 没有页框。浮动方向按 `xAlign` 取左右，其余照左浮。
  */
-function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['frame']): void {
+/**
+ * `offset`：分页布局按 x / y 算出的偏移（见 layout.ts 的 `floatOffset`），叠在 hSpace / vSpace 的外边距
+ * 上；`null` 表示调用方（分页视图）已经算过、这一块没有偏移；不传时按连续视图处理——那里没有页，
+ * 只认相对正文（text 锚点）的偏移。
+ */
+/**
+ * 偏移是用外边距挪的，但浮动块的外边距区域默认也挡字——上方和左侧会空出一大片。`shape-outside`
+ * 把挡字的范围收回到块本身，外边距那片空白照常排字。与分页测量的占位（同样的 inset）一致。
+ */
+function applyOffsetShape(element: HTMLElement, offset: FloatOffset): void {
+  const x = Math.max(0, offset.xPx);
+  const y = Math.max(0, offset.yPx);
+  if (x || y) element.style.shapeOutside = `inset(${y}px 0 0 ${x}px)`;
+}
+
+function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['frame'], offset?: FloatOffset | null): void {
   if (!frame) return;
+  const resolved = offset === undefined ? floatOffset({
+    horizontalAnchor: frame.horizontalAnchor, x: frame.xTwips, xAlign: frame.xAlign,
+    verticalAnchor: frame.verticalAnchor, y: frame.yTwips, yAlign: frame.yAlign,
+  }, undefined) : offset ?? undefined;
   const wrap = frame.wrap ?? 'auto';
   element.dataset.docxFrame = frame.dropCap === 'drop' || frame.dropCap === 'margin' ? 'dropCap' : 'frame';
   if (frame.widthTwips !== undefined) element.style.width = `${frame.widthTwips / 15}px`;
@@ -300,13 +319,21 @@ function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['fr
     if (frame.heightRule === 'exact') element.style.height = height;
     else element.style.minHeight = height;
   }
-  if (frame.horizontalSpaceTwips !== undefined) {
-    element.style.marginLeft = `${frame.horizontalSpaceTwips / 15}px`;
-    element.style.marginRight = `${frame.horizontalSpaceTwips / 15}px`;
+  // hSpace / vSpace 是到周围文字的距离。定位了 x / y 时块本身就该在那个位置，间距只留在
+  // 朝向正文的右侧与下侧，不能再把块往里推（否则比文档指定的位置偏出一个 hSpace）。
+  const horizontal = (frame.horizontalSpaceTwips ?? 0) / 15;
+  const vertical = (frame.verticalSpaceTwips ?? 0) / 15;
+  if (frame.horizontalSpaceTwips !== undefined || resolved?.xPx) {
+    element.style.marginLeft = `${resolved?.xPx ? resolved.xPx : horizontal}px`;
+    element.style.marginRight = `${horizontal}px`;
   }
-  if (frame.verticalSpaceTwips !== undefined) {
-    element.style.marginTop = `${frame.verticalSpaceTwips / 15}px`;
-    element.style.marginBottom = `${frame.verticalSpaceTwips / 15}px`;
+  if (frame.verticalSpaceTwips !== undefined || resolved?.yPx) {
+    element.style.marginTop = `${resolved?.yPx ? resolved.yPx : vertical}px`;
+    element.style.marginBottom = `${vertical}px`;
+  }
+  if (resolved) {
+    element.dataset.docxFloatOffset = `${resolved.xPx},${resolved.yPx}`;
+    applyOffsetShape(element, resolved);
   }
   // notBeside 是「旁边不许有文字」，不浮动才是对的；none 也不浮。
   if (wrap === 'none' || wrap === 'notBeside') return;
@@ -1054,7 +1081,7 @@ export class DocxEditor {
     return undefined;
   }
 
-  private applyTableStyle(table: HTMLTableElement, format: TableFormat | undefined): void {
+  private applyTableStyle(table: HTMLTableElement, format: TableFormat | undefined, offset?: FloatOffset | null): void {
     if (!format) return;
     table.style.tableLayout = format.layout === 'fixed' ? 'fixed' : 'auto';
     const width = this.widthCss(format.width);
@@ -1089,10 +1116,20 @@ export class DocxEditor {
       const right = gap(floating.rightFromText);
       const top = gap(floating.topFromText);
       const bottom = gap(floating.bottomFromText);
-      if (left) table.style.marginLeft = left;
       if (right) table.style.marginRight = right;
-      if (top) table.style.marginTop = top;
       if (bottom) table.style.marginBottom = bottom;
+      // x / y 定位，含义同 applyParagraphFrameStyle 的 offset：偏移取代那一侧的 from-text 间距。
+      const resolved = offset === undefined ? floatOffset({
+        horizontalAnchor: floating.horizontalAnchor, x: floating.x, xAlign: floating.xSpec,
+        verticalAnchor: floating.verticalAnchor, y: floating.y, yAlign: floating.ySpec,
+      }, undefined) : offset ?? undefined;
+      // 定位了 x / y 时间距不再把表推离指定位置（同 applyParagraphFrameStyle）。
+      if (left || resolved?.xPx) table.style.marginLeft = resolved?.xPx ? `${resolved.xPx}px` : left!;
+      if (top || resolved?.yPx) table.style.marginTop = resolved?.yPx ? `${resolved.yPx}px` : top!;
+      if (resolved) {
+        table.dataset.docxFloatOffset = `${resolved.xPx},${resolved.yPx}`;
+        applyOffsetShape(table, resolved);
+      }
     }
     if (format.caption) {
       const caption = table.createCaption();
@@ -1164,11 +1201,11 @@ export class DocxEditor {
   }
 
   private makeTable(block: LayoutTable, rowIndices: number[], defaultTabStopTwips: number,
-    reviewContext: ReviewRenderContext): HTMLTableElement {
+    reviewContext: ReviewRenderContext, floatPlacement?: FloatOffset | null): HTMLTableElement {
     const table = this.root.ownerDocument.createElement('table');
     table.className = 'docx-table';
     // 优先用算上表格样式之后的表格级格式；没有（调用方没注入解析器）才退回直接格式。
-    this.applyTableStyle(table, block.effective ?? block.format);
+    this.applyTableStyle(table, block.effective ?? block.format, floatPlacement);
     const body = table.createTBody();
     for (const rowIndex of rowIndices) {
       const row = block.rows[rowIndex];
@@ -1269,6 +1306,7 @@ export class DocxEditor {
       spacer.style.width = wrap.wrap === 'topAndBottom' ? '100%' : `${Math.min(area.widthPx, wrap.widthPx)}px`;
       spacer.style.height = `${wrap.heightPx}px`;
       if (wrap.wrap !== 'topAndBottom') spacer.style.cssFloat = 'left';
+      if (wrap.offsetXPx || wrap.offsetYPx) spacer.style.shapeOutside = `inset(${wrap.offsetYPx ?? 0}px 0 0 ${wrap.offsetXPx ?? 0}px)`;
       host.append(spacer);
     }
     const measured = this.withMeasuring(() => this.makeParagraph(paragraph, context.defaultTabStopTwips, {
@@ -1426,6 +1464,10 @@ export class DocxEditor {
               },
             } : {}),
           };
+          // 浮动段落一行一个浮动元素往下堆：x 偏移每行都要，y 偏移只给第一行，后面的行自然堆在它下面。
+          const placement = paragraph.frame
+            ? (item.floatOffset ? { xPx: item.floatOffset.xPx, yPx: firstLine ? item.floatOffset.yPx : 0 } : null)
+            : undefined;
           const paragraphElement = this.makeParagraph(
             this.sliceParagraph(fragment, item.line.startOffset, item.line.endOffset),
             defaultTabStopTwips,
@@ -1433,6 +1475,7 @@ export class DocxEditor {
             lineHeightPx,
             firstLine ? previousByColumn.get(columnIndex) : undefined,
             lastLine && !hasFollowingParagraph,
+            placement,
           );
           const lineNumber = lineNumbers[itemIndex];
           if (lineNumber !== null && lineNumber !== undefined) {
@@ -1462,7 +1505,8 @@ export class DocxEditor {
             .filter((candidate): candidate is Extract<FlowItem, { type: 'tableRow' }> =>
               candidate.type === 'tableRow' && candidate.table === item.table && (candidate.column ?? 0) === columnIndex)
             .map((candidate) => candidate.row);
-          column.append(this.makeTable(block, rowIndices, defaultTabStopTwips, reviewContext));
+          column.append(this.makeTable(block, rowIndices, defaultTabStopTwips, reviewContext,
+            (block.effective ?? block.format)?.floatingPosition ? (item.floatOffset ?? null) : undefined));
           renderedTables.add(`${columnIndex}:${item.table}`);
         }
       }
@@ -1701,14 +1745,14 @@ export class DocxEditor {
   }
 
   private makeParagraph(paragraph: ParagraphInfo, defaultTabStopTwips: number, reviewContext: ReviewRenderContext,
-    lineHeightPx?: number, previous?: ParagraphInfo, includeAfter = true): HTMLParagraphElement {
+    lineHeightPx?: number, previous?: ParagraphInfo, includeAfter = true, floatPlacement?: FloatOffset | null): HTMLParagraphElement {
     const element = this.root.ownerDocument.createElement('p');
     const content = this.root.ownerDocument.createElement('span');
     element.className = 'docx-paragraph';
     element.dataset.paragraph = String(paragraph.index);
     element.style.whiteSpace = 'pre-wrap';
     element.style.minHeight = '1.5em';
-    applyParagraphFrameStyle(element, paragraph.frame);
+    applyParagraphFrameStyle(element, paragraph.frame, floatPlacement);
     applyParagraphStyle(element, paragraph, previous, includeAfter, this.compatibilitySettings, this.divIndents);
     if (lineHeightPx !== undefined) {
       element.style.lineHeight = `${lineHeightPx}px`;

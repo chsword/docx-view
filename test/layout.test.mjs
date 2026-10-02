@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, frameWrapExclusion, overstrikeLayers, snapLineHeightPx, tableWrapExclusion } from '../dist/layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, frameWrapExclusion, floatOffset, overstrikeLayers, snapLineHeightPx, tableWrapExclusion } from '../dist/layout.js';
 import { DocxDocument } from '../dist/document.js';
 import { WORD_NS } from '../dist/xml.js';
 
@@ -722,4 +722,46 @@ test('paragraph snapToGrid=false opts that paragraph out of document-grid line s
   ), [section({ pageHeight: 3000, docGrid: grid })], measurer, { defaultTabStopTwips: 720 });
   const heights = result[0].items.filter((item) => item.type === 'line').map((item) => [item.paragraph, item.line.heightPx]);
   assert.deepEqual(heights, [[0, 15], [0, 15], [1, 20], [1, 20], [2, 15]]);
+});
+
+test('floatOffset turns x / y into an offset from the float\'s place in the flow', () => {
+  const geometry = { marginLeftPx: 96, marginTopPx: 96, columnLeftPx: 0, consumedPx: 100 };
+  // 相对栏（text）：x 就是偏移；15 缇 = 1px。
+  assert.deepEqual(floatOffset({ horizontalAnchor: 'text', x: 300, verticalAnchor: 'text', y: 150 }, undefined), { xPx: 20, yPx: 10 });
+  // 相对页边距：减去栏离左页边距的距离；相对页面再减去左页边距。
+  assert.deepEqual(floatOffset({ horizontalAnchor: 'margin', x: 1500 }, { ...geometry, columnLeftPx: 40 }), { xPx: 60, yPx: 0 });
+  assert.deepEqual(floatOffset({ horizontalAnchor: 'page', x: 2880 }, geometry), { xPx: 96, yPx: 0 });
+  // 竖直相对页边距：目标 300px，这一栏已经排了 100px，往下推 200px；相对页面再减上页边距。
+  assert.deepEqual(floatOffset({ verticalAnchor: 'margin', y: 4500 }, geometry), { xPx: 0, yPx: 200 });
+  assert.deepEqual(floatOffset({ verticalAnchor: 'page', y: 4500 }, geometry), { xPx: 0, yPx: 104 });
+  // 目标在当前位置之上：浮动块不能往回放，取 0。
+  assert.equal(floatOffset({ verticalAnchor: 'margin', y: 600 }, geometry), undefined);
+  // 连续视图没有几何：页面 / 页边距锚点不处理，相对正文照常。
+  assert.equal(floatOffset({ horizontalAnchor: 'page', x: 2880, verticalAnchor: 'margin', y: 4500 }, undefined), undefined);
+  // 写了对齐方式就按对齐，不读 x / y；没写锚点不猜默认值。
+  assert.equal(floatOffset({ horizontalAnchor: 'text', x: 300, xAlign: 'right' }, geometry), undefined);
+  assert.equal(floatOffset({ x: 300, y: 300 }, geometry), undefined);
+  assert.deepEqual(floatOffset({ verticalAnchor: 'text', y: 300, yAlign: 'inline' }, geometry), { xPx: 0, yPx: 20 });
+});
+
+test('a positioned frame carries its offset into the page items and widens its exclusion', () => {
+  const areas = [];
+  const widthMeasurer = {
+    measureParagraph(p, area) {
+      areas.push({ paragraph: p.index, wraps: area.wraps.map((w) => ({ ...w })) });
+      return (p.lines ?? [10]).map((height, index) => ({ heightPx: height, startOffset: index, endOffset: index + 1, widthPx: p.widthPx ?? 0 }));
+    },
+    measureTableRow(_table, row) { return row.height ?? 10; },
+  };
+  const before = { index: 0, text: 'a', runs: [], images: [], lines: [40] };
+  // 文本框锚在页边距：x = 1440 缇（96px），y = 1500 缇（100px）；它前面已经排了 40px。
+  const framed = { index: 1, text: 'b', runs: [], images: [], lines: [30, 30], widthPx: 120,
+    frame: { widthTwips: 1800, wrap: 'around', horizontalAnchor: 'margin', xTwips: 1440, verticalAnchor: 'margin', yTwips: 1500 } };
+  const after = { index: 2, text: 'c', runs: [], images: [], lines: [20] };
+  const pages = paginate([before, framed, after].map((paragraph) => ({ type: 'paragraph', paragraph })),
+    [section({ pageHeight: 6000 })], widthMeasurer, { defaultTabStopTwips: 720 });
+  const frameItems = pages[0].items.filter((item) => item.paragraph === 1);
+  assert.deepEqual(frameItems.map((item) => item.floatOffset), [{ xPx: 96, yPx: 60 }, { xPx: 96, yPx: 60 }]);
+  // 排除区把偏移推出的空白也算上：宽 120 + 96，高 60 + 60。
+  assert.deepEqual(areas.find((entry) => entry.paragraph === 2).wraps, [{ widthPx: 216, heightPx: 120, wrap: 'square', carried: true, offsetXPx: 96, offsetYPx: 60 }]);
 });
