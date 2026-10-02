@@ -491,7 +491,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 
 - 视图通过 DOM 文本节点和 `data:` URL 图片渲染，不将文档 XML 当作 HTML；编辑器剪贴板支持内部富文本与外部 HTML 映射，但 HTML 仅在分离文档中解析：`<script>/<style>`、事件属性、`javascript:` / `vbscript:` / `file:` / `data:` 链接都会被丢弃，`<img>` 仅接受 `data:` 形式的 PNG / JPEG / GIF / BMP（其余类型跳过该图，不影响同段其余内容），**不会主动请求外部 URL**。
 - 超链接一律经 `isSafeHyperlinkUrl()` 白名单（仅 http / https / mailto），编辑器与 `pasteClipboardFragment()` 公开 API 共用同一道校验。
-- 内部剪贴板携带段落的**样式 ID**但不迁移样式定义：跨文档粘贴时若目标文档未定义该样式，样式引用会悬空、显示回落到默认格式（run 的直接格式不受影响）；需要保真时请先在目标文档 `defineStyle()`。
+- 内部剪贴板携带片段引用到的样式定义（`ClipboardFragment.styles`：段落 / 字符样式及其 `basedOn` 链与 `link` 配对，不带 `isDefault`，`next` / `link` 指向集合外时去掉）。跨文档粘贴时只定义目标文档**没有**的样式，同 ID 的以目标文档为准（Word 的默认「使用目标样式」）；样式定义与粘贴是同一次提交、一步撤销。载荷是不可信输入：最多 200 个样式，每个按 `defineStyle` 操作的校验检查，不合法整批拒绝。
 
 **使用者的责任**
 

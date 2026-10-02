@@ -48,6 +48,7 @@ import {
   validateCellFormat,
   validateRequest,
   validateRowFormat,
+  validateStyleDefinition,
   validateStylePatch,
   validateRows,
   validateRunFormat,
@@ -218,6 +219,9 @@ const CLIPBOARD_MAX_PARAGRAPHS = 1_000;
 const CLIPBOARD_MAX_RUNS = 10_000;
 const CLIPBOARD_MAX_RUN_TEXT_LENGTH = 1_000_000;
 const CLIPBOARD_MAX_IMAGES = 200;
+/** 剪贴板片段最多带多少个样式定义。 */
+const MAX_CLIPBOARD_STYLES = 200;
+const CLIPBOARD_STYLE_KEYS = ['id', 'name', 'type', 'basedOn', 'aliases', 'uiPriority', 'quickFormat'] as const;
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const COMPARE_MAX_PARAGRAPHS = 1_000;
 const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
@@ -6271,12 +6275,54 @@ export class DocxDocument {
         });
       }
     }
+    const styles = this.clipboardStyles(result);
     return {
       version: 1,
       text: textChunks.join('\n'),
       paragraphs: result,
       blocks: result.map((paragraph) => ({ type: 'paragraph', paragraph })),
+      ...(styles.length ? { styles } : {}),
     };
+  }
+
+  /**
+   * 剪贴板带走的样式：片段直接引用的段落 / 字符样式，加上它们的 `basedOn` 链与 `link` 配对。
+   * `isDefault` 不带（粘过去会让目标文档同类型有两个默认样式）；`next` / `link` 指向集合外的
+   * 样式时去掉，免得在目标文档里悬空。
+   */
+  private clipboardStyles(paragraphs: ClipboardParagraph[]): StyleInfo[] {
+    const context = this.getStylesContext();
+    const wanted = new Set<string>();
+    const visit = (id: string | undefined | null) => {
+      if (!id || wanted.has(id) || !context.byId.has(id) || wanted.size >= MAX_CLIPBOARD_STYLES) return;
+      wanted.add(id);
+      const style = context.byId.get(id)!;
+      visit(style.basedOn);
+      visit(style.link);
+    };
+    for (const paragraph of paragraphs) {
+      visit(paragraph.format?.style);
+      for (const run of paragraph.runs) visit(run.format?.style);
+    }
+    return [...wanted].map((id) => {
+      const { isDefault: _default, next, link, ...style } = cloneStyleInfo(context.byId.get(id)!);
+      const defined = <T extends object>(format: T | undefined): T | undefined => {
+        if (!format) return undefined;
+        const entries = Object.entries(format).filter(([, value]) => value !== undefined && value !== null);
+        return entries.length ? Object.fromEntries(entries) as T : undefined;
+      };
+      const paragraph = defined(style.paragraph);
+      const run = defined(style.run);
+      // 只取公开的 StyleInfo 字段：解析器内部的 conditions / cell / row 之类不进剪贴板。
+      return {
+        ...Object.fromEntries(Object.entries(style).filter(([key, value]) =>
+          value !== undefined && (CLIPBOARD_STYLE_KEYS as readonly string[]).includes(key))),
+        ...(next && wanted.has(next) ? { next } : {}),
+        ...(link && wanted.has(link) ? { link } : {}),
+        ...(paragraph ? { paragraph } : {}),
+        ...(run ? { run } : {}),
+      } as StyleInfo;
+    });
   }
 
   pasteClipboardFragment(range: DocumentRange, fragment: ClipboardFragment): boolean {
@@ -6284,11 +6330,23 @@ export class DocxDocument {
       throw new Error('Invalid clipboard fragment.');
     }
     const blocks = this.normalizeClipboardBlocks(fragment);
+    // 第 16 条：剪贴板载荷是不可信输入，样式定义和 agent 的 defineStyle 走同一套校验，并有上限。
+    if (fragment.styles !== undefined) {
+      if (!Array.isArray(fragment.styles) || fragment.styles.length > MAX_CLIPBOARD_STYLES) {
+        throw new Error(`clipboard styles must be an array of at most ${MAX_CLIPBOARD_STYLES} styles.`);
+      }
+      fragment.styles.forEach((style) => validateStyleDefinition(style));
+    }
+    const existingStyles = this.getStylesContext().byId;
+    const missingStyles = (fragment.styles ?? []).filter((style) => !existingStyles.has(style.id))
+      .map((style) => ({ ...style, isDefault: undefined }));
     const preview = this.getCachedPartDocument(this.mainPath);
     const normalized = this.normalizeDocumentRange(preview, range);
     if (normalized.start.paragraph !== normalized.end.paragraph) return false;
     if (!blocks.length && !fragment.text && normalized.start.offset === normalized.end.offset) return false;
     this.withDraft((draft) => {
+      // 样式先定义：下面要直接操作部件字节（draft.parts 的副本），得在那之前把 styles.xml 写好。
+      for (const style of missingStyles) draft.defineStyle(style);
       const listNumbering = new Map<string, number>();
       for (const block of blocks) {
         if (block.type !== 'paragraph' || !block.paragraph.numbering) continue;

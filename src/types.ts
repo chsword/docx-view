@@ -1160,6 +1160,11 @@ export interface ClipboardFragment {
   text: string;
   paragraphs: ClipboardParagraph[];
   blocks?: ClipboardBlock[];
+  /**
+   * 片段里引用到的样式定义（含 `basedOn` 链与链接的字符 / 段落样式）。粘贴时只定义目标文档
+   * **没有**的那些——同 ID 的样式以目标文档为准（Word 的默认「使用目标样式」）。
+   */
+  styles?: StyleInfo[];
 }
 
 export type AgentOperation =
