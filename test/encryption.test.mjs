@@ -69,6 +69,18 @@ test('an Office 2007 Standard-encrypted file opens', async () => {
   assert.deepEqual([...saved.get('EncryptionInfo').subarray(0, 4)], [4, 0, 4, 0]);
 });
 
+test('a Standard header with AlgID 0 is AES-128, as its flags say', async () => {
+  // 2.3.2：AlgID 为 0 时算法由标志决定，fCryptoAPI + fAES 就是 AES-128。样本本身是 AES-128。
+  const streams = readCompoundFile(STANDARD);
+  const info = Uint8Array.from(streams.get('EncryptionInfo'));
+  const view = new DataView(info.buffer);
+  assert.equal(view.getUint32(20, true), 0x660e);
+  view.setUint32(20, 0, true);
+  streams.set('EncryptionInfo', info);
+  const plain = await decryptPackage(writeCompoundFile(streams), 'Password1234_');
+  assert.deepEqual([...plain.subarray(0, 2)], [0x50, 0x4b]);
+});
+
 test('unsupported encryption schemes are reported, not misread', async () => {
   // Standard 版本号，但标志里没有 fAES：那是 RC4（CryptoAPI）。
   const streams = readCompoundFile(STANDARD);

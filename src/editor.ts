@@ -303,6 +303,13 @@ function applyOffsetShape(element: HTMLElement, offset: FloatOffset): void {
   const x = Math.max(0, offset.xPx);
   const y = Math.max(0, offset.yPx);
   if (x || y) element.style.shapeOutside = `inset(${y}px 0 0 ${x}px)`;
+  // 负的偏移（挪进左页边距、往上挪）不能用负外边距：那会缩小浮动块的外框，正文就压上来，与分页
+  // 测量（排除区按原宽度留在流里的位置）对不上。改用相对定位：只挪画的位置，外框不变。
+  if (offset.xPx < 0 || offset.yPx < 0) {
+    element.style.position = 'relative';
+    if (offset.xPx < 0) element.style.left = `${offset.xPx}px`;
+    if (offset.yPx < 0) element.style.top = `${offset.yPx}px`;
+  }
 }
 
 function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['frame'], offset?: FloatOffset | null): void {
@@ -323,12 +330,14 @@ function applyParagraphFrameStyle(element: HTMLElement, frame: ParagraphInfo['fr
   // 朝向正文的右侧与下侧，不能再把块往里推（否则比文档指定的位置偏出一个 hSpace）。
   const horizontal = (frame.horizontalSpaceTwips ?? 0) / 15;
   const vertical = (frame.verticalSpaceTwips ?? 0) / 15;
-  if (frame.horizontalSpaceTwips !== undefined || resolved?.xPx) {
-    element.style.marginLeft = `${resolved?.xPx ? resolved.xPx : horizontal}px`;
+  const x = Math.max(0, resolved?.xPx ?? 0);
+  const y = Math.max(0, resolved?.yPx ?? 0);
+  if (frame.horizontalSpaceTwips !== undefined || x) {
+    element.style.marginLeft = `${x || horizontal}px`;
     element.style.marginRight = `${horizontal}px`;
   }
-  if (frame.verticalSpaceTwips !== undefined || resolved?.yPx) {
-    element.style.marginTop = `${resolved?.yPx ? resolved.yPx : vertical}px`;
+  if (frame.verticalSpaceTwips !== undefined || y) {
+    element.style.marginTop = `${y || vertical}px`;
     element.style.marginBottom = `${vertical}px`;
   }
   if (resolved) {
@@ -541,6 +550,8 @@ export class DocxEditor {
   private pageEditParagraph: number | null = null;
   /** 正在画分页视图里那个可编辑段落；其余分页段落一律只读、不登记。 */
   private pageEditRendering = false;
+  /** 改动已写回但还没重新分页（焦点去了工具栏）：下一次在文档里点击时补上。 */
+  private pageReflowPending = false;
   private measuring = false;
   private compatibilitySettings: CompatibilitySettings = {};
   private divIndents = new Map<number, { left: number; right: number }>();
@@ -699,6 +710,7 @@ export class DocxEditor {
     this.composing = false;
     this.renderAfterComposition = false;
     this.paragraphs.clear();
+    this.pageEditParagraph = null;
     this.render();
   }
 
@@ -885,6 +897,7 @@ export class DocxEditor {
       this.renderAfterComposition = true;
       return;
     }
+    this.pageReflowPending = false;
     const range = this.captureDocumentRange();
     const activeImageId = (this.root.ownerDocument.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-image]')?.dataset.image
       ?? this.selectedImageInfo?.id
@@ -1135,8 +1148,10 @@ export class DocxEditor {
         verticalAnchor: floating.verticalAnchor, y: floating.y, yAlign: floating.ySpec,
       }, undefined) : offset ?? undefined;
       // 定位了 x / y 时间距不再把表推离指定位置（同 applyParagraphFrameStyle）。
-      if (left || resolved?.xPx) table.style.marginLeft = resolved?.xPx ? `${resolved.xPx}px` : left!;
-      if (top || resolved?.yPx) table.style.marginTop = resolved?.yPx ? `${resolved.yPx}px` : top!;
+      const x = Math.max(0, resolved?.xPx ?? 0);
+      const y = Math.max(0, resolved?.yPx ?? 0);
+      if (left || x) table.style.marginLeft = x ? `${x}px` : left!;
+      if (top || y) table.style.marginTop = y ? `${y}px` : top!;
       if (resolved) {
         table.dataset.docxFloatOffset = `${resolved.xPx},${resolved.yPx}`;
         applyOffsetShape(table, resolved);
@@ -1532,7 +1547,8 @@ export class DocxEditor {
           }
           if (this.isMarkupReviewView()) {
             paragraphElement.dataset.docxPageEdit = whole ? 'paragraph' : 'split';
-            paragraphElement.dataset.docxLineStart = String(item.line.startOffset);
+            // 行的起点是 UTF-16 下标，光标偏移（offsetWithin / restoreDocumentRange）按码点算。
+            paragraphElement.dataset.docxLineStart = String(Array.from(paragraph.text.slice(0, item.line.startOffset)).length);
           }
           column.append(paragraphElement);
           if (lastLine) previousByColumn.set(columnIndex, paragraph);
@@ -1839,7 +1855,8 @@ export class DocxEditor {
     content.className = 'docx-paragraph-content';
     // 分页视图的行切片（以及整页里的表格单元格）只读：它们不登记，改了也写不回去。
     const pageLocked = this.viewMode === 'paginated' && !this.pageEditRendering;
-    content.contentEditable = this.isMarkupReviewView() && !pageLocked ? 'true' : 'false';
+    // 测量仍按可编辑排：Chrome 给编辑宿主加 break-word 等换行规则，编辑中的那一段要和测量一致。
+    content.contentEditable = this.isMarkupReviewView() && (!pageLocked || this.measuring) ? 'true' : 'false';
     content.spellcheck = false;
     content.setAttribute('role', 'textbox');
     content.setAttribute('aria-multiline', 'true');
@@ -1939,20 +1956,7 @@ export class DocxEditor {
       if (this.composing) return;
       const revision = this.document.revision;
       this.flush();
-      // 分页视图里改过一段要重新分页：字多了少了，后面的行都要挪。段落仍可编辑（重画后它若还整段
-      // 在一页里），选中的段落也就还在，工具栏照常可用。
-      if (this.viewMode !== 'paginated' || pageLocked || !content.isConnected || this.document.revision === revision) return;
-      // 等焦点真正挪走再重画：blur 时选区还在这一段里，当场重画会把选区恢复回来、把焦点抢回来。
-      // 窗口失焦时焦点其实还在这里，不重画。
-      setTimeout(() => {
-        const owner = this.root.ownerDocument;
-        if (this.destroyed || this.viewMode !== 'paginated' || owner.activeElement === content) return;
-        const selection = owner.getSelection();
-        if (!this.root.contains(owner.activeElement) && selection?.anchorNode && this.root.contains(selection.anchorNode)) {
-          selection.removeAllRanges();
-        }
-        this.render();
-      }, 0);
+      if (!pageLocked) this.repaginateAfterEdit(content, revision);
     });
     content.addEventListener('compositionstart', () => { this.composing = true; });
     content.addEventListener('compositionend', () => {
@@ -1961,7 +1965,9 @@ export class DocxEditor {
         this.renderAfterComposition = false;
         this.render();
       } else if (this.root.ownerDocument.activeElement !== content) {
+        const revision = this.document.revision;
         this.flush();
+        if (!pageLocked) this.repaginateAfterEdit(content, revision);
       }
     });
     content.addEventListener('copy', (event) => this.handleClipboardCopy(event));
@@ -3901,11 +3907,32 @@ export class DocxEditor {
    */
   private readonly handlePageMousedown = (event: MouseEvent): void => {
     if (this.viewMode !== 'paginated' || event.button !== 0 || !this.isMarkupReviewView()) return;
-    const line = (event.target as Element | null)?.closest?.<HTMLElement>('[data-docx-page-edit]');
-    if (!line || !this.root.contains(line)) return;
+    const target = event.target as Element | null;
+    const line = target?.closest?.<HTMLElement>('[data-docx-page-edit]');
+    if (!line || !this.root.contains(line)) {
+      // 点在别处（页面空白、页眉页脚）：欠着的重新分页现在补上，除非点回了正在编辑的那一段。
+      const editing = this.pageEditParagraph === null ? undefined : this.paragraphs.get(this.pageEditParagraph)?.content;
+      if (this.pageReflowPending && !(target && editing?.contains(target))) {
+        const selection = this.root.ownerDocument.getSelection();
+        if (editing && selection?.anchorNode && editing.contains(selection.anchorNode)) selection.removeAllRanges();
+        this.render();
+      }
+      return;
+    }
     const index = Number(line.dataset.paragraph);
     if (!Number.isSafeInteger(index)) return;
+    // 图片有自己的选中 / 缩放交互，Ctrl+点链接是跟随链接：都不进编辑，也不重画掉被点的元素。
+    if (target?.closest?.('[data-image]')) return;
+    const link = target?.closest?.<HTMLElement>('[data-docx-link="1"]');
+    if (link && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      this.dispatchLinkClick(link);
+      return;
+    }
     event.preventDefault();
+    // 被点的元素马上要被重画掉，它自己的 click 不会来了：批注点击在这里先派发。
+    const comment = target?.closest?.<HTMLElement>('[data-docx-comment-ids]');
+    if (comment) this.dispatchCommentClick(comment);
     const offset = Number(line.dataset.docxLineStart ?? 0) + this.lineOffsetAtPoint(line, event.clientX, event.clientY);
     if (line.dataset.docxPageEdit === 'split') {
       this.setViewMode('continuous');
@@ -3919,6 +3946,27 @@ export class DocxEditor {
     this.restoreDocumentRange({ start: { paragraph: index, offset }, end: { paragraph: index, offset } });
     if (line.dataset.docxPageEdit === 'split') content.scrollIntoView?.({ block: 'center' });
   };
+
+  /**
+   * 分页视图里改过一段要重新分页：字多了少了，后面的行都要挪。段落仍可编辑（重画后它若还整段在
+   * 一页里）。等焦点真正挪走再重画：blur 时选区还在这一段里，当场重画会把选区恢复回来、把焦点抢回来。
+   * 窗口失焦（焦点其实还在这里）不重画；选区还留在这一段而焦点去了别处——多半是点了工具栏按钮，
+   * 它要用这个选区——也不重画，等它的操作自己重画。
+   */
+  private repaginateAfterEdit(content: HTMLElement, revision: number): void {
+    if (this.viewMode !== 'paginated' || !content.isConnected) return;
+    if (this.document.revision === revision && !this.pageReflowPending) return;
+    setTimeout(() => {
+      const owner = this.root.ownerDocument;
+      if (this.destroyed || this.viewMode !== 'paginated' || !content.isConnected || owner.activeElement === content) return;
+      const anchor = owner.getSelection()?.anchorNode;
+      if (anchor && content.contains(anchor)) {
+        this.pageReflowPending = true;
+        return;
+      }
+      this.render();
+    }, 0);
+  }
 
   /** 点击位置在这一行里的字符偏移；浏览器不支持按坐标取光标时取行首。 */
   private lineOffsetAtPoint(line: HTMLElement, x: number, y: number): number {
@@ -3982,6 +4030,8 @@ export class DocxEditor {
     const beforeRevision = this.document.revision;
     const snapshot = direction === 'undo' ? this.document.undo() : this.document.redo();
     if (snapshot.revision === beforeRevision) return;
+    // 撤销可能增删段落，编号一挪，原来那个下标就成了另一段——不沿用分页视图的编辑状态。
+    this.pageEditParagraph = null;
     this.render();
     const fallback = snapshot.paragraphs[0]?.index ?? null;
     const targetIndex = previousSelected !== null && this.paragraphs.has(previousSelected) ? previousSelected : fallback;

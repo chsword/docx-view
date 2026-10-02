@@ -1040,6 +1040,23 @@ test('paginated view: only the paragraph being edited is editable, and only when
   assert.equal(lines.length, 3);
   assert.equal(editor.paragraphs.size, 0);
 
+  // 行起点按码点记：光标偏移是按码点算的，UTF-16 下标会在 emoji 之后偏右。
+  editor = setup();
+  const astral = { index: 0, text: '😀😀ab', runs: [{ index: 0, text: '😀😀ab', images: [] }], images: [] };
+  const astralPage = { ...page, items: [
+    { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 0, endOffset: 4 }, column: 0 },
+    { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 4, endOffset: 6 }, column: 0 },
+  ] };
+  lines = editor.makePageContent(astralPage, section, [{ type: 'paragraph', paragraph: astral }], [astral], 720, context()).childNodes[0].childNodes;
+  assert.deepEqual(lines.map((line) => line.dataset.docxLineStart), ['0', '2']);
+
+  // 测量仍按可编辑排（与编辑中的那一段换行规则一致），但不登记。
+  editor = setup();
+  editor.measuring = true;
+  const measured = editor.makeParagraph(whole, 720, context());
+  assert.equal(contentOf(measured).contentEditable, 'true');
+  assert.equal(editor.paragraphs.size, 0);
+
   // 不是 markup 视图（不能编辑）时不打标记。
   editor = setup('final');
   lines = editor.makePageContent(page, section, blocks, [whole, split], 720, context()).childNodes[0].childNodes;
@@ -3993,6 +4010,10 @@ test('positioned frames and floating tables render their x / y offsets as margin
   const none = editor.makeParagraph(paragraph, 720, context, undefined, undefined, true, null);
   assert.equal(none.style.marginLeft, '10px');
   assert.equal(none.style.shapeOutside ?? '', '');
+  // 负偏移（挪进左页边距）用相对定位挪画的位置，外框不缩——与分页测量的排除区一致。
+  const negative = editor.makeParagraph(paragraph, 720, context, undefined, undefined, true, { xPx: -30, yPx: 0 });
+  assert.deepEqual([negative.style.marginLeft, negative.style.position, negative.style.left], ['10px', 'relative', '-30px']);
+  assert.equal(negative.style.shapeOutside ?? '', '');
 
   const cell = () => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false });
   const table = editor.makeTable({ type: 'table', grid: [1000], rows: [{ cells: [cell()], format: {} }],

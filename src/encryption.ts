@@ -10,7 +10,7 @@ import { sha1SingleBlock } from './sha1.js';
  * SHA-512 迭代 spinCount 次（Word 写 100000），加密分段、校验 HMAC 都按规范来；数据完整性
  * （`dataIntegrity`）在解密时**校验**——被改过的包拒绝打开，而不是交出一份被篡改的文档。
  *
- * 也能**打开** Office 2007 的「Standard」加密（AES-128/192/256 + SHA-1，没有完整性校验）；存盘一律用
+ * 也能**打开** Office 2007 的「Standard」加密（AES-128/192/256 + SHA-1，没有完整性校验；Chromium 的 WebCrypto 不支持 AES-192，那种文件报 `unsupported`）；存盘一律用
  * Agile。RC4（CryptoAPI）不支持，遇到时报明确的错误。
  */
 
@@ -285,7 +285,8 @@ function parseStandardEncryptionInfo(info: Uint8Array): StandardParameters {
   const algorithm = view.getUint32(12 + 8, true);
   const hash = view.getUint32(12 + 12, true);
   const keyBits = view.getUint32(12 + 16, true);
-  const keyBitsByAlgorithm: Record<number, number> = { 0x660e: 128, 0x660f: 192, 0x6610: 256 };
+  // AlgID 为 0 时由标志决定：fCryptoAPI + fAES 就是 AES-128（2.3.2）。
+  const keyBitsByAlgorithm: Record<number, number> = { 0: 128, 0x660e: 128, 0x660f: 192, 0x6610: 256 };
   if (!keyBitsByAlgorithm[algorithm] || (hash !== 0x8004 && hash !== 0)) {
     throw new DocumentPasswordError('Unsupported Standard encryption algorithm.', 'unsupported');
   }
@@ -340,7 +341,14 @@ async function decryptEcb(key: Uint8Array, data: Uint8Array): Promise<Uint8Array
 
 async function decryptStandard(parameters: StandardParameters, encrypted: Uint8Array, password: string): Promise<Uint8Array> {
   const key = await standardKey(password, parameters);
-  const verifier = await decryptEcb(key, parameters.verifier);
+  let verifier: Uint8Array;
+  try {
+    verifier = await decryptEcb(key, parameters.verifier);
+  } catch {
+    // 第一次用到这把钥匙。Chromium 的 WebCrypto 不收 192 位 AES 钥匙，抛的是原始 DOMException；
+    // 宿主只认 DocumentPasswordError，所以在这里换成「不支持」。
+    throw new DocumentPasswordError(`AES-${parameters.keyBytes * 8} is not supported by this environment's WebCrypto.`, 'unsupported');
+  }
   const expected = (await decryptEcb(key, parameters.verifierHash)).subarray(0, 20);
   if (!sameBytes(await digest('SHA1', verifier), expected)) throw new DocumentPasswordError('Incorrect password.', 'incorrect');
   if (encrypted.length < 8) throw new DocumentPasswordError('EncryptedPackage is truncated.', 'tampered');
