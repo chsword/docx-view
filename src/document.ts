@@ -196,6 +196,27 @@ const MAX_TOTAL = 64 * 1024 * 1024;
 const MAX_PARTS = 2048;
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const MAIN_TYPE = `${DOCX_TYPE}.main+xml`;
+/**
+ * WordprocessingML 的四种包：文档 / 模板，各有启用宏的版本。正文的 schema 完全相同，差别只在主文档
+ * 的内容类型、文件 MIME，以及宏版本多一个 `vbaProject.bin`。宏只是原样带着的字节，**从不执行**。
+ */
+const PACKAGE_KINDS = {
+  document: { main: MAIN_TYPE, mimeType: DOCX_TYPE, extension: 'docx', macroFree: 'document' },
+  template: {
+    main: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template', extension: 'dotx', macroFree: 'template',
+  },
+  macroEnabledDocument: {
+    main: 'application/vnd.ms-word.document.macroEnabled.main+xml',
+    mimeType: 'application/vnd.ms-word.document.macroEnabled.12', extension: 'docm', macroFree: 'document',
+  },
+  macroEnabledTemplate: {
+    main: 'application/vnd.ms-word.template.macroEnabledTemplate.main+xml',
+    mimeType: 'application/vnd.ms-word.template.macroEnabled.12', extension: 'dotm', macroFree: 'template',
+  },
+} as const;
+type PackageKind = keyof typeof PACKAGE_KINDS;
+const VBA_PROJECT_REL = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject';
 const SETTINGS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings';
 const HEADER_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header';
 const FOOTER_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer';
@@ -3400,7 +3421,9 @@ export class DocxDocument {
     const type = overrides.find(type => type.getAttribute('PartName') === `/${path}`)?.getAttribute('ContentType')
       ?? children(types, 'Default', CONTENT_TYPES_NS)
         .find(type => type.getAttribute('Extension') === path.split('.').pop())?.getAttribute('ContentType');
-    if (type !== MAIN_TYPE) throw new Error('Package is not a supported .docx document (macros/strict OOXML are not supported).');
+    if (!Object.values(PACKAGE_KINDS).some((kind) => kind.main === type)) {
+      throw new Error('Package is not a supported WordprocessingML document (.docx / .docm / .dotx / .dotm; strict OOXML is not supported).');
+    }
     bodyOf(this.getCachedPartDocument(path));
     return path;
   }
@@ -9678,6 +9701,98 @@ export class DocxDocument {
 
   async toBlob(options: { zip?: ZipParts } = {}): Promise<Blob> {
     const bytes = await this.toUint8Array(options);
-    return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: DOCX_TYPE });
+    // MIME 跟着包的种类走：.docm 用 docx 的 MIME 存出去，Word 会按扩展名打开，但浏览器与网盘按 MIME 判类型。
+    return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: this.getPackageKind().mimeType });
+  }
+
+  /**
+   * 这是哪一种 WordprocessingML 包，以及有没有 VBA 工程。宏**从不执行**，只是原样带着的字节；
+   * 要存成不含宏的文件用 `removeMacros()`。
+   */
+  getPackageKind(): { kind: PackageKind; extension: string; mimeType: string; hasMacros: boolean } {
+    const kind = this.packageKind();
+    const relsPathOfMain = relsPath(this.mainPath);
+    let hasMacros = false;
+    if (this.parts.has(relsPathOfMain)) {
+      try {
+        hasMacros = children(this.getCachedPartDocument(relsPathOfMain).documentElement!, 'Relationship', REL_NS)
+          .some((relation) => relation.getAttribute('Type') === VBA_PROJECT_REL);
+      } catch {
+        hasMacros = false;
+      }
+    }
+    return { kind, extension: PACKAGE_KINDS[kind].extension, mimeType: PACKAGE_KINDS[kind].mimeType, hasMacros };
+  }
+
+  private packageKind(): PackageKind {
+    const types = this.getCachedPartDocument('[Content_Types].xml').documentElement!;
+    const type = children(types, 'Override', CONTENT_TYPES_NS)
+      .find((entry) => entry.getAttribute('PartName') === `/${this.mainPath}`)?.getAttribute('ContentType')
+      ?? children(types, 'Default', CONTENT_TYPES_NS)
+        .find((entry) => entry.getAttribute('Extension') === this.mainPath.split('.').pop())?.getAttribute('ContentType');
+    return (Object.entries(PACKAGE_KINDS).find(([, value]) => value.main === type)?.[0] as PackageKind | undefined) ?? 'document';
+  }
+
+  /**
+   * 去掉宏：删 VBA 工程部件、它自己的关系部件和那些关系指向的部件（`vbaData.xml` 之类）、主文档上
+   * 指向它的关系，再把主文档内容类型换成不含宏的那一种（.docm → .docx，.dotm → .dotx）。一次提交、
+   * 可撤销；本来就没有宏的包是空操作。
+   */
+  removeMacros(): void {
+    const { kind, hasMacros } = this.getPackageKind();
+    const target = PACKAGE_KINDS[kind].macroFree;
+    if (!hasMacros && target === kind) return;
+    this.withDraft((draft) => {
+      const mainRels = relsPath(draft.mainPath);
+      const removed: string[] = [];
+      if (draft.parts.has(mainRels)) {
+        draft.updatePartXml(mainRels, (rels) => {
+          for (const relation of children(rels.documentElement!, 'Relationship', REL_NS)) {
+            if (relation.getAttribute('Type') !== VBA_PROJECT_REL) continue;
+            const path = relation.getAttribute('TargetMode') === 'External' ? undefined
+              : resolveTargetPath(draft.mainPath, relation.getAttribute('Target') ?? '');
+            if (path) removed.push(path);
+            rels.documentElement!.removeChild(relation);
+          }
+        });
+      }
+      // VBA 工程自己的关系（vbaData.xml 等）指向的部件也一起删。
+      for (const path of [...removed]) {
+        const ownRels = relsPath(path);
+        if (!draft.parts.has(ownRels)) continue;
+        try {
+          for (const relation of children(draft.getPartDocument(ownRels).documentElement!, 'Relationship', REL_NS)) {
+            if (relation.getAttribute('TargetMode') === 'External') continue;
+            const child = resolveTargetPath(path, relation.getAttribute('Target') ?? '');
+            if (child) removed.push(child);
+          }
+        } catch { /* 损坏的关系部件：只删它自己。 */ }
+        removed.push(ownRels);
+      }
+      draft.materializeAllParts();
+      const next = new Map(draft.parts);
+      for (const path of removed) next.delete(path);
+      const types = parseXml(decodeXml(next.get('[Content_Types].xml')!));
+      const root = types.documentElement!;
+      let mainTyped = false;
+      for (const override of children(root, 'Override', CONTENT_TYPES_NS)) {
+        const part = (override.getAttribute('PartName') ?? '').replace(/^\//, '');
+        if (removed.includes(part)) root.removeChild(override);
+        else if (part === draft.mainPath) {
+          override.setAttribute('ContentType', PACKAGE_KINDS[target].main);
+          mainTyped = true;
+        }
+      }
+      // 主文档的类型也可能来自按扩展名的 Default：那就补一条 Override，不去改 Default（同扩展名的
+      // 别的部件还要用它）。
+      if (!mainTyped) {
+        const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+        override.setAttribute('PartName', `/${draft.mainPath}`);
+        override.setAttribute('ContentType', PACKAGE_KINDS[target].main);
+        root.appendChild(override);
+      }
+      next.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+      draft.commitParts(next);
+    });
   }
 }

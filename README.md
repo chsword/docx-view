@@ -490,7 +490,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 接受 / 拒绝修订已支持（逐条、批量、按作者筛选，移动修订成对处理）。域值计算见上文「域」一节：`SEQ`、日期 / 时间、文档属性、`REF` 会重算，提供 `pagination` 时 `PAGE` / `NUMPAGES` / `PAGEREF` 也会写回，`TOC` 仅实现 `\o` 层级过滤与 `\h` 超链接；`INDEX` 始终保留缓存结果。低层 API 仍可直接操作。
 - 编辑器标记域 run 的 `data-docx-field` / `data-docx-field-role`；结果灰底可关闭，结果不可直接编辑（不是“支持编辑域”）。
 
-支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 的统计值不随编辑自动更新，需要时调 `updateDocumentStatistics()`（见「文档属性」）。
+支持 Transitional OOXML 的 `.docx`、`.dotx` 模板以及启用宏的 `.docm` / `.dotm`；不支持加密文件或 Strict OOXML。宏文档里的 VBA 工程（`vbaProject.bin` 及其关联部件）**从不执行**，只是原样带着、存盘时逐字节保留；`getPackageKind()` 报告包的种类、扩展名、MIME 与有没有宏，`removeMacros()` 删掉 VBA 工程并把 `.docm` / `.dotm` 改成 `.docx` / `.dotx`（一次提交、可撤销）。`toBlob()` 的 MIME 跟着包的种类走。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 的统计值不随编辑自动更新，需要时调 `updateDocumentStatistics()`（见「文档属性」）。
 
 **解析边界**
 

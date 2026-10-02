@@ -1737,7 +1737,10 @@ element<HTMLInputElement>('file-input').addEventListener('change', (event) => ru
   message(`正在读取 ${file.name}…`);
   const next = await DocxDocument.load(file);
   setDocument(next, file.name);
-  message(`已打开 ${file.name}。未支持的版式可能不会显示，原始部件会保留。`);
+  const macros = next.getPackageKind().hasMacros
+    ? '文件含 VBA 宏：不会运行，保存时原样保留。'
+    : '';
+  message(`已打开 ${file.name}。${macros}未支持的版式可能不会显示，原始部件会保留。`);
 }));
 element<HTMLInputElement>('image-file-input').addEventListener('change', (event) => run(async () => {
   const input = event.target as HTMLInputElement;
@@ -1766,12 +1769,14 @@ element('download-document').addEventListener('click', () => run(async () => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = filename.toLowerCase().endsWith('.docx') ? filename : `${filename}.docx`;
+  // 扩展名跟着包的种类走：.docm 存成 .docx 会让 Word 拒绝打开（内容类型与扩展名不符）。
+  const extension = `.${doc.getPackageKind().extension}`;
+  link.download = filename.toLowerCase().endsWith(extension) ? filename : `${filename.replace(/\.(docx|docm|dotx|dotm)$/i, '')}${extension}`;
   document.body.append(link);
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  message('已生成 DOCX 并发起下载。');
+  message(`已生成 ${extension.slice(1).toUpperCase()} 并发起下载。`);
 }));
 element('reset-agent').addEventListener('click', () => run(() => { resetAgent(); message('已填入使用当前修订号的请求示例。'); }));
 element('apply-agent').addEventListener('click', () => run(() => {
