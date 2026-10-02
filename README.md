@@ -409,7 +409,9 @@ Word 的「合并字符」与「带圈字符」都是同一个机制：`EQ \o` �
 | `(…)` | `m:d`，同时用于分组 |
 | `∑_(a)^(b) c` / `∫_(a)^(b) c` | `m:nary` |
 
-`MathMlNode` 只接受已支持的结构化标签与属性，不接受 MathML 标记字符串。前置上下标使用 `mmultiscripts` / `mprescripts` 数据映射为 OMML `m:sPre`；不支持完整 UnicodeMath。公式以不可编辑的 MathML 节点渲染，宿主可通过 `data-docx-math-index` 识别公式，并在自有界面编辑后调用 `setMath()`；不支持在公式内部直接输入或进行 WYSIWYG 编辑。
+`MathMlNode` 只接受已支持的结构化标签与属性，不接受 MathML 标记字符串。前置上下标使用 `mmultiscripts` / `mprescripts` 数据映射为 OMML `m:sPre`；不支持完整 UnicodeMath。公式以不可编辑的 MathML 节点渲染，宿主可通过 `data-docx-math-index` 识别公式，并在自有界面编辑后调用 `setMath()`；不支持在公式内部直接输入或进行 WYSIWYG 编辑。演示页就是这么做的：点正文里的公式打开对话框，改线性写法、实时预览，保存走 `setMath()`，「插入 → 公式」走 `insertMath()`。
+
+线性写法与 `getMath().linear` 互为往返：写出时凡是读回来不是单个记号的运算数都加括号（`(a+b)/(c−d)`、`x^(2n)`、`(a+b)^2`），读入时分数的分子分母与上下标外面那层括号只是分组、不画出来（UnicodeMath 的约定），作为上下标的底时括号照画；`[`、`]`、`{`、`}` 当普通分隔符。所以在对话框里不改直接保存是空操作。原先的写法在多记号的分母和上标上读不回来（`(a+b)/c−d` 读成 (a+b)/c 再减 d），读入也不认 `(a+b)/(c-d)` 这种最常见的分数写法。
 
 MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / `m:acc` / `m:groupChr` / `m:limUpp`，`mrow` 可能来自 `m:d` / `m:func` / `m:box` / `m:nary`，`mtable` 可能来自 `m:m` / `m:eqArr`），因此 `getMath()` 读出的节点会在 `MathMlNode.source` 上带出原本的 OMML 元素名，`setMath()` 写回时据此还原，把读出来原样写回当作不改动处理。手工构造的节点和线性文本没有这个字段，此时按标签推断：首尾为 `stretchy` 的 `mo` 的 `mrow` 写成 `m:d`，`munderover` 后跟底数写成 `m:nary`，其余 `mrow` 由外层容器直接承载。行内文本按 MathML 语义拆分为 `mi` / `mn` / `mo`，因此写回时 run 的切分可能比原文更细，元素结构和渲染结果不变。
 

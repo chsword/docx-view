@@ -170,7 +170,7 @@ test('Ribbon panels contain every migrated control once and keep developer tabs 
     'table-rows', 'table-cols', 'add-table', 'insert-row', 'delete-row', 'insert-col', 'delete-col', 'merge-cells',
     'split-cell', 'cell-fill', 'apply-cell-style', 'insert-image', 'replace-image', 'delete-image', 'image-alt',
     'page-size', 'page-orientation', 'apply-page-setup', 'insert-section-break', 'insert-page-break', 'header-kind',
-    'footer-kind', 'add-footnote', 'add-endnote', 'review-revision-view', 'review-show-revisions', 'review-show-comments',
+    'footer-kind', 'insert-math', 'add-footnote', 'add-endnote', 'review-revision-view', 'review-show-revisions', 'review-show-comments',
     'review-select-all', 'review-clear-authors', 'reviewer-list', 'toggle-comments', 'comment-author-filter',
     'comment-resolved-filter', 'new-comment', 'reply-comment', 'resolve-comment', 'delete-comment',
   ];

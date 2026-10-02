@@ -88,6 +88,7 @@ export interface ExampleCommandActions {
   setFontColor(color: string): void;
   applyParagraphStyle(style: string): void;
   openStyleDialog(mode: 'modify' | 'new'): void;
+  openMathDialog(): void;
   setAlignment(value: ParagraphFormat['alignment']): void;
   applyNumbering(kind: 'bullet' | 'decimal'): void;
   changeNumberingLevel(delta: number): void;
@@ -293,6 +294,13 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
       // 新建后套用到当前段落（与 Word 一致），所以要求选中段落。
       enabled: (ctx) => ctx.editable && ctx.selection.paragraph !== null,
       run: () => deps.actions.openStyleDialog('new'),
+    },
+    {
+      id: 'math.insert',
+      title: '插入公式',
+      group: 'insert',
+      enabled: (ctx) => ctx.editable && ctx.selection.paragraph !== null,
+      run: () => deps.actions.openMathDialog(),
     },
     {
       id: 'paragraph.alignment',

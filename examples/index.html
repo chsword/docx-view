@@ -63,6 +63,7 @@
                 <div class="ribbon-group"><span class="ribbon-group-label">分页与页眉页脚</span><div class="ribbon-group-controls">
                   <button id="insert-page-break" class="tool wide">分页符</button><label class="sr-only" for="header-kind">页眉类型</label><select id="header-kind"><option value="default">页眉默认</option><option value="first">页眉首页</option><option value="even">页眉偶数</option></select><label class="sr-only" for="footer-kind">页脚类型</label><select id="footer-kind"><option value="default">页脚默认</option><option value="first">页脚首页</option><option value="even">页脚偶数</option></select>
                 </div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">公式</span><div class="ribbon-group-controls"><button id="insert-math" class="tool wide" type="button" title="在当前段落末尾插入公式">∑ 公式</button></div></div>
                 <div class="ribbon-group"><span class="ribbon-group-label">脚注 / 尾注</span><div class="ribbon-group-controls"><button id="add-footnote" class="tool wide">插入脚注</button><button id="add-endnote" class="tool wide">插入尾注</button></div></div>
               </section>
               <section id="ribbon-panel-layout" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-layout" tabindex="0" hidden>
@@ -185,6 +186,23 @@
           <span></span>
           <button id="style-dialog-cancel" class="button" type="button">取消</button>
           <button id="style-dialog-save" class="button primary" type="submit">确定</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="math-dialog" class="style-dialog" aria-labelledby="math-dialog-title">
+      <form id="math-form" method="dialog">
+        <h2 id="math-dialog-title">编辑公式</h2>
+        <p class="hint">线性写法：<code>a/b</code>、<code>(a+b)/(c-d)</code>、<code>x^2</code>、<code>x_i</code>、<code>x^(2n)</code>、<code>√(x)</code>、<code>∑_(i=1)^(n) i</code>、<code>∫_(0)^(1) f</code>；括号只用来分组时不会画出来。</p>
+        <label class="math-field" for="math-dialog-input">公式</label>
+        <textarea id="math-dialog-input" class="math-input" rows="3" spellcheck="false"></textarea>
+        <div class="math-preview" aria-live="polite"><span class="math-preview-label">预览</span><div id="math-dialog-preview"></div></div>
+        <label class="style-check" id="math-dialog-display-row"><input id="math-dialog-display" type="checkbox" /> 单独成行（显示公式）</label>
+        <p id="math-dialog-error" class="status error" role="alert" hidden></p>
+        <div class="style-actions">
+          <button id="math-dialog-delete" class="button subtle" type="button">删除公式</button>
+          <span></span>
+          <button id="math-dialog-cancel" class="button" type="button">取消</button>
+          <button id="math-dialog-save" class="button primary" type="submit">确定</button>
         </div>
       </form>
     </dialog>

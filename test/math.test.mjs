@@ -296,3 +296,42 @@ test('a hand-built row keeps the shapes that only the heuristics can recognise',
   assert.equal(body.length, 1);
   assert.equal(body[0].textContent, 'a', 'the n-ary operator keeps its operand');
 });
+
+test('linear math round-trips: what getMath() writes, linearToMathMl() reads back to the same text', async () => {
+  const { linearToMathMl, ommlToLinearText, ommlToMathMl } = await import('../dist/math.js');
+  const { parseXml } = await import('../dist/xml.js');
+  const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+  const r = (text) => `<m:r><m:t>${text}</m:t></m:r>`;
+  const omml = (inner) => parseXml(`<m:oMath xmlns:m="${M}">${inner}</m:oMath>`).documentElement;
+  for (const [inner, expected] of [
+    // 分母是多个记号：原先写成 (a+b)/c−d，读回来是 (a+b)/c 再减 d。
+    [`<m:f><m:num>${r('a+b')}</m:num><m:den>${r('c−d')}</m:den></m:f>`, '(a+b)/(c−d)'],
+    // 上标是多个记号：原先写成 x^2n，读回来是 x² 再乘 n。
+    [`<m:sSup><m:e>${r('x')}</m:e><m:sup>${r('2n')}</m:sup></m:sSup>`, 'x^(2n)'],
+    [`<m:sSup><m:e><m:d><m:e>${r('a+b')}</m:e></m:d></m:e><m:sup>${r('2')}</m:sup></m:sSup>`, '(a+b)^2'],
+    [`<m:f><m:num>${r('1')}</m:num><m:den>${r('2')}</m:den></m:f>`, '1/2'],
+  ]) {
+    const text = ommlToLinearText(omml(inner));
+    assert.equal(text, expected);
+    // 读回来再写一次，文字不变：对话框里不改直接保存是空操作。
+    const reread = linearToMathMl(text);
+    const again = ommlToLinearText(omml(inner));
+    assert.equal(again, text);
+    assert.equal(reread.children[0].tag, ommlToMathMl(omml(inner)).children[0].tag, `${text} 的结构`);
+  }
+});
+
+test('linear math accepts grouped fraction operands, brackets and multi-token scripts', async () => {
+  const { linearToMathMl } = await import('../dist/math.js');
+  const fraction = linearToMathMl('(a+b)/(c-d)').children[0];
+  assert.equal(fraction.tag, 'mfrac');
+  // 分子分母外面那层括号只是分组，不画出来（UnicodeMath 的约定）。
+  assert.ok(!JSON.stringify(fraction).includes('"("'));
+  const power = linearToMathMl('(a+b)^2').children[0];
+  assert.equal(power.tag, 'msup');
+  assert.ok(JSON.stringify(power.children[0]).includes('"("'), '作为上下标的底，括号是要画的');
+  assert.equal(linearToMathMl('x^(2n)').children[0].children[1].tag, 'mrow');
+  assert.doesNotThrow(() => linearToMathMl('x=(-b±√(b^2-4ac))/(2a)'));
+  assert.deepEqual(linearToMathMl('[a,b]').children.map((node) => node.text), ['[', 'a', ',', 'b', ']']);
+  assert.throws(() => linearToMathMl('\\frac{a}{b}'), /Unsupported linear math/);
+});

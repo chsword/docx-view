@@ -211,14 +211,36 @@ export function ommlToMathMl(oMath: Element, options?: { maxDepth?: number }): M
   return ommlToMathMlWithInfo(oMath, options).node;
 }
 
+/**
+ * 线性文本里一个运算数要不要加括号：读回来时能被当成**一个**记号的才不加。原先只给分子是
+ * mrow 的分数加括号，于是分母 `c−d` 写成 `(a+b)/c−d`，读回来成了 (a+b)/c 再减 d；上标 `2n`
+ * 写成 `x^2n`，读回来是 x² 再乘 n。线性文本是给人在对话框里改的，写出去读不回来就没法用。
+ */
+function linearOperand(text: string): string {
+  if (/^(?:\p{L}+|\d+(?:\.\d+)?|.)$/u.test(text)) return text;
+  if (text.startsWith('√(') && closesAt(text, 1) === text.length - 1) return text;
+  if (text.startsWith('(') && closesAt(text, 0) === text.length - 1) return text;
+  return `(${text})`;
+}
+
+/** 从 `open` 处的左括号起，找到与之配对的右括号位置；配不上返回 -1。 */
+function closesAt(text: string, open: number): number {
+  let depth = 0;
+  for (let index = open; index < text.length; index++) {
+    if (text[index] === '(') depth++;
+    else if (text[index] === ')' && --depth === 0) return index;
+  }
+  return -1;
+}
+
 function linear(node: MathMlNode): string {
   if (node.text !== undefined) return node.text;
   const c = (node.children ?? []).map(linear);
   switch (node.tag) {
-    case 'mfrac': return `${node.children?.[0]?.tag === 'mrow' ? `(${c[0] ?? ''})` : c[0] ?? ''}/${c[1] ?? ''}`;
-    case 'msup': return `${c[0] ?? ''}^${c[1] ?? ''}`;
-    case 'msub': return `${c[0] ?? ''}_${c[1] ?? ''}`;
-    case 'msubsup': return `${c[0] ?? ''}_${c[1] ?? ''}^${c[2] ?? ''}`;
+    case 'mfrac': return `${linearOperand(c[0] ?? '')}/${linearOperand(c[1] ?? '')}`;
+    case 'msup': return `${linearOperand(c[0] ?? '')}^${linearOperand(c[1] ?? '')}`;
+    case 'msub': return `${linearOperand(c[0] ?? '')}_${linearOperand(c[1] ?? '')}`;
+    case 'msubsup': return `${linearOperand(c[0] ?? '')}_${linearOperand(c[1] ?? '')}^${linearOperand(c[2] ?? '')}`;
     case 'mmultiscripts': {
       const pre = `${c[2] ? `_${c[2]}` : ''}${c[3] ? `^${c[3]}` : ''}`;
       return `${pre}${c[0] ?? ''}`;
@@ -247,7 +269,7 @@ const MATHML_TAGS = new Set([
   'mmultiscripts', 'mprescripts',
 ]);
 const MATHML_ATTRS = new Set(['mathvariant', 'display', 'linethickness', 'stretchy', 'accent', 'encoding']);
-const LINEAR_SUPPORT = 'a/b, a^b, a_b, a_b^c, √(a), sqrt(a), (…), and ∑_(a)^(b) c / ∫_(a)^(b) c';
+const LINEAR_SUPPORT = 'a/b, (a+b)/(c-d), a^b, a_b, a_b^c, x^(2n), √(a), sqrt(a), (…), […], {…}, and ∑_(a)^(b) c / ∫_(a)^(b) c';
 const MATH_VARIANTS: Record<string, string> = {
   normal: 'p',
   bold: 'b',
@@ -282,7 +304,10 @@ function mathToken(source: string, index: number): { node: MathMlNode; end: numb
   if (/[\p{Sm}\p{So}]/u.test(char) || '≠∈∉⊂⊆∪∩∀∃→←↔⇒⇔∞∂∇+-−×÷=<>≤≥±*,.;:|'.includes(char)) {
     return { node: { tag: 'mo', text: char }, end: index + 1 };
   }
-  if (/[\\{}[\]]/.test(char)) return undefined;
+  // 方括号、花括号当普通的分隔符号：区间 [a,b]、集合 {x}。反斜杠仍然拒绝（那是 UnicodeMath
+  // 的命令语法，这里不支持）。
+  if ('[]{}'.includes(char)) return { node: { tag: 'mo', text: char }, end: index + 1 };
+  if (char === '\\') return undefined;
   let end = index + 1;
   while (end < source.length && !/[\d\s]/.test(source[end]!) &&
       !(/[\p{Sm}\p{So}]/u.test(source[end]!) || '≠∈∉⊂⊆∪∩∀∃→←↔⇒⇔∞∂∇+-−×÷=<>≤≥±*/,;:|()_^√'.includes(source[end]!))) {
@@ -300,27 +325,8 @@ function parseLinearExpression(parser: LinearParser, depth: number, stopAtParen 
     if (parser.index >= parser.source.length || (stopAtParen && parser.source[parser.index] === ')')) break;
 
     const char = parser.source[parser.index]!;
-    if (char === '(') {
-      parser.index++;
-      const inside = parseLinearExpression(parser, depth + 1, true);
-      if (parser.source[parser.index] !== ')') throw new Error('Unclosed group in linear math.');
-      parser.index++;
-      nodes.push({ tag: 'mrow', children: [
-        { tag: 'mo', text: '(' }, ...inside, { tag: 'mo', text: ')' },
-      ] });
-      continue;
-    }
-    if (char === '√' || parser.source.startsWith('sqrt(', parser.index)) {
-      if (char === '√') parser.index++;
-      else parser.index += 4;
-      if (parser.source[parser.index] !== '(') throw new Error('Square roots must use √(a) or sqrt(a).');
-      parser.index++;
-      const inside = parseLinearExpression(parser, depth + 1, true);
-      if (parser.source[parser.index] !== ')') throw new Error('Unclosed square root in linear math.');
-      parser.index++;
-      nodes.push({ tag: 'msqrt', children: [parsedRow(inside)] });
-      continue;
-    }
+    // 括号组与根号交给 parseLinearFactor：它会接着看后面有没有 `/` 与上下标。原先在这里先把
+    // 括号组吃掉，`(a+b)/(c-d)` 剩下的 `/` 就成了不认识的字符。
     if (char === '∑' || char === '∫') {
       const operator = char;
       parser.index++;
@@ -355,16 +361,22 @@ function parseLinearExpression(parser: LinearParser, depth: number, stopAtParen 
   return nodes;
 }
 
-function parseLinearFactor(parser: LinearParser, depth: number, allowScripts = true): MathMlNode | undefined {
+/**
+ * `stripGroup`：括号只是分组时去掉——分数的分子分母、上下标都是这样（UnicodeMath 的约定，
+ * `(a+b)/(c-d)` 画出来分子分母不带括号）。作为上下标的**底**时括号是要画出来的，不去。
+ */
+function parseLinearFactor(parser: LinearParser, depth: number, allowScripts = true, stripGroup = false): MathMlNode | undefined {
   if (depth > parser.maxDepth) throw new Error(`Linear math exceeds the maximum depth of ${parser.maxDepth}.`);
   while (/\s/.test(parser.source[parser.index] ?? '')) parser.index++;
   let base: MathMlNode | undefined;
+  let groupInside: MathMlNode[] | undefined;
   if (parser.source[parser.index] === '(') {
     parser.index++;
     const inside = parseLinearExpression(parser, depth + 1, true);
     if (parser.source[parser.index] !== ')') throw new Error('Unclosed group in linear math.');
     parser.index++;
-    base = { tag: 'mrow', children: [{ tag: 'mo', text: '(' }, ...inside, { tag: 'mo', text: ')' }] };
+    groupInside = inside;
+    base = stripGroup && inside.length ? parsedRow(inside) : { tag: 'mrow', children: [{ tag: 'mo', text: '(' }, ...inside, { tag: 'mo', text: ')' }] };
   } else if (parser.source[parser.index] === '√' || parser.source.startsWith('sqrt(', parser.index)) {
     if (parser.source[parser.index] === '√') parser.index++;
     else parser.index += 4;
@@ -383,9 +395,10 @@ function parseLinearFactor(parser: LinearParser, depth: number, allowScripts = t
 
   if (parser.source[parser.index] === '/') {
     parser.index++;
-    const denominator = parseLinearFactor(parser, depth + 1);
+    const denominator = parseLinearFactor(parser, depth + 1, true, true);
     if (!denominator) throw new Error('Fractions must use a/b.');
-    base = { tag: 'mfrac', children: [base, denominator] };
+    const numerator = groupInside?.length ? parsedRow(groupInside) : base;
+    base = { tag: 'mfrac', children: [numerator, denominator] };
   }
   if (allowScripts && (parser.source[parser.index] === '_' || parser.source[parser.index] === '^')) {
     let sub: MathMlNode | undefined;
@@ -394,7 +407,7 @@ function parseLinearFactor(parser: LinearParser, depth: number, allowScripts = t
       const marker = parser.source[parser.index];
       if (marker !== '_' && marker !== '^') break;
       parser.index++;
-      const script = parseLinearFactor(parser, depth + 1, false);
+      const script = parseLinearFactor(parser, depth + 1, false, true);
       if (!script) throw new Error('Scripts must use a_b, a^b, or a_b^c.');
       if (marker === '_') {
         if (sub) throw new Error('Only one subscript is supported per base.');

@@ -1,4 +1,4 @@
-import { DocxDocument, DocxEditor, WORD_NS } from '../src/index.js';
+import { DocxDocument, DocxEditor, WORD_NS, linearToMathMl } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
 import type {
   AgentRequest,
@@ -6,6 +6,7 @@ import type {
   DocumentSnapshot,
   HyperlinkInfo,
   ImageInfo,
+  MathMlNode,
   OutlineNode,
   ParagraphFormat,
   ReviewerFilterAuthor,
@@ -790,6 +791,78 @@ function deleteStyleFromDialog(): void {
   message(`已删除样式「${style.name}」。`);
 }
 
+/** 公式对话框：编辑既有公式时记下它在正文里的位置；插入时只记段落。 */
+let mathTarget: { paragraph: number; index: number | null } | null = null;
+
+function renderMathPreview(source: string): void {
+  const preview = element('math-dialog-preview');
+  const error = element('math-dialog-error');
+  preview.replaceChildren();
+  error.hidden = true;
+  if (!source.trim()) return;
+  try {
+    const ns = 'http://www.w3.org/1998/Math/MathML';
+    const build = (node: MathMlNode): Element => {
+      const created = document.createElementNS(ns, node.tag);
+      for (const [name, value] of Object.entries(node.attrs ?? {})) created.setAttribute(name, value);
+      if (node.text !== undefined) created.textContent = node.text;
+      for (const child of node.children ?? []) created.append(build(child));
+      return created;
+    };
+    const root = build(linearToMathMl(source));
+    if (element<HTMLInputElement>('math-dialog-display').checked) root.setAttribute('display', 'block');
+    preview.append(root);
+  } catch (problem) {
+    error.hidden = false;
+    error.textContent = problem instanceof Error ? problem.message : String(problem);
+  }
+}
+
+function openMathDialog(target?: { paragraph: number; index: number }): void {
+  ensureMarkupView();
+  editor.flush();
+  const input = element<HTMLTextAreaElement>('math-dialog-input');
+  const display = element<HTMLInputElement>('math-dialog-display');
+  if (target) {
+    const info = doc.getMath().filter((item) => item.paragraph === target.paragraph)[target.index];
+    if (!info) throw new Error('找不到这个公式，文档可能已经改过了。');
+    mathTarget = target;
+    input.value = info.linear;
+    display.checked = info.display === 'block';
+    // 已有公式的行内 / 独立形式由它在文档里的元素决定（oMath / oMathPara），这里只读。
+    display.disabled = true;
+    element('math-dialog-title').textContent = '编辑公式';
+    element<HTMLButtonElement>('math-dialog-delete').hidden = false;
+  } else {
+    mathTarget = { paragraph: selectedIndex(), index: null };
+    input.value = '';
+    display.checked = false;
+    display.disabled = false;
+    element('math-dialog-title').textContent = '插入公式（段落末尾）';
+    element<HTMLButtonElement>('math-dialog-delete').hidden = true;
+  }
+  renderMathPreview(input.value);
+  element<HTMLDialogElement>('math-dialog').showModal();
+  input.focus();
+}
+
+function saveMathDialog(): void {
+  const source = element<HTMLTextAreaElement>('math-dialog-input').value.trim();
+  if (!mathTarget) return;
+  if (!source) throw new Error('公式不能为空；要删掉它请用「删除公式」。');
+  if (mathTarget.index === null) {
+    doc.insertMath(mathTarget.paragraph, { linear: source },
+      { display: element<HTMLInputElement>('math-dialog-display').checked ? 'block' : 'inline' });
+    message('已插入公式。');
+  } else {
+    doc.setMath(mathTarget.paragraph, mathTarget.index, { linear: source });
+    message('已更新公式。');
+  }
+  element<HTMLDialogElement>('math-dialog').close();
+  editor.render();
+  refresh();
+}
+
 function selectedIndex(): number {
   editor.flush();
   const index = editor.selectedParagraph;
@@ -1002,6 +1075,7 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
       formatRuns({ color });
     },
     openStyleDialog,
+    openMathDialog: () => openMathDialog(),
     applyParagraphStyle(style) {
       ensureMarkupView();
       doc.applyParagraphStyle(selectedIndex(), style);
@@ -1274,6 +1348,7 @@ const commandControls: Array<{ elementId: string; commandId: string; pressed?: b
   { elementId: 'paragraph-style', commandId: 'paragraph.style' },
   { elementId: 'modify-style', commandId: 'style.modify' },
   { elementId: 'new-style', commandId: 'style.new' },
+  { elementId: 'insert-math', commandId: 'math.insert' },
   { elementId: 'alignment', commandId: 'paragraph.alignment' },
   { elementId: 'list-bullet', commandId: 'list.bullet', pressed: true },
   { elementId: 'list-decimal', commandId: 'list.decimal', pressed: true },
@@ -1504,6 +1579,35 @@ element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event)
   const style = (event.target as HTMLSelectElement).value;
   if (style) runCommand('paragraph.style');
 });
+element('insert-math').addEventListener('click', () => runCommand('math.insert'));
+// 点正文里的公式打开编辑对话框。公式节点是 contentEditable=false 的装饰，点它不会落光标。
+element('editor').addEventListener('click', (event) => {
+  const math = (event.target as Element | null)?.closest?.('[data-docx-math-index]') as HTMLElement | null;
+  const paragraph = math?.closest<HTMLElement>('[data-paragraph]');
+  if (!math || !paragraph || !isMarkupView()) return;
+  run(() => openMathDialog({ paragraph: Number(paragraph.dataset.paragraph), index: Number(math.dataset.docxMathIndex) }));
+});
+element<HTMLTextAreaElement>('math-dialog-input').addEventListener('input', (event) => renderMathPreview((event.target as HTMLTextAreaElement).value));
+element<HTMLInputElement>('math-dialog-display').addEventListener('change', () => renderMathPreview(element<HTMLTextAreaElement>('math-dialog-input').value));
+element<HTMLFormElement>('math-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  try {
+    saveMathDialog();
+  } catch (problem) {
+    const error = element('math-dialog-error');
+    error.hidden = false;
+    error.textContent = problem instanceof Error ? problem.message : String(problem);
+  }
+});
+element('math-dialog-cancel').addEventListener('click', () => element<HTMLDialogElement>('math-dialog').close());
+element('math-dialog-delete').addEventListener('click', () => run(() => {
+  if (!mathTarget || mathTarget.index === null) return;
+  doc.deleteMath(mathTarget.paragraph, mathTarget.index);
+  element<HTMLDialogElement>('math-dialog').close();
+  editor.render();
+  refresh();
+  message('已删除公式。');
+}));
 element('modify-style').addEventListener('click', () => runCommand('style.modify'));
 element('new-style').addEventListener('click', () => runCommand('style.new'));
 element<HTMLSelectElement>('style-dialog-target').addEventListener('change', (event) => run(() => {
