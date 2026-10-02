@@ -37,6 +37,7 @@ import {
 } from './xml.js';
 import { readRunShapes, shapeTextElements } from './shapes.js';
 import { parseWebDivs } from './web-divs.js';
+import { convertStrictParts } from './strict.js';
 import { MATH_NS, linearToMathMl, mathMlToOmml, ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
@@ -2824,6 +2825,8 @@ export class DocxDocument {
    * 判定形状一致，不要误以为它守住了什么。
    */
   private paragraphCache?: { revision: number; mainPath: string; paragraphs: ParagraphInfo[] };
+  /** 打开的是 Strict OOXML，已在内存里换成 Transitional。 */
+  private convertedFromStrict = false;
   /** 主文档里有没有能产出图片的元素；按 revision 失效（和其余读模型缓存同一个判定）。 */
   private imageMarkupCache?: { revision: number; mainPath: string; present: boolean };
   private documents = new Map<string, Document>();
@@ -2979,7 +2982,11 @@ export class DocxDocument {
       total += data.byteLength;
       parts.set(entry.name, data);
     }
-    return new DocxDocument(parts);
+    // Strict OOXML 打开时整包换成 Transitional（见 strict.ts），之后的读写照常；存盘是 Transitional。
+    const fromStrict = convertStrictParts(parts);
+    const document = new DocxDocument(parts);
+    document.convertedFromStrict = fromStrict;
+    return document;
   }
 
   static compare(base: DocxDocument, revised: DocxDocument, options: { author?: string; date?: string } = {}): DocxDocument {
@@ -9709,7 +9716,7 @@ export class DocxDocument {
    * 这是哪一种 WordprocessingML 包，以及有没有 VBA 工程。宏**从不执行**，只是原样带着的字节；
    * 要存成不含宏的文件用 `removeMacros()`。
    */
-  getPackageKind(): { kind: PackageKind; extension: string; mimeType: string; hasMacros: boolean } {
+  getPackageKind(): { kind: PackageKind; extension: string; mimeType: string; hasMacros: boolean; convertedFromStrict: boolean } {
     const kind = this.packageKind();
     const relsPathOfMain = relsPath(this.mainPath);
     let hasMacros = false;
@@ -9721,7 +9728,10 @@ export class DocxDocument {
         hasMacros = false;
       }
     }
-    return { kind, extension: PACKAGE_KINDS[kind].extension, mimeType: PACKAGE_KINDS[kind].mimeType, hasMacros };
+    return {
+      kind, extension: PACKAGE_KINDS[kind].extension, mimeType: PACKAGE_KINDS[kind].mimeType, hasMacros,
+      convertedFromStrict: this.convertedFromStrict,
+    };
   }
 
   private packageKind(): PackageKind {

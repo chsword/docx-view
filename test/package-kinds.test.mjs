@@ -27,7 +27,7 @@ async function docmBytes({ template = false, defaultTyped = false } = {}) {
 test('macro-enabled documents open, edit and save with the VBA project untouched', async () => {
   const doc = await DocxDocument.load(await docmBytes());
   assert.deepEqual(doc.getPackageKind(), {
-    kind: 'macroEnabledDocument', extension: 'docm', mimeType: 'application/vnd.ms-word.document.macroEnabled.12', hasMacros: true,
+    kind: 'macroEnabledDocument', extension: 'docm', mimeType: 'application/vnd.ms-word.document.macroEnabled.12', hasMacros: true, convertedFromStrict: false,
   });
   doc.setParagraphText(0, 'Edited, macros carried along');
   const reopened = await DocxDocument.load(await doc.toUint8Array());
@@ -44,7 +44,7 @@ test('removeMacros strips the VBA project and turns .docm into .docx, as one und
   doc.removeMacros();
   assert.equal(doc.revision, revision + 1);
   assert.deepEqual(doc.getPackageKind(), {
-    kind: 'document', extension: 'docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', hasMacros: false,
+    kind: 'document', extension: 'docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', hasMacros: false, convertedFromStrict: false,
   });
   for (const path of ['word/vbaProject.bin', 'word/_rels/vbaProject.bin.rels', 'word/vbaData.xml']) assert.ok(!doc.listParts().includes(path), path);
   const types = new TextDecoder().decode(doc.getPartBytes('[Content_Types].xml'));
