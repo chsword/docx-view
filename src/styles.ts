@@ -46,7 +46,7 @@ export interface ThemeInfo {
    * （`fillRef` 的 1001 起指向背景填充表）。原样留着元素，读形状时再解析，表里的 `phClr` 要换成
    * 引用处给的颜色，提前解析不了。
    */
-  formatScheme?: { fills: Element[]; lines: Element[]; backgroundFills: Element[] };
+  formatScheme?: { fills: Element[]; lines: Element[]; effects: Element[]; backgroundFills: Element[] };
 }
 
 interface TableStyleLayer {
@@ -834,7 +834,9 @@ function parseTheme(themeElement: Element | undefined, colorSchemeMapping?: Colo
   };
   return {
     colors, fonts, colorSchemeMapping,
-    ...(formatScheme ? { formatScheme: { fills: list('fillStyleLst'), lines: list('lnStyleLst'), backgroundFills: list('bgFillStyleLst') } } : {}),
+    ...(formatScheme ? { formatScheme: {
+      fills: list('fillStyleLst'), lines: list('lnStyleLst'), effects: list('effectStyleLst'), backgroundFills: list('bgFillStyleLst'),
+    } } : {}),
   };
 }
 

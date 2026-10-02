@@ -744,6 +744,7 @@ export interface ShapeChildInfo {
   customGeometry?: CustomGeometry;
   fill?: ShapeInfo['fill'];
   line?: ShapeInfo['line'];
+  shadow?: ShapeShadow;
   rotation?: number;
   flipH?: boolean;
   flipV?: boolean;
@@ -814,6 +815,16 @@ export interface ChartInfo {
   stock?: { hiLowLines: boolean; upDownBars: boolean };
 }
 
+export interface ShapeShadow {
+  /** 偏移（像素，已按方向角分解）。 */
+  dxPx: number;
+  dyPx: number;
+  /** 模糊半径（像素）。 */
+  blurPx: number;
+  /** CSS 颜色，含透明度。 */
+  color: string;
+}
+
 export interface ShapeInfo {
   id: string;
   paragraph: number;
@@ -837,6 +848,8 @@ export interface ShapeInfo {
     imagePartPath?: string;
   };
   line?: { color?: string; widthPx?: number; dash?: string };
+  /** 外阴影（`a:outerShdw`，来自 `spPr` 的 `a:effectLst` 或 `effectRef` 指向的主题效果样式）。 */
+  shadow?: ShapeShadow;
   rotation?: number;
   flipH?: boolean;
   flipV?: boolean;

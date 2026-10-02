@@ -7,6 +7,7 @@ import type {
   BordersFormat,
   CellFormat,
   ChartSeriesInfo,
+  ShapeShadow,
   ShapeTextParagraph,
   EquationNode,
   TableException,
@@ -2055,6 +2056,7 @@ export class DocxEditor {
       path.setAttribute('fill', 'none');
       if (!shape.line?.color) path.setAttribute('stroke', '#000000');
     }
+    if (shape.shadow) path.setAttribute('filter', `url(#${this.appendShadowFilter(svg, shape.shadow, `shape-shadow-${shape.id}`)})`);
     if (shape.rotation || shape.flipH || shape.flipV) {
       const transforms = [`translate(${width / 2} ${height / 2})`];
       if (shape.rotation) transforms.push(`rotate(${shape.rotation})`);
@@ -2086,6 +2088,7 @@ export class DocxEditor {
       else childPath.setAttribute('stroke', 'none');
       if (child.line?.widthPx !== undefined) childPath.setAttribute('stroke-width', String(child.line.widthPx));
       if (child.line?.dash) childPath.setAttribute('stroke-dasharray', child.line.dash);
+      if (child.shadow) childPath.setAttribute('filter', `url(#${this.appendShadowFilter(svg, child.shadow, `shape-shadow-${shape.id}-${index}`)})`);
       const transforms = [`translate(${child.offsetXPx} ${child.offsetYPx})`];
       if (child.rotation || child.flipH || child.flipV) {
         transforms.push(`translate(${childWidth / 2} ${childHeight / 2})`);
@@ -2927,6 +2930,28 @@ export class DocxEditor {
       text.appendChild(row);
     }
     return text;
+  }
+
+  /**
+   * 外阴影画成 SVG 的 `feDropShadow`。SVG 的 stdDeviation 大约是模糊半径的一半；滤镜区域放大，
+   * 免得阴影被形状的包围盒裁掉。返回滤镜 id。
+   */
+  private appendShadowFilter(svg: Element, shadow: ShapeShadow, rawId: string): string {
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const id = rawId.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const defs = this.root.ownerDocument.createElementNS(svgNs, 'defs');
+    const filter = this.root.ownerDocument.createElementNS(svgNs, 'filter');
+    filter.setAttribute('id', id);
+    for (const [name, value] of [['x', '-50%'], ['y', '-50%'], ['width', '200%'], ['height', '200%']] as const) filter.setAttribute(name, value);
+    const drop = this.root.ownerDocument.createElementNS(svgNs, 'feDropShadow');
+    drop.setAttribute('dx', String(shadow.dxPx));
+    drop.setAttribute('dy', String(shadow.dyPx));
+    drop.setAttribute('stdDeviation', String(shadow.blurPx / 2));
+    drop.setAttribute('flood-color', shadow.color);
+    filter.appendChild(drop);
+    defs.appendChild(filter);
+    svg.appendChild(defs);
+    return id;
   }
 
   /** OMML 公式渲染成 MathML 节点。正文段落和文本框 / 形状里的段落共用。 */

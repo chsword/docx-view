@@ -63,7 +63,8 @@ function themedShapes(spPrs, styles) {
       <a:lnStyleLst><a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>
         <a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="sysDash"/></a:ln>
         <a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
-      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
+      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle>
+        <a:effectStyle><a:effectLst><a:outerShdw blurRad="57150" dist="19050" dir="5400000" algn="ctr" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="63000"/></a:srgbClr></a:outerShdw></a:effectLst></a:effectStyle></a:effectStyleLst>
       <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/></a:schemeClr></a:solidFill></a:bgFillStyleLst>
     </a:fmtScheme></a:themeElements></a:theme>`;
   const shape = (id, spPr, style) => `<w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/><wp:docPr id="${id}"/><a:graphic>`
@@ -134,4 +135,20 @@ test('the README preset count is the code\'s count', async () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const count = Number(readme.match(/形状 SVG 渲染支持 (\d+) 种 DrawingML 预设几何/)?.[1]);
   assert.equal(count, supportedPresetGeometries().length);
+});
+
+test('outer shadows come from the theme effect style or the shape\'s own effect list', () => {
+  const withEffect = WORD_DEFAULT_STYLE.replace('effectRef idx="0"', 'effectRef idx="3"');
+  const [themed, explicitNone, own, noRef] = themedShapes([
+    '', '<a:effectLst/>',
+    '<a:effectLst><a:outerShdw blurRad="38100" dist="38100" dir="2700000"><a:prstClr val="black"><a:alpha val="40000"/></a:prstClr></a:outerShdw></a:effectLst>',
+    '',
+  ], [withEffect, withEffect, withEffect, WORD_DEFAULT_STYLE]);
+  // Office 主题第 3 个效果样式：向下 1.5pt、模糊 4.5pt、黑色 63%。
+  assert.deepEqual(themed.shadow, { dxPx: 0, dyPx: 2, blurPx: 6, color: 'rgba(0, 0, 0, 0.63)' });
+  assert.equal(explicitNone.shadow, undefined, '空的 effectLst 是「显式没有效果」，主题的不能透上来');
+  // 方向 45°：右下各 3px·cos45°。
+  assert.ok(Math.abs(own.shadow.dxPx - own.shadow.dyPx) < 1e-6 && own.shadow.dxPx > 2.8);
+  assert.equal(own.shadow.color, 'rgba(0, 0, 0, 0.4)');
+  assert.equal(noRef.shadow, undefined, 'effectRef idx 0 没有效果');
 });

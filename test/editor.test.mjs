@@ -3881,3 +3881,17 @@ test('the continuous view gives each section its own width, margins and columns'
   assert.deepEqual([paragraphsOf(first), paragraphsOf(second), paragraphsOf(third)], [['0'], ['1', '2'], ['3']]);
   assert.equal(second.childNodes.at(-1).className, 'docx-break-marker');
 });
+
+test('a shape shadow renders as an SVG drop-shadow filter on the shape path', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const svg = editor.makeShape({ id: 'shadowed 1', paragraph: 0, run: 0, kind: 'shape', form: 'drawingml', widthPx: 100, heightPx: 50,
+    placement: 'inline', hasTextContent: false, geometry: 'rect', fill: { type: 'solid', color: '#4472C4' },
+    shadow: { dxPx: 0, dyPx: 2, blurPx: 6, color: 'rgba(0, 0, 0, 0.63)' } },
+  720, { deletedTextByRun: new Map(), revisionColors: new Map() }).childNodes[0];
+  const path = svg.childNodes.find((node) => node.tagName === 'PATH');
+  assert.equal(path.attributes.get('filter'), 'url(#shape-shadow-shadowed-1)', 'id 里的空格要换掉，否则 url() 引用失效');
+  const drop = svg.childNodes.find((node) => node.tagName === 'DEFS').childNodes[0].childNodes[0];
+  assert.equal(drop.tagName, 'FEDROPSHADOW');
+  assert.deepEqual(['dx', 'dy', 'stdDeviation', 'flood-color'].map((name) => drop.attributes.get(name)), ['0', '2', '3', 'rgba(0, 0, 0, 0.63)']);
+});

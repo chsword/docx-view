@@ -69,13 +69,47 @@ function colorWithAlpha(theme: ThemeInfo, color: Element | undefined, placeholde
   return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 }
 
-function readShapeAppearance(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): Pick<ShapeInfo, 'fill' | 'line' | 'geometry' | 'customGeometry'> {
+function readShapeAppearance(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): Pick<ShapeInfo, 'fill' | 'line' | 'geometry' | 'customGeometry' | 'shadow'> {
   const presetGeom = first(spPr, A_NS, 'prstGeom');
   const geometry = presetGeom?.getAttribute('prst') ?? undefined;
   const fill = readDrawingFill(spPr, theme, relationships, style);
   const line = readLine(spPr, theme, style);
   const customGeometry = parseCustomGeometry(spPr);
-  return { ...(geometry ? { geometry } : {}), ...(fill ? { fill } : {}), ...(line ? { line } : {}), ...(customGeometry ? { customGeometry } : {}) };
+  const shadow = readShadow(spPr, theme, style);
+  return {
+    ...(geometry ? { geometry } : {}), ...(fill ? { fill } : {}), ...(line ? { line } : {}),
+    ...(customGeometry ? { customGeometry } : {}), ...(shadow ? { shadow } : {}),
+  };
+}
+
+/**
+ * 外阴影。`spPr` 里写了 `a:effectLst`（哪怕是空的）就以它为准——空的 effectLst 是「显式没有效果」；
+ * 没写才看 `effectRef idx` 指向的主题效果样式（`effectStyleLst`，从 1 数起，0 是没有）。只画
+ * `a:outerShdw`：内阴影、发光、柔化边缘、倒影、三维不画。
+ */
+function readShadow(spPr: Element | undefined, theme: ThemeInfo, style?: Element): ShapeInfo['shadow'] {
+  const own = spPr ? Array.from(spPr.childNodes).find((node) =>
+    node.nodeType === 1 && (node as Element).namespaceURI === A_NS && (node as Element).localName === 'effectLst') as Element | undefined : undefined;
+  const effectRef = style ? descendants(style, A_NS, 'effectRef')[0] : undefined;
+  const index = Number(effectRef?.getAttribute('idx'));
+  const themed = !own && Number.isSafeInteger(index) && index >= 1 ? theme.formatScheme?.effects[index - 1] : undefined;
+  const list = own ?? (themed ? first(themed, A_NS, 'effectLst') : undefined);
+  const shadow = list ? first(list, A_NS, 'outerShdw') : undefined;
+  if (!shadow) return undefined;
+  const number = (name: string) => {
+    const value = Number(shadow.getAttribute(name));
+    return Number.isFinite(value) ? value : 0;
+  };
+  const distance = emuToPx(number('dist'));
+  // 方向角单位是 1/60000 度，0° 朝右、顺时针。
+  const angle = (number('dir') / 60000) * Math.PI / 180;
+  const color = colorWithAlpha(theme, colorChild(shadow), colorChild(effectRef)) ?? 'rgba(0, 0, 0, 0.35)';
+  return {
+    dxPx: Number((Math.cos(angle) * distance).toFixed(3)),
+    dyPx: Number((Math.sin(angle) * distance).toFixed(3)),
+    blurPx: Number(emuToPx(number('blurRad')).toFixed(3)),
+    color,
+  };
 }
 
 const FILL_ELEMENTS = new Set(['noFill', 'solidFill', 'gradFill', 'blipFill', 'pattFill']);

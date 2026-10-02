@@ -43,5 +43,5 @@ export type {
   RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, StylePatch, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, DocumentStatistics, SectionProperties, TableConditionName, TableException, TextMatch, WebDivInfo, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   ThemeFontLanguages, ThemeSettings, WidthFormat,
-  ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind, ShapeTextParagraph,
+  ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind, ShapeShadow, ShapeTextParagraph,
 } from './types.js';
