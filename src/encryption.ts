@@ -1,5 +1,6 @@
 import { isCompoundFile, readCompoundFile, writeCompoundFile } from './cfb.js';
 import { sha512SingleBlock } from './sha512.js';
+import { sha1SingleBlock } from './sha1.js';
 
 /**
  * 加密的 .docx（MS-OFFCRYPTO「Agile」加密，Word 2010 起的默认）：复合文件里一个 XML 的
@@ -9,7 +10,8 @@ import { sha512SingleBlock } from './sha512.js';
  * SHA-512 迭代 spinCount 次（Word 写 100000），加密分段、校验 HMAC 都按规范来；数据完整性
  * （`dataIntegrity`）在解密时**校验**——被改过的包拒绝打开，而不是交出一份被篡改的文档。
  *
- * 不支持 Office 2007 的「Standard」加密与 RC4：遇到时报明确的错误。
+ * 也能**打开** Office 2007 的「Standard」加密（AES-128/192/256 + SHA-1，没有完整性校验）；存盘一律用
+ * Agile。RC4（CryptoAPI）不支持，遇到时报明确的错误。
  */
 
 const BLOCK_KEY_VERIFIER_INPUT = [0xfe, 0xa7, 0xd2, 0x76, 0x3b, 0x4b, 0x9e, 0x79];
@@ -212,6 +214,12 @@ export async function decryptPackage(bytes: Uint8Array, password: string | undef
   const info = streams.get('EncryptionInfo');
   const encrypted = streams.get('EncryptedPackage');
   if (!info || !encrypted) throw new DocumentPasswordError('Compound file is not an encrypted Office package.', 'unsupported');
+  // 版本 3.2 / 4.2 是 Office 2007 的「Standard」加密；4.4 是 Agile。别的（RC4 等）由 parseEncryptionInfo 报不支持。
+  if (info.length >= 4 && (info[0] === 3 || info[0] === 4) && info[1] === 0 && info[2] === 2 && info[3] === 0) {
+    const standard = parseStandardEncryptionInfo(info);
+    if (password === undefined) throw new DocumentPasswordError('This document is password protected.', 'required');
+    return decryptStandard(standard, encrypted, password);
+  }
   const parameters = parseEncryptionInfo(info);
   if (password === undefined) throw new DocumentPasswordError('This document is password protected.', 'required');
   const { password: key, keyData } = parameters;
@@ -247,6 +255,101 @@ export async function decryptPackage(bytes: Uint8Array, password: string | undef
     output.set(await decryptRaw(secret, iv, payload.subarray(offset, Math.min(offset + SEGMENT, payload.length))), offset);
   }
   return output.subarray(0, size);
+}
+
+interface StandardParameters {
+  keyBytes: number;
+  salt: Uint8Array;
+  verifier: Uint8Array;
+  verifierHash: Uint8Array;
+}
+
+/**
+ * Standard 加密（MS-OFFCRYPTO 2.3.4.5）的二进制头：版本、标志、头长度、EncryptionHeader（算法、
+ * 哈希、密钥位数、CSP 名），再接 EncryptionVerifier（盐、加密的校验值与其哈希）。只收 AES +
+ * SHA-1——规范规定 Standard 加密就是这一种组合；标志里没有 fAES 的是 RC4（CryptoAPI），不支持。
+ */
+function parseStandardEncryptionInfo(info: Uint8Array): StandardParameters {
+  const view = new DataView(info.buffer, info.byteOffset, info.byteLength);
+  const need = (length: number) => {
+    if (info.length < length) throw new DocumentPasswordError('EncryptionInfo is truncated.', 'tampered');
+  };
+  need(12);
+  const flags = view.getUint32(4, true);
+  if (!(flags & 0x04) || !(flags & 0x20)) {
+    throw new DocumentPasswordError('Only AES Standard encryption is supported; RC4 CryptoAPI encryption is not.', 'unsupported');
+  }
+  const headerSize = view.getUint32(8, true);
+  if (headerSize < 32 || headerSize > 1024) throw new DocumentPasswordError('EncryptionInfo has an invalid header size.', 'tampered');
+  need(12 + headerSize + 40);
+  const algorithm = view.getUint32(12 + 8, true);
+  const hash = view.getUint32(12 + 12, true);
+  const keyBits = view.getUint32(12 + 16, true);
+  const keyBitsByAlgorithm: Record<number, number> = { 0x660e: 128, 0x660f: 192, 0x6610: 256 };
+  if (!keyBitsByAlgorithm[algorithm] || (hash !== 0x8004 && hash !== 0)) {
+    throw new DocumentPasswordError('Unsupported Standard encryption algorithm.', 'unsupported');
+  }
+  if (keyBits !== keyBitsByAlgorithm[algorithm]) throw new DocumentPasswordError('EncryptionInfo key size does not match its algorithm.', 'tampered');
+  const verifierOffset = 12 + headerSize;
+  const saltSize = view.getUint32(verifierOffset, true);
+  if (saltSize !== 16) throw new DocumentPasswordError('EncryptionInfo has an invalid salt size.', 'tampered');
+  const salt = info.subarray(verifierOffset + 4, verifierOffset + 20);
+  const verifier = info.subarray(verifierOffset + 20, verifierOffset + 36);
+  const hashSize = view.getUint32(verifierOffset + 36, true);
+  if (hashSize !== 20) throw new DocumentPasswordError('EncryptionInfo has an invalid verifier hash size.', 'tampered');
+  // AES 下加密的哈希补齐到 32 字节。
+  need(verifierOffset + 40 + 32);
+  return { keyBytes: keyBits / 8, salt, verifier, verifierHash: info.subarray(verifierOffset + 40, verifierOffset + 72) };
+}
+
+/**
+ * Standard 的口令派生（MS-OFFCRYPTO 2.3.4.7）：SHA-1 迭代 50000 次，再与块号 0 一起哈希，然后
+ * 按 0x36 / 0x5C 各填满 64 字节异或、各哈希一次，前后拼起来截到密钥长度。
+ */
+async function standardKey(password: string, parameters: StandardParameters): Promise<Uint8Array> {
+  const utf16 = new Uint8Array(password.length * 2);
+  for (let index = 0; index < password.length; index++) {
+    utf16[index * 2] = password.charCodeAt(index) & 0xff;
+    utf16[index * 2 + 1] = password.charCodeAt(index) >>> 8;
+  }
+  let hash = await digest('SHA1', parameters.salt, utf16);
+  const input = new Uint8Array(24);
+  for (let iteration = 0; iteration < 50_000; iteration++) {
+    input.set(le32(iteration), 0);
+    input.set(hash, 4);
+    hash = sha1SingleBlock(input);
+  }
+  const final = await digest('SHA1', hash, le32(0));
+  const xorPad = (byte: number) => {
+    const buffer = new Uint8Array(64).fill(byte);
+    final.forEach((value, index) => { buffer[index] = buffer[index]! ^ value; });
+    return buffer;
+  };
+  return concat(await digest('SHA1', xorPad(0x36)), await digest('SHA1', xorPad(0x5c))).subarray(0, parameters.keyBytes);
+}
+
+/**
+ * 不带填充的 AES-ECB 解密。WebCrypto 没有 ECB：用零 IV 做一次 CBC 解密，得到的是
+ * D(Cᵢ) ⊕ Cᵢ₋₁，再把每块异或回前一个密文块就是 D(Cᵢ)。
+ */
+async function decryptEcb(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const plain = await decryptRaw(key, new Uint8Array(16), data);
+  for (let offset = 16; offset < plain.length; offset++) plain[offset] = plain[offset]! ^ data[offset - 16]!;
+  return plain;
+}
+
+async function decryptStandard(parameters: StandardParameters, encrypted: Uint8Array, password: string): Promise<Uint8Array> {
+  const key = await standardKey(password, parameters);
+  const verifier = await decryptEcb(key, parameters.verifier);
+  const expected = (await decryptEcb(key, parameters.verifierHash)).subarray(0, 20);
+  if (!sameBytes(await digest('SHA1', verifier), expected)) throw new DocumentPasswordError('Incorrect password.', 'incorrect');
+  if (encrypted.length < 8) throw new DocumentPasswordError('EncryptedPackage is truncated.', 'tampered');
+  const view = new DataView(encrypted.buffer, encrypted.byteOffset, encrypted.byteLength);
+  const size = view.getUint32(0, true) + view.getUint32(4, true) * 2 ** 32;
+  const payload = encrypted.subarray(8, 8 + Math.floor((encrypted.length - 8) / 16) * 16);
+  if (size > payload.length) throw new DocumentPasswordError('EncryptedPackage is shorter than its declared size.', 'tampered');
+  // Standard 加密没有 HMAC：被改过的包只能在后面解 ZIP 时暴露。
+  return (await decryptEcb(key, payload)).subarray(0, size);
 }
 
 /** 用密码把 ZIP 字节加密成 Agile 加密包（与 Word 2010+ 相同的参数：AES-256、SHA-512、100000 次）。 */

@@ -5,9 +5,11 @@ import { DocxDocument } from '../dist/document.js';
 import { decryptPackage, encryptPackage, isEncryptedPackage } from '../dist/encryption.js';
 import { isCompoundFile, readCompoundFile, writeCompoundFile } from '../dist/cfb.js';
 import { sha512SingleBlock } from '../dist/sha512.js';
+import { sha1SingleBlock } from '../dist/sha1.js';
 
 const REFERENCE = new Uint8Array(readFileSync(new URL('./fixtures/agile-msoffcrypto.docx', import.meta.url)));
 const REFERENCE_PASSWORD = '参考 Reference-1';
+const STANDARD = new Uint8Array(readFileSync(new URL('./fixtures/standard-office2007.docx', import.meta.url)));
 
 test('a file encrypted by another implementation opens with its password', async () => {
   assert.equal(isEncryptedPackage(REFERENCE), true);
@@ -56,12 +58,38 @@ test('packages larger than one 4096-byte segment encrypt and decrypt across segm
   assert.deepEqual(await decryptPackage(encrypted, 'pw'), zip);
 });
 
+test('an Office 2007 Standard-encrypted file opens', async () => {
+  const doc = await DocxDocument.load(STANDARD, { password: 'Password1234_' });
+  assert.equal(doc.getParagraphs()[0].text, 'lorem ipsum');
+  assert.equal(doc.getPackageKind().encrypted, true);
+  await assert.rejects(DocxDocument.load(STANDARD, { password: 'Password1234' }), (error) => error.reason === 'incorrect');
+  await assert.rejects(DocxDocument.load(STANDARD), (error) => error.reason === 'required');
+  // 存盘一律是 Agile：不把文件降级到更弱的 Standard。
+  const saved = readCompoundFile(await doc.toUint8Array({ password: 'pw' }));
+  assert.deepEqual([...saved.get('EncryptionInfo').subarray(0, 4)], [4, 0, 4, 0]);
+});
+
 test('unsupported encryption schemes are reported, not misread', async () => {
-  const streams = readCompoundFile(REFERENCE);
+  // Standard 版本号，但标志里没有 fAES：那是 RC4（CryptoAPI）。
+  const streams = readCompoundFile(STANDARD);
   const info = Uint8Array.from(streams.get('EncryptionInfo'));
-  info[0] = 3; info[2] = 2; // 3.2：Office 2007 的 Standard 加密
+  info[4] = 0x04;
   streams.set('EncryptionInfo', info);
   await assert.rejects(decryptPackage(writeCompoundFile(streams), 'x'), (error) => error.reason === 'unsupported');
+  // 不认识的版本号。
+  const other = readCompoundFile(REFERENCE);
+  const agile = Uint8Array.from(other.get('EncryptionInfo'));
+  agile[0] = 2; agile[2] = 9;
+  other.set('EncryptionInfo', agile);
+  await assert.rejects(decryptPackage(writeCompoundFile(other), 'x'), (error) => error.reason === 'unsupported');
+});
+
+test('the single-block SHA-1 used for Standard key derivation matches WebCrypto byte for byte', async () => {
+  for (const length of [0, 1, 4, 20, 24, 55]) {
+    const input = Uint8Array.from({ length }, (_, index) => (index * 13 + length) & 0xff);
+    assert.deepEqual(sha1SingleBlock(input), new Uint8Array(await crypto.subtle.digest('SHA-1', input)), `${length} bytes`);
+  }
+  assert.throws(() => sha1SingleBlock(new Uint8Array(56)), /55/);
 });
 
 test('the single-block SHA-512 used for key derivation matches WebCrypto byte for byte', async () => {
