@@ -1,7 +1,7 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import { emuToPx, V_NS, WP_NS, A_NS, OFFICE_REL_NS } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
-import type { ChartInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
+import type { ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
 import { MC_NS, selectAlternateContentBranch } from './xml.js';
 import { resolveDrawingColor, resolveDrawingThemeColor, type ThemeInfo } from './styles.js';
 
@@ -224,59 +224,130 @@ function readChartInfo(
   const chartTypes = Array.from(plotArea.childNodes).filter((node) =>
     node.nodeType === 1 && (node as Element).namespaceURI === CHART_NS &&
     (node as Element).localName?.endsWith('Chart')) as Element[];
-  const chartType = chartTypes[0];
+  const supported = chartTypes.filter((group) => CHART_KINDS[group.localName ?? ''] !== undefined);
+  const chartType = supported[0] ?? chartTypes[0];
   if (!chartType) return undefined;
   const localName = chartType.localName ?? '';
-  const kind = localName === 'barChart' ? 'bar'
-    : localName === 'lineChart' ? 'line'
-      : localName === 'pieChart' ? 'pie'
-        : localName === 'doughnutChart' ? 'doughnut'
-          : localName === 'areaChart' ? 'area'
-            : localName === 'scatterChart' ? 'scatter' : 'unsupported';
+  const kind: ChartInfo['kind'] = CHART_KINDS[localName] ?? 'unsupported';
   const titleNode = direct(chartDocument.documentElement as Element, CHART_NS, 'chart')
     && direct(direct(chartDocument.documentElement as Element, CHART_NS, 'chart'), CHART_NS, 'title');
   const title = titleNode ? descendants(titleNode, A_NS, 't').map((node) => node.textContent ?? '').join('').trim() || undefined : undefined;
+  const xy = (group: Element) => ['scatterChart', 'bubbleChart'].includes(group.localName ?? '');
   const firstSeries = first(chartType, CHART_NS, 'ser');
-  const categoryContainer = localName === 'scatterChart'
-    ? direct(firstSeries, CHART_NS, 'xVal')
-    : direct(firstSeries, CHART_NS, 'cat');
+  const categoryContainer = xy(chartType) ? direct(firstSeries, CHART_NS, 'xVal') : direct(firstSeries, CHART_NS, 'cat');
   const firstCategoryRef = direct(categoryContainer, CHART_NS, 'strRef')
-    ?? direct(categoryContainer, CHART_NS, 'numRef');
+    ?? direct(categoryContainer, CHART_NS, 'numRef') ?? direct(categoryContainer, CHART_NS, 'strLit');
   const categories = cacheValues(
-    firstCategoryRef ? direct(firstCategoryRef, CHART_NS, firstCategoryRef.localName === 'numRef' ? 'numCache' : 'strCache') : undefined,
+    firstCategoryRef
+      ? firstCategoryRef.localName === 'strLit' ? firstCategoryRef
+        : direct(firstCategoryRef, CHART_NS, firstCategoryRef.localName === 'numRef' ? 'numCache' : 'strCache')
+      : undefined,
     false,
   ).map((value) => typeof value === 'string' ? value : '');
-  const series = chartTypes.flatMap((group) => descendants(group, CHART_NS, 'ser').flatMap((ser, index) => {
-    const val = direct(ser, CHART_NS, 'val') ?? direct(ser, CHART_NS, 'yVal');
-    const numRef = val && (direct(val, CHART_NS, 'numRef') ?? direct(val, CHART_NS, 'numLit'));
-    const cache = numRef && (direct(numRef, CHART_NS, 'numCache') ?? (numRef.localName === 'numLit' ? numRef : undefined));
-    if (!cache) return [];
-    const values = cacheValues(cache, true) as Array<number | null>;
-    const xContainer = localName === 'scatterChart' ? direct(ser, CHART_NS, 'xVal') : undefined;
-    const xRef = xContainer && (direct(xContainer, CHART_NS, 'numRef') ?? direct(xContainer, CHART_NS, 'numLit'));
-    const xCache = xRef && (direct(xRef, CHART_NS, 'numCache') ?? (xRef.localName === 'numLit' ? xRef : undefined));
-    const xValues = xCache ? cacheValues(xCache, true) as Array<number | null> : undefined;
-    const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
-    const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined : undefined;
-    const appearance = chartSeriesAppearance(ser, index, theme, relationships);
-    const pointFills = (localName === 'pieChart' || localName === 'doughnutChart')
-      ? chartPointFills(ser, values.length, theme, relationships)
-      : undefined;
-    return [{ name, values, ...(xValues ? { xValues } : {}), ...(pointFills ? { pointFills } : {}), ...appearance }];
-  }));
+
+  // 次坐标轴：每个图表组用 c:axId 指向自己的一对轴。第一个组的数值轴算主轴，其余组如果指向
+  // 另一根数值轴就是次坐标轴。散点 / 气泡图两根轴都是 valAx，取竖向（axPos 为 l / r）那根。
+  const valueAxes = new Map(Array.from(plotArea.childNodes)
+    .filter((node): node is Element => node.nodeType === 1 && (node as Element).localName === 'valAx')
+    .map((axis) => [direct(axis, CHART_NS, 'axId')?.getAttribute('val') ?? '', axis] as const));
+  const valueAxisOf = (group: Element): string | undefined => {
+    const ids = Array.from(group.childNodes).filter((node): node is Element => node.nodeType === 1 && (node as Element).localName === 'axId')
+      .map((node) => node.getAttribute('val') ?? '');
+    const candidates = ids.filter((id) => valueAxes.has(id));
+    return candidates.find((id) => ['l', 'r'].includes(direct(valueAxes.get(id), CHART_NS, 'axPos')?.getAttribute('val') ?? '')) ?? candidates[0];
+  };
+  const primaryAxis = valueAxisOf(chartType);
+  let secondaryAxis: Element | undefined;
+
+  const numbers = (container: Element | undefined): Array<number | null> | undefined => {
+    const ref = container && (direct(container, CHART_NS, 'numRef') ?? direct(container, CHART_NS, 'numLit'));
+    const cache = ref && (direct(ref, CHART_NS, 'numCache') ?? (ref.localName === 'numLit' ? ref : undefined));
+    return cache ? cacheValues(cache, true) as Array<number | null> : undefined;
+  };
+  let seriesIndex = 0;
+  const series = supported.flatMap((group) => {
+    const groupKind = CHART_KINDS[group.localName ?? '']!;
+    const axisId = valueAxisOf(group);
+    const axis = axisId && primaryAxis && axisId !== primaryAxis ? 'secondary' as const : 'primary' as const;
+    if (axis === 'secondary') secondaryAxis ??= valueAxes.get(axisId!);
+    return descendants(group, CHART_NS, 'ser').flatMap((ser) => {
+      const values = numbers(direct(ser, CHART_NS, 'val') ?? direct(ser, CHART_NS, 'yVal'));
+      if (!values) return [];
+      const xValues = xy(group) ? numbers(direct(ser, CHART_NS, 'xVal')) : undefined;
+      const bubbleSizes = group.localName === 'bubbleChart' ? numbers(direct(ser, CHART_NS, 'bubbleSize')) : undefined;
+      const nameRef = direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'strRef');
+      const name = nameRef ? String(cacheValues(direct(nameRef, CHART_NS, 'strCache'), false)[0] ?? '') || undefined
+        : direct(direct(ser, CHART_NS, 'tx'), CHART_NS, 'v')?.textContent ?? undefined;
+      // 自动配色按 c:idx（Word 写的就是全图唯一的序号），没有才按出现顺序。
+      const idx = Number(direct(ser, CHART_NS, 'idx')?.getAttribute('val'));
+      const appearance = chartSeriesAppearance(ser, Number.isSafeInteger(idx) && idx >= 0 ? idx : seriesIndex, theme, relationships);
+      seriesIndex++;
+      const pointFills = groupKind === 'pie' || groupKind === 'doughnut'
+        ? chartPointFills(ser, values.length, theme, relationships)
+        : undefined;
+      const trendlines = Array.from(ser.childNodes)
+        .filter((node): node is Element => node.nodeType === 1 && (node as Element).localName === 'trendline')
+        .flatMap((trendline) => {
+          const type = direct(trendline, CHART_NS, 'trendlineType')?.getAttribute('val') ?? 'linear';
+          if (!TRENDLINE_TYPES.has(type)) return [];
+          const order = Number(direct(trendline, CHART_NS, 'order')?.getAttribute('val'));
+          const period = Number(direct(trendline, CHART_NS, 'period')?.getAttribute('val'));
+          const label = direct(trendline, CHART_NS, 'name')?.textContent?.trim();
+          return [{
+            type: type as NonNullable<ChartSeriesInfo['trendlines']>[number]['type'],
+            ...(Number.isFinite(order) ? { order } : {}),
+            ...(Number.isFinite(period) ? { period } : {}),
+            ...(label ? { name: label } : {}),
+          }];
+        });
+      const errorBars = Array.from(ser.childNodes)
+        .filter((node): node is Element => node.nodeType === 1 && (node as Element).localName === 'errBars')
+        .flatMap((bars) => {
+          const valueType = direct(bars, CHART_NS, 'errValType')?.getAttribute('val') ?? 'fixedVal';
+          if (!ERROR_VALUE_TYPES.has(valueType)) return [];
+          const barType = direct(bars, CHART_NS, 'errBarType')?.getAttribute('val') ?? 'both';
+          const value = Number(direct(bars, CHART_NS, 'val')?.getAttribute('val'));
+          const plus = numbers(direct(bars, CHART_NS, 'plus'));
+          const minus = numbers(direct(bars, CHART_NS, 'minus'));
+          return [{
+            direction: (direct(bars, CHART_NS, 'errDir')?.getAttribute('val') === 'x' ? 'x' : 'y') as 'x' | 'y',
+            type: (['plus', 'minus'].includes(barType) ? barType : 'both') as 'both' | 'plus' | 'minus',
+            valueType: valueType as NonNullable<ChartSeriesInfo['errorBars']>[number]['valueType'],
+            ...(Number.isFinite(value) ? { value } : {}),
+            ...(plus ? { plus } : {}),
+            ...(minus ? { minus } : {}),
+          }];
+        });
+      const entry: ChartSeriesInfo = {
+        name, values, type: groupKind, axis,
+        ...(xValues ? { xValues } : {}),
+        ...(bubbleSizes ? { bubbleSizes } : {}),
+        ...(pointFills ? { pointFills } : {}),
+        ...(trendlines.length ? { trendlines } : {}),
+        ...(errorBars.length ? { errorBars } : {}),
+        ...appearance,
+      };
+      return [entry];
+    });
+  });
   const grouping = direct(chartType, CHART_NS, 'grouping')?.getAttribute('val') as ChartInfo['grouping'] | null;
-  const barDirection = localName === 'barChart'
-    ? (direct(chartType, CHART_NS, 'barDir')?.getAttribute('val') === 'bar' ? 'bar' : 'col')
+  const barGroup = supported.find((group) => CHART_KINDS[group.localName ?? ''] === 'bar');
+  const barDirection = barGroup
+    ? (direct(barGroup, CHART_NS, 'barDir')?.getAttribute('val') === 'bar' ? 'bar' : 'col')
     : undefined;
   const legendPosition = descendants(chartDocument.documentElement as Element, CHART_NS, 'legendPos')[0]?.getAttribute('val');
   const legend = ['l', 'r', 't', 'b', 'tr'].includes(legendPosition ?? '') ? { position: legendPosition as 'l' | 'r' | 't' | 'b' | 'tr' } : undefined;
+  const primaryValueAxis = primaryAxis ? valueAxes.get(primaryAxis) : direct(plotArea, CHART_NS, 'valAx');
+  const visible = (axis: Element | undefined) => direct(axis, CHART_NS, 'delete')?.getAttribute('val') !== '1';
   const axes = {
-    category: { visible: direct(plotArea, CHART_NS, 'catAx') ? direct(direct(plotArea, CHART_NS, 'catAx'), CHART_NS, 'delete')?.getAttribute('val') !== '1' : true },
+    category: { visible: direct(plotArea, CHART_NS, 'catAx') ? visible(direct(plotArea, CHART_NS, 'catAx')) : true },
     value: {
-      visible: direct(plotArea, CHART_NS, 'valAx') ? direct(direct(plotArea, CHART_NS, 'valAx'), CHART_NS, 'delete')?.getAttribute('val') !== '1' : true,
-      majorGridlines: Boolean(direct(plotArea, CHART_NS, 'valAx') && direct(direct(plotArea, CHART_NS, 'valAx'), CHART_NS, 'majorGridlines')),
+      visible: primaryValueAxis ? visible(primaryValueAxis) : true,
+      majorGridlines: Boolean(primaryValueAxis && direct(primaryValueAxis, CHART_NS, 'majorGridlines')),
     },
+    ...(secondaryAxis ? { secondaryValue: { visible: visible(secondaryAxis) } } : {}),
   };
+  const radarStyle = localName === 'radarChart' ? direct(chartType, CHART_NS, 'radarStyle')?.getAttribute('val') : undefined;
   return {
     kind,
     ...(title ? { title } : {}),
@@ -286,8 +357,23 @@ function readChartInfo(
     ...(grouping ? { grouping } : {}),
     ...(legend ? { legend } : {}),
     axes,
+    ...(localName.includes('3D') ? { threeD: true } : {}),
+    ...(radarStyle && ['standard', 'marker', 'filled'].includes(radarStyle) ? { radarStyle: radarStyle as ChartInfo['radarStyle'] } : {}),
+    ...(localName === 'stockChart' ? {
+      stock: { hiLowLines: Boolean(direct(chartType, CHART_NS, 'hiLowLines')), upDownBars: Boolean(direct(chartType, CHART_NS, 'upDownBars')) },
+    } : {}),
   };
 }
+
+/** 图表组元素名 → 画法。3D 图按对应的 2D 图画；曲面图（等高线）不在这里，退化为占位。 */
+const CHART_KINDS: Record<string, ChartKind> = {
+  barChart: 'bar', bar3DChart: 'bar', lineChart: 'line', line3DChart: 'line',
+  pieChart: 'pie', pie3DChart: 'pie', ofPieChart: 'pie', doughnutChart: 'doughnut',
+  areaChart: 'area', area3DChart: 'area', scatterChart: 'scatter',
+  radarChart: 'radar', bubbleChart: 'bubble', stockChart: 'stock',
+};
+const TRENDLINE_TYPES = new Set(['linear', 'exp', 'log', 'poly', 'power', 'movingAvg']);
+const ERROR_VALUE_TYPES = new Set(['fixedVal', 'percentage', 'stdDev', 'stdErr', 'cust']);
 
 function parseCustomGeometry(spPr: Element | undefined): CustomGeometry | undefined {
   const custom = spPr && descendants(spPr, A_NS, 'custGeom')[0];

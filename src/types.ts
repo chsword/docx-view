@@ -738,15 +738,47 @@ export interface ShapeChildInfo {
   text?: string;
 }
 
+export type ChartKind = 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'radar' | 'bubble' | 'stock';
+
+export interface ChartSeriesInfo {
+  name?: string;
+  values: Array<number | null>;
+  xValues?: Array<number | null>;
+  /** 气泡图的气泡大小（`c:bubbleSize`），按面积缩放。 */
+  bubbleSizes?: Array<number | null>;
+  pointFills?: Array<ShapeInfo['fill'] | undefined>;
+  fill?: ShapeInfo['fill'];
+  line?: ShapeInfo['line'];
+  /** 这条序列所在图表组的类型。组合图里各序列不同，渲染时按它画。 */
+  type?: ChartKind;
+  /** 落在哪根数值轴上。次坐标轴的序列有自己的刻度，画在右侧。 */
+  axis?: 'primary' | 'secondary';
+  trendlines?: Array<{ type: 'linear' | 'exp' | 'log' | 'poly' | 'power' | 'movingAvg'; order?: number; period?: number; name?: string }>;
+  errorBars?: Array<{
+    direction: 'x' | 'y';
+    type: 'both' | 'plus' | 'minus';
+    valueType: 'fixedVal' | 'percentage' | 'stdDev' | 'stdErr' | 'cust';
+    value?: number;
+    plus?: Array<number | null>;
+    minus?: Array<number | null>;
+  }>;
+}
+
 export interface ChartInfo {
-  kind: 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'unsupported';
+  kind: ChartKind | 'unsupported';
   title?: string;
   categories: string[];
-  series: Array<{ name?: string; values: Array<number | null>; xValues?: Array<number | null>; pointFills?: Array<ShapeInfo['fill'] | undefined>; fill?: ShapeInfo['fill']; line?: ShapeInfo['line'] }>;
+  series: ChartSeriesInfo[];
   barDirection?: 'col' | 'bar';
   grouping?: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
   legend?: { position: 'l' | 'r' | 't' | 'b' | 'tr' };
-  axes?: { category?: { visible: boolean }; value?: { visible: boolean; majorGridlines: boolean } };
+  axes?: { category?: { visible: boolean }; value?: { visible: boolean; majorGridlines: boolean }; secondaryValue?: { visible: boolean } };
+  /** 原图是 3D（`bar3DChart` 等）。按对应的 2D 图画，透视与深度不画。 */
+  threeD?: boolean;
+  /** 雷达图样式：`marker` 只画线和点，`filled` 填充多边形。 */
+  radarStyle?: 'standard' | 'marker' | 'filled';
+  /** 股价图：每个类目一根最高—最低线，有开盘价时再画涨跌柱。 */
+  stock?: { hiLowLines: boolean; upDownBars: boolean };
 }
 
 export interface ShapeInfo {

@@ -6,6 +6,7 @@ import type {
   ClipboardRun,
   BordersFormat,
   CellFormat,
+  ChartSeriesInfo,
   EquationNode,
   TableException,
   WebDivInfo,
@@ -33,7 +34,7 @@ import type {
 } from './types.js';
 import { contentTypeForExtension, dataUrlForBytes, isBrowserRenderableContentType, pxToEmu } from './drawing.js';
 import { customGeometryPath, presetGeometryIsOpen, presetGeometryPath } from './geometry.js';
-import { axisTicks, barRects, pieSlicePath, valueToPx } from './chart.js';
+import { axisTicks, barRects, errorBarRanges, pieSlicePath, radarPoint, trendlinePoints, valueToPx } from './chart.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
@@ -2050,26 +2051,49 @@ export class DocxEditor {
       parent.appendChild(node);
       return node;
     };
+    if (chart.kind === 'radar') {
+      this.renderRadarChart(add, chart, width, height);
+      return;
+    }
     const titleHeight = chart.title ? 18 : 4;
-    const horizontalBars = chart.kind === 'bar' && chart.barDirection === 'bar';
+    const seriesType = (series: ChartSeriesInfo) => series.type ?? chart.kind;
+    const primarySeries = chart.series.filter((series) => series.axis !== 'secondary');
+    const secondarySeries = chart.series.filter((series) => series.axis === 'secondary');
+    const barSeries = chart.series.filter((series) => seriesType(series) === 'bar');
+    const horizontalBars = barSeries.length > 0 && chart.barDirection === 'bar';
     const left = (horizontalBars ? chart.axes?.category?.visible : chart.axes?.value?.visible) === false ? 8 : 34;
-    const bottom = (horizontalBars ? chart.axes?.value?.visible : chart.axes?.category?.visible) === false ? 8 : 24;
+    // 有序列名时图例画在最底下一行，要单独留出 14px；原先图例和类目标签挤在同一条带里，互相压字。
+    const legendHeight = chart.kind !== 'pie' && chart.kind !== 'doughnut' && chart.series.some((series) => series.name) ? 14 : 0;
+    const bottom = ((horizontalBars ? chart.axes?.value?.visible : chart.axes?.category?.visible) === false ? 8 : 24) + legendHeight;
     const pieLegendColumns = Math.max(1, Math.floor(Math.max(1, width - left - 8) / 70));
     const pieLegendRows = chart.kind === 'pie' || chart.kind === 'doughnut'
       ? Math.max(1, Math.ceil(chart.categories.length / pieLegendColumns))
       : 1;
     const pieLegendExtraHeight = (pieLegendRows - 1) * 12;
-    const plot = { x: left, y: titleHeight, width: Math.max(1, width - left - 8), height: Math.max(1, height - titleHeight - bottom - pieLegendExtraHeight) };
+    // 次坐标轴的刻度画在右边，要留出地方。
+    const right = secondarySeries.length && chart.axes?.secondaryValue?.visible !== false ? 34 : 8;
+    const plot = { x: left, y: titleHeight, width: Math.max(1, width - left - right), height: Math.max(1, height - titleHeight - bottom - pieLegendExtraHeight) };
     if (chart.title) add('text', { x: String(width / 2), y: '13', 'text-anchor': 'middle', 'font-size': '12', fill: '#222' }).textContent = chart.title;
-    const values = chart.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value)));
-    const isPercentBars = chart.kind === 'bar' && chart.grouping === 'percentStacked';
-    const isStackedBars = chart.kind === 'bar' && (chart.grouping === 'stacked' || isPercentBars);
-    const stackedTotals = isStackedBars ? chart.series[0]?.values.map((_, index) =>
-      chart.series.reduce((sum, series) => sum + Math.max(0, series.values[index] ?? 0), 0),
-    ) ?? [] : [];
-    const minValue = isPercentBars ? -100 : isStackedBars ? Math.min(0, ...stackedTotals) : values.length ? Math.min(0, ...values) : 0;
-    const maxValue = isPercentBars ? 100 : isStackedBars ? Math.max(1, ...stackedTotals) : values.length ? Math.max(0, ...values) : 1;
-    const scale = axisTicks(minValue, maxValue, 5);
+    const isPercentBars = barSeries.length > 0 && chart.grouping === 'percentStacked';
+    const isStackedBars = barSeries.length > 0 && (chart.grouping === 'stacked' || isPercentBars);
+    // 每根数值轴各算各的刻度：次坐标轴的序列（常见是「金额 + 增长率」）量级完全不同，合到一根
+    // 轴上会把其中一条压成一条直线。误差线的端点也算进范围，否则会画出绘图区。
+    const scaleFor = (members: ChartSeriesInfo[]) => {
+      const values = members.flatMap((series) => [
+        ...series.values.filter((value): value is number => value !== null && Number.isFinite(value)),
+        ...(series.errorBars ?? []).filter((bars) => bars.direction === 'y').flatMap((bars) =>
+          errorBarRanges(series.values, bars).flatMap((range) => (range ? [range.low, range.high] : []))),
+      ]);
+      const bars = members.filter((series) => seriesType(series) === 'bar');
+      const stackedTotals = isStackedBars && bars.length ? bars[0]!.values.map((_, index) =>
+        bars.reduce((sum, series) => sum + Math.max(0, series.values[index] ?? 0), 0)) : [];
+      const minValue = isPercentBars && bars.length ? -100 : stackedTotals.length ? Math.min(0, ...stackedTotals, ...values) : values.length ? Math.min(0, ...values) : 0;
+      const maxValue = isPercentBars && bars.length ? 100 : stackedTotals.length ? Math.max(1, ...stackedTotals, ...values) : values.length ? Math.max(0, ...values) : 1;
+      return axisTicks(minValue, chart.kind === 'bubble' ? maxValue + (maxValue - minValue) * 0.15 : maxValue, 5);
+    };
+    const scale = scaleFor(primarySeries.length ? primarySeries : chart.series);
+    const secondaryScale = secondarySeries.length ? scaleFor(secondarySeries) : undefined;
+    const scaleOf = (series: ChartSeriesInfo) => (series.axis === 'secondary' && secondaryScale ? secondaryScale : scale);
     if (chart.kind === 'pie' || chart.kind === 'doughnut') {
       const total = chart.series.reduce((sum, series) => sum + series.values.reduce<number>((part, value) => part + (value !== null && value > 0 ? value : 0), 0), 0);
       const radius = Math.max(1, Math.min(plot.width, plot.height) / 2 - 2);
@@ -2093,18 +2117,26 @@ export class DocxEditor {
       });
       return;
     }
-    const zeroY = plot.y + plot.height - valueToPx(0, scale, plot.height);
+    if (chart.kind === 'stock') {
+      this.renderStockChart(add, chart, plot, scale);
+    }
+    const xyChart = chart.kind === 'scatter' || chart.kind === 'bubble';
     const allXValues = chart.series.flatMap((series) => series.xValues?.filter((value): value is number => value !== null && Number.isFinite(value)) ?? []);
-    const xScale = chart.kind === 'scatter' && allXValues.length
-      ? axisTicks(Math.min(...allXValues), Math.max(...allXValues), 5)
+    // 气泡有半径，数据点贴着轴画会被切掉一半：两侧各留 15% 的余量。
+    const xPadding = chart.kind === 'bubble' && allXValues.length ? (Math.max(...allXValues) - Math.min(...allXValues) || 1) * 0.15 : 0;
+    const xScale = xyChart && allXValues.length
+      ? axisTicks(Math.min(...allXValues) - xPadding, Math.max(...allXValues) + xPadding, 5)
       : undefined;
     const categoryCount = Math.max(chart.categories.length, ...chart.series.map((series) => series.values.length), 0);
-    if (chart.kind !== 'scatter' && chart.axes?.category?.visible !== false) {
+    if (!xyChart && chart.axes?.category?.visible !== false) {
       chart.categories.forEach((category, index) => {
         if (!category) return;
+        // 柱子画在每个类目带的中间，标签也要在中间；只有折线 / 面积图才两端对齐。
         const x = horizontalBars
           ? plot.x - 4
-          : plot.x + (categoryCount > 1 ? index / (categoryCount - 1) : 0.5) * plot.width;
+          : plot.x + (barSeries.length || chart.kind === 'stock'
+            ? ((index + 0.5) / Math.max(1, categoryCount)) * plot.width
+            : (categoryCount > 1 ? index / (categoryCount - 1) : 0.5) * plot.width);
         const y = horizontalBars
           ? plot.y + (index + 0.5) / Math.max(1, categoryCount) * plot.height + 4
           : plot.y + plot.height + 14;
@@ -2139,46 +2171,192 @@ export class DocxEditor {
       const label = add('text', { x: String(x), y: String(y), 'text-anchor': horizontalBars ? 'middle' : 'end', 'font-size': '9', fill: '#555', 'data-docx-chart-tick': '1' });
       label.textContent = String(tick);
     }
-    if (chart.kind === 'bar') {
-      const rects = barRects(chart.series.map((series) => series.values.map((value) => value ?? 0)), scale, plot.width, plot.height, { grouping: chart.grouping ?? 'clustered', direction: chart.barDirection });
-      rects.forEach((series, seriesIndex) => series.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: chart.series[seriesIndex]?.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) })));
-    } else {
+    if (secondaryScale && chart.axes?.secondaryValue?.visible !== false && !horizontalBars) {
+      const axisX = plot.x + plot.width;
+      add('line', { x1: String(axisX), x2: String(axisX), y1: String(plot.y), y2: String(plot.y + plot.height), stroke: '#555', 'data-docx-chart-axis': 'secondary' });
+      for (const tick of secondaryScale.ticks) {
+        const label = add('text', { x: String(axisX + 4), y: String(plot.y + plot.height - valueToPx(tick, secondaryScale, plot.height) + 4), 'text-anchor': 'start', 'font-size': '9', fill: '#555', 'data-docx-chart-tick': 'secondary' });
+        label.textContent = String(tick);
+      }
+    }
+    // 有柱子时折线点落在每个类目带的中间（Excel 的 crossBetween=between），否则沿用两端对齐。
+    const categoryX = (index: number, count: number) => plot.x + (barSeries.length
+      ? ((index + 0.5) / Math.max(1, count)) * plot.width
+      : (count > 1 ? index / (count - 1) : 0.5) * plot.width);
+    const seriesXOf = (series: ChartSeriesInfo, index: number): number => {
+      const xValue = series.xValues?.[index];
+      if (xyChart && xScale && xValue !== null && xValue !== undefined) return plot.x + valueToPx(xValue, xScale, plot.width);
+      return categoryX(index, chart.series[0]?.values.length ?? 0);
+    };
+    const yOf = (series: ChartSeriesInfo, value: number) => plot.y + plot.height - valueToPx(value, scaleOf(series), plot.height);
+    if (barSeries.length) {
+      // 主、次坐标轴上的柱子各按自己的刻度算。
+      for (const members of [barSeries.filter((series) => series.axis !== 'secondary'), barSeries.filter((series) => series.axis === 'secondary')]) {
+        if (!members.length) continue;
+        const rects = barRects(members.map((series) => series.values.map((value) => value ?? 0)), scaleOf(members[0]!), plot.width, plot.height, { grouping: chart.grouping ?? 'clustered', direction: chart.barDirection });
+        rects.forEach((rectsOfSeries, memberIndex) => {
+          const series = members[memberIndex]!;
+          const seriesIndex = chart.series.indexOf(series);
+          rectsOfSeries.forEach((rect) => add('rect', { x: String(plot.x + rect.x), y: String(plot.y + rect.y), width: String(rect.width), height: String(rect.height), fill: series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) }));
+        });
+      }
+    }
+    if (chart.kind === 'bubble') {
+      const sizes = chart.series.flatMap((series) => series.bubbleSizes?.filter((size): size is number => size !== null && size > 0) ?? []);
+      const largest = Math.max(1e-9, ...sizes);
+      // 气泡按面积缩放：半径正比于 √size，最大的气泡直径约为绘图区短边的 1/4（Excel 默认 bubbleScale 100）。
+      const maxRadius = Math.min(plot.width, plot.height) / 8;
+      chart.series.forEach((series, seriesIndex) => series.values.forEach((value, index) => {
+        const size = series.bubbleSizes?.[index];
+        if (value === null || !Number.isFinite(value) || size === null || size === undefined || size <= 0) return;
+        add('circle', {
+          cx: String(seriesXOf(series, index)), cy: String(yOf(series, value)), r: String(Math.sqrt(size / largest) * maxRadius),
+          fill: series.fill?.color ?? 'none', 'fill-opacity': '0.75', stroke: series.line?.color ?? series.fill?.color ?? 'none',
+          'data-docx-chart-series': String(seriesIndex),
+        });
+      }));
+    } else if (chart.kind !== 'stock') {
       chart.series.forEach((series, seriesIndex) => {
+        const type = seriesType(series);
+        if (type === 'bar') return;
         const segments: Array<Array<{ x: number; y: number }>> = [];
         let current: Array<{ x: number; y: number }> = [];
-        const xValues = series.xValues;
+        const zeroY = plot.y + plot.height - valueToPx(0, scaleOf(series), plot.height);
         series.values.forEach((value, index) => {
           if (value === null || !Number.isFinite(value)) {
             if (current.length) segments.push(current);
             current = [];
             return;
           }
-          const firstSeriesLength = chart.series[0]?.values.length ?? 0;
-          const xValue = xValues?.[index];
-          const x = plot.x + (chart.kind === 'scatter' && xScale && xValue !== null && xValue !== undefined
-            ? valueToPx(xValue, xScale, plot.width)
-            : (firstSeriesLength > 1 ? index / (firstSeriesLength - 1) : 0.5) * plot.width);
-          current.push({ x, y: plot.y + plot.height - valueToPx(value, scale, plot.height) });
+          current.push({ x: seriesXOf(series, index), y: yOf(series, value) });
         });
         if (current.length) segments.push(current);
         const path = segments.map((points) => {
           const line = points.map((point, pointIndex) => `${pointIndex ? 'L' : 'M'} ${point.x} ${point.y} `).join('');
-          if (chart.kind !== 'area') return line;
+          if (type !== 'area') return line;
           const last = points[points.length - 1]!;
           const first = points[0]!;
           return last.x === first.x
             ? `${line}L ${first.x} ${zeroY} Z`
             : `${line}L ${last.x} ${zeroY} L ${first.x} ${zeroY} Z`;
         }).join(' ');
-        if (path) add('path', { d: path, fill: chart.kind === 'area' ? (series.fill?.color ?? 'none') : 'none', 'fill-opacity': chart.kind === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) });
+        if (path) add('path', { d: path, fill: type === 'area' ? (series.fill?.color ?? 'none') : 'none', 'fill-opacity': type === 'area' ? '0.35' : '1', stroke: series.line?.color ?? series.fill?.color ?? 'none', 'data-docx-chart-series': String(seriesIndex) });
       });
     }
+    // 趋势线：类目图的 x 按 Excel 的约定取 1..n，散点 / 气泡图取缓存的 x。
+    chart.series.forEach((series, seriesIndex) => {
+      const color = series.line?.color ?? series.fill?.color ?? '#444';
+      const count = series.values.length;
+      for (const trendline of series.trendlines ?? []) {
+        const points = series.values.flatMap((value, index) => {
+          if (value === null || !Number.isFinite(value)) return [];
+          const x = xyChart ? series.xValues?.[index] : index + 1;
+          return x === null || x === undefined || !Number.isFinite(x) ? [] : [{ x, y: value }];
+        });
+        const fitted = trendlinePoints(points, trendline.type, { order: trendline.order, period: trendline.period });
+        const toPx = (x: number) => (xyChart && xScale ? plot.x + valueToPx(x, xScale, plot.width) : categoryX(x - 1, count));
+        const d = fitted.map((point, index) => `${index ? 'L' : 'M'} ${toPx(point.x)} ${yOf(series, point.y)}`).join(' ');
+        if (d) add('path', { d, fill: 'none', stroke: color, 'stroke-dasharray': '4 3', 'data-docx-chart-trendline': String(seriesIndex) });
+      }
+      // 误差线：竖向用数值轴刻度，横向（只有散点 / 气泡图有）用 x 刻度；两端各画一小段横 / 竖线当帽子。
+      for (const bars of series.errorBars ?? []) {
+        const source = bars.direction === 'x' ? series.xValues ?? [] : series.values;
+        errorBarRanges(source, bars).forEach((range, index) => {
+          const value = series.values[index];
+          if (!range || value === null || value === undefined || !Number.isFinite(value)) return;
+          const x = seriesXOf(series, index);
+          const y = yOf(series, value);
+          if (bars.direction === 'x') {
+            if (!xScale) return;
+            const x1 = plot.x + valueToPx(range.low, xScale, plot.width);
+            const x2 = plot.x + valueToPx(range.high, xScale, plot.width);
+            add('path', { d: `M ${x1} ${y} L ${x2} ${y} M ${x1} ${y - 3} L ${x1} ${y + 3} M ${x2} ${y - 3} L ${x2} ${y + 3}`, stroke: color, fill: 'none', 'data-docx-chart-error-bar': String(seriesIndex) });
+          } else {
+            const y1 = yOf(series, range.low);
+            const y2 = yOf(series, range.high);
+            add('path', { d: `M ${x} ${y1} L ${x} ${y2} M ${x - 3} ${y1} L ${x + 3} ${y1} M ${x - 3} ${y2} L ${x + 3} ${y2}`, stroke: color, fill: 'none', 'data-docx-chart-error-bar': String(seriesIndex) });
+          }
+        });
+      }
+    });
     chart.series.forEach((series, index) => {
       if (!series.name) return;
       const x = plot.x + index * 70;
       add('rect', { x: String(x), y: String(height - 12), width: '8', height: '8', fill: series.fill?.color ?? 'none' });
       add('text', { x: String(x + 11), y: String(height - 4), 'font-size': '9', fill: '#444' }).textContent = series.name;
     });
+  }
+
+  /** 雷达图：每个类目一根辐条，序列连成闭合多边形；`filled` 样式填色，其余只描边。 */
+  private renderRadarChart(add: (name: string, attrs: Record<string, string>) => Element, chart: NonNullable<ShapeInfo['chart']>,
+    width: number, height: number): void {
+    const titleHeight = chart.title ? 18 : 4;
+    if (chart.title) add('text', { x: String(width / 2), y: '13', 'text-anchor': 'middle', 'font-size': '12', fill: '#222' }).textContent = chart.title;
+    const count = Math.max(chart.categories.length, ...chart.series.map((series) => series.values.length), 0);
+    if (!count) return;
+    const cx = width / 2;
+    const cy = titleHeight + (height - titleHeight - 14) / 2;
+    const radius = Math.max(1, Math.min(width / 2 - 30, (height - titleHeight - 14) / 2 - 10));
+    const values = chart.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value)));
+    const scale = axisTicks(Math.min(0, ...values), Math.max(1, ...values), 4);
+    for (const tick of scale.ticks) {
+      if (tick <= scale.min) continue;
+      const r = valueToPx(tick, scale, radius);
+      const ring = Array.from({ length: count }, (_, index) => radarPoint(index, count, r, cx, cy));
+      add('path', { d: `${ring.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')} Z`, fill: 'none', stroke: '#e5e7eb', 'data-docx-chart-gridline': '1' });
+    }
+    for (let index = 0; index < count; index++) {
+      const end = radarPoint(index, count, radius, cx, cy);
+      add('line', { x1: String(cx), y1: String(cy), x2: String(end.x), y2: String(end.y), stroke: '#cfd5dd', 'data-docx-chart-axis': 'category' });
+      const label = radarPoint(index, count, radius + 10, cx, cy);
+      const text = chart.categories[index];
+      if (text) add('text', { x: String(label.x), y: String(label.y + 3), 'text-anchor': 'middle', 'font-size': '9', fill: '#555', 'data-docx-chart-category': '1' }).textContent = text;
+    }
+    chart.series.forEach((series, seriesIndex) => {
+      const points = series.values.map((value, index) => radarPoint(index, count, valueToPx(value ?? scale.min, scale, radius), cx, cy));
+      const color = series.line?.color ?? series.fill?.color ?? '#444';
+      add('path', {
+        d: `${points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')} Z`,
+        fill: chart.radarStyle === 'filled' ? (series.fill?.color ?? color) : 'none',
+        'fill-opacity': chart.radarStyle === 'filled' ? '0.4' : '1',
+        stroke: color, 'data-docx-chart-series': String(seriesIndex),
+      });
+      if (chart.radarStyle === 'marker') {
+        for (const point of points) add('circle', { cx: String(point.x), cy: String(point.y), r: '2.5', fill: color, 'data-docx-chart-marker': String(seriesIndex) });
+      }
+    });
+  }
+
+  /**
+   * 股价图。序列按 Excel 的约定排：三条是「最高—最低—收盘」，四条是「开盘—最高—最低—收盘」。
+   * 每个类目一根最高—最低竖线、收盘价一个向右的小横；有开盘价且开了涨跌柱时，开盘到收盘画一根柱，
+   * 涨（收 ≥ 开）白、跌黑。序列自己的连线在股价图里默认不画（Word 写的是 noFill）。
+   */
+  private renderStockChart(add: (name: string, attrs: Record<string, string>) => Element, chart: NonNullable<ShapeInfo['chart']>,
+    plot: { x: number; y: number; width: number; height: number }, scale: { min: number; max: number }): void {
+    const series = chart.series;
+    if (series.length < 3) return;
+    const [open, high, low, close] = series.length >= 4 ? [series[0], series[1], series[2], series[3]] : [undefined, series[0], series[1], series[2]];
+    const count = Math.max(...series.map((entry) => entry.values.length));
+    const band = plot.width / Math.max(1, count);
+    const y = (value: number) => plot.y + plot.height - valueToPx(value, scale, plot.height);
+    for (let index = 0; index < count; index++) {
+      const x = plot.x + (index + 0.5) * band;
+      const hi = high?.values[index];
+      const lo = low?.values[index];
+      const cl = close?.values[index];
+      const op = open?.values[index];
+      if (hi !== null && hi !== undefined && lo !== null && lo !== undefined && chart.stock?.hiLowLines !== false) {
+        add('line', { x1: String(x), x2: String(x), y1: String(y(hi)), y2: String(y(lo)), stroke: '#333', 'data-docx-chart-stock': 'hilow' });
+      }
+      if (op !== null && op !== undefined && cl !== null && cl !== undefined && chart.stock?.upDownBars) {
+        const top = y(Math.max(op, cl));
+        add('rect', { x: String(x - band * 0.25), y: String(top), width: String(band * 0.5), height: String(Math.max(1, y(Math.min(op, cl)) - top)),
+          fill: cl >= op ? '#ffffff' : '#333333', stroke: '#333', 'data-docx-chart-stock': cl >= op ? 'up' : 'down' });
+      } else if (cl !== null && cl !== undefined) {
+        add('line', { x1: String(x), x2: String(x + band * 0.2), y1: String(y(cl)), y2: String(y(cl)), stroke: '#333', 'data-docx-chart-stock': 'close' });
+      }
+    }
   }
 
   private reviewScopedRun(paragraphIndex: number, run: RunInfo, reviewContext: ReviewRenderContext): RunInfo {

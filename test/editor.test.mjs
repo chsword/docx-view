@@ -3770,3 +3770,48 @@ test('open preset geometries (brackets, arcs, connectors) render as strokes with
   // 闭合形状照常填充。
   assert.equal(render('chord').attributes.get('fill'), '#4472C4');
 });
+
+test('charts render secondary axes, radar, bubble, stock, trendlines and error bars', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const axes = { category: { visible: true }, value: { visible: true, majorGridlines: false }, secondaryValue: { visible: true } };
+  const render = (chart) => editor.makeShape({ id: `chart-${chart.kind}`, paragraph: 0, run: 0, kind: 'chart', form: 'drawingml', widthPx: 320,
+    heightPx: 200, placement: 'inline', hasTextContent: false, chart }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() }).childNodes[0].childNodes;
+  const having = (nodes, name, value) => nodes.filter((node) => node.attributes?.get(name) === value);
+
+  // 组合图：次坐标轴有自己的刻度，画在右边；折线的点落在柱子所在类目带的中间。
+  const combo = render({ kind: 'bar', barDirection: 'col', grouping: 'clustered', categories: ['a', 'b'], axes, series: [
+    { values: [100, 200], type: 'bar', axis: 'primary', fill: { color: '#111111' } },
+    { values: [0.1, 0.2], type: 'line', axis: 'secondary', line: { color: '#222222' } }] });
+  assert.equal(having(combo, 'data-docx-chart-axis', 'secondary').length, 1);
+  assert.ok(having(combo, 'data-docx-chart-tick', 'secondary').some((node) => node.textContent === '0.2'));
+  const bars = having(combo, 'data-docx-chart-series', '0').filter((node) => node.tagName === 'RECT');
+  const line = having(combo, 'data-docx-chart-series', '1').find((node) => node.tagName === 'PATH');
+  assert.equal(bars.length, 2);
+  const firstPointX = Number(line.attributes.get('d').match(/^M ([\d.]+)/)[1]);
+  const bar = bars[0];
+  assert.ok(firstPointX > Number(bar.attributes.get('x')) && firstPointX < Number(bar.attributes.get('x')) + 40, '折线点在第一根柱子附近，不在绘图区左边界');
+  // 次坐标轴上的 0.2 画到最高处：两根轴各用各的刻度，0.2 不会被压在 200 的刻度底下。
+  const lineYs = [...line.attributes.get('d').matchAll(/[ML] [\d.]+ ([\d.]+)/g)].map((match) => Number(match[1]));
+  assert.ok(lineYs[1] < lineYs[0] - 50);
+
+  const radar = render({ kind: 'radar', radarStyle: 'marker', categories: ['a', 'b', 'c'], axes, series: [{ values: [1, 2, 3], line: { color: '#333333' } }] });
+  assert.ok(having(radar, 'data-docx-chart-series', '0')[0].attributes.get('d').endsWith('Z'));
+  assert.equal(radar.filter((node) => node.attributes?.get('data-docx-chart-marker') === '0').length, 3);
+  assert.equal(having(radar, 'data-docx-chart-category', '1').length, 3);
+
+  const bubble = render({ kind: 'bubble', categories: [], axes, series: [{ values: [1, 2], xValues: [1, 2], bubbleSizes: [1, 4], fill: { color: '#444444' } }] });
+  const circles = bubble.filter((node) => node.tagName === 'CIRCLE');
+  // 按面积缩放：大小 4 的半径是大小 1 的 2 倍。
+  assert.equal(Number(circles[1].attributes.get('r')) / Number(circles[0].attributes.get('r')), 2);
+
+  const stock = render({ kind: 'stock', stock: { hiLowLines: true, upDownBars: true }, categories: ['d1', 'd2'], axes, series: [
+    { values: [10, 12] }, { values: [13, 14] }, { values: [9, 10] }, { values: [12, 11] }] });
+  assert.equal(having(stock, 'data-docx-chart-stock', 'hilow').length, 2);
+  assert.deepEqual(stock.filter((node) => ['up', 'down'].includes(node.attributes?.get('data-docx-chart-stock'))).map((node) => node.attributes.get('data-docx-chart-stock')), ['up', 'down']);
+
+  const fitted = render({ kind: 'scatter', categories: [], axes, series: [{ values: [2, 4, 6], xValues: [1, 2, 3], line: { color: '#555555' },
+    trendlines: [{ type: 'linear' }], errorBars: [{ direction: 'y', type: 'both', valueType: 'fixedVal', value: 1 }] }] });
+  assert.equal(having(fitted, 'data-docx-chart-trendline', '0').length, 1);
+  assert.equal(having(fitted, 'data-docx-chart-error-bar', '0').length, 3);
+});
