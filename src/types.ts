@@ -157,6 +157,23 @@ export interface StyleInfo {
   run?: RunFormat;
 }
 
+/**
+ * `updateStyle()` 的补丁：只改给出的字段，没给的原样保留（包括读模型不认识的子元素）。
+ * `basedOn` / `next` / `link` / `aliases` / `uiPriority` 传 `null` 清除；`paragraph` / `run`
+ * 与 `formatParagraph()` / `formatRun()` 同一语义——字段为 `null` 即从样式里删掉该属性。
+ */
+export interface StylePatch {
+  name?: string;
+  basedOn?: string | null;
+  next?: string | null;
+  link?: string | null;
+  aliases?: string[] | null;
+  uiPriority?: number | null;
+  quickFormat?: boolean;
+  paragraph?: ParagraphFormat;
+  run?: RunFormat;
+}
+
 export interface OutlineNode {
   paragraph: number;
   level: number;
@@ -1086,6 +1103,9 @@ export type AgentOperation =
   | { type: 'setCommentResolved'; id: number; resolved: boolean }
   | { type: 'setCommentText'; id: number; text: string }
   | { type: 'deleteComment'; id: number; options?: { withReplies?: boolean } }
+  | { type: 'defineStyle'; style: StyleInfo }
+  | { type: 'updateStyle'; id: string; patch: StylePatch }
+  | { type: 'deleteStyle'; id: string }
   | { type: 'undo' }
   | { type: 'redo' };
 

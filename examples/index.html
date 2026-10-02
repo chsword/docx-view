@@ -51,7 +51,7 @@
                   <label class="sr-only" for="alignment">段落对齐</label><select id="alignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option><option value="distribute">分散对齐</option></select>
                   <button class="tool wide" id="list-bullet" aria-label="项目符号列表" title="项目符号列表">• 列表</button><button class="tool wide" id="list-decimal" aria-label="编号列表" title="编号列表">1. 列表</button><button class="tool" id="list-outdent" aria-label="降低级别" title="降低级别">⇤</button><button class="tool" id="list-indent" aria-label="提高级别" title="提高级别">⇥</button><button id="add-paragraph" class="tool wide">＋ 段落</button>
                 </div></div>
-                <div class="ribbon-group"><span class="ribbon-group-label">样式</span><div class="ribbon-group-controls"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select></div></div>
+                <div class="ribbon-group"><span class="ribbon-group-label">样式</span><div class="ribbon-group-controls"><label class="sr-only" for="paragraph-style">段落样式</label><select id="paragraph-style"><option value="">样式</option></select><button id="modify-style" class="tool wide" type="button" title="修改当前段落所用的样式">✎ 修改样式</button><button id="new-style" class="tool wide" type="button" title="以当前段落样式为基础新建样式">＋ 新建样式</button></div></div>
               </section>
               <section id="ribbon-panel-insert" class="ribbon-panel" role="tabpanel" aria-labelledby="ribbon-tab-insert" tabindex="0" hidden>
                 <div class="ribbon-group"><span class="ribbon-group-label">表格</span><div class="ribbon-group-controls">
@@ -152,6 +152,42 @@
         <footer class="page-footer"><span>纸间 · 给文档更多可能</span><span>无上传 · 无云端存储 · 无外部字体</span></footer>
       </main>
     </div>
+    <dialog id="style-dialog" class="style-dialog" aria-labelledby="style-dialog-title">
+      <form id="style-form" method="dialog">
+        <h2 id="style-dialog-title">修改样式</h2>
+        <p class="hint">留空的项不在此样式中设置，沿用「基于」的样式。</p>
+        <div class="style-grid">
+          <label>样式<select id="style-dialog-target"></select></label>
+          <label>名称<input id="style-dialog-name" required maxlength="253" autocomplete="off" /></label>
+          <label>基于<select id="style-dialog-based-on"></select></label>
+          <label>后续段落样式<select id="style-dialog-next"></select></label>
+        </div>
+        <fieldset><legend>字体</legend><div class="style-grid">
+          <label>字体<input id="style-dialog-font-family" placeholder="继承" autocomplete="off" /></label>
+          <label>字号（磅）<input id="style-dialog-font-size" inputmode="decimal" placeholder="继承" /></label>
+          <label>加粗<select id="style-dialog-bold"><option value="">继承</option><option value="on">是</option><option value="off">否</option></select></label>
+          <label>斜体<select id="style-dialog-italic"><option value="">继承</option><option value="on">是</option><option value="off">否</option></select></label>
+          <label>下划线<select id="style-dialog-underline"><option value="">继承</option><option value="on">是</option><option value="off">否</option></select></label>
+          <label>颜色<span class="style-color"><input id="style-dialog-color" placeholder="继承，如 3567D6" maxlength="7" autocomplete="off" /><input id="style-dialog-color-picker" type="color" aria-label="选择颜色" /></span></label>
+        </div></fieldset>
+        <fieldset id="style-dialog-paragraph"><legend>段落</legend><div class="style-grid">
+          <label>对齐<select id="style-dialog-alignment"><option value="">继承</option><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="both">两端对齐</option><option value="distribute">分散对齐</option></select></label>
+          <label>行距（倍）<input id="style-dialog-line-spacing" inputmode="decimal" placeholder="继承" /></label>
+          <label>段前（磅）<input id="style-dialog-spacing-before" inputmode="decimal" placeholder="继承" /></label>
+          <label>段后（磅）<input id="style-dialog-spacing-after" inputmode="decimal" placeholder="继承" /></label>
+          <label>左缩进（磅）<input id="style-dialog-indent-left" inputmode="decimal" placeholder="继承" /></label>
+          <label>首行缩进（磅）<input id="style-dialog-indent-first-line" inputmode="decimal" placeholder="继承" /></label>
+        </div></fieldset>
+        <label class="style-check"><input id="style-dialog-quick-format" type="checkbox" /> 添加到样式库</label>
+        <p id="style-dialog-error" class="status error" role="alert" hidden></p>
+        <div class="style-actions">
+          <button id="style-dialog-delete" class="button subtle" type="button">删除样式</button>
+          <span></span>
+          <button id="style-dialog-cancel" class="button" type="button">取消</button>
+          <button id="style-dialog-save" class="button primary" type="submit">确定</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -59,6 +59,7 @@ function makeRegistry(options = {}) {
       setFontSize: action('setFontSize'),
       setFontColor: action('setFontColor'),
       applyParagraphStyle: action('applyParagraphStyle'),
+      openStyleDialog: action('openStyleDialog'),
       setAlignment: action('setAlignment'),
       applyNumbering: action('applyNumbering'),
       changeNumberingLevel: action('changeNumberingLevel'),
@@ -129,6 +130,10 @@ test('command enabled predicates match migrated toolbar behavior', async (t) => 
     ['format.fontColor disables without selection target', 'format.fontColor', makeContext(), false],
     ['format.fontColor enables with a selected paragraph', 'format.fontColor', makeContext({ selection: { paragraph: 0 } }), true],
     ['paragraph.style requires markup paragraph selection', 'paragraph.style', makeContext({ editable: false, selection: { paragraph: 0 } }), false],
+    ['style.modify is enabled in markup view without a selection', 'style.modify', makeContext(), true],
+    ['style.modify is disabled in read-only views', 'style.modify', makeContext({ editable: false }), false],
+    ['style.new needs a paragraph to apply the new style to', 'style.new', makeContext(), false],
+    ['style.new enables on markup paragraph selection', 'style.new', makeContext({ selection: { paragraph: 0 } }), true],
     ['paragraph.alignment enables on markup paragraph selection', 'paragraph.alignment', makeContext({ selection: { paragraph: 0 } }), true],
     ['list.bullet disables outside a paragraph', 'list.bullet', makeContext(), false],
     ['list.bullet enables in markup view', 'list.bullet', makeContext({ selection: { paragraph: 0 } }), true],
@@ -344,7 +349,7 @@ test('read-only, navigation, and revision-decision commands remain enabled in pr
 
 test('Ribbon and context-menu enabled states match for every registered command and view', async (t) => {
   const { registry } = makeRegistry({ revisionCount: 1 });
-  assert.equal(registry.list().length, 59);
+  assert.equal(registry.list().length, 61);
   for (const view of ['markup', 'final', 'original']) {
     const userState = populatedContext(view);
     const targetStates = new Map(

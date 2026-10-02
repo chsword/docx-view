@@ -1,4 +1,4 @@
-import type { AgentRequest, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, ParagraphFrame, RowFormat, RunFormat, Shading, TabStop, TableFloatingPosition, TableFormat } from './types.js';
+import type { AgentRequest, StyleInfo, StylePatch, BorderSide, CellFormat, EastAsianLayout, EditableRegionEditorGroup, ParagraphFormat, ParagraphFrame, RowFormat, RunFormat, Shading, TabStop, TableFloatingPosition, TableFormat } from './types.js';
 import { assertBase64 } from './drawing.js';
 import { assertText, isValidXmlCharCode } from './xml.js';
 import { assertHyperlinkInput } from './hyperlink.js';
@@ -548,6 +548,83 @@ function validateRevisionFilter(value: unknown): void {
   }
 }
 
+export const STYLE_PATCH_KEYS = [
+  'name', 'basedOn', 'next', 'link', 'aliases', 'uiPriority', 'quickFormat', 'paragraph', 'run',
+] as const satisfies readonly (keyof StylePatch)[];
+
+export function validateStylePatch(value: unknown): asserts value is StylePatch {
+  object(value);
+  keys(value, [...STYLE_PATCH_KEYS]);
+  const patch = value as StylePatch;
+  if (patch.name !== undefined) {
+    assertText(patch.name, 'patch.name');
+    if (!patch.name.trim()) throw new Error('patch.name must not be empty.');
+  }
+  for (const key of ['basedOn', 'next', 'link'] as const) {
+    const value = patch[key];
+    if (value !== undefined && value !== null) assertText(value, `patch.${key}`);
+  }
+  if (patch.aliases !== undefined && patch.aliases !== null) {
+    if (!Array.isArray(patch.aliases) || patch.aliases.length > 100) throw new Error('patch.aliases must be an array of at most 100 names.');
+    // 别名在 XML 里是一个逗号分隔的字符串，名字里带逗号就会拆成两个。
+    patch.aliases.forEach((alias, index) => {
+      assertText(alias, `patch.aliases[${index}]`);
+      if (alias.includes(',')) throw new Error(`patch.aliases[${index}] must not contain a comma.`);
+    });
+  }
+  if (patch.uiPriority !== undefined && patch.uiPriority !== null &&
+    (!Number.isSafeInteger(patch.uiPriority) || patch.uiPriority < 0)) {
+    throw new Error('patch.uiPriority must be a non-negative safe integer.');
+  }
+  if (patch.quickFormat !== undefined && typeof patch.quickFormat !== 'boolean') throw new Error('patch.quickFormat must be boolean.');
+  if (patch.paragraph !== undefined) {
+    validateParagraphFormat(patch.paragraph);
+    // 样式的 pPr 里写 pStyle 没有意义（Word 视为损坏），继承走 basedOn。
+    if (patch.paragraph.style !== undefined) throw new Error('Use patch.basedOn instead of paragraph.style.');
+  }
+  if (patch.run !== undefined) {
+    validateRunFormat(patch.run);
+    if (patch.run.style !== undefined) throw new Error('Use patch.basedOn or patch.link instead of run.style.');
+  }
+}
+
+export const STYLE_DEFINITION_KEYS = [
+  'id', 'name', 'type', 'basedOn', 'next', 'link', 'aliases', 'isDefault', 'uiPriority', 'quickFormat', 'paragraph', 'run',
+] as const satisfies readonly (keyof StyleInfo)[];
+
+/**
+ * `defineStyle` 操作的入参校验。`defineStyle()` 方法自己也校验一遍（它是公开 API），这里是
+ * 给批次用的：批次要在动手之前就把整批验完，中途才抛会让模型无从预判。
+ */
+export function validateStyleDefinition(value: unknown): asserts value is StyleInfo {
+  object(value);
+  keys(value, [...STYLE_DEFINITION_KEYS]);
+  assertText(value.id, 'style.id');
+  if (!value.id) throw new Error('style.id must not be empty.');
+  if (value.name !== undefined) assertText(value.name, 'style.name');
+  if (!['paragraph', 'character', 'table', 'numbering'].includes(String(value.type))) {
+    throw new Error('style.type must be paragraph, character, table or numbering.');
+  }
+  for (const key of ['basedOn', 'next', 'link']) if (value[key] !== undefined) assertText(value[key], `style.${key}`);
+  if (value.aliases !== undefined) {
+    if (!Array.isArray(value.aliases) || value.aliases.length > 100) throw new Error('style.aliases must be an array of at most 100 names.');
+    value.aliases.forEach((alias, index) => assertText(alias, `style.aliases[${index}]`));
+  }
+  for (const key of ['isDefault', 'quickFormat']) {
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`style.${key} must be boolean.`);
+  }
+  if (value.uiPriority !== undefined && (!Number.isSafeInteger(value.uiPriority) || (value.uiPriority as number) < 0)) {
+    throw new Error('style.uiPriority must be a non-negative safe integer.');
+  }
+  for (const key of ['paragraph', 'run'] as const) {
+    if (value[key] === undefined) continue;
+    if (key === 'paragraph') validateParagraphFormat(value[key]); else validateRunFormat(value[key]);
+    for (const [field, entry] of Object.entries(value[key] as Record<string, unknown>)) {
+      if (entry === null) throw new Error(`style.${key}.${field} cannot be null in defineStyle().`);
+    }
+  }
+}
+
 export function validateRequest(value: unknown): asserts value is AgentRequest {
   object(value);
   keys(value, ['expectedRevision', 'operations']);
@@ -903,6 +980,12 @@ export function validateRequest(value: unknown): asserts value is AgentRequest {
             throw new Error('options.withReplies must be boolean.');
           }
         }
+      case 'defineStyle':
+        keys(op, ['type', 'style']); validateStyleDefinition(op.style); break;
+      case 'updateStyle':
+        keys(op, ['type', 'id', 'patch']); assertText(op.id, 'id'); validateStylePatch(op.patch); break;
+      case 'deleteStyle':
+        keys(op, ['type', 'id']); assertText(op.id, 'id'); break;
       case 'undo':
       case 'redo':
         keys(op, ['type']);
@@ -1103,6 +1186,93 @@ const cellFormat = shape({
   hMerge: { enum: ['restart', 'continue'] }, vMerge: { enum: ['restart', 'continue'] },
 }, []);
 
+const paragraphFormat = shape({
+  alignment: nullable({ enum: ['left', 'center', 'right', 'both', 'distribute'] }),
+  style: nullable(text),
+  indentLeft: nullable(signedInteger),
+  indentRight: nullable(signedInteger),
+  indentFirstLine: nullable(unsignedTwips),
+  indentHanging: nullable(unsignedTwips),
+  spacingBefore: nullable(unsignedTwips),
+  spacingAfter: nullable(unsignedTwips),
+  spacingBeforeLines: nullable(unsignedTwips),
+  spacingAfterLines: nullable(unsignedTwips),
+  spacingBeforeAuto: nullable({ type: 'boolean' }),
+  spacingAfterAuto: nullable({ type: 'boolean' }),
+  contextualSpacing: nullable({ type: 'boolean' }),
+  mirrorIndents: nullable({ type: 'boolean' }),
+  lineSpacing: nullable(signedInteger),
+  lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
+  keepNext: nullable({ type: 'boolean' }),
+  keepLines: nullable({ type: 'boolean' }),
+  pageBreakBefore: nullable({ type: 'boolean' }),
+  widowControl: nullable({ type: 'boolean' }),
+  suppressLineNumbers: nullable({ type: 'boolean' }),
+  suppressAutoHyphens: nullable({ type: 'boolean' }),
+  kinsoku: nullable({ type: 'boolean' }),
+  wordWrap: nullable({ type: 'boolean' }),
+  overflowPunct: nullable({ type: 'boolean' }),
+  topLinePunct: nullable({ type: 'boolean' }),
+  autoSpaceDE: nullable({ type: 'boolean' }),
+  autoSpaceDN: nullable({ type: 'boolean' }),
+  bidi: nullable({ type: 'boolean' }),
+  textDirection: nullable(text),
+  textAlignment: nullable({ enum: ['auto', 'baseline', 'bottom', 'center', 'top'] }),
+  adjustRightInd: nullable({ type: 'boolean' }),
+  suppressOverlap: nullable({ type: 'boolean' }),
+  textboxTightWrap: nullable({ enum: ['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'] }),
+  snapToGrid: nullable({ type: 'boolean' }),
+  frame: nullable(paragraphFrame),
+  outlineLevel: nullable(outlineLevel),
+  tabs: nullable(docTabs),
+  borders: nullable(shape({
+    top: docBorderSide,
+    left: docBorderSide,
+    bottom: docBorderSide,
+    right: docBorderSide,
+    between: docBorderSide,
+    bar: docBorderSide,
+  }, [])),
+  shading: nullable(docShading),
+}, []);
+
+/**
+ * 把 `nullable(x)` 剥回 `x`。`defineStyle` 是整体定义，不是补丁，运行时拒绝 `null` 字段
+ * （`rejectNullFormatValues`）；schema 若照抄补丁那一份就会放过 `null`，违反第 13 条。
+ */
+const withoutNull = (schema: { properties: Record<string, unknown> }) => ({
+  ...schema,
+  properties: Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => {
+    const anyOf = (value as { anyOf?: unknown[] }).anyOf;
+    return [key, anyOf?.length === 2 && (anyOf[1] as { type?: string }).type === 'null' ? anyOf[0] : value];
+  })),
+});
+const stylePatch = shape({
+  name: { ...text, pattern: '\\S' },
+  basedOn: nullable(text),
+  next: nullable(text),
+  link: nullable(text),
+  aliases: nullable({ type: 'array', maxItems: 100, items: { ...text, pattern: '^[^,]*$' } }),
+  uiPriority: nullable({ ...index }),
+  quickFormat: { type: 'boolean' },
+  paragraph: { ...paragraphFormat, properties: Object.fromEntries(Object.entries(paragraphFormat.properties).filter(([key]) => key !== 'style')) },
+  run: { ...runFormat, properties: Object.fromEntries(Object.entries(runFormat.properties).filter(([key]) => key !== 'style')) },
+}, []);
+const styleDefinition = shape({
+  id: { ...text, minLength: 1 },
+  name: text,
+  type: { enum: ['paragraph', 'character', 'table', 'numbering'] },
+  basedOn: text,
+  next: text,
+  link: text,
+  aliases: { type: 'array', maxItems: 100, items: text },
+  isDefault: { type: 'boolean' },
+  uiPriority: index,
+  quickFormat: { type: 'boolean' },
+  paragraph: withoutNull(paragraphFormat),
+  run: withoutNull(runFormat),
+}, ['id', 'type']);
+
 /** JSON Schema for tool/function calling; requests are also validated at runtime. */
 export const AGENT_OPERATION_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
@@ -1123,55 +1293,7 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setParagraphText', { index, text }),
           operation('insertParagraph', { text, before: index }, ['text']),
           operation('deleteParagraph', { index }),
-          operation('formatParagraph', { index, format: shape({
-            alignment: nullable({ enum: ['left', 'center', 'right', 'both', 'distribute'] }),
-            style: nullable(text),
-            indentLeft: nullable(signedInteger),
-            indentRight: nullable(signedInteger),
-            indentFirstLine: nullable(unsignedTwips),
-            indentHanging: nullable(unsignedTwips),
-            spacingBefore: nullable(unsignedTwips),
-            spacingAfter: nullable(unsignedTwips),
-            spacingBeforeLines: nullable(unsignedTwips),
-            spacingAfterLines: nullable(unsignedTwips),
-            spacingBeforeAuto: nullable({ type: 'boolean' }),
-            spacingAfterAuto: nullable({ type: 'boolean' }),
-            contextualSpacing: nullable({ type: 'boolean' }),
-            mirrorIndents: nullable({ type: 'boolean' }),
-            lineSpacing: nullable(signedInteger),
-            lineSpacingRule: nullable({ enum: ['auto', 'atLeast', 'exact'] }),
-            keepNext: nullable({ type: 'boolean' }),
-            keepLines: nullable({ type: 'boolean' }),
-            pageBreakBefore: nullable({ type: 'boolean' }),
-            widowControl: nullable({ type: 'boolean' }),
-            suppressLineNumbers: nullable({ type: 'boolean' }),
-            suppressAutoHyphens: nullable({ type: 'boolean' }),
-            kinsoku: nullable({ type: 'boolean' }),
-            wordWrap: nullable({ type: 'boolean' }),
-            overflowPunct: nullable({ type: 'boolean' }),
-            topLinePunct: nullable({ type: 'boolean' }),
-            autoSpaceDE: nullable({ type: 'boolean' }),
-            autoSpaceDN: nullable({ type: 'boolean' }),
-            bidi: nullable({ type: 'boolean' }),
-            textDirection: nullable(text),
-            textAlignment: nullable({ enum: ['auto', 'baseline', 'bottom', 'center', 'top'] }),
-            adjustRightInd: nullable({ type: 'boolean' }),
-            suppressOverlap: nullable({ type: 'boolean' }),
-            textboxTightWrap: nullable({ enum: ['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'] }),
-            snapToGrid: nullable({ type: 'boolean' }),
-            frame: nullable(paragraphFrame),
-            outlineLevel: nullable(outlineLevel),
-            tabs: nullable(docTabs),
-            borders: nullable(shape({
-              top: docBorderSide,
-              left: docBorderSide,
-              bottom: docBorderSide,
-              right: docBorderSide,
-              between: docBorderSide,
-              bar: docBorderSide,
-            }, [])),
-            shading: nullable(docShading),
-          }, []) }),
+          operation('formatParagraph', { index, format: paragraphFormat }),
           operation('applyParagraphStyle', { index, styleId: text, options: styleApplyOptions }, ['index', 'styleId']),
           operation('setParagraphNumbering', { index, numId: { ...index, minimum: 1 }, level: { ...index, maximum: 8 } }, ['index', 'numId']),
           operation('clearParagraphNumbering', { index }),
@@ -1281,6 +1403,9 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setCommentResolved', { id: index, resolved: { type: 'boolean' } }),
           operation('setCommentText', { id: index, text }),
           operation('deleteComment', { id: index, options: shape({ withReplies: { type: 'boolean' } }, []) }, ['id']),
+          operation('defineStyle', { style: styleDefinition }),
+          operation('updateStyle', { id: { ...text, minLength: 1 }, patch: stylePatch }),
+          operation('deleteStyle', { id: { ...text, minLength: 1 } }),
           operation('undo', {}),
           operation('redo', {}),
         ],

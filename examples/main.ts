@@ -26,6 +26,7 @@ import {
 } from './commands.js';
 import { initializeRibbon } from './ribbon.js';
 import { initializeContextMenu } from './context-menu.js';
+import { styleFormValues, stylePatchFromForm, uniqueStyleId, withoutNulls, type StyleFormValues, type TriState } from './style-editor.js';
 import './style.css';
 
 const SAMPLE_IMAGE = decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAQAAAD8fJRsAAAAC0lEQVR42mP8/x8AAusB9WnM0iEAAAAASUVORK5CYII=');
@@ -622,6 +623,172 @@ function refreshReviewers(): void {
   }));
 }
 
+let styleDialogMode: 'modify' | 'new' = 'modify';
+let styleDialogInitial: StyleFormValues | null = null;
+let styleDialogParagraph: number | null = null;
+
+const BLANK_STYLE_FORM: StyleFormValues = {
+  name: '', basedOn: '', next: '', fontFamily: '', fontSize: '', bold: '', italic: '', underline: '', color: '',
+  alignment: '', spacingBefore: '', spacingAfter: '', lineSpacing: '', indentLeft: '', indentFirstLine: '',
+  quickFormat: true,
+};
+
+function styleOption(value: string, label: string): HTMLOptionElement {
+  return Object.assign(document.createElement('option'), { value, textContent: label });
+}
+
+function styleTypeLabel(style: StyleInfo): string {
+  return style.type === 'character' ? '字符' : '段落';
+}
+
+/** 「基于」只能选同类型的样式；成环的选择由 `updateStyle()` 拒绝并在对话框里报出来。 */
+function fillStyleRelations(type: StyleInfo['type'], self: string | null): void {
+  const styles = doc.getStyles();
+  element<HTMLSelectElement>('style-dialog-based-on').replaceChildren(styleOption('', '（无）'),
+    ...styles.filter((style) => style.type === type && style.id !== self).map((style) => styleOption(style.id, style.name)));
+  element<HTMLSelectElement>('style-dialog-next').replaceChildren(styleOption('', '（同本样式）'),
+    ...styles.filter((style) => style.type === 'paragraph').map((style) => styleOption(style.id, style.name)));
+}
+
+function writeStyleForm(values: StyleFormValues, type: StyleInfo['type']): void {
+  element<HTMLInputElement>('style-dialog-name').value = values.name;
+  element<HTMLSelectElement>('style-dialog-based-on').value = values.basedOn;
+  element<HTMLSelectElement>('style-dialog-next').value = values.next;
+  element<HTMLSelectElement>('style-dialog-next').disabled = type !== 'paragraph';
+  element<HTMLInputElement>('style-dialog-font-family').value = values.fontFamily;
+  element<HTMLInputElement>('style-dialog-font-size').value = values.fontSize;
+  element<HTMLSelectElement>('style-dialog-bold').value = values.bold;
+  element<HTMLSelectElement>('style-dialog-italic').value = values.italic;
+  element<HTMLSelectElement>('style-dialog-underline').value = values.underline;
+  element<HTMLInputElement>('style-dialog-color').value = values.color;
+  element<HTMLInputElement>('style-dialog-color-picker').value = `#${values.color || '25334A'}`;
+  element<HTMLSelectElement>('style-dialog-alignment').value = values.alignment;
+  element<HTMLInputElement>('style-dialog-line-spacing').value = values.lineSpacing;
+  element<HTMLInputElement>('style-dialog-spacing-before').value = values.spacingBefore;
+  element<HTMLInputElement>('style-dialog-spacing-after').value = values.spacingAfter;
+  element<HTMLInputElement>('style-dialog-indent-left').value = values.indentLeft;
+  element<HTMLInputElement>('style-dialog-indent-first-line').value = values.indentFirstLine;
+  element<HTMLInputElement>('style-dialog-quick-format').checked = values.quickFormat;
+  element('style-dialog-paragraph').hidden = type === 'character';
+}
+
+function readStyleForm(): StyleFormValues {
+  return {
+    name: element<HTMLInputElement>('style-dialog-name').value,
+    basedOn: element<HTMLSelectElement>('style-dialog-based-on').value,
+    next: element<HTMLSelectElement>('style-dialog-next').value,
+    fontFamily: element<HTMLInputElement>('style-dialog-font-family').value,
+    fontSize: element<HTMLInputElement>('style-dialog-font-size').value,
+    bold: element<HTMLSelectElement>('style-dialog-bold').value as TriState,
+    italic: element<HTMLSelectElement>('style-dialog-italic').value as TriState,
+    underline: element<HTMLSelectElement>('style-dialog-underline').value as TriState,
+    color: element<HTMLInputElement>('style-dialog-color').value,
+    alignment: element<HTMLSelectElement>('style-dialog-alignment').value as StyleFormValues['alignment'],
+    lineSpacing: element<HTMLInputElement>('style-dialog-line-spacing').value,
+    spacingBefore: element<HTMLInputElement>('style-dialog-spacing-before').value,
+    spacingAfter: element<HTMLInputElement>('style-dialog-spacing-after').value,
+    indentLeft: element<HTMLInputElement>('style-dialog-indent-left').value,
+    indentFirstLine: element<HTMLInputElement>('style-dialog-indent-first-line').value,
+    quickFormat: element<HTMLInputElement>('style-dialog-quick-format').checked,
+  };
+}
+
+function loadStyleIntoDialog(id: string): void {
+  const style = doc.getStyle(id);
+  if (!style) throw new Error(`找不到样式 ${id}。`);
+  fillStyleRelations(style.type, style.id);
+  styleDialogInitial = styleFormValues(style);
+  writeStyleForm(styleDialogInitial, style.type);
+  const remove = element<HTMLButtonElement>('style-dialog-delete');
+  remove.disabled = style.isDefault === true;
+  remove.title = style.isDefault ? '默认样式不能删除' : '';
+}
+
+function showStyleDialogError(text: string | null): void {
+  const error = element('style-dialog-error');
+  error.hidden = !text;
+  error.textContent = text ?? '';
+}
+
+function openStyleDialog(mode: 'modify' | 'new'): void {
+  ensureMarkupView();
+  editor.flush();
+  styleDialogMode = mode;
+  styleDialogParagraph = editor.selectedParagraph;
+  const paragraph = styleDialogParagraph === null ? undefined
+    : doc.getParagraphs().find((item) => item.index === styleDialogParagraph);
+  const currentStyle = (paragraph?.style ? doc.getStyle(paragraph.style) : undefined) ?? defaultParagraphStyle();
+  const target = element<HTMLSelectElement>('style-dialog-target');
+  showStyleDialogError(null);
+  if (mode === 'new') {
+    if (!paragraph) throw new Error('请先点击要套用新样式的段落。');
+    target.replaceChildren(styleOption('', '（新样式）'));
+    target.disabled = true;
+    fillStyleRelations('paragraph', null);
+    styleDialogInitial = { ...BLANK_STYLE_FORM, basedOn: currentStyle?.id ?? '' };
+    writeStyleForm(styleDialogInitial, 'paragraph');
+    element<HTMLButtonElement>('style-dialog-delete').disabled = true;
+    element('style-dialog-title').textContent = '新建样式';
+  } else {
+    const editable = doc.getStyles().filter((style) => style.type === 'paragraph' || style.type === 'character');
+    if (!editable.length) throw new Error('这份文档还没有可编辑的段落或字符样式。');
+    target.replaceChildren(...editable.map((style) => styleOption(style.id, `${style.name}（${styleTypeLabel(style)}）`)));
+    target.disabled = false;
+    target.value = currentStyle && editable.some((style) => style.id === currentStyle.id) ? currentStyle.id : editable[0]!.id;
+    loadStyleIntoDialog(target.value);
+    element('style-dialog-title').textContent = '修改样式';
+  }
+  element<HTMLDialogElement>('style-dialog').showModal();
+  element<HTMLInputElement>('style-dialog-name').focus();
+}
+
+function saveStyleDialog(): void {
+  const current = readStyleForm();
+  if (styleDialogMode === 'new') {
+    const name = current.name.trim();
+    if (!name) throw new Error('请填写样式名称。');
+    if (doc.getStyles().some((style) => style.name === name)) throw new Error(`已有名为「${name}」的样式。`);
+    const patch = stylePatchFromForm(BLANK_STYLE_FORM, current, 'paragraph');
+    const id = uniqueStyleId(name, doc.getStyles().map((style) => style.id));
+    const paragraph = styleDialogParagraph;
+    if (paragraph === null) throw new Error('请先点击要套用新样式的段落。');
+    // 一个批次：定义样式 + 套用到当前段落，撤销时一步回去。
+    doc.applyOperations({ operations: [
+      { type: 'defineStyle', style: {
+        id, name, type: 'paragraph', quickFormat: current.quickFormat,
+        ...(current.basedOn ? { basedOn: current.basedOn } : {}),
+        ...(current.next ? { next: current.next } : {}),
+        ...(withoutNulls(patch.paragraph) ? { paragraph: withoutNulls(patch.paragraph) } : {}),
+        ...(withoutNulls(patch.run) ? { run: withoutNulls(patch.run) } : {}),
+      } },
+      { type: 'applyParagraphStyle', index: paragraph, styleId: id },
+    ] });
+    message(`已新建样式「${name}」并套用到当前段落。`);
+  } else {
+    const id = element<HTMLSelectElement>('style-dialog-target').value;
+    const style = doc.getStyle(id);
+    if (!style || !styleDialogInitial) throw new Error('样式已不存在，请重新打开对话框。');
+    const patch = stylePatchFromForm(styleDialogInitial, current, style.type);
+    if (Object.keys(patch).length) doc.updateStyle(id, patch);
+    message(Object.keys(patch).length ? `已修改样式「${current.name.trim() || style.name}」，所有使用它的段落都已更新。` : '样式没有改动。');
+  }
+  element<HTMLDialogElement>('style-dialog').close();
+  editor.render();
+  refresh();
+}
+
+function deleteStyleFromDialog(): void {
+  const id = element<HTMLSelectElement>('style-dialog-target').value;
+  const style = doc.getStyle(id);
+  if (!style) return;
+  if (!window.confirm(`删除样式「${style.name}」？使用它的内容会改用默认样式，继承它的样式改为继承「${style.basedOn ? doc.getStyle(style.basedOn)?.name ?? style.basedOn : '（无）'}」。`)) return;
+  doc.deleteStyle(id);
+  element<HTMLDialogElement>('style-dialog').close();
+  editor.render();
+  refresh();
+  message(`已删除样式「${style.name}」。`);
+}
+
 function selectedIndex(): number {
   editor.flush();
   const index = editor.selectedParagraph;
@@ -833,6 +1000,7 @@ const commandRegistry = createCommandRegistry(createExampleCommandDescriptors({
     setFontColor(color) {
       formatRuns({ color });
     },
+    openStyleDialog,
     applyParagraphStyle(style) {
       ensureMarkupView();
       doc.applyParagraphStyle(selectedIndex(), style);
@@ -1103,6 +1271,8 @@ const commandControls: Array<{ elementId: string; commandId: string; pressed?: b
   { elementId: 'font-size', commandId: 'format.fontSize' },
   { elementId: 'font-color', commandId: 'format.fontColor' },
   { elementId: 'paragraph-style', commandId: 'paragraph.style' },
+  { elementId: 'modify-style', commandId: 'style.modify' },
+  { elementId: 'new-style', commandId: 'style.new' },
   { elementId: 'alignment', commandId: 'paragraph.alignment' },
   { elementId: 'list-bullet', commandId: 'list.bullet', pressed: true },
   { elementId: 'list-decimal', commandId: 'list.decimal', pressed: true },
@@ -1332,6 +1502,31 @@ element('list-outdent').addEventListener('click', () => runCommand('list.outdent
 element<HTMLSelectElement>('paragraph-style').addEventListener('change', (event) => {
   const style = (event.target as HTMLSelectElement).value;
   if (style) runCommand('paragraph.style');
+});
+element('modify-style').addEventListener('click', () => runCommand('style.modify'));
+element('new-style').addEventListener('click', () => runCommand('style.new'));
+element<HTMLSelectElement>('style-dialog-target').addEventListener('change', (event) => run(() => {
+  showStyleDialogError(null);
+  loadStyleIntoDialog((event.target as HTMLSelectElement).value);
+}));
+element<HTMLInputElement>('style-dialog-color-picker').addEventListener('input', (event) => {
+  element<HTMLInputElement>('style-dialog-color').value = (event.target as HTMLInputElement).value.slice(1).toUpperCase();
+});
+element<HTMLFormElement>('style-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  try {
+    saveStyleDialog();
+  } catch (error) {
+    showStyleDialogError(error instanceof Error ? error.message : String(error));
+  }
+});
+element('style-dialog-cancel').addEventListener('click', () => element<HTMLDialogElement>('style-dialog').close());
+element('style-dialog-delete').addEventListener('click', () => {
+  try {
+    deleteStyleFromDialog();
+  } catch (error) {
+    showStyleDialogError(error instanceof Error ? error.message : String(error));
+  }
 });
 element('add-paragraph').addEventListener('click', () => run(() => {
   editor.flush();

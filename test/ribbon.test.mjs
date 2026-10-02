@@ -166,7 +166,7 @@ test('Ribbon panels contain every migrated control once and keep developer tabs 
   const ribbon = html.slice(html.indexOf('id="ribbon"'), html.indexOf('<div class="paper-stage"'));
   const controls = [
     'format-bold', 'format-italic', 'format-underline', 'font-size', 'font-color', 'format-painter', 'clear-format',
-    'paragraph-style', 'alignment', 'list-bullet', 'list-decimal', 'list-outdent', 'list-indent', 'add-paragraph',
+    'paragraph-style', 'modify-style', 'new-style', 'alignment', 'list-bullet', 'list-decimal', 'list-outdent', 'list-indent', 'add-paragraph',
     'table-rows', 'table-cols', 'add-table', 'insert-row', 'delete-row', 'insert-col', 'delete-col', 'merge-cells',
     'split-cell', 'cell-fill', 'apply-cell-style', 'insert-image', 'replace-image', 'delete-image', 'image-alt',
     'page-size', 'page-orientation', 'apply-page-setup', 'insert-section-break', 'insert-page-break', 'header-kind',

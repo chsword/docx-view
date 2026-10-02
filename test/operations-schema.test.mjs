@@ -11,7 +11,7 @@ import {
 test('operation schema and README list stay aligned', () => {
   const operationTypes = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf
     .map((operation) => operation.properties.type.const);
-  assert.equal(operationTypes.length, 72);
+  assert.equal(operationTypes.length, 75);
   assert.equal(new Set(operationTypes).size, operationTypes.length);
 
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');

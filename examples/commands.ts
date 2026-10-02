@@ -87,6 +87,7 @@ export interface ExampleCommandActions {
   setFontSize(value: number): void;
   setFontColor(color: string): void;
   applyParagraphStyle(style: string): void;
+  openStyleDialog(mode: 'modify' | 'new'): void;
   setAlignment(value: ParagraphFormat['alignment']): void;
   applyNumbering(kind: 'bullet' | 'decimal'): void;
   changeNumberingLevel(delta: number): void;
@@ -276,6 +277,22 @@ export function createExampleCommandDescriptors(deps: ExampleCommandDeps): Comma
         const value = deps.getParagraphStyleValue();
         if (value) deps.actions.applyParagraphStyle(value);
       },
+    },
+    {
+      id: 'style.modify',
+      title: '修改样式',
+      group: 'paragraph',
+      // 改样式不针对选区，但它改的是文档：只读视图下和其它编辑命令一样禁用。
+      enabled: (ctx) => ctx.editable,
+      run: () => deps.actions.openStyleDialog('modify'),
+    },
+    {
+      id: 'style.new',
+      title: '新建样式',
+      group: 'paragraph',
+      // 新建后套用到当前段落（与 Word 一致），所以要求选中段落。
+      enabled: (ctx) => ctx.editable && ctx.selection.paragraph !== null,
+      run: () => deps.actions.openStyleDialog('new'),
     },
     {
       id: 'paragraph.alignment',

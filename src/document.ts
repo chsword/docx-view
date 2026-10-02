@@ -4,7 +4,7 @@ import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, TabStop, TableCellLocation, TableFormat, TableInfo, TextRange, ThemeSettings,
+  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -43,6 +43,7 @@ import {
   validateParagraphFormat,
   RUN_FORMAT_FIELDS,
   validateRequest,
+  validateStylePatch,
   validateRows,
   validateRunFormat,
   validateTableFormat,
@@ -1503,6 +1504,10 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
     else if (format.shading !== undefined) writeShading(property(props, 'shd'), format.shading);
   }
   removeIfEmpty(props);
+}
+
+function styleElementById(root: Element, id: string): Element | undefined {
+  return children(root, 'style').find(element => element.getAttributeNS(WORD_NS, 'styleId') === id);
 }
 
 function rejectNullFormatValues(format: ParagraphFormat | RunFormat, label: string): void {
@@ -8062,90 +8067,198 @@ export class DocxDocument {
       validateRunFormat(style.run);
       rejectNullFormatValues(style.run, 'style.run');
     }
-    const draft = new DocxDocument(new Map([...this.parts].map(([path, bytes]) => [path, Uint8Array.from(bytes)])));
-    const stylesPath = draft.getStylesPath() ?? (() => {
-      const path = `${dirname(draft.mainPath) ? `${dirname(draft.mainPath)}/` : ''}styles.xml`;
-      const relsDocument = draft.parts.has(relsPath(draft.mainPath))
-        ? draft.getPartDocument(relsPath(draft.mainPath))
-        : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
-      const relsRoot = relsDocument.documentElement!;
-      const exists = children(relsRoot, 'Relationship', REL_NS)
-        .some(relation => relation.getAttribute('Type') === STYLES_REL);
-      if (!exists) {
-        const relation = relsDocument.createElementNS(REL_NS, 'Relationship');
-        relation.setAttribute('Id', nextRelationshipId(relsRoot));
-        relation.setAttribute('Type', STYLES_REL);
-        relation.setAttribute('Target', basename(path));
-        relsRoot.appendChild(relation);
-        draft.parts.set(relsPath(draft.mainPath), encodeXml(serializeXml(relsDocument)));
-        draft.documents.delete(relsPath(draft.mainPath));
-        draft.dirtyPartXml.delete(relsPath(draft.mainPath));
-        draft.dirtyPartSizes.delete(relsPath(draft.mainPath));
-      }
-      if (!draft.parts.has(path)) {
-        const types = draft.getPartDocument('[Content_Types].xml');
-        const typesRoot = types.documentElement!;
-        if (!children(typesRoot, 'Override', CONTENT_TYPES_NS)
-          .some(override => override.getAttribute('PartName') === `/${path}`)) {
-          const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
-          override.setAttribute('PartName', `/${path}`);
-          override.setAttribute('ContentType', STYLES_TYPE);
-          typesRoot.appendChild(override);
-          draft.parts.set('[Content_Types].xml', encodeXml(serializeXml(types)));
-          draft.documents.delete('[Content_Types].xml');
-          draft.dirtyPartXml.delete('[Content_Types].xml');
-          draft.dirtyPartSizes.delete('[Content_Types].xml');
+    // 走 withDraft：原先这里自建草稿、自己提交，于是**不进撤销历史**——定义样式之后按撤销，
+    // 撤掉的是它前面那一次编辑，样式本身留着。
+    this.withDraft((draft) => {
+      const stylesPath = draft.ensureStylesPart();
+      draft.updatePartXml(stylesPath, document => {
+        const root = document.documentElement!;
+        let styleElement = styleElementById(root, style.id);
+        if (!styleElement) {
+          styleElement = wordElement(document, 'style');
+          root.appendChild(styleElement);
+        } else {
+          removeProperty(styleElement, 'name');
+          removeProperty(styleElement, 'basedOn');
+          removeProperty(styleElement, 'next');
+          removeProperty(styleElement, 'link');
+          removeProperty(styleElement, 'aliases');
+          removeProperty(styleElement, 'qFormat');
+          removeProperty(styleElement, 'pPr');
+          removeProperty(styleElement, 'rPr');
         }
-        draft.parts.set(path, encodeXml(`<w:styles xmlns:w="${WORD_NS}"/>`));
-        draft.documents.delete(path);
-        draft.dirtyPartXml.delete(path);
-        draft.dirtyPartSizes.delete(path);
-      }
-      return path;
-    })();
-    draft.updatePartXml(stylesPath, document => {
-      const root = document.documentElement!;
-      let styleElement = children(root, 'style').find(element => element.getAttributeNS(WORD_NS, 'styleId') === style.id);
-      if (!styleElement) {
-        styleElement = wordElement(document, 'style');
-        root.appendChild(styleElement);
-      } else {
-        removeProperty(styleElement, 'name');
-        removeProperty(styleElement, 'basedOn');
-        removeProperty(styleElement, 'next');
-        removeProperty(styleElement, 'link');
-        removeProperty(styleElement, 'aliases');
-        removeProperty(styleElement, 'qFormat');
-        removeProperty(styleElement, 'pPr');
-        removeProperty(styleElement, 'rPr');
-      }
-      styleElement.setAttributeNS(WORD_NS, 'w:type', style.type);
-      styleElement.setAttributeNS(WORD_NS, 'w:styleId', style.id);
-      removeWordAttribute(styleElement, 'default');
-      if (style.isDefault) styleElement.setAttributeNS(WORD_NS, 'w:default', '1');
-      const name = property(styleElement, 'name');
-      setWordValue(name, styleName);
-      if (style.aliases?.length) setWordValue(property(styleElement, 'aliases'), style.aliases.join(', '));
-      if (style.basedOn) setWordValue(property(styleElement, 'basedOn'), style.basedOn);
-      if (style.next) setWordValue(property(styleElement, 'next'), style.next);
-      if (style.link) setWordValue(property(styleElement, 'link'), style.link);
-      if (style.uiPriority !== undefined) setWordValue(property(styleElement, 'uiPriority'), String(style.uiPriority));
-      if (style.quickFormat) property(styleElement, 'qFormat');
-      if (style.paragraph) applyParagraphFormatTo(property(styleElement, 'pPr'), style.paragraph);
-      if (style.run) applyRunFormatTo(property(styleElement, 'rPr'), style.run);
+        styleElement.setAttributeNS(WORD_NS, 'w:type', style.type);
+        styleElement.setAttributeNS(WORD_NS, 'w:styleId', style.id);
+        removeWordAttribute(styleElement, 'default');
+        if (style.isDefault) styleElement.setAttributeNS(WORD_NS, 'w:default', '1');
+        const name = property(styleElement, 'name');
+        setWordValue(name, styleName);
+        if (style.aliases?.length) setWordValue(property(styleElement, 'aliases'), style.aliases.join(', '));
+        if (style.basedOn) setWordValue(property(styleElement, 'basedOn'), style.basedOn);
+        if (style.next) setWordValue(property(styleElement, 'next'), style.next);
+        if (style.link) setWordValue(property(styleElement, 'link'), style.link);
+        if (style.uiPriority !== undefined) setWordValue(property(styleElement, 'uiPriority'), String(style.uiPriority));
+        if (style.quickFormat) property(styleElement, 'qFormat');
+        if (style.paragraph) applyParagraphFormatTo(property(styleElement, 'pPr'), style.paragraph);
+        if (style.run) applyRunFormatTo(property(styleElement, 'rPr'), style.run);
+      });
     });
-    if (equalPartMap(this.parts, draft.parts)) return;
-    this.parts = draft.parts;
-    // 换了字节就必须连 documents 一起换掉。留着旧的已解析树，getStylesContext() 会从那棵旧树
-    // 重新解析——currentRevision++ 只能让按 revision 缓存的那一层失效，救不了树本身，于是
-    // 样式改动对所有先读过样式的调用方都不可见（getStyles / getParagraphs().effective / 渲染
-    // 全是旧值）。withDraft() 与快照提交那两处本来就是这么交接的。
-    this.documents = draft.documents;
-    this.dirtyPartXml = draft.dirtyPartXml;
-    this.dirtyPartSizes = draft.dirtyPartSizes;
-    this.mainPath = draft.mainPath;
-    this.currentRevision++;
-    this.invalidateMutationCaches();
+  }
+
+  /**
+   * 改一个已有样式的部分字段。与 `defineStyle()` 的差别是**补丁语义**：`defineStyle` 整个重写
+   * `pPr` / `rPr`，样式里读模型不认识的属性（`numPr`、`rFonts` 的主题槽位……）会一起没掉；
+   * 这里只动补丁里出现的字段。
+   */
+  updateStyle(id: string, patch: StylePatch): void {
+    assertText(id, 'style id');
+    validateStylePatch(patch);
+    const styles = this.getStylesContext();
+    const current = styles.byId.get(id);
+    if (!current) throw new Error(`Style not found: ${id}`);
+    if (patch.name !== undefined && styles.styles.some((style) => style.id !== id && style.name === patch.name)) {
+      throw new Error(`Another style is already named ${patch.name}.`);
+    }
+    if (patch.basedOn) {
+      const parent = styles.byId.get(patch.basedOn);
+      if (!parent) throw new Error(`basedOn style not found: ${patch.basedOn}`);
+      if (parent.type !== current.type) throw new Error(`basedOn must be a ${current.type} style.`);
+      // 继承链成环时 resolveStyleChain 会在环上截断，读出来的格式取决于从哪一环进去——
+      // Word 直接拒绝这种文件里的样式，所以在写入侧挡住。
+      for (let cursor: string | undefined = patch.basedOn, seen = new Set<string>(); cursor && !seen.has(cursor);
+        seen.add(cursor), cursor = styles.byId.get(cursor)?.basedOn) {
+        if (cursor === id) throw new Error(`basedOn would make ${id} inherit from itself.`);
+      }
+    }
+    if (patch.next) {
+      const next = styles.byId.get(patch.next);
+      if (!next || next.type !== 'paragraph') throw new Error(`next must name an existing paragraph style: ${patch.next}`);
+      if (current.type !== 'paragraph') throw new Error('next only applies to paragraph styles.');
+    }
+    if (patch.link) {
+      const linked = styles.byId.get(patch.link);
+      const expected = current.type === 'paragraph' ? 'character' : current.type === 'character' ? 'paragraph' : undefined;
+      if (!expected) throw new Error('link only applies to paragraph and character styles.');
+      if (!linked || linked.type !== expected) throw new Error(`link must name an existing ${expected} style: ${patch.link}`);
+    }
+    if (patch.paragraph && current.type === 'character') throw new Error('Character styles have no paragraph properties.');
+    const stylesPath = this.getStylesPath()!;
+    this.updatePartXmlInternal(stylesPath, (document) => {
+      const element = styleElementById(document.documentElement!, id)!;
+      if (patch.name !== undefined) setWordValue(property(element, 'name'), patch.name);
+      for (const key of ['basedOn', 'next', 'link'] as const) {
+        const value = patch[key];
+        if (value === null) removeProperty(element, key);
+        else if (value !== undefined) setWordValue(property(element, key), value);
+      }
+      if (patch.aliases === null || patch.aliases?.length === 0) removeProperty(element, 'aliases');
+      else if (patch.aliases !== undefined) setWordValue(property(element, 'aliases'), patch.aliases.join(','));
+      if (patch.uiPriority === null) removeProperty(element, 'uiPriority');
+      else if (patch.uiPriority !== undefined) setWordValue(property(element, 'uiPriority'), String(patch.uiPriority));
+      if (patch.quickFormat === false) removeProperty(element, 'qFormat');
+      else if (patch.quickFormat) property(element, 'qFormat');
+      if (patch.paragraph) applyParagraphFormatTo(property(element, 'pPr'), patch.paragraph);
+      if (patch.run) applyRunFormatTo(property(element, 'rPr'), patch.run);
+    });
+  }
+
+  /**
+   * 删除样式，照 Word「删除样式」的做法收拾引用：
+   * - 以它为 `basedOn` 的样式改为继承它的 `basedOn`（没有就不再继承），**不**把它的格式
+   *   折进去——Word 也不折，删掉一层继承本来就会改变下游样式的外观；
+   * - 别的样式的 `next` / `link` 指向它的，删掉那一条；
+   * - 正文、页眉页脚、脚注尾注、批注里引用它的 `pStyle` / `rStyle` / `tblStyle` 删掉，
+   *   这些内容回落到该类型的默认样式。
+   *
+   * 默认样式不能删（Word 里「正文」也删不掉）：删了之后同类型没有默认样式，回落无处可落。
+   */
+  deleteStyle(id: string): void {
+    assertText(id, 'style id');
+    const styles = this.getStylesContext();
+    const target = styles.byId.get(id);
+    if (!target) throw new Error(`Style not found: ${id}`);
+    if (target.isDefault) throw new Error(`Cannot delete the default ${target.type} style.`);
+    const reference = { paragraph: 'pStyle', character: 'rStyle', table: 'tblStyle', numbering: undefined }[target.type];
+    this.withDraft((draft) => {
+      const stylesPath = draft.getStylesPath()!;
+      draft.updatePartXml(stylesPath, (document) => {
+        const root = document.documentElement!;
+        const element = styleElementById(root, id)!;
+        const inherited = wordValue(children(element, 'basedOn')[0]) ?? undefined;
+        root.removeChild(element);
+        for (const style of children(root, 'style')) {
+          const basedOn = children(style, 'basedOn')[0];
+          if (wordValue(basedOn) === id) {
+            if (inherited) setWordValue(basedOn!, inherited);
+            else style.removeChild(basedOn!);
+          }
+          for (const name of ['next', 'link']) {
+            const pointer = children(style, name)[0];
+            if (wordValue(pointer) === id) style.removeChild(pointer!);
+          }
+        }
+      });
+      if (!reference) return;
+      for (const path of draft.listParts()) {
+        let root: Element | null | undefined;
+        try { root = draft.getCachedPartDocument(path).documentElement; } catch { continue; }
+        if (root?.namespaceURI !== WORD_NS ||
+          !['document', 'hdr', 'ftr', 'footnotes', 'endnotes', 'comments'].includes(root.localName ?? '')) continue;
+        if (!descendants(root, reference).some((element) => wordValue(element) === id)) continue;
+        draft.updatePartXml(path, (document) => {
+          for (const element of descendants(document.documentElement!, reference)) {
+            if (wordValue(element) !== id) continue;
+            const props = element.parentNode as Element;
+            props.removeChild(element);
+            removeIfEmpty(props);
+          }
+        });
+      }
+    });
+  }
+
+  /** 样式部件的路径；没有就按惯例名建一个并补上关系与内容类型。只在草稿上调用。 */
+  private ensureStylesPart(): string {
+    const existing = this.getStylesPath();
+    if (existing) return existing;
+    const path = `${dirname(this.mainPath) ? `${dirname(this.mainPath)}/` : ''}styles.xml`;
+    const relsDocument = this.parts.has(relsPath(this.mainPath))
+      ? this.getPartDocument(relsPath(this.mainPath))
+      : parseXml(`<Relationships xmlns="${REL_NS}"/>`);
+    const relsRoot = relsDocument.documentElement!;
+    const exists = children(relsRoot, 'Relationship', REL_NS)
+      .some(relation => relation.getAttribute('Type') === STYLES_REL);
+    if (!exists) {
+      const relation = relsDocument.createElementNS(REL_NS, 'Relationship');
+      relation.setAttribute('Id', nextRelationshipId(relsRoot));
+      relation.setAttribute('Type', STYLES_REL);
+      relation.setAttribute('Target', basename(path));
+      relsRoot.appendChild(relation);
+      this.parts.set(relsPath(this.mainPath), encodeXml(serializeXml(relsDocument)));
+      this.documents.delete(relsPath(this.mainPath));
+      this.dirtyPartXml.delete(relsPath(this.mainPath));
+      this.dirtyPartSizes.delete(relsPath(this.mainPath));
+    }
+    if (!this.parts.has(path)) {
+      const types = this.getPartDocument('[Content_Types].xml');
+      const typesRoot = types.documentElement!;
+      if (!children(typesRoot, 'Override', CONTENT_TYPES_NS)
+        .some(override => override.getAttribute('PartName') === `/${path}`)) {
+        const override = types.createElementNS(CONTENT_TYPES_NS, 'Override');
+        override.setAttribute('PartName', `/${path}`);
+        override.setAttribute('ContentType', STYLES_TYPE);
+        typesRoot.appendChild(override);
+        this.parts.set('[Content_Types].xml', encodeXml(serializeXml(types)));
+        this.documents.delete('[Content_Types].xml');
+        this.dirtyPartXml.delete('[Content_Types].xml');
+        this.dirtyPartSizes.delete('[Content_Types].xml');
+      }
+      this.parts.set(path, encodeXml(`<w:styles xmlns:w="${WORD_NS}"/>`));
+      this.documents.delete(path);
+      this.dirtyPartXml.delete(path);
+      this.dirtyPartSizes.delete(path);
+    }
+    return path;
   }
 
   replaceText(search: string, replacement: string): void {
@@ -9062,6 +9175,9 @@ export class DocxDocument {
         case 'setCommentResolved': draft.setCommentResolved(operation.id, operation.resolved); break;
         case 'setCommentText': draft.setCommentText(operation.id, operation.text); break;
         case 'deleteComment': draft.deleteComment(operation.id, operation.options); break;
+        case 'defineStyle': draft.defineStyle(operation.style); break;
+        case 'updateStyle': draft.updateStyle(operation.id, operation.patch); break;
+        case 'deleteStyle': draft.deleteStyle(operation.id); break;
         case 'undo': draft.undo(); break;
         case 'redo': draft.redo(); break;
         }
