@@ -6964,3 +6964,40 @@ test('clearing direct format and the clipboard cover every paragraph format fiel
   assert.equal(fragment.paragraphs[0].format.kinsoku, true);
   assert.equal(fragment.paragraphs[0].format.textAlignment, 'top');
 });
+
+test('complex-script bold/italic, noProof, snapToGrid and specVanish read, write and keep rPr order', () => {
+  const doc = withBody(`<w:p><w:pPr><w:snapToGrid w:val="0"/></w:pPr><w:r><w:rPr>
+    <w:b/><w:bCs/><w:iCs/><w:noProof/><w:snapToGrid w:val="0"/><w:vanish/><w:specVanish/>
+  </w:rPr><w:t>x</w:t></w:r></w:p>`);
+  const run = doc.getParagraph(0).runs[0];
+  assert.deepEqual(
+    [run.bold, run.italic, run.boldComplexScript, run.italicComplexScript, run.noProof, run.snapToGrid, run.specVanish],
+    [true, undefined, true, true, true, false, true]);
+  assert.equal(doc.getParagraph(0).snapToGrid, false);
+
+  doc.formatRun(0, 0, { boldComplexScript: false, italicComplexScript: false, noProof: false, snapToGrid: true, specVanish: false });
+  doc.formatParagraph(0, { snapToGrid: true });
+  const written = doc.getParagraph(0).runs[0];
+  assert.deepEqual(
+    [written.boldComplexScript, written.italicComplexScript, written.noProof, written.snapToGrid, written.specVanish],
+    [false, false, false, true, false]);
+  assert.equal(doc.getParagraph(0).snapToGrid, true);
+
+  // CT_RPrBase 的顺序：b, bCs, i, iCs ... noProof, snapToGrid, vanish ... specVanish。
+  const rPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'rPr')[0];
+  const names = [...rPr.childNodes].filter((node) => node.nodeType === 1).map((node) => node.localName);
+  assert.deepEqual(names, ['b', 'bCs', 'iCs', 'noProof', 'snapToGrid', 'vanish', 'specVanish']);
+  // w:pPr 里 snapToGrid 在 adjustRightInd 之后、spacing 之前。
+  doc.formatParagraph(0, { adjustRightInd: true, spacingBefore: 120 });
+  const pPr = doc.getPartDocument(doc.mainDocumentPath).getElementsByTagNameNS(WORD_NS, 'pPr')[0];
+  const pNames = [...pPr.childNodes].filter((node) => node.nodeType === 1).map((node) => node.localName);
+  assert.deepEqual(pNames.filter((name) => ['adjustRightInd', 'snapToGrid', 'spacing'].includes(name)), ['adjustRightInd', 'snapToGrid', 'spacing']);
+
+  // null 清除
+  doc.formatRun(0, 0, { boldComplexScript: null, italicComplexScript: null, noProof: null, snapToGrid: null, specVanish: null });
+  doc.formatParagraph(0, { snapToGrid: null });
+  const xml = doc.getPartXml(doc.mainDocumentPath);
+  for (const tag of ['bCs', 'iCs', 'noProof', 'snapToGrid', 'specVanish']) assert.equal(new RegExp(`<w:${tag}\\b`).test(xml), false, tag);
+  assert.throws(() => doc.formatRun(0, 0, { boldComplexScript: 'yes' }), /boldComplexScript must be boolean/);
+  assert.throws(() => doc.formatParagraph(0, { snapToGrid: 'yes' }), /snapToGrid must be boolean/);
+});

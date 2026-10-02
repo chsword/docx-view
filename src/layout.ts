@@ -83,7 +83,13 @@ export function effectiveKinsoku(value: boolean | null | undefined, compatibilit
   return compatibilitySettings?.doNotUseEastAsianBreakRules === true ? undefined : value ?? undefined;
 }
 
-export function snapLineHeightPx(naturalHeightPx: number, docGrid: SectionInfo['docGrid']): number {
+/**
+ * 把一行的自然高度吸附到文档网格的行距上。`snapToGrid` 是段落级 `w:snapToGrid`：默认开，
+ * 显式为 `false` 的段落不吸附。两个调用点（分页与渲染）都从这里走，开关只判断一次。
+ */
+export function snapLineHeightPx(naturalHeightPx: number, docGrid: SectionInfo['docGrid'],
+  snapToGrid: boolean | null | undefined = undefined): number {
+  if (snapToGrid === false) return naturalHeightPx;
   if (!docGrid || !['lines', 'linesAndChars', 'snapToChars'].includes(docGrid.type) ||
       !Number.isFinite(docGrid.linePitch) || (docGrid.linePitch ?? 0) <= 0) {
     return naturalHeightPx;
@@ -279,7 +285,8 @@ export function paginate(
       carried: false,
     }));
     return (measurer.measureParagraph(paragraph, { widthPx: width(), wraps: [...carried, ...own] }, context) ?? [])
-      .map((line) => ({ ...line, heightPx: snapLineHeightPx(line.heightPx, sectionAt(sectionIndex).docGrid) }));
+      .map((line) => ({ ...line, heightPx: snapLineHeightPx(line.heightPx, sectionAt(sectionIndex).docGrid,
+        (paragraph.effective ?? paragraph).snapToGrid) }));
   };
   const updateWraps = (paragraph: ParagraphInfo, consumedHeight: number, includeOwn = true) => {
     const carried = (wrapsByColumn[currentColumn] ?? [])

@@ -2378,7 +2378,10 @@ test('appendRun renders supported run text effects and leaves read-only effects 
   assert.deepEqual(readOnly.style, {});
 });
 
-test('paginated paragraph rendering uses snapped line height for its page fragment', () => {
+test('paginated paragraph rendering uses the line height paginate produced, without re-snapping', () => {
+  // 吸附只在 paginate() 的 measureParagraph 里做一次（含段落级 snapToGrid 的开关）。编辑器原先在这里
+  // 再吸附一次——幂等所以看不出来，但那是第二份真相：段落关掉吸附时，这一处会把 15 又抬回 20，
+  // 分页视图里的开关就静默失效了。所以这里断言的是「交多少用多少」。
   const section = {
     pageWidth: 1500,
     pageHeight: 1500,
@@ -2401,15 +2404,23 @@ test('paginated paragraph rendering uses snapped line height for its page fragme
       runs: [{ index: 0, text: '字', emphasisMark: 'underDot', revisions: [{ id: 8, kind: 'insertion' }] }],
       images: [],
     };
+    // paginate() 吸附后交出来的是 20；关掉吸附的段落交出来的是 15 —— 两种都原样落到样式上。
+    for (const heightPx of [20, 15]) {
+      const rendered = editor.makePageContent(
+        { items: [{ type: 'line', paragraph: 0, line: { heightPx, startOffset: 0, endOffset: 1 } }] },
+        section, [], [paragraph], 720, { deletedTextByRun: new Map(), revisionColors: new Map() },
+      );
+      const pageParagraph = rendered.childNodes[0].childNodes[0];
+      assert.equal(pageParagraph.style.lineHeight, `${heightPx}px`);
+      assert.equal(pageParagraph.style.minHeight, `${heightPx}px`);
+    }
     const rendered = editor.makePageContent(
-      { items: [{ type: 'line', paragraph: 0, line: { heightPx: 15, startOffset: 0, endOffset: 1 } }] },
+      { items: [{ type: 'line', paragraph: 0, line: { heightPx: 20, startOffset: 0, endOffset: 1 } }] },
       section, [], [paragraph], 720, { deletedTextByRun: new Map(), revisionColors: new Map() },
     );
     const pageParagraph = rendered.childNodes[0].childNodes[0];
     const content = pageParagraph.childNodes.find((node) => node.className === 'docx-paragraph-content');
     const runSpan = content.childNodes.find((node) => node.dataset.docxRun === '0');
-    assert.equal(pageParagraph.style.lineHeight, '20px');
-    assert.equal(pageParagraph.style.minHeight, '20px');
     assert.equal(runSpan.style.textEmphasisStyle, 'dot');
     assert.equal(runSpan.style.textEmphasisPosition, 'under right');
     assert.equal(runSpan.dataset.docxRevisionIds, '8');
@@ -3600,4 +3611,34 @@ test('textAlignment renders as the line default and run superscript overrides it
   assert.equal(render({ index: 0, textAlignment: 'bottom' }, superscript).style.verticalAlign, 'superscript');
   const raised = { index: 0, text: 'x', images: [], effective: { position: 12 } };
   assert.equal(render({ index: 0, textAlignment: 'bottom' }, raised).style.verticalAlign, '6pt');
+});
+
+test('complex-script runs take bold/italic from bCs/iCs, others from b/i, and noProof turns spellcheck off', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const render = (effective) => {
+    const element = editor.root.ownerDocument.createElement('span');
+    editor.appendRun(element, { index: 0 }, { index: 0, text: 'x', images: [], effective },
+      { deletedTextByRun: new Map(), revisionColors: new Map() }, 720, 0);
+    return element.childNodes[0];
+  };
+  // 普通 run：w:b 说了算，bCs 不管。
+  assert.equal(render({ bold: true, boldComplexScript: false }).style.fontWeight, '700');
+  assert.equal(render({ bold: false, boldComplexScript: true }).style.fontWeight, '400');
+  // w:cs 或 w:rtl 标成复杂文种：换成 bCs / iCs 说了算 —— Word 里只写了 <w:b/> 的阿拉伯文 run 不加粗。
+  assert.equal(render({ complexScript: true, bold: true, boldComplexScript: false }).style.fontWeight, '400');
+  assert.equal(render({ rtl: true, bold: false, boldComplexScript: true }).style.fontWeight, '700');
+  assert.equal(render({ rtl: true, italic: true, italicComplexScript: false }).style.fontStyle, 'normal');
+  assert.equal(render({ complexScript: true, italicComplexScript: true }).style.fontStyle, 'italic');
+  // 复杂文种 run 没写 bCs：按规范就是「没设」，不回退到 b。
+  assert.equal(render({ complexScript: true, bold: true }).style.fontWeight, undefined);
+  // 没有任何标记时什么都不设。
+  assert.equal(render({}).style.fontWeight, undefined);
+
+  // w:noProof → spellcheck=false，交给浏览器；没设就不碰这个属性。
+  assert.equal(render({ noProof: true }).spellcheck, false);
+  assert.equal(render({ noProof: false }).spellcheck, undefined);
+  assert.equal(render({}).spellcheck, undefined);
 });

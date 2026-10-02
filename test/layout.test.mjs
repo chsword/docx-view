@@ -704,3 +704,22 @@ test('a floating table leaves the flow and leaves an exclusion for what follows'
   assert.equal(plain[0].contentHeightPx, 100, '60 + 2 × 20');
   assert.deepEqual(areas.find((entry) => entry.paragraph === 1).wraps, []);
 });
+
+test('paragraph snapToGrid=false opts that paragraph out of document-grid line snapping', () => {
+  const grid = { type: 'linesAndChars', linePitch: 300, charSpace: 0 };
+  // 开关只在显式 false 时生效；默认与显式 true 都照常吸附。
+  assert.equal(snapLineHeightPx(15, grid), 20);
+  assert.equal(snapLineHeightPx(15, grid, true), 20);
+  assert.equal(snapLineHeightPx(15, grid, null), 20);
+  assert.equal(snapLineHeightPx(15, grid, false), 15);
+
+  // 分页走的是同一个函数：关掉的那段每行留在 15，没关的那段吸到 20。
+  const result = paginate(blocks(
+    paragraph(0, [15, 15], { snapToGrid: false }),
+    paragraph(1, [15, 15]),
+    // effective 优先于直接格式，和其它段落属性一致。
+    paragraph(2, [15], { snapToGrid: true, effective: { snapToGrid: false } }),
+  ), [section({ pageHeight: 3000, docGrid: grid })], measurer, { defaultTabStopTwips: 720 });
+  const heights = result[0].items.filter((item) => item.type === 'line').map((item) => [item.paragraph, item.line.heightPx]);
+  assert.deepEqual(heights, [[0, 15], [0, 15], [1, 20], [1, 20], [2, 15]]);
+});

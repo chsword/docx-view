@@ -41,6 +41,7 @@ import {
   validateDocShading,
   validateParagraphBorders,
   validateParagraphFormat,
+  RUN_FORMAT_FIELDS,
   validateRequest,
   validateRows,
   validateRunFormat,
@@ -1263,6 +1264,7 @@ function applyParagraphFormatTo(props: Element, format: ParagraphFormat): void {
     ['bidi', 'bidi'],
     ['adjustRightInd', 'adjustRightInd'],
     ['suppressOverlap', 'suppressOverlap'],
+    ['snapToGrid', 'snapToGrid'],
   ] as const) {
     if (!(key in format)) continue;
     if (format[key] === null) removeProperty(props, tag);
@@ -1386,6 +1388,11 @@ function applyRunFormatTo(props: Element, format: RunFormat): void {
   for (const [key, tag] of [
     ['bold', 'b'],
     ['italic', 'i'],
+    ['boldComplexScript', 'bCs'],
+    ['italicComplexScript', 'iCs'],
+    ['noProof', 'noProof'],
+    ['snapToGrid', 'snapToGrid'],
+    ['specVanish', 'specVanish'],
     ['hidden', 'vanish'],
     ['webHidden', 'webHidden'],
     ['strike', 'strike'],
@@ -2120,12 +2127,6 @@ function isolateRunChild(run: Element, child: Element): Element {
   return isolated;
 }
 
-const RUN_FORMAT_FIELDS = [
-  'style', 'bold', 'italic', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
-  'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps', 'hidden', 'webHidden',
-  'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
-  'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
-] as const satisfies readonly (keyof RunFormat)[];
 /**
  * 段落直接格式的**全部**字段，一份。原先这里有两份：`PARAGRAPH_FORMAT_FIELDS`（`compare()`
  * 做格式差异用）和 `PARAGRAPH_DIRECT_FIELDS`（`applyParagraphStyle(clearDirectFormat)` 与
@@ -2140,7 +2141,7 @@ const PARAGRAPH_FORMAT_FIELDS = [
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines',
   'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
-  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap',
+  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap', 'snapToGrid',
   'outlineLevel', 'tabs', 'borders', 'shading', 'frame',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 

@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  AGENT_OPERATION_SCHEMA, CELL_FORMAT_KEYS, PARAGRAPH_FORMAT_KEYS, PARAGRAPH_FRAME_KEYS, ROW_FORMAT_KEYS, TABLE_FORMAT_KEYS,
-  validateCellFormat, validateParagraphFormat, validateParagraphFrame, validateRowFormat, validateRunFormat,
-  validateTableFormat,
+  AGENT_OPERATION_SCHEMA, CELL_FORMAT_KEYS, EAST_ASIAN_LAYOUT_KEYS, PARAGRAPH_FORMAT_KEYS, PARAGRAPH_FRAME_KEYS,
+  ROW_FORMAT_KEYS, RUN_FORMAT_FIELDS, TABLE_FORMAT_KEYS,
+  validateCellFormat, validateEastAsianLayout, validateParagraphFormat, validateParagraphFrame, validateRowFormat,
+  validateRunFormat, validateTableFormat,
 } from '../dist/operations.js';
 
 test('operation schema and README list stay aligned', () => {
@@ -59,6 +60,10 @@ test('every format field the validators accept is declared in the agent schema',
   const formatProperties = (name) => operations.find((operation) => operation.properties.type.const === name)
     .properties.format.properties;
   for (const [operation, names, validate] of [
+    // run 格式有三个入口，schema 原先各抄一份；eastAsianLayout 就是只进了校验、三份 schema 都没有。
+    ['formatRun', RUN_FORMAT_FIELDS, validateRunFormat],
+    ['formatRange', RUN_FORMAT_FIELDS, validateRunFormat],
+    ['formatDocumentRange', RUN_FORMAT_FIELDS, validateRunFormat],
     ['formatParagraph', PARAGRAPH_FORMAT_KEYS, validateParagraphFormat],
     ['formatTable', TABLE_FORMAT_KEYS, validateTableFormat],
     ['formatTableRow', ROW_FORMAT_KEYS, validateRowFormat],
@@ -99,4 +104,15 @@ test('the framePr schema is derived from the frame validator, not copied', () =>
   // additionalProperties: false，校验就不能悄悄多收一个。
   assert.throws(() => validateParagraphFrame({ notAFrameField: 1 }), /notAFrameField/);
   for (const name of PARAGRAPH_FRAME_KEYS) assert.ok(name in frame.properties, name);
+});
+
+test('the eastAsianLayout schema is derived from its validator, not copied', () => {
+  const operations = AGENT_OPERATION_SCHEMA.properties.operations.items.oneOf;
+  const layout = operations.find((operation) => operation.properties.type.const === 'formatRun')
+    .properties.format.properties.eastAsianLayout.anyOf[0];
+  assert.deepEqual(Object.keys(layout.properties).sort(), [...EAST_ASIAN_LAYOUT_KEYS].sort());
+  assert.deepEqual(layout.properties.combineBrackets.enum, ['none', 'round', 'square', 'angle', 'curly']);
+  assert.equal(layout.properties.id.maximum, 0xffff);
+  assert.equal(layout.additionalProperties, false);
+  assert.throws(() => validateEastAsianLayout({ notALayoutField: 1 }), /notALayoutField/);
 });

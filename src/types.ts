@@ -16,6 +16,26 @@ export interface RunFormat {
   doubleStrike?: boolean | null;
   rtl?: boolean | null;
   complexScript?: boolean | null;
+  /**
+   * `w:bCs` / `w:iCs`：**复杂文种**字符的粗体 / 斜体。ECMA-376 把一个 run 的字符分成两类：
+   * `w:b` / `w:i` 管非复杂文种，`w:bCs` / `w:iCs` 管复杂文种（阿拉伯文、希伯来文、泰文……）。
+   * 渲染时 run 被当成复杂文种（`complexScript` 或 `rtl` 为真）就用这两个，否则用 `bold` / `italic`。
+   * **没有按 Unicode 文种逐字符判断**：含阿拉伯字符却没标 `w:cs` / `w:rtl` 的 run 仍按 `bold` 画。
+   */
+  boldComplexScript?: boolean | null;
+  italicComplexScript?: boolean | null;
+  /** `w:noProof`：不检查拼写与语法。渲染落在 `spellcheck="false"` 上，交给浏览器。 */
+  noProof?: boolean | null;
+  /**
+   * `w:snapToGrid`（run 级）：用文档网格的**字符间距**。**不参与渲染**——这里的 `w:docGrid` 只做了
+   * 行高吸附，没有横向字符格（同 `ParagraphFormat.adjustRightInd`）。
+   */
+  snapToGrid?: boolean | null;
+  /**
+   * `w:specVanish`：「特殊隐藏」的段落标记，Word 用它做样式分隔符（两段并成一行、各用各的样式，
+   * 目录条目常见）。只做读写保真；渲染成一行要把两段合并排，这里不做。
+   */
+  specVanish?: boolean | null;
   verticalAlign?: 'baseline' | 'subscript' | 'superscript' | null;
   smallCaps?: boolean | null;
   allCaps?: boolean | null;
@@ -111,6 +131,11 @@ export interface ParagraphFormat {
    * `w:tblpPr` 一样的 `square` 简化。
    */
   textboxTightWrap?: 'none' | 'allLines' | 'firstAndLastLine' | 'firstLineOnly' | 'lastLineOnly' | null;
+  /**
+   * `w:snapToGrid`（段落级）：这段的行是否吸附到文档网格的行距（`w:docGrid`）。默认开；
+   * 显式关掉的段落在分页与渲染里都**不做**行高吸附——这是 `snapLineHeightPx` 的开关。
+   */
+  snapToGrid?: boolean | null;
   outlineLevel?: number | null;
   tabs?: TabStop[] | null;
   borders?: Partial<Record<'top' | 'left' | 'bottom' | 'right' | 'between' | 'bar', BorderSide>> | null;

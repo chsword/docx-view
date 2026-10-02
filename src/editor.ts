@@ -35,7 +35,7 @@ import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
 import { eighthPointsToPx, normalizeColor, normalizeWidth, twipsToPx } from './table.js';
 import { assertText, sanitizeText, sanitizeTextWithInfo } from './xml.js';
-import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss, snapLineHeightPx } from './layout.js';
+import { columnWidthsPx, combineBracketChars, combinedTextLines, effectiveKinsoku, lineNumbersFor, overstrikeLayers, pageBoxPx, paginate, paragraphSpacingPx, rubyAlignToCss } from './layout.js';
 import type { FlowItem, LayoutTable, LineBox, MeasureContext, PageBox, ParagraphMeasureArea } from './layout.js';
 import { formatPageNumber, pageFieldResult } from './fields.js';
 
@@ -374,8 +374,16 @@ const LINE_TEXT_ALIGNMENT_CSS: Record<string, string> = {
 
 function applyRunStyle(span: HTMLElement, run: RunInfo, lineTextAlignment?: ParagraphFormat['textAlignment']): void {
   const effective = run.effective ?? run;
-  if (effective.bold !== undefined) span.style.fontWeight = effective.bold ? '700' : '400';
-  if (effective.italic !== undefined) span.style.fontStyle = effective.italic ? 'italic' : 'normal';
+  // 复杂文种的 run 用 w:bCs / w:iCs，其余用 w:b / w:i —— ECMA-376 把这两组分开管，Word 里
+  // 一个只写了 <w:b/> 的阿拉伯文 run 是不加粗的。「复杂文种」这里只认 w:cs / w:rtl 两个显式标记，
+  // 不按 Unicode 文种逐字符判断。
+  const complex = effective.complexScript === true || effective.rtl === true;
+  const bold = complex ? effective.boldComplexScript : effective.bold;
+  const italic = complex ? effective.italicComplexScript : effective.italic;
+  if (bold !== undefined && bold !== null) span.style.fontWeight = bold ? '700' : '400';
+  if (italic !== undefined && italic !== null) span.style.fontStyle = italic ? 'italic' : 'normal';
+  // w:noProof：浏览器自己会给 contenteditable 画拼写波浪线，关掉就是它的事。
+  if (effective.noProof) span.spellcheck = false;
   if (effective.emphasisMark && effective.emphasisMark !== 'none') {
     span.style.textEmphasisStyle = effective.emphasisMark === 'comma' ? 'sesame' : effective.emphasisMark === 'underDot' ? 'dot' : effective.emphasisMark;
     span.style.textEmphasisPosition = `${effective.emphasisMark === 'underDot' ? 'under' : 'over'} right`;
@@ -1312,7 +1320,10 @@ export class DocxEditor {
       if (item.type === 'line') {
         const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
         if (paragraph) {
-          const lineHeightPx = snapLineHeightPx(item.line.heightPx, section.docGrid);
+          // paginate() 交出来的行高已经按 docGrid（和段落的 snapToGrid）吸附过了——它每个 line 项都出自
+          // measureParagraph，吸附就在那里。这里原先再吸附一次：幂等所以看不出来，但它是第二份真相，
+          // 段落级开关漏传到这一处时没有任何用例会红。所以不再吸附，照用。
+          const lineHeightPx = item.line.heightPx;
           const firstLine = item.line.startOffset === 0;
           const lastLine = item.line.endOffset >= paragraph.text.length;
           const hasFollowingParagraph = page.items.slice(itemIndex + 1).some((candidate) =>

@@ -24,12 +24,14 @@ function maybeNull<T>(value: T | null | undefined, validate: (value: T) => void)
   if (value !== null && value !== undefined) validate(value);
 }
 
-const RUN_FORMAT_FIELDS = [
-  'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
+/** run 格式的字段名，唯一的一份：校验、schema、`document.ts` 的样式清理与剪贴板都用它。 */
+export const RUN_FORMAT_FIELDS = [
+  'style', 'bold', 'italic', 'boldComplexScript', 'italicComplexScript', 'noProof', 'snapToGrid', 'specVanish',
+  'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
   'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
   'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
   'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
-] as const;
+] as const satisfies readonly (keyof RunFormat)[];
 
 function validateTextRange(value: unknown): asserts value is { paragraph: number; start: number; end: number } {
   object(value);
@@ -74,14 +76,10 @@ export function assertInteger(value: unknown, name = 'value'): asserts value is 
 
 export function validateRunFormat(value: unknown): asserts value is RunFormat {
   object(value);
-  keys(value, [
-    'style', 'bold', 'italic', 'hidden', 'webHidden', 'emphasisMark', 'underline', 'underlineStyle', 'underlineColor', 'fontSize', 'fontFamily',
-    'fontFamilyEastAsia', 'color', 'strike', 'doubleStrike', 'verticalAlign', 'smallCaps', 'allCaps',
-    'rtl', 'complexScript', 'highlight', 'characterSpacing', 'position', 'characterScale', 'kerning', 'fitTextWidth',
-    'textEffect', 'textOutline', 'textShadow', 'emboss', 'imprint', 'border', 'shading', 'eastAsianLayout',
-  ]);
+  keys(value, [...RUN_FORMAT_FIELDS]);
   for (const key of [
-    'bold', 'italic', 'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl',
+    'bold', 'italic', 'boldComplexScript', 'italicComplexScript', 'noProof', 'snapToGrid', 'specVanish',
+    'hidden', 'webHidden', 'underline', 'strike', 'doubleStrike', 'smallCaps', 'allCaps', 'rtl',
     'complexScript', 'textOutline', 'textShadow', 'emboss', 'imprint',
   ]) {
     if (key in value && value[key] !== null && value[key] !== undefined && typeof value[key] !== 'boolean') {
@@ -176,21 +174,26 @@ export function validateParagraphFrame(value: unknown): asserts value is Paragra
   }
 }
 
+const EAST_ASIAN_LAYOUT_BRACKETS = ['none', 'round', 'square', 'angle', 'curly'] as const;
+const EAST_ASIAN_LAYOUT_FLAGS = ['combine', 'vert', 'vertCompress'] as const;
+/** `w:eastAsianLayout` 的字段名，校验、schema 与用例共用一份。 */
+export const EAST_ASIAN_LAYOUT_KEYS = ['id', ...EAST_ASIAN_LAYOUT_FLAGS, 'combineBrackets'] as readonly (keyof EastAsianLayout)[];
+
 export function validateEastAsianLayout(value: unknown): asserts value is EastAsianLayout {
   object(value);
   const layout = value as Record<string, unknown>;
-  keys(layout, ['id', 'combine', 'combineBrackets', 'vert', 'vertCompress']);
+  keys(layout, [...EAST_ASIAN_LAYOUT_KEYS]);
   if ('id' in layout && layout.id !== undefined &&
       (!Number.isSafeInteger(layout.id) || (layout.id as number) < 0 || (layout.id as number) > 0xffff)) {
     throw new Error('eastAsianLayout.id must be an unsigned integer within OOXML bounds.');
   }
-  for (const name of ['combine', 'vert', 'vertCompress'] as const) {
+  for (const name of EAST_ASIAN_LAYOUT_FLAGS) {
     if (name in layout && layout[name] !== undefined && typeof layout[name] !== 'boolean') {
       throw new Error(`eastAsianLayout.${name} must be boolean.`);
     }
   }
   if ('combineBrackets' in layout && layout.combineBrackets !== undefined &&
-      !['none', 'round', 'square', 'angle', 'curly'].includes(layout.combineBrackets as string)) {
+      !(EAST_ASIAN_LAYOUT_BRACKETS as readonly string[]).includes(layout.combineBrackets as string)) {
     throw new Error('eastAsianLayout.combineBrackets must be none, round, square, angle or curly.');
   }
 }
@@ -209,7 +212,7 @@ export const PARAGRAPH_FORMAT_KEYS = [
   'contextualSpacing', 'mirrorIndents', 'lineSpacing', 'lineSpacingRule', 'keepNext', 'keepLines', 'pageBreakBefore',
   'widowControl', 'outlineLevel', 'tabs', 'borders', 'shading', 'suppressLineNumbers', 'suppressAutoHyphens', 'frame',
   'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'textDirection',
-  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap',
+  'textAlignment', 'adjustRightInd', 'suppressOverlap', 'textboxTightWrap', 'snapToGrid',
 ] as const satisfies readonly (keyof ParagraphFormat)[];
 
 export const TABLE_FORMAT_KEYS = [
@@ -259,7 +262,7 @@ export function validateParagraphFormat(value: unknown): asserts value is Paragr
   for (const key of [
     'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'suppressLineNumbers', 'suppressAutoHyphens',
     'kinsoku', 'wordWrap', 'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi',
-    'adjustRightInd', 'suppressOverlap',
+    'adjustRightInd', 'suppressOverlap', 'snapToGrid',
   ]) {
     if (key in value && value[key] !== null && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
@@ -1008,6 +1011,54 @@ const shading = shape({
   value: text,
 }, []);
 const margins = shape({ top: width, right: width, bottom: width, left: width }, []);
+/** `w:eastAsianLayout`，从 validateEastAsianLayout 用的那几张表推出来。第四次发现「校验收、schema 不声明」的字段。 */
+const eastAsianLayout = shape({
+  id: { type: 'integer', minimum: 0, maximum: 0xffff },
+  ...Object.fromEntries(EAST_ASIAN_LAYOUT_FLAGS.map((name) => [name, { type: 'boolean' }])),
+  combineBrackets: { enum: [...EAST_ASIAN_LAYOUT_BRACKETS] },
+}, []);
+/** run 格式的 schema。formatRun / formatRange / formatDocumentRange 三处原先各抄一份、逐字相同，合成一份。 */
+const runFormat = shape({
+  style: nullable(text),
+  bold: nullable({ type: 'boolean' }),
+  italic: nullable({ type: 'boolean' }),
+  boldComplexScript: nullable({ type: 'boolean' }),
+  italicComplexScript: nullable({ type: 'boolean' }),
+  noProof: nullable({ type: 'boolean' }),
+  snapToGrid: nullable({ type: 'boolean' }),
+  specVanish: nullable({ type: 'boolean' }),
+  hidden: nullable({ type: 'boolean' }),
+  webHidden: nullable({ type: 'boolean' }),
+  emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
+  underline: nullable({ type: 'boolean' }),
+  underlineStyle: nullable(text),
+  underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+  fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
+  fontFamily: nullable(text),
+  fontFamilyEastAsia: nullable(text),
+  color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
+  strike: nullable({ type: 'boolean' }),
+  doubleStrike: nullable({ type: 'boolean' }),
+  rtl: nullable({ type: 'boolean' }),
+  complexScript: nullable({ type: 'boolean' }),
+  verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
+  smallCaps: nullable({ type: 'boolean' }),
+  allCaps: nullable({ type: 'boolean' }),
+  highlight: nullable(text),
+  characterSpacing: nullable(signedInteger),
+  position: nullable(signedHalfPoints),
+  characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
+  kerning: nullable(halfPoints),
+  fitTextWidth: nullable(unsignedTwips),
+  textEffect: nullable(text),
+  textOutline: nullable({ type: 'boolean' }),
+  textShadow: nullable({ type: 'boolean' }),
+  emboss: nullable({ type: 'boolean' }),
+  imprint: nullable({ type: 'boolean' }),
+  border: nullable(docBorderSide),
+  shading: nullable(docShading),
+  eastAsianLayout: nullable(eastAsianLayout),
+}, []);
 /**
  * `w:tblpPr`。坐标 `x` / `y` 可以为负（挪到页边距外），`*FromText` 是间距所以不能为负——
  * 和 validateTableFloatingPosition 里的判断是同一条规则。
@@ -1107,6 +1158,7 @@ export const AGENT_OPERATION_SCHEMA = {
             adjustRightInd: nullable({ type: 'boolean' }),
             suppressOverlap: nullable({ type: 'boolean' }),
             textboxTightWrap: nullable({ enum: ['none', 'allLines', 'firstAndLastLine', 'firstLineOnly', 'lastLineOnly'] }),
+            snapToGrid: nullable({ type: 'boolean' }),
             frame: nullable(paragraphFrame),
             outlineLevel: nullable(outlineLevel),
             tabs: nullable(docTabs),
@@ -1126,78 +1178,10 @@ export const AGENT_OPERATION_SCHEMA = {
           operation('setParagraphLevel', { index, delta: integer }),
           operation('restartNumbering', { index, options: shape({ start: { ...index, minimum: 1 } }, []) }, ['index']),
           operation('continueNumbering', { index }),
-          operation('formatRun', { paragraph: index, run: index, format: shape({
-            style: nullable(text),
-            bold: nullable({ type: 'boolean' }),
-            italic: nullable({ type: 'boolean' }),
-            hidden: nullable({ type: 'boolean' }),
-            webHidden: nullable({ type: 'boolean' }),
-            emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
-            underline: nullable({ type: 'boolean' }),
-            underlineStyle: nullable(text),
-            underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-            fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
-            fontFamily: nullable(text),
-            fontFamilyEastAsia: nullable(text),
-            color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-            strike: nullable({ type: 'boolean' }),
-            doubleStrike: nullable({ type: 'boolean' }),
-            rtl: nullable({ type: 'boolean' }),
-            complexScript: nullable({ type: 'boolean' }),
-            verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
-            smallCaps: nullable({ type: 'boolean' }),
-            allCaps: nullable({ type: 'boolean' }),
-            highlight: nullable(text),
-            characterSpacing: nullable(signedInteger),
-            position: nullable(signedHalfPoints),
-            characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
-            kerning: nullable(halfPoints),
-            fitTextWidth: nullable(unsignedTwips),
-            textEffect: nullable(text),
-            textOutline: nullable({ type: 'boolean' }),
-            textShadow: nullable({ type: 'boolean' }),
-            emboss: nullable({ type: 'boolean' }),
-            imprint: nullable({ type: 'boolean' }),
-            border: nullable(docBorderSide),
-            shading: nullable(docShading),
-          }, []) }),
+          operation('formatRun', { paragraph: index, run: index, format: runFormat }),
           operation('formatRange', {
             range: textRange,
-            format: shape({
-              style: nullable(text),
-              bold: nullable({ type: 'boolean' }),
-              italic: nullable({ type: 'boolean' }),
-              hidden: nullable({ type: 'boolean' }),
-              webHidden: nullable({ type: 'boolean' }),
-              emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
-              underline: nullable({ type: 'boolean' }),
-              underlineStyle: nullable(text),
-              underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-              fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
-              fontFamily: nullable(text),
-              fontFamilyEastAsia: nullable(text),
-              color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-              strike: nullable({ type: 'boolean' }),
-              doubleStrike: nullable({ type: 'boolean' }),
-              rtl: nullable({ type: 'boolean' }),
-              complexScript: nullable({ type: 'boolean' }),
-              verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
-              smallCaps: nullable({ type: 'boolean' }),
-              allCaps: nullable({ type: 'boolean' }),
-              highlight: nullable(text),
-              characterSpacing: nullable(signedInteger),
-              position: nullable(signedHalfPoints),
-              characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
-              kerning: nullable(halfPoints),
-              fitTextWidth: nullable(unsignedTwips),
-              textEffect: nullable(text),
-              textOutline: nullable({ type: 'boolean' }),
-              textShadow: nullable({ type: 'boolean' }),
-              emboss: nullable({ type: 'boolean' }),
-              imprint: nullable({ type: 'boolean' }),
-              border: nullable(docBorderSide),
-              shading: nullable(docShading),
-            }, []),
+            format: runFormat,
           }),
           operation('applyCharacterStyle', { range: textRange, styleId: text, options: styleApplyOptions }, ['range', 'styleId']),
           operation('clearRangeFormat', {
@@ -1206,41 +1190,7 @@ export const AGENT_OPERATION_SCHEMA = {
           }, ['range']),
           operation('formatDocumentRange', {
             range: documentRange,
-            format: shape({
-              style: nullable(text),
-              bold: nullable({ type: 'boolean' }),
-              italic: nullable({ type: 'boolean' }),
-              hidden: nullable({ type: 'boolean' }),
-              webHidden: nullable({ type: 'boolean' }),
-              emphasisMark: nullable({ enum: ['dot', 'comma', 'circle', 'underDot', 'none'] }),
-              underline: nullable({ type: 'boolean' }),
-              underlineStyle: nullable(text),
-              underlineColor: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-              fontSize: nullable({ type: 'number', minimum: 1, maximum: 400, multipleOf: 0.5 }),
-              fontFamily: nullable(text),
-              fontFamilyEastAsia: nullable(text),
-              color: nullable({ type: 'string', pattern: '^[a-fA-F0-9]{6}$' }),
-              strike: nullable({ type: 'boolean' }),
-              doubleStrike: nullable({ type: 'boolean' }),
-              rtl: nullable({ type: 'boolean' }),
-              complexScript: nullable({ type: 'boolean' }),
-              verticalAlign: nullable({ enum: ['baseline', 'subscript', 'superscript'] }),
-              smallCaps: nullable({ type: 'boolean' }),
-              allCaps: nullable({ type: 'boolean' }),
-              highlight: nullable(text),
-              characterSpacing: nullable(signedInteger),
-              position: nullable(signedHalfPoints),
-              characterScale: nullable({ type: 'integer', minimum: 1, maximum: 600 }),
-              kerning: nullable(halfPoints),
-              fitTextWidth: nullable(unsignedTwips),
-              textEffect: nullable(text),
-              textOutline: nullable({ type: 'boolean' }),
-              textShadow: nullable({ type: 'boolean' }),
-              emboss: nullable({ type: 'boolean' }),
-              imprint: nullable({ type: 'boolean' }),
-              border: nullable(docBorderSide),
-              shading: nullable(docShading),
-            }, []),
+            format: runFormat,
           }),
           operation('setOutlineLevel', { index, level: nullable({ ...outlineLevel, maximum: 8 }) }),
           operation('moveOutlineSection', { from: index, to: index }),

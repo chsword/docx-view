@@ -135,6 +135,8 @@ const bytes = await doc.toUint8Array({
 
 `clearDirectFormat` 与剪贴板覆盖**全部**段落格式字段。这两处原先用的是一份更早建立的字段名单，少了 `kinsoku` / `wordWrap` / `overflowPunct` / `topLinePunct` / `autoSpaceDE` / `autoSpaceDN` / `bidi` / `textDirection` 八项，于是与样式冲突的东亚排版设置清不掉、剪贴板也带不走；现在名单只有一份。
 
+Agent JSON Schema 里 `formatParagraph` / `formatRun` / `formatRange` / `formatDocumentRange` / `formatTable` / `formatTableRow` / `formatCell` 的 `format` 属性集与运行时校验**共用同一份字段名**（`operations.ts` 导出的 `PARAGRAPH_FORMAT_KEYS` / `RUN_FORMAT_FIELDS` / `TABLE_FORMAT_KEYS` / `ROW_FORMAT_KEYS` / `CELL_FORMAT_KEYS`），嵌套的 `frame` / `eastAsianLayout` / `floatingPosition` 也各有一份。此前 `frame`、`eastAsianLayout`、`floatingPosition` 和行的 `gridBefore` / `wBefore` / `gridAfter` / `wAfter` 都是校验收、schema 不声明——schema 比校验窄，等于这些字段对 agent 不存在，而两边都是绿的。
+
 `getCompatibilitySettings()` 读取 `settings.xml` 的 `w:compat` 声明：四个已接入的标志会暴露为明确字段，并分别影响自动段间距、东亚断行、环绕表格分页和表格条件样式规则；`compatSetting` 三元组通过 `compatSettings` 暴露，其余标志收集在 `other` 中。兼容性声明只被读取，不会放松文本、ZIP/XML、路径或其它安全校验，也不会执行文档内容。
 
 `getThemeSettings()` 读取 `settings.xml` 的 `w:clrSchemeMapping` 和 `w:themeFontLang`，以及 `styles.xml` 的 `w:latentStyles`。颜色槽位映射参与主题色解析；替换主题关系指向的主题部件（通常名为 `theme1.xml`）即可切换当前主题。`themeFontLang` 与 `latentStyles` 只暴露为元数据，不参与字体选择或排版；主题字体仍按主题中声明的脚本槽位解析。
@@ -422,12 +424,16 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 分页预览按栏宽重新度量内容，支持等宽 / 指定宽度分栏与 `nextColumn`，并按表格行跨页 / 跨栏拆分；连续的 `w:tblHeader` 标题行会在每个片段重复，`cantSplit` 行保持完整。
 - run 着重号支持 `w:em` 的 `dot`、`comma`、`circle`、`underDot`（分别使用浏览器原生 `text-emphasis`）；显式 `none` 可关闭继承的着重号。不按竖排文字方向调整着重号位置。
 - 注音（`w:ruby`）读取为 `RunInfo.ruby`，含注音文字、基字符、`w:rubyAlign`、`w:hps` / `w:hpsRaise` / `w:hpsBaseText`（半磅）与 `w:lid`。**注音不计入段落正文**：`paragraph.text` 与 run 的 `text` 都只含基字符，与 Word 的阅读顺序一致；注音排在基字符上方，通过浏览器原生 `<ruby>` / `<rt>` 渲染，`<rt>` 标为 `contentEditable="false"` 且被 `readText()` 跳过，因此编辑正文不会把注音追加进文本。`w:rubyAlign` 只映射 CSS `ruby-align` 真正支持的 `center` / `distributeLetter` / `distributeSpace` / `left`，`right` 与 `rightVertical` 没有对应值，交给浏览器默认行为。注音内容本期不提供写入 API。
+- 复杂文种的粗体 / 斜体（`w:bCs` / `w:iCs`）读写为 `RunFormat.boldComplexScript` / `italicComplexScript`。ECMA-376 把一个 run 的字符分成两类：`w:b` / `w:i` 管非复杂文种，`w:bCs` / `w:iCs` 管复杂文种（阿拉伯文、希伯来文、泰文……），所以 Word 里只写了 `<w:b/>` 的阿拉伯文 run **不加粗**。渲染照此：run 被标成复杂文种（`w:cs` 或 `w:rtl` 为真）就用 `bCs` / `iCs`，否则用 `b` / `i`；复杂文种 run 没写 `bCs` 时按「没设」处理，**不回退到 `b`**。**没有按 Unicode 文种逐字符判断**——含阿拉伯字符却没标 `w:cs` / `w:rtl` 的 run 仍按 `b` 画。
+- `w:noProof`（不检查拼写与语法）读写为 `RunFormat.noProof`，渲染落在 run 的 `spellcheck="false"` 上，波浪线的事交给浏览器。
+- `w:snapToGrid` 有两级：**段落级**（`ParagraphFormat.snapToGrid`）是这段的行是否吸附到 `w:docGrid` 的行距，默认开，显式 `false` 的段落在分页与渲染里都不吸附——两处走的是同一个 `snapLineHeightPx`，开关只判断一次；**run 级**（`RunFormat.snapToGrid`）管的是字符间距对齐到横向字符格，这里没有横向字符格（同 `adjustRightInd`），只读写保真。
+- `w:specVanish`（「特殊隐藏」的段落标记，Word 用它做样式分隔符：两段并成一行、各用各的样式）读写为 `RunFormat.specVanish`，只做读写保真——渲染成一行要把两段合并排，不做。
 - `w:eastAsianLayout` 读取为 `RunFormat.eastAsianLayout`（`id` / `combine` / `combineBrackets` / `vert` / `vertCompress`），可通过 `formatRun()` 写入，传 `null` 清除。「双行合一」（`combine`）CSS 没有对应能力，渲染时自行把文字按**码点**平分成上下两行（奇数时上一行多一个字），括号按 `combineBrackets` 用全角 `（）` / `［］` / `〈〉` / `｛｝` 绘制——括号是渲染装饰，`contentEditable="false"` 且被 `readText()` 跳过，不会写回文档。分页测量按较长那行的一半计宽（加上按原字号计的括号），不按整段文字计宽。「纵中横」（`vert`）映射为 CSS `text-combine-upright: all`，横排视图下不产生可见差别，与 Word 一致（Word 也只在竖排时显示）；`vertCompress` 只读取保留。双行合一的 run 内若含制表符或换行，不再走制表位计算。
 - run 文字效果按映射质量分档：`w:position` 以半磅映射到 `vertical-align`；`w:outline` 使用 `-webkit-text-stroke: 1px currentColor` 并透明化文字填充，描边保留原文字颜色；`w:shadow` 使用 `1px 1px 2px rgba(0, 0, 0, 0.45)` 阴影。
 - `w:emboss` / `w:imprint` 以双阴影近似：阳文使用 `-1px -1px 1px rgba(255, 255, 255, 0.9)` 与 `1px 1px 1px rgba(0, 0, 0, 0.65)`；阴文反转两道阴影的方向。该效果是浏览器 CSS 近似，不保证与 Word 像素一致。
 - `w:kern` 以半磅阈值近似映射为 `font-kerning: normal`（当前字号达到阈值）或 `none`（未达到）；CSS 不支持 Word 的字号阈值语义，且未解析到字号时不额外设置字距。
 - `w:w`、`w:fitText` 与 `w:effect` 读取为 `characterScale`、`fitTextWidth`、`textEffect`，也可通过 `formatRun()` 写入 / 清除，但不映射到 CSS：字符缩放与按宽度压缩会破坏行内布局 / 分页测量，动画效果已废弃且没有可靠静态映射。
-- 读取节的 `w:docGrid` `type`、`linePitch` 与 `charSpace`；`lines`、`linesAndChars`、`snapToChars` 的 `linePitch` 用于分页行高吸附，`default` 不吸附。`charSpace` 目前只读取并保留，不参与字符宽度计算。
+- 读取节的 `w:docGrid` `type`、`linePitch` 与 `charSpace`；`lines`、`linesAndChars`、`snapToChars` 的 `linePitch` 用于分页行高吸附，`default` 不吸附，段落显式 `w:snapToGrid w:val="0"` 也不吸附。`charSpace` 目前只读取并保留，不参与字符宽度计算。
 - 分页预览按节套用页面设置：每一页使用所在节的纸张宽度、页边距、方向、分栏与页眉页脚。连续视图（`viewMode: 'continuous'`，默认）是一条不分页的滚动流，整篇文档**只套用第一节**（`getSection(0)`）的纸张宽度、页边距、方向与分栏数 / 栏间距，页眉页脚也只显示第一节的，其余节的页面设置不会反映在连续视图中——例如「纵向正文 + 一节横向宽表格」的文档，横向那节会按第一节的宽度渲染，分栏数不同的节也按第一节的栏数排。查看多节文档的真实版式请切换到分页视图（`setViewMode('paginated')`）；文档中各节的页面设置本身不受影响，导出时原样保留。
 
 **列表与表格**
