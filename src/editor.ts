@@ -1471,24 +1471,38 @@ export class DocxEditor {
       if (item.type === 'line') {
         const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
         if (paragraph && editingPlaced.has(paragraph.index)) continue;
-        // 整段都在本页本栏：第一行和最后一行都在这里。浮动段落（framePr）一行一个浮动元素，不算。
+        // 整段都在本页本栏：第一行和最后一行都在这里。
         const ownLines = paragraph ? page.items.filter((candidate): candidate is Extract<FlowItem, { type: 'line' }> =>
           candidate.type === 'line' && candidate.paragraph === paragraph.index && (candidate.column ?? 0) === (item.column ?? 0)) : [];
-        const whole = !!paragraph && !paragraph.frame && ownLines.some((line) => line.line.startOffset === 0)
+        const onPage = !!paragraph && ownLines.some((line) => line.line.startOffset === 0)
           && ownLines.some((line) => line.line.endOffset >= paragraph.text.length);
-        if (paragraph && whole && this.pageEditParagraph === paragraph.index && this.isMarkupReviewView()) {
-          // 正在编辑的段落整段画成一个元素。各行行高一致（通常如此）时沿用它，否则交给浏览器。
+        // 浮动段落（framePr）不进分页编辑：它的位置由偏移决定，改字后的重排不在这条路上。
+        const whole = onPage && !paragraph!.frame;
+        const editing = !!paragraph && whole && this.pageEditParagraph === paragraph.index && this.isMarkupReviewView();
+        // 多行的浮动段落也整段画成一个浮动元素：一行一个 float 时，窄框的第二行会浮到第一行旁边，
+        // 而不是排在它下面。
+        const mergedFrame = !!paragraph && onPage && !!paragraph.frame && ownLines.length > 1;
+        if (paragraph && (editing || mergedFrame)) {
+          // 各行行高一致（通常如此）时沿用它，否则交给浏览器。
           const heights = new Set(ownLines.map((line) => line.line.heightPx));
           const lastItem = page.items.lastIndexOf(ownLines.at(-1)!);
           const hasFollowingParagraph = page.items.slice(lastItem + 1).some((candidate) =>
             candidate.type === 'line' && candidate.paragraph !== paragraph.index);
-          this.pageEditRendering = true;
+          const placement = paragraph.frame ? (ownLines[0]!.floatOffset ?? null) : undefined;
+          this.pageEditRendering = editing;
+          let element: HTMLParagraphElement;
           try {
-            column.append(this.makeParagraph(paragraph, defaultTabStopTwips, reviewContext,
-              heights.size === 1 ? [...heights][0] : undefined, previousByColumn.get(columnIndex), !hasFollowingParagraph));
+            element = this.makeParagraph(paragraph, defaultTabStopTwips, reviewContext,
+              heights.size === 1 ? [...heights][0] : undefined, previousByColumn.get(columnIndex), !hasFollowingParagraph, placement);
           } finally {
             this.pageEditRendering = false;
           }
+          if (mergedFrame && this.isMarkupReviewView()) {
+            // 点它切到连续视图去改，与其它不能在分页视图里改的段落一样。
+            element.dataset.docxPageEdit = 'split';
+            element.dataset.docxLineStart = '0';
+          }
+          column.append(element);
           previousByColumn.set(columnIndex, paragraph);
           editingPlaced.add(paragraph.index);
           continue;

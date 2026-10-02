@@ -1063,6 +1063,37 @@ test('paginated view: only the paragraph being edited is editable, and only when
   assert.deepEqual(lines.map((line) => line.dataset.docxPageEdit), [undefined, undefined, undefined]);
 });
 
+test('a multi-line positioned frame on one page renders as one float, offset applied once', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.readText = (content) => content.textContent ?? '';
+  editor.document = { getShapeParagraphs: () => [] };
+  editor.renderShapeInfos = [];
+  editor.viewMode = 'paginated';
+  editor.pageEditParagraph = null;
+  editor.pageEditRendering = false;
+  const frame = { widthTwips: 1200, wrap: 'around', horizontalAnchor: 'margin', xTwips: 1440 };
+  const framed = { index: 0, text: 'abcdef', runs: [{ index: 0, text: 'abcdef', images: [] }], images: [], frame };
+  const offset = { xPx: 96, yPx: 40 };
+  const page = {
+    index: 0, number: 1, section: 0, contentHeightPx: 20,
+    items: [
+      { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 0, endOffset: 3 }, column: 0, floatOffset: offset },
+      { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 3, endOffset: 6 }, column: 0, floatOffset: offset },
+    ],
+  };
+  const section = { pageWidth: 1500, pageHeight: 1500, margins: { top: 0, right: 0, bottom: 0, left: 0 }, columns: { count: 1, space: 0, equalWidth: true } };
+  const elements = editor.makePageContent(page, section, [{ type: 'paragraph', paragraph: framed }], [framed], 720,
+    { deletedTextByRun: new Map(), revisionColors: new Map() }).childNodes[0].childNodes;
+  // 一行一个 float 时，窄框的第二行会浮到第一行旁边；合成一个就不会。
+  assert.equal(elements.length, 1);
+  assert.equal(elements[0].dataset.docxFloatOffset, '96,40');
+  assert.equal(elements[0].style.cssFloat, 'left');
+  assert.equal(elements[0].dataset.docxPageEdit, 'split');
+  assert.equal(editor.paragraphs.size, 0);
+});
+
 test('flush writes back the paragraph being edited in paginated view', () => {
   const editor = makeRunRenderEditor();
   const calls = [];
