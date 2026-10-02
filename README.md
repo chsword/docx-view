@@ -184,6 +184,7 @@ Agent JSON Schema 里 `formatParagraph` / `formatRun` / `formatRange` / `formatD
 | `getFields(partPath?)` / `updateFields(options?)` | 按部件读取域；文档层可接收调用方提供的分页结果，写回 `PAGE` / `NUMPAGES` / `PAGEREF` 与受限的 `TOC` 域结果 |
 | `getMath(partPath?)` / `insertMath(paragraph, source, options?)` / `setMath(paragraph, mathIndex, source)` / `deleteMath(paragraph, mathIndex)` | 读取公式，按段落 run 偏移插入、替换或删除；`source` 接受 `MathMlNode` 数据或下列线性文本子集，不接受 MathML 标记字符串 |
 | `getDocumentProperties()` / `setDocumentProperties(patch)` | 读取和按字段更新 `docProps/core.xml` / `docProps/app.xml` 中的常用文档属性；缺失部件时自动补包级关系与 content-type，未知元素和未改字段原样保留 |
+| `getDocumentStatistics()` / `updateDocumentStatistics(options?)` | 按 Word 的口径统计正文（含表格）：东亚文字每个字算一个词，其余按空白切分，东亚标点不算词；字符按码点计；隐藏文字与已删除修订不算，段落只数有文字的。`update…` 把 Words / Characters / CharactersWithSpaces / Paragraphs 写进 `docProps/app.xml`（没有就建），传入 `pagination` 时再写 Pages / Lines；页数与行数取决于排版，编辑器的 `editor.updateDocumentStatistics()` 会先分页测量。行数里表格行按一行算，是近似值 |
 | `getDocumentProtection()` / `setDocumentProtection(value)` | 读取和写入 `settings.xml` 中的 `w:documentProtection`（如只读 / 仅批注 / 仅修订 / 表单）；仅修改 `edit` / `enforcement`，保留已有 hash/salt 等密码相关属性 |
 | `getSettings()` / `setTrackChanges(enabled)` / `setRevisionAuthor(author)` | 读取常用文档设置（当前返回 `{ defaultTabStop, evenAndOddHeaders, trackChanges }`），显式开启/关闭 `w:trackChanges`（关闭时写 `w:val="0"`，不删除元素），并设置后续记录修订写入使用的作者名 |
 | `revision` | 本实例的修订号；加载文件后从 0 开始，不持久化到 DOCX |
@@ -480,7 +481,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - 接受 / 拒绝修订已支持（逐条、批量、按作者筛选，移动修订成对处理）。域值计算见上文「域」一节：`SEQ`、日期 / 时间、文档属性、`REF` 会重算，提供 `pagination` 时 `PAGE` / `NUMPAGES` / `PAGEREF` 也会写回，`TOC` 仅实现 `\o` 层级过滤与 `\h` 超链接；`INDEX` 始终保留缓存结果。低层 API 仍可直接操作。
 - 编辑器标记域 run 的 `data-docx-field` / `data-docx-field-role`；结果灰底可关闭，结果不可直接编辑（不是“支持编辑域”）。
 
-支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 中 Pages / Words / Characters / Lines / Paragraphs 等统计值不会自动重算。
+支持普通 Transitional OOXML `.docx`，不支持加密文件、`.docm` 宏文档或 Strict OOXML。导入限制：ZIP 不超过 50 MiB、最多 2048 个条目、单部件解压后不超过 16 MiB、总解压大小不超过 64 MiB。批次最多 1000 个操作，单个文本参数最多 1,000,000 字符，表格最多 10,000 个单元格。剪贴板片段最多 1000 个段落、10,000 个 run、200 张图片，单个 run 文本最多 1,000,000 字符。`setDocumentProperties()` 仅校验并写入常用 `docProps` 字段；`app.xml` 的统计值不随编辑自动更新，需要时调 `updateDocumentStatistics()`（见「文档属性」）。
 
 **解析边界**
 

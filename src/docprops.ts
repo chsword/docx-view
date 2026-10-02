@@ -1,5 +1,5 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { DocumentProperties } from './types.js';
+import type { DocumentProperties, DocumentStatistics } from './types.js';
 import { assertText } from './xml.js';
 
 export const CORE_PROPS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties';
@@ -180,5 +180,45 @@ export function setAppDocumentPropertiesOn(document: Document, patch: Partial<Do
       continue;
     }
     setElementText(ensureChild(root, APP_NS, info.qualifiedName, info.localName, APP_PROPERTY_ORDER), value);
+  }
+}
+
+/**
+ * 字数统计按 Word 的口径：东亚文字（汉字、假名、谚文）**每个字算一个词**，其余按空白切分的连续
+ * 非空白串算一个词；东亚标点不算词。字符数按 Unicode 码点计（一个 emoji 是一个字符，不是两个
+ * UTF-16 单元），「不含空格」去掉所有空白。
+ */
+const EAST_ASIAN_LETTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const EAST_ASIAN_PUNCTUATION = /[　-〿＀-／：-＠［-｀｛-･‘-‟…]/u;
+
+export function countTextStatistics(text: string): { words: number; characters: number; charactersWithSpaces: number } {
+  let words = 0;
+  let inWord = false;
+  let characters = 0;
+  let charactersWithSpaces = 0;
+  for (const character of text) {
+    if (character === '\n' || character === '\r') { inWord = false; continue; }
+    charactersWithSpaces++;
+    if (/\s/u.test(character)) { inWord = false; continue; }
+    characters++;
+    if (EAST_ASIAN_LETTER.test(character)) { words++; inWord = false; continue; }
+    if (EAST_ASIAN_PUNCTUATION.test(character)) { inWord = false; continue; }
+    if (!inWord) { words++; inWord = true; }
+  }
+  return { words, characters, charactersWithSpaces };
+}
+
+const STATISTIC_ELEMENTS = [
+  ['pages', 'Pages'], ['words', 'Words'], ['characters', 'Characters'], ['lines', 'Lines'],
+  ['paragraphs', 'Paragraphs'], ['charactersWithSpaces', 'CharactersWithSpaces'],
+] as const;
+
+export function setAppStatisticsOn(document: Document, statistics: DocumentStatistics): void {
+  const root = rootOrNull(document, APP_NS, 'Properties');
+  if (!root) throw new Error('Invalid app properties root.');
+  for (const [key, localName] of STATISTIC_ELEMENTS) {
+    const value = statistics[key];
+    if (value === undefined) continue;
+    setElementText(ensureChild(root, APP_NS, localName, localName, APP_PROPERTY_ORDER), String(value));
   }
 }

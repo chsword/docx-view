@@ -38,7 +38,7 @@ export type {
   ColorSchemeMapping, CompatibilitySettings, DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, LatentStyleException, LatentStyles, NoteInfo, NoteSettings, NoteSettingsValue,
   RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, ReviewerInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, StylePatch, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, SectionProperties, TableConditionName, TableException, WebDivInfo, TableFormat, TableInfo, TableRowInfo,
+  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, StylePatch, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, DocumentStatistics, SectionProperties, TableConditionName, TableException, WebDivInfo, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   ThemeFontLanguages, ThemeSettings, WidthFormat,
   ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind, ShapeTextParagraph,

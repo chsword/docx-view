@@ -438,8 +438,20 @@ export interface FieldInfo {
   nestedIn?: number;
 }
 
+export interface DocumentStatistics {
+  words: number;
+  characters: number;
+  charactersWithSpaces: number;
+  paragraphs: number;
+  /** 只有提供了分页结果时才有：页数与行数取决于排版，文档本身算不出来。 */
+  pages?: number;
+  lines?: number;
+}
+
 export interface PaginationInfo {
   pageCount: number;
+  /** 正文总行数（分页测量出来的行）。`updateDocumentStatistics()` 用它写 `Lines`。 */
+  lineCount?: number;
   pageOfParagraph: (paragraph: number) => number | undefined;
   numberOfPage: (pageIndex: number) => number;
 }

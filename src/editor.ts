@@ -22,6 +22,7 @@ import type {
   ParagraphFormat,
   ParagraphInfo,
   PaginationInfo,
+  DocumentStatistics,
   ShapeInfo,
   ReviewerFilterAuthor,
   RunFormat,
@@ -84,8 +85,13 @@ export function paginationInfoFromPages(pages: PageBox[], blocks: DocumentBlock[
       } else if (item.type === 'tableRow') addRowParagraphs(blocks[item.table], item.row, page.index);
     }
   }
+  // 行数：正文的每一行算一行；表格行按一行算（单元格里的行没有单独测量）——是近似值，
+  // 文字多的表格会比 Word 少算。
+  const lineCount = pages.reduce((total, page) =>
+    total + page.items.filter((item) => item.type === 'line' || item.type === 'tableRow').length, 0);
   return {
     pageCount: pages.length,
+    lineCount,
     pageOfParagraph: paragraph => pageByParagraph.get(paragraph),
     numberOfPage: pageIndex => pages[pageIndex]?.number ?? 0,
   };
@@ -794,6 +800,24 @@ export class DocxEditor {
     target?.focus();
     target?.scrollIntoView({ block: 'nearest' });
     return true;
+  }
+
+  /**
+   * 重算并写入 `docProps/app.xml` 的统计值。页数与行数要靠排版，所以在这里分页测量一次再交给
+   * `DocxDocument.updateDocumentStatistics()`；只要字数的话直接调文档那个方法就够了。
+   */
+  updateDocumentStatistics(): DocumentStatistics {
+    this.flush();
+    const blocks = this.document.getBlocks();
+    const sections = this.document.getSections();
+    let defaultTabStopTwips = 720;
+    try {
+      defaultTabStopTwips = Math.max(1, Number(this.document.getSettings().defaultTabStop) || 720);
+    } catch {
+      defaultTabStopTwips = 720;
+    }
+    const pages = this.paginateDocument(blocks, sections, defaultTabStopTwips);
+    return this.document.updateDocumentStatistics({ pagination: paginationInfoFromPages(pages, blocks) });
   }
 
   updateFields(options: { kinds?: FieldKind[]; now?: Date; filename?: string } = {}): boolean {

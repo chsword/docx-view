@@ -4,7 +4,7 @@ import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, WebDivInfo, TableFormat, TableInfo, TextRange, ThemeSettings,
+  AgentRequest, DocumentStatistics, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, WebDivInfo, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -18,6 +18,8 @@ import {
   defaultCorePropertiesXml,
   parseDocumentProperties,
   setAppDocumentPropertiesOn,
+  setAppStatisticsOn,
+  countTextStatistics,
   setCoreDocumentPropertiesOn,
 } from './docprops.js';
 import type { NumberingImageContext, NumberingModel } from './numbering.js';
@@ -8852,6 +8854,50 @@ export class DocxDocument {
         this.updatePartXml(path, (document) => setAppDocumentPropertiesOn(document, appPatch));
       }
     }
+  }
+
+  /**
+   * 正文的字数统计，口径见 `countTextStatistics()`。只算正文（含表格），页眉页脚、脚注尾注、
+   * 文本框、批注不算——和 Word 状态栏默认的口径一致。隐藏文字（`w:vanish`）与已删除的修订文字
+   * 不算；段落数只数有文字的段落。
+   */
+  getDocumentStatistics(): DocumentStatistics {
+    const totals = { words: 0, characters: 0, charactersWithSpaces: 0, paragraphs: 0 };
+    for (const paragraph of this.cachedParagraphs()) {
+      const text = paragraph.visibleText ?? paragraph.text;
+      const counts = countTextStatistics(text);
+      totals.words += counts.words;
+      totals.characters += counts.characters;
+      totals.charactersWithSpaces += counts.charactersWithSpaces;
+      if (counts.charactersWithSpaces > 0) totals.paragraphs++;
+    }
+    return totals;
+  }
+
+  /**
+   * 把统计值写进 `docProps/app.xml`（没有就建，补包级关系与内容类型）。页数与行数取决于排版，
+   * 只有传了 `pagination`（编辑器分页测量的结果）才写；否则只写字数、字符数与段落数，已有的
+   * `Pages` / `Lines` 不动。一次提交、进撤销历史；值没变不推进 revision。
+   */
+  updateDocumentStatistics(options: { pagination?: PaginationInfo } = {}): DocumentStatistics {
+    const pagination = options.pagination;
+    if (pagination !== undefined && (!pagination || !Number.isSafeInteger(pagination.pageCount) || pagination.pageCount < 0 ||
+      (pagination.lineCount !== undefined && (!Number.isSafeInteger(pagination.lineCount) || pagination.lineCount < 0)))) {
+      throw new Error('options.pagination must contain a non-negative pageCount (and lineCount when given).');
+    }
+    const statistics: DocumentStatistics = {
+      ...this.getDocumentStatistics(),
+      ...(pagination ? { pages: pagination.pageCount } : {}),
+      ...(pagination?.lineCount !== undefined ? { lines: pagination.lineCount } : {}),
+    };
+    this.withDraft((draft) => {
+      let path = draft.getAppPropertiesPath(true);
+      path ??= 'docProps/app.xml';
+      draft.ensurePackageRelationship(APP_PROPS_REL, path);
+      if (!draft.parts.has(path)) draft.addPart(path, encodeXml(defaultAppPropertiesXml()), APP_PROPS_TYPE);
+      draft.updatePartXml(path, (document) => setAppStatisticsOn(document, statistics));
+    });
+    return statistics;
   }
 
   getDocumentProtection(): DocumentProtection {
