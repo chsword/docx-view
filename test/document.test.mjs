@@ -6578,6 +6578,34 @@ test('table band size comes from the style, where Word writes it', () => {
   assert.equal(columns(''), '1.1.1.', '不写时默认 1');
 });
 
+test('vertical bands count grid columns, not cell positions in the row', () => {
+  // 第二行第一格横跨两列。按单元格序号数带，它后面那格（第 2 列）会被当成序号 1 → band2Vert；
+  // Word 按网格列号数，第 2 列是 band1Vert。
+  const cell = (text, span = 1) => `<w:tc><w:tcPr>${span > 1 ? `<w:gridSpan w:val="${span}"/>` : ''}`
+    + `<w:tcW w:w="${500 * span}" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const colored = (look, rowsXml) => withStyles(
+    `<w:tbl><w:tblPr><w:tblStyle w:val="C"/>${look}</w:tblPr>
+      <w:tblGrid>${'<w:gridCol w:w="500"/>'.repeat(4)}</w:tblGrid>${rowsXml}</w:tbl>`,
+    `<w:styles xmlns:w="${WORD_NS}">
+      <w:style w:type="table" w:styleId="C"><w:name w:val="C"/>
+        <w:tblStylePr w:type="band1Vert"><w:rPr><w:color w:val="FFFF00"/></w:rPr></w:tblStylePr>
+        <w:tblStylePr w:type="band2Vert"><w:rPr><w:color w:val="00FFFF"/></w:rPr></w:tblStylePr>
+      </w:style></w:styles>`,
+  ).getParagraphs().map((paragraph) => ({ FFFF00: '1', '00FFFF': '2' })[paragraph.runs[0].effective.color] ?? '.').join('');
+
+  const merged = `<w:tr>${cell('a', 2)}${cell('b')}${cell('c')}</w:tr>`;
+  assert.equal(colored('<w:tblLook w:noHBand="1" w:noVBand="0"/>', merged), '112',
+    '横跨第 0、1 列的单元格按起始列算 band1；后面两格在第 2、3 列');
+  // 首列开着时第 0 列不参与计数；首格横跨两列也只有它自己被排除，第 2 列算第二条带的开头。
+  assert.equal(colored('<w:tblLook w:firstColumn="1" w:noHBand="1" w:noVBand="0"/>', merged), '.21');
+  // 末列单元格横跨两列时，它的起始列号不是最后一列，但它仍然是末列，不参与带状。
+  assert.equal(colored('<w:tblLook w:lastColumn="1" w:noHBand="1" w:noVBand="0"/>',
+    `<w:tr>${cell('a')}${cell('b')}${cell('c', 2)}</w:tr>`), '12.');
+  // w:gridBefore 跳过的网格列也算进列号。
+  assert.equal(colored('<w:tblLook w:noHBand="1" w:noVBand="0"/>',
+    `<w:tr><w:trPr><w:gridBefore w:val="1"/></w:trPr>${cell('a')}${cell('b')}${cell('c')}</w:tr>`), '212');
+});
+
 test('tblLook falls back to the Word 2007 bitmask when the named flags are absent', () => {
   const cell = (text) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
   const looked = (look) => withStyles(

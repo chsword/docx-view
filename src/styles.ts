@@ -4,7 +4,7 @@ import type {
 } from './types.js';
 import { WORD_NS, children, childrenThroughTransparent, wordValue } from './xml.js';
 import { compactDefined } from './internal/elements.js';
-import { parseCellFormat, parseRowFormat, parseTableFormat } from './table.js';
+import { parseCellFormat, parseRowFormat, parseTableFormat, rowCells } from './table.js';
 
 const DRAWINGML_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 
@@ -63,6 +63,11 @@ interface TableMeta {
   rows: Element[];
   rowIndex: Map<Element, number>;
   cellIndex: WeakMap<Element, number>;
+  /**
+   * 单元格的起始网格列号（算上 `w:gridBefore`）。纵向带按网格列数，不按单元格在行内的序号：
+   * 一行里有横向合并时，后面的单元格序号比网格列号小，按序号数带的相位就与 Word 错开。
+   */
+  cellGridStart: WeakMap<Element, number>;
   look?: Element;
   rowBandSize: number;
   colBandSize: number;
@@ -908,9 +913,13 @@ function tableMeta(context: StylesContext, table: Element): TableMeta {
   const rows = childrenThroughTransparent(table, 'tr');
   const rowIndex = new Map<Element, number>();
   const cellIndex = new WeakMap<Element, number>();
+  const cellGridStart = new WeakMap<Element, number>();
   rows.forEach((row, index) => {
     rowIndex.set(row, index);
-    childrenThroughTransparent(row, 'tc').forEach((cell, cellPosition) => cellIndex.set(cell, cellPosition));
+    rowCells(row).forEach((position, cellPosition) => {
+      cellIndex.set(position.cell, cellPosition);
+      cellGridStart.set(position.cell, position.start);
+    });
   });
   const tableProps = children(table, 'tblPr')[0];
   const styleId = wordValue(children(tableProps ?? table, 'tblStyle')[0]) ?? undefined;
@@ -930,6 +939,7 @@ function tableMeta(context: StylesContext, table: Element): TableMeta {
     rows,
     rowIndex,
     cellIndex,
+    cellGridStart,
     look: children(tableProps ?? table, 'tblLook')[0],
     rowBandSize: bandSize('tblStyleRowBandSize', (style) => style.rowBandSize),
     colBandSize: bandSize('tblStyleColBandSize', (style) => style.colBandSize),
@@ -992,18 +1002,26 @@ function tableConditionsFor(context: StylesContext, table: Element | undefined,
     if (position < start || position >= end) return;
     conditions.push(Math.floor((position - start) / size) % 2 === 0 ? odd : even);
   };
-  if (!readLookFlag(look, 'noVBand', false)) {
-    band(cellPosition, cellCount, meta.colBandSize, firstColumn, lastColumn, 'band1Vert', 'band2Vert');
-  }
-  if (!readLookFlag(look, 'noHBand', false)) {
-    band(rowPosition, meta.rows.length, meta.rowBandSize, firstRow, lastRow, 'band1Horz', 'band2Horz');
-  }
   const topRow = rowPosition === 0 && firstRow;
   const bottomRow = rowPosition === meta.rows.length - 1 && lastRow;
   const leftColumn = cellPosition === 0 && firstColumn;
   // cellPosition 为 -1（没传单元格，或单元格不在索引里）时不能算成末列——空行的 cellCount
   // 是 0，`-1 === 0 - 1` 会误判为 true。
   const rightColumn = cellPosition >= 0 && cellPosition === cellCount - 1 && lastColumn;
+  if (!readLookFlag(look, 'noVBand', false) && cellPosition >= 0) {
+    // 纵向带按网格列号数（见 TableMeta.cellGridStart）。首列 / 末列单元格不参与计数是按
+    // **单元格**判的，不是按网格列：末列单元格横跨两列时它的起始列号不是最后一列，按网格
+    // 区间排除会漏掉它。
+    const gridStart = meta.cellGridStart.get(cell!) ?? cellPosition;
+    const excluded = !legacyRules && (leftColumn || rightColumn);
+    const offset = !legacyRules && firstColumn ? 1 : 0;
+    if (!excluded && gridStart >= offset) {
+      conditions.push(Math.floor((gridStart - offset) / meta.colBandSize) % 2 === 0 ? 'band1Vert' : 'band2Vert');
+    }
+  }
+  if (!readLookFlag(look, 'noHBand', false)) {
+    band(rowPosition, meta.rows.length, meta.rowBandSize, firstRow, lastRow, 'band1Horz', 'band2Horz');
+  }
   if (leftColumn) conditions.push('firstCol');
   if (rightColumn) conditions.push('lastCol');
   if (topRow) conditions.push('firstRow');
