@@ -41,6 +41,12 @@ export interface ThemeInfo {
   colors: Record<string, string>;
   fonts: Record<string, string>;
   colorSchemeMapping?: ColorSchemeMapping;
+  /**
+   * 主题的格式表（`a:fmtScheme`）：`wps:style` 的 `fillRef idx` / `lnRef idx` 指向这里的第 idx 项
+   * （`fillRef` 的 1001 起指向背景填充表）。原样留着元素，读形状时再解析，表里的 `phClr` 要换成
+   * 引用处给的颜色，提前解析不了。
+   */
+  formatScheme?: { fills: Element[]; lines: Element[]; backgroundFills: Element[] };
 }
 
 interface TableStyleLayer {
@@ -488,14 +494,147 @@ function resolveThemeColor(theme: ThemeInfo, element: Element | undefined): stri
   return resolveThemeValue(theme, wordAttr(element, 'themeColor'), wordAttr(element, 'themeShade'), wordAttr(element, 'themeTint'));
 }
 
-export function resolveDrawingColor(theme: ThemeInfo, element: Element | undefined): string | undefined {
+/** `a:sysClr` 没写 `lastClr` 时的兜底：Windows 默认配色里最常见的几个。 */
+const SYSTEM_COLORS: Record<string, string> = {
+  windowText: '000000', window: 'FFFFFF', btnFace: 'F0F0F0', btnText: '000000', highlight: '0078D7',
+  highlightText: 'FFFFFF', grayText: '6D6D6D', menu: 'F0F0F0', menuText: '000000', captionText: '000000',
+  activeBorder: 'B4B4B4', windowFrame: '646464', '3dDkShadow': '696969', '3dLight': 'E3E3E3',
+};
+
+/** `a:prstClr` 的取值是 CSS / X11 颜色名的一个子集；收常用的，认不出的按没有颜色处理。 */
+const PRESET_COLORS: Record<string, string> = {
+  black: '000000', white: 'FFFFFF', red: 'FF0000', green: '008000', blue: '0000FF', yellow: 'FFFF00',
+  cyan: '00FFFF', magenta: 'FF00FF', gray: '808080', grey: '808080', silver: 'C0C0C0', maroon: '800000',
+  navy: '000080', olive: '808000', purple: '800080', teal: '008080', orange: 'FFA500', lime: '00FF00',
+  ltGray: 'D3D3D3', dkGray: 'A9A9A9', darkBlue: '00008B', darkRed: '8B0000', darkGreen: '006400',
+  lightBlue: 'ADD8E6', pink: 'FFC0CB', brown: 'A52A2A', gold: 'FFD700', indigo: '4B0082', violet: 'EE82EE',
+};
+
+function drawingPercent(element: Element): number | undefined {
+  const raw = element.getAttribute('val');
+  if (raw === null || !/^-?\d+$/.test(raw)) return undefined;
+  return Number(raw) / 100000;
+}
+
+/** scRGB（线性）→ sRGB 伽马。 */
+function linearToSrgbChannel(value: number): number {
+  const clamped = Math.max(0, Math.min(1, value));
+  const gamma = clamped <= 0.0031308 ? clamped * 12.92 : 1.055 * clamped ** (1 / 2.4) - 0.055;
+  return Math.round(gamma * 255);
+}
+
+/**
+ * 变换链用的 HSL → RGB：四舍五入。`hslToRgb()` 向下取整，浮点误差会把 255 落成 254（纯红取补色
+ * 得到 `00FEFF`）；那个函数的输出被 `shade` / `tint` 的既有结果钉着，所以不改它，另写一份。
+ */
+function hslToRgbRounded(hue: number, saturation: number, lightness: number): number[] {
+  if (saturation === 0) return [lightness * 255, lightness * 255, lightness * 255];
+  const high = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const low = 2 * lightness - high;
+  return [hue + 1 / 3, hue, hue - 1 / 3].map((offset) => hueToRgb(low, high, offset) * 255);
+}
+
+function hexOf(channels: number[]): string {
+  return channels.map((channel) => Math.max(0, Math.min(255, Math.round(channel))).toString(16).padStart(2, '0').toUpperCase()).join('');
+}
+
+/**
+ * DrawingML 颜色的**变换链**：按子元素在文档里的顺序逐个套用（Office 就是这么做的，`lumMod`
+ * 在 `lumOff` 前面和后面结果不同）。原先只认 `shade` / `tint`，而且是用后代查找不分先后——Word
+ * 主题里「淡色 40%」这类颜色写的是 `lumMod` + `lumOff`，于是整个落成了未变换的主题色。
+ *
+ * `shade` / `tint` 保留原来的 HSL 亮度算法，不改既有输出；`alpha` 系列不在这里（由调用方转成
+ * 不透明度）。HSL 往返按向下取整，个别分量会和 Office 色板差 1（Office 自己的几处色板之间也
+ * 差 1：PowerPoint 显示 Accent 1 淡色 80% 为 `DAE3F3`，Word 内置表格样式里写的是 `D9E2F3`）。
+ */
+function applyDrawingTransforms(hex: string, element: Element): string {
+  let result = hex;
+  for (const transform of Array.from(element.childNodes)) {
+    if (transform.nodeType !== 1 || (transform as Element).namespaceURI !== DRAWINGML_NS) continue;
+    const node = transform as Element;
+    const name = node.localName ?? '';
+    const amount = drawingPercent(node);
+    if (name === 'shade' || name === 'tint') {
+      result = applyShadeTint(result, name === 'shade' ? node.getAttribute('val') ?? undefined : undefined,
+        name === 'tint' ? node.getAttribute('val') ?? undefined : undefined, true) ?? result;
+      continue;
+    }
+    const channels = result.match(/../g)!.map((channel) => parseInt(channel, 16));
+    if (name === 'inv') { result = hexOf(channels.map((channel) => 255 - channel)); continue; }
+    if (name === 'gray') {
+      const gray = 0.3 * channels[0]! + 0.59 * channels[1]! + 0.11 * channels[2]!;
+      result = hexOf([gray, gray, gray]);
+      continue;
+    }
+    const channelIndex = { red: 0, green: 1, blue: 2, redMod: 0, greenMod: 1, blueMod: 2, redOff: 0, greenOff: 1, blueOff: 2 }[name];
+    if (channelIndex !== undefined && amount !== undefined) {
+      const next = [...channels];
+      if (name.endsWith('Mod')) next[channelIndex] = channels[channelIndex]! * amount;
+      else if (name.endsWith('Off')) next[channelIndex] = channels[channelIndex]! + amount * 255;
+      else next[channelIndex] = amount * 255;
+      result = hexOf(next);
+      continue;
+    }
+    let [hue, saturation, lightness] = rgbToHsl(channels[0]!, channels[1]!, channels[2]!);
+    if (name === 'comp') hue = (hue + 0.5) % 1;
+    else if (amount === undefined) continue;
+    else if (name === 'lumMod') lightness *= amount;
+    else if (name === 'lumOff') lightness += amount;
+    else if (name === 'lum') lightness = amount;
+    else if (name === 'satMod') saturation *= amount;
+    else if (name === 'satOff') saturation += amount;
+    else if (name === 'sat') saturation = amount;
+    // 色相的单位是 1/60000 度；hueMod 是倍数。
+    else if (name === 'hueMod') hue = (hue * amount) % 1;
+    else if (name === 'hueOff') hue = ((hue + (Number(node.getAttribute('val')) / 60000) / 360) % 1 + 1) % 1;
+    else if (name === 'hue') hue = ((Number(node.getAttribute('val')) / 60000) / 360) % 1;
+    else continue;
+    result = hexOf(hslToRgbRounded(hue, Math.max(0, Math.min(1, saturation)), Math.max(0, Math.min(1, lightness))));
+  }
+  return result;
+}
+
+/**
+ * 解析一个 DrawingML 颜色元素（`srgbClr` / `schemeClr` / `sysClr` / `prstClr` / `scrgbClr` /
+ * `hslClr`）并套上它的变换链。`placeholder` 是主题格式表里 `phClr`（占位色）要替换成的颜色元素
+ * ——`wps:style` 的 `fillRef` / `lnRef` 里那个颜色；占位色先解析出它自己，再叠上表里写的变换。
+ */
+export function resolveDrawingColor(theme: ThemeInfo, element: Element | undefined, placeholder?: Element): string | undefined {
   if (!element) return undefined;
   const value = element.getAttribute('val') ?? undefined;
-  const direct = normalizeHex(value);
-  if (direct) return direct;
-  const modifier = (name: 'shade' | 'tint') =>
-    Array.from(element.getElementsByTagNameNS(DRAWINGML_NS, name))[0]?.getAttribute('val') ?? undefined;
-  return resolveThemeValue(theme, value, modifier('shade'), modifier('tint'), true);
+  let base: string | undefined;
+  switch (element.localName) {
+    case 'schemeClr':
+      base = value === 'phClr'
+        ? (placeholder && placeholder !== element ? resolveDrawingColor(theme, placeholder) : undefined)
+        : resolveDrawingThemeColor(theme, value ?? '');
+      break;
+    case 'sysClr':
+      base = normalizeHex(element.getAttribute('lastClr') ?? undefined) ?? SYSTEM_COLORS[value ?? ''];
+      break;
+    case 'prstClr':
+      base = PRESET_COLORS[value ?? ''];
+      break;
+    case 'scrgbClr': {
+      const channel = (name: string) => Number(element.getAttribute(name)) / 100000;
+      const channels = ['r', 'g', 'b'].map(channel);
+      if (channels.every(Number.isFinite)) base = hexOf(channels.map(linearToSrgbChannel));
+      break;
+    }
+    case 'hslClr': {
+      const hue = Number(element.getAttribute('hue')) / 60000 / 360;
+      const saturation = Number(element.getAttribute('sat')) / 100000;
+      const lightness = Number(element.getAttribute('lum')) / 100000;
+      if ([hue, saturation, lightness].every(Number.isFinite)) {
+        base = hexOf(hslToRgbRounded(((hue % 1) + 1) % 1, Math.max(0, Math.min(1, saturation)), Math.max(0, Math.min(1, lightness))));
+      }
+      break;
+    }
+    default:
+      // srgbClr，以及调用方直接递过来的、带 val 的其它元素：十六进制就是它本身，否则当主题色名。
+      base = normalizeHex(value) ?? resolveDrawingThemeColor(theme, value ?? '');
+  }
+  return base ? applyDrawingTransforms(base, element) : undefined;
 }
 
 export function resolveDrawingThemeColor(theme: ThemeInfo, name: string): string | undefined {
@@ -687,7 +826,16 @@ function parseTheme(themeElement: Element | undefined, colorSchemeMapping?: Colo
     fonts[`${prefix}EastAsia`] = ea?.getAttribute('typeface') || latinTypeface;
     fonts[`${prefix}Bidi`] = cs?.getAttribute('typeface') || fonts[`${prefix}Bidi`] || latinTypeface;
   }
-  return { colors, fonts, colorSchemeMapping };
+  const formatScheme = Array.from(themeElement.getElementsByTagNameNS(DRAWINGML_NS, 'fmtScheme'))[0];
+  const list = (name: string): Element[] => {
+    const container = formatScheme ? Array.from(formatScheme.childNodes).find((child) =>
+      child.nodeType === 1 && (child as Element).localName === name) as Element | undefined : undefined;
+    return container ? Array.from(container.childNodes).filter((child): child is Element => child.nodeType === 1) : [];
+  };
+  return {
+    colors, fonts, colorSchemeMapping,
+    ...(formatScheme ? { formatScheme: { fills: list('fillStyleLst'), lines: list('lnStyleLst'), backgroundFills: list('bgFillStyleLst') } } : {}),
+  };
 }
 
 function parseStyleType(value: string | undefined): StyleType | undefined {

@@ -32,7 +32,7 @@ import type {
   WidthFormat,
 } from './types.js';
 import { contentTypeForExtension, dataUrlForBytes, isBrowserRenderableContentType, pxToEmu } from './drawing.js';
-import { customGeometryPath, presetGeometryPath } from './geometry.js';
+import { customGeometryPath, presetGeometryIsOpen, presetGeometryPath } from './geometry.js';
 import { axisTicks, barRects, pieSlicePath, valueToPx } from './chart.js';
 import { isSafeHyperlinkUrl } from './hyperlink.js';
 import { reviewerBucketKey, reviewerBucketOf } from './revisions.js';
@@ -1966,6 +1966,12 @@ export class DocxEditor {
     else path.setAttribute('stroke', fill?.type === 'picture' ? '#c7d3e5' : 'none');
     if (shape.line?.widthPx !== undefined) path.setAttribute('stroke-width', String(shape.line.widthPx));
     if (shape.line?.dash) path.setAttribute('stroke-dasharray', shape.line.dash);
+    // 线、连接线、弧、括号这类开放路径只描边：SVG 会把开放路径首尾连起来填色。没写线条颜色时
+    // 它们就整个看不见了，所以给一个黑色兜底（Word 的默认线条色）。
+    if (!shape.customGeometry && shape.geometry && presetGeometryIsOpen(shape.geometry)) {
+      path.setAttribute('fill', 'none');
+      if (!shape.line?.color) path.setAttribute('stroke', '#000000');
+    }
     if (shape.rotation || shape.flipH || shape.flipV) {
       const transforms = [`translate(${width / 2} ${height / 2})`];
       if (shape.rotation) transforms.push(`rotate(${shape.rotation})`);

@@ -25,7 +25,7 @@ export {
 } from './drawing.js';
 export { WORD_NS, REL_NS, CONTENT_TYPES_NS, OFFICE_DOCUMENT_REL, OFFICE_REL_NS } from './xml.js';
 export { readRunShapes } from './shapes.js';
-export { customGeometryPath, presetGeometryPath } from './geometry.js';
+export { customGeometryPath, presetGeometryIsOpen, presetGeometryPath, supportedPresetGeometries } from './geometry.js';
 export { axisTicks, barRects, pieSlicePath, valueToPx } from './chart.js';
 export { equationToMathMl, parseEquationInstruction } from './fields.js';
 export {

@@ -48,11 +48,22 @@ function cssColor(value: string | undefined): string | undefined {
     ? value.toLowerCase() : undefined;
 }
 
-function colorWithAlpha(theme: ThemeInfo, color: Element | undefined): string | undefined {
-  const hex = resolveDrawingColor(theme, color);
+/** DrawingML 的颜色元素名，用来从填充 / 线条 / 渐变停止点里挑出那个颜色子元素。 */
+const COLOR_ELEMENTS = new Set(['srgbClr', 'schemeClr', 'sysClr', 'prstClr', 'scrgbClr', 'hslClr']);
+
+function colorChild(parent: Element | undefined): Element | undefined {
+  if (!parent) return undefined;
+  return Array.from(parent.childNodes).find((child) =>
+    child.nodeType === 1 && (child as Element).namespaceURI === A_NS && COLOR_ELEMENTS.has((child as Element).localName ?? '')) as Element | undefined;
+}
+
+function colorWithAlpha(theme: ThemeInfo, color: Element | undefined, placeholder?: Element): string | undefined {
+  const hex = resolveDrawingColor(theme, color, placeholder);
   if (!hex) return undefined;
-  const alpha = color ? descendants(color, A_NS, 'alpha')[0]?.getAttribute('val') : undefined;
-  if (alpha === undefined || !Number.isFinite(Number(alpha))) return `#${hex}`;
+  // 占位色上的 alpha 也算：主题格式表写 phClr，透明度可能在引用处（fillRef 的颜色）上。
+  const alphaOf = (element: Element | undefined) => element ? descendants(element, A_NS, 'alpha')[0]?.getAttribute('val') : undefined;
+  const alpha = alphaOf(color) ?? (color?.localName === 'schemeClr' && color.getAttribute('val') === 'phClr' ? alphaOf(placeholder) : undefined);
+  if (alpha === undefined || alpha === null || !Number.isFinite(Number(alpha))) return `#${hex}`;
   const opacity = Math.max(0, Math.min(1, Number(alpha) / 100000));
   const [r, g, b] = hex.match(/../g)!.map((channel: string) => parseInt(channel, 16));
   return `rgba(${r}, ${g}, ${b}, ${opacity})`;
@@ -67,23 +78,39 @@ function readShapeAppearance(spPr: Element | undefined, theme: ThemeInfo, relati
   return { ...(geometry ? { geometry } : {}), ...(fill ? { fill } : {}), ...(line ? { line } : {}), ...(customGeometry ? { customGeometry } : {}) };
 }
 
+const FILL_ELEMENTS = new Set(['noFill', 'solidFill', 'gradFill', 'blipFill', 'pattFill']);
+
 function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, style?: Element): NonNullable<ShapeInfo['fill']> | undefined {
   const fillNode = spPr && Array.from(spPr.childNodes).find((child) =>
     child.nodeType === 1 && (child as Element).namespaceURI === A_NS &&
-    ['noFill', 'solidFill', 'gradFill', 'blipFill'].includes((child as Element).localName ?? '')) as Element | undefined;
-  if (!fillNode) {
-    const fillRef = style && descendants(style, A_NS, 'fillRef')[0];
-    const color = fillRef && (descendants(fillRef, A_NS, 'schemeClr')[0] ?? descendants(fillRef, A_NS, 'srgbClr')[0]);
-    const resolved = colorWithAlpha(theme, color);
-    return resolved ? { type: 'solid', color: resolved } : undefined;
-  }
+    FILL_ELEMENTS.has((child as Element).localName ?? '')) as Element | undefined;
+  if (fillNode) return fillFromNode(fillNode, theme, relationships);
+  const fillRef = style && descendants(style, A_NS, 'fillRef')[0];
+  if (!fillRef) return undefined;
+  const placeholder = colorChild(fillRef);
+  // idx 指向主题格式表：0 是「没有填充」，1..999 是 fillStyleLst，1001 起是 bgFillStyleLst。
+  const index = Number(fillRef.getAttribute('idx'));
+  if (index === 0) return { type: 'none' };
+  const scheme = theme.formatScheme;
+  const themed = !Number.isSafeInteger(index) ? undefined
+    : index >= 1001 ? scheme?.backgroundFills[index - 1001] : scheme?.fills[index - 1];
+  if (themed && FILL_ELEMENTS.has(themed.localName ?? '')) return fillFromNode(themed, theme, relationships, placeholder);
+  // 主题里没有格式表（或 idx 越界）时退回引用处的颜色当实心填充，这是原来的行为。
+  const resolved = colorWithAlpha(theme, placeholder);
+  return resolved ? { type: 'solid', color: resolved } : undefined;
+}
+
+function fillFromNode(fillNode: Element, theme: ThemeInfo, relationships: Map<string, RelationshipTarget>, placeholder?: Element): NonNullable<ShapeInfo['fill']> {
   if (fillNode.localName === 'noFill') return { type: 'none' };
-  if (fillNode.localName === 'solidFill') return { type: 'solid', color: colorWithAlpha(theme, descendants(fillNode, A_NS, 'srgbClr')[0] ?? descendants(fillNode, A_NS, 'schemeClr')[0]) };
+  if (fillNode.localName === 'solidFill') return { type: 'solid', color: colorWithAlpha(theme, colorChild(fillNode), placeholder) };
+  if (fillNode.localName === 'pattFill') {
+    // 图案填充画不出图案，取前景色当实心——比留白更接近原样。
+    return { type: 'solid', color: colorWithAlpha(theme, colorChild(first(fillNode, A_NS, 'fgClr')), placeholder) };
+  }
   if (fillNode.localName === 'gradFill') {
     const stops = descendants(fillNode, A_NS, 'gs').flatMap((stop) => {
-      const color = descendants(stop, A_NS, 'srgbClr')[0] ?? descendants(stop, A_NS, 'schemeClr')[0];
       const position = Number(stop.getAttribute('pos'));
-      const resolved = colorWithAlpha(theme, color);
+      const resolved = colorWithAlpha(theme, colorChild(stop), placeholder);
       return Number.isFinite(position) && resolved ? [{ position: Math.max(0, Math.min(1, position / 100000)), color: resolved }] : [];
     });
     const angle = Number(descendants(fillNode, A_NS, 'lin')[0]?.getAttribute('ang'));
@@ -98,25 +125,44 @@ function readDrawingFill(spPr: Element | undefined, theme: ThemeInfo, relationsh
   };
 }
 
+const LINE_DASHES: Record<string, string> = {
+  dash: '6 3', dashDot: '6 3 1 3', dot: '1 3', lgDash: '10 3', lgDashDot: '10 3 1 3',
+  lgDashDotDot: '10 3 1 3 1 3', sysDash: '4 2', sysDashDot: '4 2 1 2', sysDot: '1 2',
+};
+
 function readLine(spPr: Element | undefined, theme: ThemeInfo, style?: Element): ShapeInfo['line'] {
   const line = spPr && Array.from(spPr.childNodes).find((child) =>
     child.nodeType === 1 && (child as Element).namespaceURI === A_NS && (child as Element).localName === 'ln') as Element | undefined;
-  const lineRef = !line && style ? descendants(style, A_NS, 'lnRef')[0] : undefined;
+  const lineRef = style ? descendants(style, A_NS, 'lnRef')[0] : undefined;
+  const placeholder = colorChild(lineRef);
+  const index = Number(lineRef?.getAttribute('idx'));
+  const themed = lineRef && Number.isSafeInteger(index) && index >= 1 ? theme.formatScheme?.lines[index - 1] : undefined;
   if (!line && !lineRef) return undefined;
-  const color = line
-    ? descendants(line, A_NS, 'srgbClr')[0] ?? descendants(line, A_NS, 'schemeClr')[0]
-    : lineRef && (descendants(lineRef, A_NS, 'schemeClr')[0] ?? descendants(lineRef, A_NS, 'srgbClr')[0]);
-  const width = line ? Number(line.getAttribute('w')) : Number.NaN;
-  const dashName = line ? descendants(line, A_NS, 'prstDash')[0]?.getAttribute('val') : undefined;
-  const dashes: Record<string, string> = {
-    dash: '6 3', dashDot: '6 3 1 3', dot: '1 3', lgDash: '10 3', lgDashDot: '10 3 1 3',
-    lgDashDotDot: '10 3 1 3 1 3', sysDash: '4 2', sysDashDot: '4 2 1 2', sysDot: '1 2',
+  // 线条按属性逐项合并：spPr 里的 a:ln 常常只写了宽度，颜色和线型仍来自 lnRef 指向的主题线条。
+  const fromLine = (element: Element | undefined): NonNullable<ShapeInfo['line']> & { none?: boolean } => {
+    if (!element) return {};
+    const fill = Array.from(element.childNodes).find((child) =>
+      child.nodeType === 1 && FILL_ELEMENTS.has((child as Element).localName ?? '')) as Element | undefined;
+    const width = Number(element.getAttribute('w'));
+    const dashName = first(element, A_NS, 'prstDash')?.getAttribute('val');
+    const color = fill?.localName === 'solidFill' ? colorWithAlpha(theme, colorChild(fill), placeholder)
+      : fill?.localName === 'gradFill' ? colorWithAlpha(theme, colorChild(descendants(fill, A_NS, 'gs')[0]), placeholder)
+        : undefined;
+    return {
+      ...(fill?.localName === 'noFill' ? { none: true } : {}),
+      ...(color ? { color } : {}),
+      ...(element.hasAttribute('w') && Number.isFinite(width) && width >= 0 ? { widthPx: emuToPx(width) } : {}),
+      ...(dashName && LINE_DASHES[dashName] ? { dash: LINE_DASHES[dashName] } : {}),
+    };
   };
-  return {
-    ...(colorWithAlpha(theme, color) ? { color: colorWithAlpha(theme, color) } : {}),
-    ...(line && Number.isFinite(width) && width >= 0 ? { widthPx: emuToPx(width) } : {}),
-    ...(dashName && dashes[dashName] ? { dash: dashes[dashName] } : {}),
-  };
+  // lnRef idx="0"：没有主题线条。
+  const base = themed ? fromLine(themed) : lineRef && index !== 0 && !line ? { ...(colorWithAlpha(theme, placeholder) ? { color: colorWithAlpha(theme, placeholder) } : {}) } : {};
+  const merged = { ...base, ...fromLine(line) };
+  // 显式 <a:noFill/> 的线条就是没有线：不能让主题线条的颜色从下面透上来。
+  if (merged.none) return {};
+  const { none: _none, ...result } = merged;
+  // lnRef idx="0" 而且 spPr 里没有 a:ln：根本没有线条，和「没写」一样。
+  return !line && !Object.keys(result).length ? undefined : result;
 }
 
 function direct(parent: Element | undefined, namespace: string, localName: string): Element | undefined {

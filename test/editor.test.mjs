@@ -694,7 +694,7 @@ test('makeShape falls back to a styled rectangle for unsupported presets', () =>
     heightPx: 40,
     placement: 'inline',
     hasTextContent: false,
-    geometry: 'flowChartMagneticDisk',
+    geometry: 'gear6',
     fill: { type: 'solid', color: '#654321' },
     line: { color: '#abcdef', widthPx: 3 },
   }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
@@ -3753,4 +3753,20 @@ test('EQ switches other than a top-level overstrike render as decorative MathML,
   const overstrike = newSpan();
   editor.appendRun(overstrike, { ...paragraph, text: '甲' }, { index: 2, text: '甲', field: { index: 0, role: 'result' } }, reviewContext, 720, 0);
   assert.equal(overstrike.childNodes.filter((child) => child.dataset?.docxEquation === 'math').length, 0);
+});
+
+test('open preset geometries (brackets, arcs, connectors) render as strokes without fill', () => {
+  const editor = makeRunRenderEditor();
+  editor.document = {};
+  const render = (geometry, extra = {}) => editor.makeShape({
+    id: `open-${geometry}`, paragraph: 0, run: 0, kind: 'shape', form: 'drawingml', widthPx: 40, heightPx: 120,
+    placement: 'inline', hasTextContent: false, geometry, fill: { type: 'solid', color: '#4472C4' }, ...extra,
+  }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() }).childNodes[0].childNodes.find((node) => node.tagName === 'PATH');
+  // 主题给了实心填充，但括号是开放路径：SVG 会把它首尾连起来填成一块月牙。
+  const bracket = render('leftBracket');
+  assert.equal(bracket.attributes.get('fill'), 'none');
+  assert.equal(bracket.attributes.get('stroke'), '#000000', '没写线条颜色时黑色兜底，否则整个看不见');
+  assert.equal(render('arc', { line: { color: '#ff0000' } }).attributes.get('stroke'), '#ff0000');
+  // 闭合形状照常填充。
+  assert.equal(render('chord').attributes.get('fill'), '#4472C4');
 });

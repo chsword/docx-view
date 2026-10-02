@@ -15,7 +15,7 @@ test('preset shape geometry returns deterministic paths for supported names', ()
     assert.equal(typeof path, 'string', name);
     assert.equal(path, presetGeometryPath(name, 120, 80), name);
   }
-  assert.equal(presetGeometryPath('flowChartMagneticDisk', 120, 80), undefined);
+  assert.equal(presetGeometryPath('gear6', 120, 80), undefined);
 });
 
 test('left arrow adjustments are clamped to keep the path within its bounds', () => {
