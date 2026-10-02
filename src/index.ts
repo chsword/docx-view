@@ -4,6 +4,7 @@ export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export { zipParts } from './zip.js';
 export { compareDocxBytes, readDocxSnapshot, searchDocxText } from './offload.js';
+export { DocumentPasswordError, isEncryptedPackage } from './encryption.js';
 export type { ZipParts } from './zip.js';
 export type {
   EastAsianLayout, EquationNode, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource,

@@ -38,6 +38,8 @@ import {
 import { readRunShapes, shapeTextElements } from './shapes.js';
 import { parseWebDivs } from './web-divs.js';
 import { convertStrictParts } from './strict.js';
+import { isCompoundFile } from './cfb.js';
+import { decryptPackage, encryptPackage } from './encryption.js';
 import { MATH_NS, linearToMathMl, mathMlToOmml, ommlToLinearTextWithInfo, ommlToMathMlWithInfo } from './math.js';
 import {
   assertIndex,
@@ -2827,6 +2829,8 @@ export class DocxDocument {
   private paragraphCache?: { revision: number; mainPath: string; paragraphs: ParagraphInfo[] };
   /** 打开的是 Strict OOXML，已在内存里换成 Transitional。 */
   private convertedFromStrict = false;
+  /** 是用密码从加密包打开的。存盘不会自动再加密（库不保存密码）。 */
+  private openedEncrypted = false;
   /** 主文档里有没有能产出图片的元素；按 revision 失效（和其余读模型缓存同一个判定）。 */
   private imageMarkupCache?: { revision: number; mainPath: string; present: boolean };
   private documents = new Map<string, Document>();
@@ -2963,10 +2967,23 @@ export class DocxDocument {
     return new DocxDocument(new Map(Object.entries(files).map(([path, xml]) => [path, encoder.encode(xml)])));
   }
 
-  static async load(input: Uint8Array | ArrayBuffer | Blob): Promise<DocxDocument> {
+  /**
+   * `password`：打开加密的 .docx。没给密码时抛 `DocumentPasswordError`（`reason: 'required'`），宿主
+   * 据此弹出密码框；密码错是 `'incorrect'`，包被改过是 `'tampered'`，Office 2007 的 Standard 加密等
+   * 不支持的方式是 `'unsupported'`。
+   */
+  static async load(input: Uint8Array | ArrayBuffer | Blob, options: { password?: string } = {}): Promise<DocxDocument> {
     const size = input instanceof Blob ? input.size : input.byteLength;
     if (size > MAX_ARCHIVE) throw new Error('DOCX archive exceeds 50 MiB.');
-    const bytes = input instanceof Blob ? await input.arrayBuffer() : input;
+    let bytes: Uint8Array = input instanceof Blob ? new Uint8Array(await input.arrayBuffer())
+      : input instanceof Uint8Array ? input : new Uint8Array(input);
+    let encrypted = false;
+    if (isCompoundFile(bytes)) {
+      if (options.password !== undefined) assertText(options.password, 'password');
+      bytes = await decryptPackage(bytes, options.password);
+      encrypted = true;
+      if (bytes.byteLength > MAX_ARCHIVE) throw new Error('DOCX archive exceeds 50 MiB.');
+    }
     const zip = await JSZip.loadAsync(bytes, { createFolders: false });
     const entries = Object.values(zip.files) as JSZip.JSZipObject[];
     if (entries.length > MAX_PARTS) throw new Error('DOCX contains too many ZIP entries.');
@@ -2986,6 +3003,7 @@ export class DocxDocument {
     const fromStrict = convertStrictParts(parts);
     const document = new DocxDocument(parts);
     document.convertedFromStrict = fromStrict;
+    document.openedEncrypted = encrypted;
     return document;
   }
 
@@ -9697,16 +9715,26 @@ export class DocxDocument {
    * 传进去的是部件字节的**映射**，结构化克隆会复制它们，所以本文档自己的 `parts` 不受影响
    * （不要转移 ArrayBuffer，那会把这边的字节置为分离状态）。
    */
-  async toUint8Array(options: { zip?: ZipParts } = {}): Promise<Uint8Array> {
+  /**
+   * `password`：存成加密的 .docx（Agile 加密，与 Word 2010+ 相同的参数）。用密码打开的文档**不会**
+   * 自动按原密码加密——库不保存密码；要保持加密，存盘时把密码再传一次（`getPackageKind().encrypted`
+   * 告诉你它原本是加密的）。
+   */
+  async toUint8Array(options: { zip?: ZipParts; password?: string } = {}): Promise<Uint8Array> {
     const zip = options.zip ?? zipParts;
     if (typeof zip !== 'function') throw new Error('zip must be a function.');
+    if (options.password !== undefined) {
+      assertText(options.password, 'password');
+      if (!options.password) throw new Error('password must not be empty.');
+      if (options.password.length > 255) throw new Error('password must be at most 255 characters (Word\'s limit).');
+    }
     this.materializeAllParts();
     const bytes = await zip(this.parts);
     if (!(bytes instanceof Uint8Array)) throw new Error('zip must resolve to a Uint8Array.');
-    return bytes;
+    return options.password === undefined ? bytes : encryptPackage(bytes, options.password);
   }
 
-  async toBlob(options: { zip?: ZipParts } = {}): Promise<Blob> {
+  async toBlob(options: { zip?: ZipParts; password?: string } = {}): Promise<Blob> {
     const bytes = await this.toUint8Array(options);
     // MIME 跟着包的种类走：.docm 用 docx 的 MIME 存出去，Word 会按扩展名打开，但浏览器与网盘按 MIME 判类型。
     return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: this.getPackageKind().mimeType });
@@ -9716,7 +9744,9 @@ export class DocxDocument {
    * 这是哪一种 WordprocessingML 包，以及有没有 VBA 工程。宏**从不执行**，只是原样带着的字节；
    * 要存成不含宏的文件用 `removeMacros()`。
    */
-  getPackageKind(): { kind: PackageKind; extension: string; mimeType: string; hasMacros: boolean; convertedFromStrict: boolean } {
+  getPackageKind(): {
+    kind: PackageKind; extension: string; mimeType: string; hasMacros: boolean; convertedFromStrict: boolean; encrypted: boolean;
+  } {
     const kind = this.packageKind();
     const relsPathOfMain = relsPath(this.mainPath);
     let hasMacros = false;
@@ -9731,6 +9761,7 @@ export class DocxDocument {
     return {
       kind, extension: PACKAGE_KINDS[kind].extension, mimeType: PACKAGE_KINDS[kind].mimeType, hasMacros,
       convertedFromStrict: this.convertedFromStrict,
+      encrypted: this.openedEncrypted,
     };
   }
 

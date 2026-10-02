@@ -1,4 +1,4 @@
-import { DocxDocument, DocxEditor, WORD_NS, linearToMathMl } from '../src/index.js';
+import { DocumentPasswordError, DocxDocument, DocxEditor, WORD_NS, linearToMathMl } from '../src/index.js';
 import { contentTypeForExtension, decodeBase64 } from '../src/index.js';
 import type {
   AgentRequest,
@@ -112,6 +112,7 @@ function changeNumberingLevel(delta: number): void {
 
 let doc = createSample();
 let filename = '产品计划.docx';
+let documentPassword: string | undefined;
 let xmlRevision = -1;
 let imageAction: 'insert' | 'replace' = 'insert';
 let imageActionTarget: ImageInfo | null = null;
@@ -1724,6 +1725,7 @@ element('add-endnote').addEventListener('click', () => run(() => {
 }));
 element('new-document').addEventListener('click', () => run(() => {
   if (!window.confirm('新建会替换当前工作区。请先下载需要保留的文档，是否继续？')) return;
+  documentPassword = undefined;
   setDocument(DocxDocument.create(), '未命名.docx');
   message('已创建空白文档。点击纸张中的空段落开始输入。');
 }));
@@ -1735,7 +1737,21 @@ element<HTMLInputElement>('file-input').addEventListener('change', (event) => ru
   if (!file) return;
   if (!window.confirm('打开文件将替换当前工作区。请确认已下载需要保留的修改。')) return;
   message(`正在读取 ${file.name}…`);
-  const next = await DocxDocument.load(file);
+  // 加密文件：库报 required / incorrect 时向用户要密码，最多三次。密码只留在这个页面的内存里，
+  // 下载时用它重新加密（库本身不保存密码）。
+  let next: DocxDocument | undefined;
+  let password: string | undefined;
+  for (let attempt = 0; !next; attempt++) {
+    try {
+      next = await DocxDocument.load(file, password === undefined ? {} : { password });
+    } catch (problem) {
+      if (!(problem instanceof DocumentPasswordError) || !['required', 'incorrect'].includes(problem.reason) || attempt >= 3) throw problem;
+      const entered = window.prompt(problem.reason === 'incorrect' ? '密码不对，请重新输入：' : `「${file.name}」有密码保护，请输入密码：`);
+      if (entered === null) { message('已取消打开。'); return; }
+      password = entered;
+    }
+  }
+  documentPassword = password;
   setDocument(next, file.name);
   const macros = next.getPackageKind().hasMacros
     ? '文件含 VBA 宏：不会运行，保存时原样保留。'
@@ -1765,7 +1781,8 @@ element<HTMLInputElement>('image-file-input').addEventListener('change', (event)
 }));
 element('download-document').addEventListener('click', () => run(async () => {
   editor.flush();
-  const blob = await doc.toBlob();
+  // 用密码打开的文件按原密码重新加密；否则存成普通文件。
+  const blob = await doc.toBlob(documentPassword ? { password: documentPassword } : {});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -1776,7 +1793,7 @@ element('download-document').addEventListener('click', () => run(async () => {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  message(`已生成 ${extension.slice(1).toUpperCase()} 并发起下载。`);
+  message(`已生成 ${extension.slice(1).toUpperCase()}${documentPassword ? '（已按打开时的密码加密）' : ''}并发起下载。`);
 }));
 element('reset-agent').addEventListener('click', () => run(() => { resetAgent(); message('已填入使用当前修订号的请求示例。'); }));
 element('apply-agent').addEventListener('click', () => run(() => {
