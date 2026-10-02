@@ -6,7 +6,7 @@ import { collectTextElements, elementText, PROPERTY_ORDER, reviewerBucketKey, re
 
 export { reviewerBucketKey, reviewerBucketOf } from './internal/elements.js';
 
-const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel'] as const;
+const REVISION_NAMES = ['ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'sectPrChange', 'cellIns', 'cellDel'] as const;
 const DEFAULT_REVISION_AUTHOR = 'docx-view';
 const WRAPPER_KIND = {
   ins: 'insertion',
@@ -20,6 +20,7 @@ const CHANGE_KIND = {
   tblPrChange: 'tableFormatChange',
   trPrChange: 'rowFormatChange',
   tcPrChange: 'cellFormatChange',
+  sectPrChange: 'sectionFormatChange',
 } as const satisfies Partial<Record<string, RevisionMark['kind']>>;
 const REVIEWER_PLACEHOLDERS: Record<Exclude<ReviewerAuthorKind, 'named'>, string> = {
   unattributed: '(unattributed)',

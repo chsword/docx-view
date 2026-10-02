@@ -1,5 +1,5 @@
 import type { Document, Element } from '@xmldom/xmldom';
-import type { SectionInfo, SectionType } from './types.js';
+import type { SectionInfo, SectionProperties, SectionType } from './types.js';
 import { WORD_NS, children, descendants } from './xml.js';
 import { readBorderSide } from './styles.js';
 
@@ -201,23 +201,34 @@ export function collectSections(mainDocument: Document): SectionDescriptor[] {
   return sections;
 }
 
+/**
+ * 一个 `sectPr` 自己的版面属性，不含它在文档里的位置与页眉页脚引用。`readSections()` 用它，
+ * `w:sectPrChange` 里的旧值快照（CT_SectPrBase，本来就没有页眉页脚引用）也用它读。
+ */
+export function readSectionProperties(sectPr: Element): SectionProperties {
+  const grid = docGrid(sectPr);
+  const lines = lineNumbering(sectPr);
+  const borders = pageBorders(sectPr);
+  const alignment = verticalAlignment(sectPr);
+  return {
+    type: sectionType(sectPr),
+    ...pageSetup(sectPr),
+    ...(grid ? { docGrid: grid } : {}),
+    pageNumbering: pageNumbering(sectPr),
+    ...(lines ? { lineNumbering: lines } : {}),
+    ...(borders ? { pageBorders: borders } : {}),
+    ...(alignment ? { verticalAlignment: alignment } : {}),
+    titlePage: !!children(sectPr, 'titlePg')[0],
+  };
+}
+
 export function readSections(mainDocument: Document, resolveRelationship: (id: string) => string | undefined): SectionInfo[] {
-  return collectSections(mainDocument).map((section, index) => {
-    const grid = docGrid(section.sectPr);
-    return {
-      index,
-      startParagraph: section.startParagraph,
-      endParagraph: section.endParagraph,
-      type: sectionType(section.sectPr),
-      ...pageSetup(section.sectPr),
-      ...(grid ? { docGrid: grid } : {}),
-      pageNumbering: pageNumbering(section.sectPr),
-      ...(lineNumbering(section.sectPr) ? { lineNumbering: lineNumbering(section.sectPr) } : {}),
-      ...(pageBorders(section.sectPr) ? { pageBorders: pageBorders(section.sectPr) } : {}),
-      ...(verticalAlignment(section.sectPr) ? { verticalAlignment: verticalAlignment(section.sectPr) } : {}),
-      titlePage: !!children(section.sectPr, 'titlePg')[0],
-      headers: references(section.sectPr, 'headerReference', resolveRelationship),
-      footers: references(section.sectPr, 'footerReference', resolveRelationship),
-    };
-  });
+  return collectSections(mainDocument).map((section, index) => ({
+    index,
+    startParagraph: section.startParagraph,
+    endParagraph: section.endParagraph,
+    ...readSectionProperties(section.sectPr),
+    headers: references(section.sectPr, 'headerReference', resolveRelationship),
+    footers: references(section.sectPr, 'footerReference', resolveRelationship),
+  }));
 }

@@ -519,6 +519,7 @@ function revisionSummaryText(revision: ReturnType<DocxDocument['getRevisions']>[
   if (revision.kind === 'runFormatChange') return '文字格式修订';
   if (revision.kind === 'paragraphFormatChange') return '段落格式修订';
   if (revision.kind === 'tableFormatChange') return '表格格式修订';
+  if (revision.kind === 'sectionFormatChange') return '页面设置修订';
   if (revision.kind === 'rowFormatChange') return '行格式修订';
   return '单元格格式修订';
 }

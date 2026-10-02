@@ -52,7 +52,7 @@ import {
   validateTableFormat,
   validateTabs,
 } from './operations.js';
-import { collectSections, readSections, SECTION_ORDER } from './section.js';
+import { collectSections, readSectionProperties, readSections, SECTION_ORDER } from './section.js';
 import { fieldKindFromInstruction, formatPageNumber, NEVER_EVALUATE, pageFieldResult, parseFields } from './fields.js';
 import {
   cloneStyleInfo,
@@ -220,7 +220,8 @@ const REVISION_FILTER_MAX_AUTHORS = 1_000;
 const COMPARE_MAX_PARAGRAPHS = 1_000;
 const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
 const REVISION_ELEMENT_NAMES = new Set([
-  'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'cellIns', 'cellDel',
+  'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'sectPrChange',
+  'cellIns', 'cellDel',
 ]);
 
 type HistoryAction =
@@ -628,6 +629,56 @@ function nearestNonTransparentAncestor(element: Element): Element {
     result = result.parentNode as Element;
   }
   return result;
+}
+
+/** 修订快照只管版面属性：CT_SectPrBase 里没有页眉页脚引用，也不含修订标记本身。 */
+const SECTION_SNAPSHOT_EXCLUDED = new Set(['headerReference', 'footerReference', 'sectPrChange']);
+
+/** 版面属性子元素的副本（快照用），和用来判断「有没有真的改」的序列化形式。 */
+function sectionBase(sectPr: Element): { nodes: Element[]; xml: string } {
+  const nodes = children(sectPr).filter((child) => !SECTION_SNAPSHOT_EXCLUDED.has(child.localName ?? ''))
+    .map((child) => child.cloneNode(true) as Element);
+  const serializer = new XMLSerializer();
+  return { nodes, xml: nodes.map((node) => serializer.serializeToString(node)).join('') };
+}
+
+/**
+ * 记一条 `w:sectPrChange`。已经有一条时**只刷新 id / 作者 / 日期，不重写快照**（第 17 条）：
+ * 快照必须始终是最初的未修订属性，连改两次再拒绝要回到最初，而不是回到中间态。
+ */
+function trackSectionChange(sectPr: Element, original: Element[], author: string | undefined, created: boolean): void {
+  const marker = sectionProperty(sectPr, 'sectPrChange');
+  applySectionRevisionMetadata(marker, author);
+  if (!created && children(marker, 'sectPr')[0]) return;
+  for (const child of children(marker)) marker.removeChild(child);
+  const snapshot = wordElement(sectPr.ownerDocument!, 'sectPr');
+  for (const node of original) snapshot.appendChild(node);
+  marker.appendChild(snapshot);
+}
+
+function applySectionRevisionMetadata(marker: Element, author: string | undefined): void {
+  const used = Array.from(marker.ownerDocument!.getElementsByTagNameNS(WORD_NS, '*'))
+    .map((element) => revisionIdOf(element))
+    .filter((value): value is number => value !== undefined);
+  marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
+  marker.setAttributeNS(WORD_NS, 'w:author', author?.trim() || 'docx-view');
+}
+
+/** 拒绝 `sectPrChange`：版面属性换回快照，页眉页脚引用原样留着（快照里本来就没有它们）。 */
+function restoreSectionSnapshot(marker: Element): void {
+  const sectPr = marker.parentNode as Element | null;
+  const snapshot = children(marker, 'sectPr')[0];
+  if (!sectPr || !snapshot) return;
+  for (const child of children(sectPr)) {
+    if (!SECTION_SNAPSHOT_EXCLUDED.has(child.localName ?? '')) sectPr.removeChild(child);
+  }
+  for (const child of children(snapshot)) {
+    if (SECTION_SNAPSHOT_EXCLUDED.has(child.localName ?? '')) continue;
+    const index = SECTION_ORDER.indexOf(child.localName as typeof SECTION_ORDER[number]);
+    const following = children(sectPr).find((existing) =>
+      SECTION_ORDER.indexOf(existing.localName as typeof SECTION_ORDER[number]) > index);
+    sectPr.insertBefore(child.cloneNode(true), following ?? null);
+  }
 }
 
 function sectionProperty(parent: Element, name: string): Element {
@@ -4889,13 +4940,18 @@ export class DocxDocument {
     const result: RevisionInfo[] = [];
     const moveEntries: { element: Element; info: RevisionInfo }[] = [];
     const push = (element: Element, kind: RevisionInfo['kind']): void => {
-      const paragraph = revisionParagraphAnchor(element);
+      // sectPrChange 挂在结束这一节的段落上。正文末尾的 sectPr 不在任何段落里，通用的锚点查找
+      // 会往上找到 body 再取它的**第一个**段落——那是文档开头，不是这一节的末尾。
+      const paragraph = element.localName === 'sectPrChange'
+        ? (nearestWordAncestor(element, 'p') ?? paragraphs.at(-1))
+        : revisionParagraphAnchor(element);
       if (!paragraph) return;
       const paragraphNumber = paragraphIndex.get(paragraph);
       if (paragraphNumber === undefined) return;
       const mark = readRevisionMark(element, kind, theme);
       if (!mark) return;
-      const run = revisionRunAnchor(paragraph, element);
+      const run = kind === 'sectionFormatChange' ? undefined : revisionRunAnchor(paragraph, element);
+      const previousSectPr = kind === 'sectionFormatChange' ? children(element, 'sectPr')[0] : undefined;
       const deletedText = ['del', 'moveFrom'].includes(element.localName ?? '') ? deletedTextOf(element) || undefined : undefined;
       const runNumber = run ? runIndexOf(paragraph, run) : undefined;
       const info: RevisionInfo = {
@@ -4908,6 +4964,7 @@ export class DocxDocument {
         ...(runNumber !== undefined ? { run: runNumber } : {}),
         ...(deletedText !== undefined ? { deletedText } : {}),
         ...(mark.previousFormat !== undefined ? { previousFormat: mark.previousFormat } : {}),
+        ...(previousSectPr ? { previousSection: readSectionProperties(previousSectPr) } : {}),
       };
       result.push(info);
       if (info.kind === 'move') moveEntries.push({ element, info });
@@ -4944,6 +5001,9 @@ export class DocxDocument {
             break;
           case 'tcPrChange':
             push(element, 'cellFormatChange');
+            break;
+          case 'sectPrChange':
+            push(element, 'sectionFormatChange');
             break;
         }
         walk(element);
@@ -5139,6 +5199,11 @@ export class DocxDocument {
     const name = marker.localName ?? '';
     if (['rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange'].includes(name)) {
       this.applyFormatChangeRevision(marker, action);
+      return;
+    }
+    if (name === 'sectPrChange') {
+      if (action === 'reject') restoreSectionSnapshot(marker);
+      this.removeRevisionMarker(marker);
       return;
     }
     if (['ins', 'moveTo', 'del', 'moveFrom'].includes(name)) {
@@ -7124,6 +7189,8 @@ export class DocxDocument {
   }
 
   setPageSetup(section: number, setup: Partial<PageSetup>): void {
+    const tracked = this.trackChangesEnabled();
+    const author = tracked ? this.trackedRevisionAuthor() : undefined;
     this.updatePartXml(this.mainPath, document => {
       let descriptors = collectSections(document);
       if (!descriptors.length && section === 0) {
@@ -7133,6 +7200,29 @@ export class DocxDocument {
       const descriptor = descriptors[section];
       if (!descriptor) throw new Error(`Section ${section} does not exist.`);
       const sectPr = descriptor.sectPr;
+      if (tracked) {
+        // 改完再看有没有真的变：没变就把这次加上的修订标记撤掉，no-op 不该留下一条修订。
+        const before = sectionBase(sectPr);
+        const created = !children(sectPr, 'sectPrChange')[0];
+        this.applyPageSetup(document, sectPr, setup);
+        const after = sectionBase(sectPr).xml;
+        if (after === before.xml) return;
+        const existing = children(sectPr, 'sectPrChange')[0];
+        const snapshot = existing ? children(existing, 'sectPr')[0] : undefined;
+        if (!created && existing && snapshot && sectionBase(snapshot).xml === after) {
+          // 第二次修改恰好改回了最初的值：这条修订已经没有内容，删掉而不是留一条空修订。
+          sectPr.removeChild(existing);
+          return;
+        }
+        trackSectionChange(sectPr, before.nodes, author, created);
+        return;
+      }
+      this.applyPageSetup(document, sectPr, setup);
+    });
+  }
+
+  private applyPageSetup(document: Document, sectPr: Element, setup: Partial<PageSetup>): void {
+    {
       if (setup.type !== undefined) setWordValue(sectionProperty(sectPr, 'type'), setup.type);
       if (setup.pageWidth !== undefined || setup.pageHeight !== undefined || setup.orientation !== undefined) {
         const size = sectionProperty(sectPr, 'pgSz');
@@ -7195,7 +7285,7 @@ export class DocxDocument {
           sectPr.removeChild(existing);
         }
       }
-    });
+    }
   }
 
   insertSectionBreak(paragraph: number, type: SectionType): void {

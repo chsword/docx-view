@@ -474,6 +474,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 **修订与域**
 
 - 当前已支持读取修订（插入、删除、`rPrChange` / `pPrChange` / `tblPrChange` / `trPrChange` / `tcPrChange`）、`trackChanges` 开关，以及常见文本 / 段落 / 图片 / 表格行编辑自动写入修订；这些部件 / XML 会尽量保留。
+- 节属性修订 `w:sectPrChange` 读作 `sectionFormatChange`，挂在**结束这一节的段落**上（正文末尾的 `sectPr` 对应最后一段），旧版面属性在 `previousSection`。拒绝时版面属性换回快照，页眉页脚引用保留（快照是 CT_SectPrBase，本来就不含它们）。`trackChanges` 开启时 `setPageSetup()` 自动记修订：快照始终是第一次修改前的属性，再改只刷新 id / 作者；改回原值则删掉这条修订，没有实际变化的调用不留修订。
 - 接受 / 拒绝修订已支持（逐条、批量、按作者筛选，移动修订成对处理）。域值计算见上文「域」一节：`SEQ`、日期 / 时间、文档属性、`REF` 会重算，提供 `pagination` 时 `PAGE` / `NUMPAGES` / `PAGEREF` 也会写回，`TOC` 仅实现 `\o` 层级过滤与 `\h` 超链接；`INDEX` 始终保留缓存结果。低层 API 仍可直接操作。
 - 编辑器标记域 run 的 `data-docx-field` / `data-docx-field-role`；结果灰底可关闭，结果不可直接编辑（不是“支持编辑域”）。
 

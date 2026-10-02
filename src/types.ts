@@ -783,6 +783,9 @@ export interface ShapeInfo {
 
 export type SectionType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';
 
+/** 一节的版面属性，即 `SectionInfo` 去掉位置与页眉页脚引用。 */
+export type SectionProperties = Omit<SectionInfo, 'index' | 'startParagraph' | 'endParagraph' | 'isImplicit' | 'headers' | 'footers'>;
+
 export interface SectionInfo {
   index: number;
   startParagraph: number;
@@ -892,7 +895,8 @@ export interface DocumentSnapshot {
 
 export interface RevisionMark {
   id: number;
-  kind: 'insertion' | 'deletion' | 'move' | 'runFormatChange' | 'paragraphFormatChange' | 'tableFormatChange' | 'rowFormatChange' | 'cellFormatChange';
+  kind: 'insertion' | 'deletion' | 'move' | 'runFormatChange' | 'paragraphFormatChange' | 'tableFormatChange' | 'rowFormatChange'
+    | 'cellFormatChange' | 'sectionFormatChange';
   author?: string;
   date?: string;
   move?: {
@@ -907,6 +911,11 @@ export interface RevisionInfo extends RevisionMark {
   run?: number;
   deletedText?: string;
   previousFormat?: RunFormat | ParagraphFormat;
+  /**
+   * `sectionFormatChange`（`w:sectPrChange`）记下的旧版面属性。修订挂在**结束这一节的段落**上
+   * （正文末尾那个 `sectPr` 就是最后一段）。
+   */
+  previousSection?: SectionProperties;
 }
 
 export type ReviewerAuthorKind = 'named' | 'unattributed' | 'empty' | 'blank';

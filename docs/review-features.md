@@ -94,7 +94,7 @@ d.formatTableRow(0, 0, { deleted: true, inserted: true });
 | `numbering.ts` | 不用改，但要有回归测试：**接受/拒绝修订不能打乱编号计数**（列表计数依赖段落顺序） |
 | `drawing.ts` | 图片所在 run 被 `w:ins` / `w:del` 包裹时，`readRunImages` 的遍历要能穿透（见 2.3） |
 | `notes.ts` | 脚注正文段落也可能带修订；`getFootnotes()` 的 `blocks` 走同一套 `readParagraph`，不要为脚注单写一套修订解析 |
-| `section.ts` | `sectPrChange` 本期明确不支持，在 README 写明 |
+| `section.ts` | `sectPrChange` 本期未做；后续已补上（读作 `sectionFormatChange`，`setPageSetup()` 在跟踪修订时写入），见 README |
 | `hyperlink.ts` | `isUnsafeHyperlink` 判定不变；但遍历时要注意 `w:ins` / `w:del` 包裹层 |
 | 缓存 | 新增与 `stylesCache` / `numberingContextCache` / `noteStateCache` 同级的修订与批注缓存，失效键仍是 `revision`；无修订 / 无批注时走快路径（参照 #27 的做法） |
 
