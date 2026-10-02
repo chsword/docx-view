@@ -1,9 +1,10 @@
 import type { Element } from '@xmldom/xmldom';
 import type {
   BorderFormat, BordersFormat, CellBordersFormat, CellFormat, DocumentBlock, MarginFormat, RowFormat, TableCellInfo,
-  TableFormat, WidthFormat,
+  TableException, TableFormat, WidthFormat,
 } from './types.js';
 import { children, childrenThroughTransparent, WORD_NS, wordValue } from './xml.js';
+import { TABLE_EXCEPTION_KEYS } from './operations.js';
 
 export const TWIPS_PER_INCH = 1440;
 export const EIGHTH_POINTS_PER_POINT = 8;
@@ -192,6 +193,21 @@ function gridSkip(trPr: Element, name: string): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+/**
+ * `w:tblPrEx` 的内容模型就是 `w:tblPr` 的一个子集，所以直接借表格格式的解析，再按名单收窄。
+ * 一个属性都没有的 `<w:tblPrEx/>` 不覆盖任何东西，读成 `undefined`。
+ */
+export function parseTableException(tblPrEx: Element | undefined): TableException | undefined {
+  if (!tblPrEx) return undefined;
+  const format = parseTableFormat(tblPrEx);
+  if (!format) return undefined;
+  const exception: TableException = {};
+  for (const key of TABLE_EXCEPTION_KEYS) {
+    if (format[key] !== undefined) (exception as Record<string, unknown>)[key] = format[key];
+  }
+  return Object.keys(exception).length ? exception : undefined;
+}
+
 export function parseRowFormat(trPr: Element | undefined): RowFormat | undefined {
   if (!trPr) return undefined;
   const height = children(trPr, 'trHeight')[0];
@@ -317,7 +333,9 @@ export function readTable(table: Element, walk: (parent: Element) => DocumentBlo
     });
     for (const [start, merge] of nextActive) active.set(start, merge);
     for (const [start] of [...active]) if (!nextActive.has(start)) active.delete(start);
-    const format = parseRowFormat(children(row, 'trPr')[0]);
+    const direct = parseRowFormat(children(row, 'trPr')[0]);
+    const exception = parseTableException(children(row, 'tblPrEx')[0]);
+    const format = exception ? { ...direct, tableException: exception } : direct;
     const effective = effectiveRowFormat?.(row, format);
     return { cells, format, ...(effective ? { effective } : {}) };
   });

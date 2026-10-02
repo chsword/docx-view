@@ -663,3 +663,50 @@ test('table format fields accepted at runtime are also in the agent schema', () 
     { type: 'formatTableRow', table: 0, row: 0, format: { cellSpacing: { type: 'dxa', value: 45 }, gridBefore: 1 } },
   ] }));
 });
+
+test('tblPrEx reads as a row table exception, writes before trPr, and round-trips', () => {
+  // Word 合并两张表时下半张的边框落在各行的 tblPrEx 上，形状照 Word 的输出写。
+  const doc = withBody(`<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+    <w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>
+    <w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>
+    <w:tr><w:tblPrEx><w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="FF0000"/>
+      <w:insideV w:val="dashed" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders>
+      <w:shd w:val="clear" w:color="auto" w:fill="FFF2CC"/>
+      <w:tblCellMar><w:left w:w="57" w:type="dxa"/></w:tblCellMar></w:tblPrEx>
+      <w:trPr><w:trHeight w:val="400"/></w:trPr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>
+    <w:tr><w:tblPrEx/><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:tbl>`);
+  const rows = doc.getBlocks().find((block) => block.type === 'table').rows;
+  assert.equal(rows[0].format?.tableException, undefined);
+  const exception = rows[1].format.tableException;
+  assert.deepEqual(exception.borders.top, { style: 'single', size: 12, space: 0, color: 'FF0000', none: false });
+  assert.equal(exception.borders.insideV.style, 'dashed');
+  assert.equal(exception.shading.fill, 'FFF2CC');
+  assert.deepEqual(exception.cellMargin, { left: { type: 'dxa', value: 57 } });
+  assert.equal(rows[1].format.height.value, 400, 'trPr 照常读');
+  assert.equal(rows[2].format?.tableException, undefined, '空的 tblPrEx 不覆盖任何东西');
+
+  // 第 5 条：读出来原样写回不抛错，再读出来等价。
+  doc.formatTableRow(0, 1, { tableException: exception });
+  assert.deepEqual(doc.getBlocks().find((block) => block.type === 'table').rows[1].format.tableException, exception);
+
+  // 给只有 tblPrEx、没有 trPr 的行加行高：trPr 必须排在 tblPrEx 后面。
+  doc.formatTableRow(0, 2, { tableException: { alignment: 'center', shading: { value: 'clear', fill: 'DDDDDD' } }, height: { value: 300 } });
+  const xml = new TextDecoder().decode(doc.getPartBytes('word/document.xml'));
+  const third = xml.split('<w:tr>')[3];
+  assert.match(third, /^<w:tblPrEx><w:jc w:val="center"\/><w:shd [^>]*\/><\/w:tblPrEx><w:trPr><w:trHeight w:val="300"\/><\/w:trPr><w:tc>/);
+  assert.equal(doc.getBlocks().find((block) => block.type === 'table').rows[2].format.tableException.alignment, 'center');
+
+  doc.formatTableRow(0, 1, { tableException: null });
+  assert.equal(doc.getBlocks().find((block) => block.type === 'table').rows[1].format.tableException, undefined);
+  assert.doesNotMatch(new TextDecoder().decode(doc.getPartBytes('word/document.xml')).split('<w:tr>')[2], /tblPrEx/);
+});
+
+test('formatTableRow and formatCell validate on the public API, not only in agent batches', () => {
+  const doc = withBody('<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>');
+  const revision = doc.revision;
+  assert.throws(() => doc.formatTableRow(0, 0, { height: { value: -1 } }), /height/);
+  assert.throws(() => doc.formatTableRow(0, 0, { tableException: { style: 'Grid' } }), /style/, 'tblPrEx 里没有 tblStyle');
+  assert.throws(() => doc.formatTableRow(0, 0, { tableException: { shading: { value: 'clear', fill: 'nope' } } }));
+  assert.throws(() => doc.formatCell(0, 0, 0, { verticalAlign: 'middle' }), /verticalAlign/);
+  assert.equal(doc.revision, revision);
+});

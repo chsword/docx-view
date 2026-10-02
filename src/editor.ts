@@ -6,6 +6,7 @@ import type {
   ClipboardRun,
   BordersFormat,
   CellFormat,
+  TableException,
   DocumentRange,
   DocumentBlock,
   DocumentSnapshot,
@@ -1081,6 +1082,38 @@ export class DocxEditor {
     if (cell?.textDirection?.toLowerCase().includes('tb') || cell?.textDirection?.toLowerCase().includes('bt')) td.style.writingMode = 'vertical-rl';
   }
 
+  /**
+   * `w:tblPrEx`：这一行的表格属性例外。优先级是 单元格自己的 `tcPr` > 行的 `tblPrEx` > 表格的
+   * `tblPr` 与表格样式，所以判断「单元格有没有自己的值」要看**直接格式**——有效格式里已经叠进了
+   * 样式给的边框和边距，拿它判断的话例外永远压不过样式。
+   *
+   * 能落到 CSS 的是边框、底纹、单元格边距这三样；`jc` / `tblInd` / `tblW` / `tblCellSpacing`
+   * 是整行平移或加宽，HTML 表格的行没有这种能力，只读写、不渲染。
+   */
+  private applyTableException(td: HTMLTableCellElement, exception: TableException, direct: CellFormat | undefined,
+    row: number, col: number, rowSpan: number, colSpan: number, rowCount: number, colCount: number): void {
+    if (exception.borders) {
+      const sides = { top: 'borderTop', right: 'borderRight', bottom: 'borderBottom', left: 'borderLeft' } as const;
+      for (const [side, property] of Object.entries(sides) as Array<[keyof typeof sides, typeof sides[keyof typeof sides]]>) {
+        if (direct?.borders?.[side]) continue;
+        const css = this.cellBorder(side, { borders: exception.borders }, undefined, row, col, rowSpan, colSpan, rowCount, colCount);
+        if (css) td.style[property] = css;
+      }
+    }
+    if (exception.shading?.fill && !direct?.shading?.fill && /^[0-9a-f]{6}$/i.test(exception.shading.fill)) {
+      td.style.backgroundColor = `#${exception.shading.fill}`;
+    }
+    if (exception.cellMargin) {
+      const sides = { top: 'paddingTop', right: 'paddingRight', bottom: 'paddingBottom', left: 'paddingLeft' } as const;
+      for (const [side, property] of Object.entries(sides) as Array<[keyof typeof sides, typeof sides[keyof typeof sides]]>) {
+        const margin = exception.cellMargin[side];
+        if (!margin || direct?.margin?.[side]) continue;
+        const css = this.paddingCss(margin);
+        if (css) td.style[property] = css;
+      }
+    }
+  }
+
   private makeTable(block: LayoutTable, rowIndices: number[], defaultTabStopTwips: number,
     reviewContext: ReviewRenderContext): HTMLTableElement {
     const table = this.root.ownerDocument.createElement('table');
@@ -1125,6 +1158,10 @@ export class DocxEditor {
         // 优先用算上表格样式之后的格式；没有（调用方没注入解析器）才退回直接格式。
         this.applyCellStyle(td, cell.effective ?? cell.format, block.effective ?? block.format, rowIndex, logicalStart,
           Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
+        if (rowFormat?.tableException) {
+          this.applyTableException(td, rowFormat.tableException, cell.format, rowIndex, logicalStart,
+            Math.max(1, cell.rowSpan), Math.max(1, cell.colSpan), block.rows.length, block.grid.length);
+        }
         this.appendBlocks(td, cell.blocks, defaultTabStopTwips, reviewContext);
       }
       if (rowFormat?.gridAfter) gridSkip(rowFormat.gridAfter, rowFormat.widthAfter);

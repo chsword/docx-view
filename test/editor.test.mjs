@@ -3642,3 +3642,42 @@ test('complex-script runs take bold/italic from bCs/iCs, others from b/i, and no
   assert.equal(render({ noProof: false }).spellcheck, undefined);
   assert.equal(render({}).spellcheck, undefined);
 });
+
+test('a row table-property exception (w:tblPrEx) paints over the table and its style, not over the cell', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.measuring = false;
+  editor.renderShapeInfos = [];
+  const cell = (extra = {}) => ({ blocks: [], colSpan: 1, rowSpan: 1, isMergeContinuation: false, ...extra });
+  const styleBorder = { style: 'single', size: 8, color: '000000' };
+  const block = {
+    type: 'table',
+    grid: [1000, 1000],
+    effective: { borders: { top: styleBorder, bottom: styleBorder, left: styleBorder, right: styleBorder, insideH: styleBorder, insideV: styleBorder } },
+    rows: [
+      { cells: [cell(), cell()], format: {} },
+      { cells: [
+        // 样式给的边框进了有效格式，但单元格自己什么都没写：例外要压过样式。
+        cell({ effective: { borders: { top: styleBorder }, margin: { left: { type: 'dxa', value: 108 } } } }),
+        // 单元格自己的 tcPr 比例外更具体。
+        cell({ format: { borders: { top: { style: 'single', size: 8, color: '00FF00' } }, shading: { fill: 'EEEEEE' } },
+          effective: { borders: { top: { style: 'single', size: 8, color: '00FF00' } }, shading: { fill: 'EEEEEE' } } }),
+      ], format: { tableException: {
+        borders: { top: { style: 'single', size: 24, color: 'FF0000' }, insideV: { style: 'single', size: 8, color: '0000FF' } },
+        shading: { fill: 'FFF2CC' },
+        cellMargin: { left: { type: 'dxa', value: 300 } },
+      } } },
+    ],
+  };
+  const table = editor.makeTable(block, [0, 1], 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const [plainRow, exceptionRow] = table.rows;
+  assert.match(exceptionRow.childNodes[0].style.borderTop, /#FF0000/, '例外的上边框');
+  assert.match(exceptionRow.childNodes[0].style.borderRight, /#0000FF/, '例外的内部竖线落在两格之间');
+  assert.equal(exceptionRow.childNodes[0].style.backgroundColor, '#FFF2CC');
+  assert.equal(exceptionRow.childNodes[0].style.paddingLeft, '20px', '300 缇 ÷ 15，压过样式给的 108');
+  assert.match(exceptionRow.childNodes[1].style.borderTop, /#00FF00/, '单元格自己的边框不被例外覆盖');
+  assert.equal(exceptionRow.childNodes[1].style.backgroundColor, '#EEEEEE');
+  // 例外只管它所在的那一行。
+  assert.doesNotMatch(plainRow.childNodes[0].style.borderTop ?? '', /#FF0000/);
+  assert.equal(plainRow.childNodes[0].style.backgroundColor ?? '', '');
+});

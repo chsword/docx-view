@@ -42,7 +42,9 @@ import {
   validateParagraphBorders,
   validateParagraphFormat,
   RUN_FORMAT_FIELDS,
+  validateCellFormat,
   validateRequest,
+  validateRowFormat,
   validateStylePatch,
   validateRows,
   validateRunFormat,
@@ -1693,7 +1695,9 @@ function tableProperty(parent: Element, name: 'tblPr' | 'trPr' | 'tcPr'): Elemen
   let result = children(parent, name)[0];
   if (!result) {
     result = wordElement(parent.ownerDocument!, name);
-    parent.insertBefore(result, parent.firstChild);
+    // trPr 排在 tblPrEx 之后；插到最前面会把它挤到 tblPrEx 前头，Word 判为损坏。
+    const exception = name === 'trPr' ? children(parent, 'tblPrEx')[0] : undefined;
+    parent.insertBefore(result, exception ? exception.nextSibling : parent.firstChild);
   }
   return result;
 }
@@ -1813,7 +1817,11 @@ function setMargins(parent: Element, name: 'tblCellMar' | 'tcMar', margin: Table
 }
 
 function setTableFormat(tbl: Element, format: TableFormat): void {
-  const props = tableProperty(tbl, 'tblPr');
+  writeTableProperties(tableProperty(tbl, 'tblPr'), format);
+}
+
+/** `w:tblPr` 与 `w:tblPrEx` 共用：后者的内容模型是前者的子集，`property()` 按各自的顺序表插入。 */
+function writeTableProperties(props: Element, format: TableFormat): void {
   if (format.bidiVisual !== undefined) boolValue(props, 'bidiVisual', format.bidiVisual ?? undefined);
   if (format.width !== undefined) widthValue(props, 'tblW', format.width);
   if (format.alignment !== undefined) valueElement(props, 'jc', format.alignment);
@@ -1860,6 +1868,20 @@ function setFloatingPosition(element: Element, position: NonNullable<TableFormat
 }
 
 function setRowFormat(row: Element, format: RowFormat): void {
+  if (format.tableException !== undefined) {
+    // tblPrEx 不在 trPr 里，是 w:tr 的第一个子元素（CT_Row：tblPrEx?, trPr?, 单元格……）。
+    let exception = children(row, 'tblPrEx')[0];
+    if (format.tableException === null) {
+      if (exception) row.removeChild(exception);
+    } else {
+      if (!exception) {
+        exception = wordElement(row.ownerDocument!, 'tblPrEx');
+        row.insertBefore(exception, row.firstChild);
+      }
+      writeTableProperties(exception, format.tableException);
+    }
+  }
+  if (Object.keys(format).every((key) => key === 'tableException')) return;
   const props = tableProperty(row, 'trPr');
   if (format.height !== undefined) {
     removeWordChildren(props, 'trHeight');
@@ -8495,6 +8517,8 @@ export class DocxDocument {
   }
 
   formatTableRow(table: number, row: number, format: RowFormat): void {
+    // 第 16 条：校验属于公开 API。原先只有 applyOperations 那条路校验，直接调用会把任意值写进 XML。
+    validateRowFormat(format);
     this.updatePartXmlInternal(this.mainPath, document => {
       const element = tableRows(tableAt(document, table))[row];
       if (!element) throw new Error(`Row ${row} does not exist.`);
@@ -8503,6 +8527,7 @@ export class DocxDocument {
   }
 
   formatCell(table: number, row: number, col: number, format: CellFormat): void {
+    validateCellFormat(format);
     this.updatePartXmlInternal(this.mainPath, document => setCellFormat(cellAt(tableAt(document, table), row, col).cell, format));
   }
 

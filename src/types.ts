@@ -516,7 +516,17 @@ export interface TableFormat {
   floatingPosition?: TableFloatingPosition | null;
 }
 
+/**
+ * `w:tblPrEx`：表格属性的**行级例外**。它不在 `w:trPr` 里，而是 `w:tr` 的第一个子元素，
+ * 内容是 `w:tblPr` 的一个子集，含义是「这一行按这些值覆盖表格自己的 `tblPr`」——Word 合并
+ * 两张格式不同的表格时就会产出它（下半张的边框、底纹、边距落到各行的 `tblPrEx` 上）。
+ */
+export type TableException = Pick<TableFormat,
+  'width' | 'alignment' | 'indent' | 'borders' | 'shading' | 'cellMargin' | 'layout' | 'cellSpacing' | 'look'>;
+
 export interface RowFormat {
+  /** 见 `TableException`。写入时 `null` 删除整个 `w:tblPrEx`。 */
+  tableException?: TableException | null;
   height?: { value: number; rule?: 'atLeast' | 'exact' };
   /** `w:gridBefore`：这一行开头跳过的网格列数，视觉上就是整行缩进。 */
   gridBefore?: number;

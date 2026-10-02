@@ -17,13 +17,13 @@ test('the internal elements module stays a leaf with no browser DOM dependency',
   );
 });
 
-test('PROPERTY_ORDER has one 11-parent definition shared by document and revision writers', () => {
+test('PROPERTY_ORDER has one 12-parent definition shared by document and revision writers', () => {
   const sourceFiles = ['../src/document.ts', '../src/internal/elements.ts', '../src/revisions.ts']
     .map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));
   assert.equal(sourceFiles.reduce((count, source) => count + [...source.matchAll(/\bconst PROPERTY_ORDER\s*=/g)].length, 0), 1);
-  assert.equal(Object.keys(PROPERTY_ORDER).length, 11);
+  assert.equal(Object.keys(PROPERTY_ORDER).length, 12);
   assert.deepEqual(Object.keys(PROPERTY_ORDER), [
-    'pPr', 'rPr', 'paraRPr', 'style', 'tblPr', 'trPr', 'tcPr', 'tblBorders', 'tcBorders', 'tblCellMar', 'tcMar',
+    'pPr', 'rPr', 'paraRPr', 'style', 'tblPr', 'tblPrEx', 'trPr', 'tcPr', 'tblBorders', 'tcBorders', 'tblCellMar', 'tcMar',
   ]);
 
   const parseProperties = () => new DOMParser().parseFromString(

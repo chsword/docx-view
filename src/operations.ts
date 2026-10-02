@@ -220,8 +220,13 @@ export const TABLE_FORMAT_KEYS = [
   'overlap', 'style', 'look', 'caption', 'description', 'bidiVisual', 'floatingPosition',
 ] as const satisfies readonly (keyof TableFormat)[];
 
+/** `w:tblPrEx` 能写的 `tblPr` 子集（CT_TblPrEx）。 */
+export const TABLE_EXCEPTION_KEYS = [
+  'width', 'alignment', 'indent', 'borders', 'shading', 'cellMargin', 'layout', 'cellSpacing', 'look',
+] as const satisfies readonly (keyof TableFormat)[];
+
 export const ROW_FORMAT_KEYS = [
-  'height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
+  'tableException', 'height', 'cellSpacing', 'cantSplit', 'header', 'alignment', 'deleted', 'inserted', 'revision',
   'gridBefore', 'widthBefore', 'gridAfter', 'widthAfter',
 ] as const satisfies readonly (keyof RowFormat)[];
 
@@ -350,16 +355,16 @@ function validateBorder(value: unknown, name: string): void {
   object(value as Record<string, unknown>);
   const border = value as Record<string, unknown>;
   keys(border, ['style', 'size', 'space', 'color', 'none']);
-  if ('style' in border && typeof border.style !== 'string') throw new Error(`${name}.style must be a string.`);
+  if (border.style !== undefined && typeof border.style !== 'string') throw new Error(`${name}.style must be a string.`);
   for (const key of ['size', 'space']) {
-    if (key in border && (typeof border[key] !== 'number' || !Number.isFinite(border[key]) || border[key] < 0)) {
+    if (border[key] !== undefined && (typeof border[key] !== 'number' || !Number.isFinite(border[key]) || border[key] < 0)) {
       throw new Error(`${name}.${key} must be a non-negative number.`);
     }
   }
-  if ('color' in border && (typeof border.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(border.color))) {
+  if (border.color !== undefined && (typeof border.color !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(border.color))) {
     throw new Error(`${name}.color must be auto or six hexadecimal digits.`);
   }
-  if ('none' in border && typeof border.none !== 'boolean') throw new Error(`${name}.none must be boolean.`);
+  if (border.none !== undefined && typeof border.none !== 'boolean') throw new Error(`${name}.none must be boolean.`);
 }
 
 const BORDER_SIDES = ['top', 'right', 'bottom', 'left', 'insideH', 'insideV'];
@@ -372,7 +377,7 @@ function validateBorders(value: unknown, name: string, diagonals = false): void 
   const sides = diagonals ? CELL_BORDER_SIDES : BORDER_SIDES;
   keys(borders, sides);
   for (const side of sides) {
-    if (side in borders) validateBorder(borders[side], `${name}.${side}`);
+    if (borders[side] !== undefined) validateBorder(borders[side], `${name}.${side}`);
   }
 }
 
@@ -381,11 +386,11 @@ function validateShading(value: unknown, name: string): void {
   const shading = value as Record<string, unknown>;
   keys(shading, ['fill', 'color', 'value']);
   for (const key of ['fill', 'color']) {
-    if (key in shading && (typeof shading[key] !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(String(shading[key])))) {
+    if (shading[key] !== undefined && (typeof shading[key] !== 'string' || !/^(auto|[a-f\d]{6})$/i.test(String(shading[key])))) {
       throw new Error(`${name}.${key} must be auto or six hexadecimal digits.`);
     }
   }
-  if ('value' in shading && typeof shading.value !== 'string') throw new Error(`${name}.value must be a string.`);
+  if (shading.value !== undefined && typeof shading.value !== 'string') throw new Error(`${name}.value must be a string.`);
 }
 
 function validateMargins(value: unknown, name: string): void {
@@ -398,18 +403,18 @@ function validateMargins(value: unknown, name: string): void {
 export function validateTableFormat(value: unknown): asserts value is TableFormat {
   object(value);
   keys(value, [...TABLE_FORMAT_KEYS]);
-  if ('width' in value) validateWidth(value.width, 'width');
-  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
-  if ('indent' in value && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
-  if ('borders' in value) validateBorders(value.borders, 'borders');
-  if ('shading' in value) validateShading(value.shading, 'shading');
-  if ('cellMargin' in value) validateMargins(value.cellMargin, 'cellMargin');
-  if ('layout' in value && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
-  if ('cellSpacing' in value) validateWidth(value.cellSpacing, 'cellSpacing');
-  if ('overlap' in value && !['never', 'overlap'].includes(String(value.overlap))) throw new Error('overlap must be never or overlap.');
-  if ('bidiVisual' in value && value.bidiVisual !== null && typeof value.bidiVisual !== 'boolean') throw new Error('bidiVisual must be boolean.');
-  for (const key of ['style', 'look', 'caption', 'description'] as const) if (key in value) assertText(value[key], key);
-  if ('floatingPosition' in value) {
+  if (value.width !== undefined) validateWidth(value.width, 'width');
+  if (value.alignment !== undefined && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid table alignment.');
+  if (value.indent !== undefined && (typeof value.indent !== 'number' || !Number.isFinite(value.indent) || value.indent < 0)) throw new Error('indent must be a non-negative number.');
+  if (value.borders !== undefined) validateBorders(value.borders, 'borders');
+  if (value.shading !== undefined) validateShading(value.shading, 'shading');
+  if (value.cellMargin !== undefined) validateMargins(value.cellMargin, 'cellMargin');
+  if (value.layout !== undefined && !['fixed', 'autofit'].includes(String(value.layout))) throw new Error('Invalid table layout.');
+  if (value.cellSpacing !== undefined) validateWidth(value.cellSpacing, 'cellSpacing');
+  if (value.overlap !== undefined && !['never', 'overlap'].includes(String(value.overlap))) throw new Error('overlap must be never or overlap.');
+  if (value.bidiVisual !== undefined && value.bidiVisual !== null && typeof value.bidiVisual !== 'boolean') throw new Error('bidiVisual must be boolean.');
+  for (const key of ['style', 'look', 'caption', 'description'] as const) if (value[key] !== undefined) assertText(value[key], key);
+  if (value.floatingPosition !== undefined) {
     maybeNull(value.floatingPosition as TableFloatingPosition | null | undefined,
       (entry) => validateTableFloatingPosition(entry));
   }
@@ -428,14 +433,14 @@ export function validateTableFloatingPosition(value: unknown): asserts value is 
   const position = value as Record<string, unknown>;
   keys(position, [...FLOAT_NUMBERS, ...Object.keys(FLOAT_ENUMS)]);
   for (const [name, allowed] of Object.entries(FLOAT_ENUMS)) {
-    if (name in position && position[name] !== undefined && !allowed.includes(position[name] as string)) {
+    if (position[name] !== undefined && !allowed.includes(position[name] as string)) {
       throw new Error(`floatingPosition.${name} must be one of ${allowed.join(', ')}.`);
     }
   }
   for (const name of FLOAT_NUMBERS) {
     // x / y 是坐标，可以为负（挪到页边距外）；FromText 是间距，不能为负。
     const signed = name === 'x' || name === 'y';
-    if (name in position && position[name] !== undefined &&
+    if (position[name] !== undefined &&
         (!Number.isSafeInteger(position[name]) || (!signed && (position[name] as number) < 0))) {
       throw new Error(`floatingPosition.${name} must be ${signed ? 'an integer' : 'a non-negative integer'} in twips.`);
     }
@@ -445,49 +450,55 @@ export function validateTableFloatingPosition(value: unknown): asserts value is 
 export function validateRowFormat(value: unknown): asserts value is RowFormat {
   object(value);
   keys(value, [...ROW_FORMAT_KEYS]);
-  if ('height' in value) {
+  if (value.height !== undefined) {
     object(value.height);
     const height = value.height as Record<string, unknown>;
     keys(height, ['value', 'rule']);
     if (typeof height.value !== 'number' || !Number.isFinite(height.value) || height.value < 0) throw new Error('height.value must be a non-negative number.');
-    if ('rule' in height && !['atLeast', 'exact'].includes(String(height.rule))) throw new Error('height.rule must be atLeast or exact.');
+    if (height.rule !== undefined && !['atLeast', 'exact'].includes(String(height.rule))) throw new Error('height.rule must be atLeast or exact.');
   }
   for (const key of ['cantSplit', 'header', 'deleted', 'inserted'] as const) {
-    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
-  if ('alignment' in value && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
+  if (value.alignment !== undefined && !['left', 'center', 'right'].includes(String(value.alignment))) throw new Error('Invalid row alignment.');
   for (const key of ['gridBefore', 'gridAfter'] as const) {
-    if (key in value && value[key] !== undefined &&
+    if (value[key] !== undefined &&
         (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0)) {
       throw new Error(`${key} must be a non-negative integer number of grid columns.`);
     }
   }
-  if ('cellSpacing' in value) validateWidth(value.cellSpacing, 'cellSpacing');
-  if ('widthBefore' in value) validateWidth(value.widthBefore, 'widthBefore');
-  if ('widthAfter' in value) validateWidth(value.widthAfter, 'widthAfter');
-  if ('revision' in value) {
+  if (value.tableException !== undefined && value.tableException !== null) {
+    object(value.tableException);
+    // 先按名单收窄再交给表格格式校验：tblPrEx 里没有 tblStyle / tblpPr / caption 这些。
+    keys(value.tableException, [...TABLE_EXCEPTION_KEYS]);
+    validateTableFormat(value.tableException);
+  }
+  if (value.cellSpacing !== undefined) validateWidth(value.cellSpacing, 'cellSpacing');
+  if (value.widthBefore !== undefined) validateWidth(value.widthBefore, 'widthBefore');
+  if (value.widthAfter !== undefined) validateWidth(value.widthAfter, 'widthAfter');
+  if (value.revision !== undefined) {
     object(value.revision);
     const revision = value.revision as Record<string, unknown>;
     keys(revision, ['author', 'date']);
-    if ('author' in revision) assertText(revision.author, 'revision.author');
-    if ('date' in revision) assertText(revision.date, 'revision.date');
+    if (revision.author !== undefined) assertText(revision.author, 'revision.author');
+    if (revision.date !== undefined) assertText(revision.date, 'revision.date');
   }
 }
 
 export function validateCellFormat(value: unknown): asserts value is CellFormat {
   object(value);
   keys(value, [...CELL_FORMAT_KEYS]);
-  if ('width' in value) validateWidth(value.width, 'width');
-  if ('borders' in value) validateBorders(value.borders, 'borders', true);
-  if ('shading' in value) validateShading(value.shading, 'shading');
-  if ('margin' in value) validateMargins(value.margin, 'margin');
-  if ('verticalAlign' in value && !['top', 'center', 'bottom'].includes(String(value.verticalAlign))) throw new Error('Invalid verticalAlign.');
-  if ('textDirection' in value) assertText(value.textDirection, 'textDirection');
+  if (value.width !== undefined) validateWidth(value.width, 'width');
+  if (value.borders !== undefined) validateBorders(value.borders, 'borders', true);
+  if (value.shading !== undefined) validateShading(value.shading, 'shading');
+  if (value.margin !== undefined) validateMargins(value.margin, 'margin');
+  if (value.verticalAlign !== undefined && !['top', 'center', 'bottom'].includes(String(value.verticalAlign))) throw new Error('Invalid verticalAlign.');
+  if (value.textDirection !== undefined) assertText(value.textDirection, 'textDirection');
   for (const key of ['noWrap', 'fitText', 'hideMark'] as const) {
-    if (key in value && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
   for (const key of ['hMerge', 'vMerge'] as const) {
-    if (key in value && !['restart', 'continue'].includes(String(value[key]))) throw new Error(`${key} must be restart or continue.`);
+    if (value[key] !== undefined && !['restart', 'continue'].includes(String(value[key]))) throw new Error(`${key} must be restart or continue.`);
   }
 }
 
@@ -1173,6 +1184,7 @@ const tableFormat = shape({
   floatingPosition: nullable(tableFloatingPosition),
 }, []);
 const rowFormat = shape({
+  tableException: nullable(shape(Object.fromEntries(TABLE_EXCEPTION_KEYS.map((key) => [key, tableFormat.properties[key]])), [])),
   height: shape({ value: { type: 'number', minimum: 0 }, rule: { enum: ['atLeast', 'exact'] } }, ['value']),
   cellSpacing: width,
   cantSplit: { type: 'boolean' }, header: { type: 'boolean' }, alignment: { enum: ['left', 'center', 'right'] },
