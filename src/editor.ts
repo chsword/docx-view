@@ -533,6 +533,14 @@ export class DocxEditor {
   private renderFieldInfos = new Map<number, FieldInfo>();
   private activeRevisionId: number | null = null;
   private viewMode: 'continuous' | 'paginated';
+  /**
+   * 分页视图里正在编辑的段落。分页视图把段落按行切开画，切片不能直接编辑（写回去会把一行当成
+   * 整段）。所以只有**整段都在同一页同一栏**的段落能编辑：点它时整段换成一个可编辑元素，失焦时
+   * 写回并重新分页。跨页 / 跨栏的段落点了切到连续视图。
+   */
+  private pageEditParagraph: number | null = null;
+  /** 正在画分页视图里那个可编辑段落；其余分页段落一律只读、不登记。 */
+  private pageEditRendering = false;
   private measuring = false;
   private compatibilitySettings: CompatibilitySettings = {};
   private divIndents = new Map<number, { left: number; right: number }>();
@@ -597,6 +605,7 @@ export class DocxEditor {
     this.divIndents = this.readDivIndents();
     this.root.ownerDocument.addEventListener('selectionchange', this.handleSelection);
     this.root.addEventListener('keydown', this.handleRootKeydown);
+    this.root.addEventListener('mousedown', this.handlePageMousedown);
     this.render();
   }
 
@@ -629,8 +638,10 @@ export class DocxEditor {
 
   setViewMode(mode: 'continuous' | 'paginated'): void {
     if (this.destroyed || mode === this.viewMode) return;
-    if (mode === 'paginated') this.flush();
-    else this.paragraphs.clear();
+    // 分页视图里登记的只有正在编辑的那一段，flush 写回它就够了。
+    this.flush();
+    this.paragraphs.clear();
+    this.pageEditParagraph = null;
     this.viewMode = mode;
     this.render();
   }
@@ -642,7 +653,6 @@ export class DocxEditor {
   /** Commit visible text before an external API operation or an export. */
   flush(): void {
     if (this.destroyed) return;
-    if (this.viewMode === 'paginated') return;
     if (!this.isMarkupReviewView()) return;
     let changed = false;
     for (const [index, entry] of this.paragraphs) {
@@ -973,6 +983,7 @@ export class DocxEditor {
     this.destroyed = true;
     this.root.ownerDocument.removeEventListener('selectionchange', this.handleSelection);
     this.root.removeEventListener('keydown', this.handleRootKeydown);
+    this.root.removeEventListener('mousedown', this.handlePageMousedown);
     this.root.remove();
     this.paragraphs.clear();
     this.selectedRangeInfo = null;
@@ -1436,6 +1447,7 @@ export class DocxEditor {
       return column;
     });
     const renderedTables = new Set<string>();
+    const editingPlaced = new Set<number>();
     const previousByColumn = new Map<number, ParagraphInfo>();
     for (let itemIndex = 0; itemIndex < page.items.length; itemIndex++) {
       const item = page.items[itemIndex]!;
@@ -1443,6 +1455,29 @@ export class DocxEditor {
       const column = columns[columnIndex]!;
       if (item.type === 'line') {
         const paragraph = paragraphs.find((entry) => entry.index === item.paragraph);
+        if (paragraph && editingPlaced.has(paragraph.index)) continue;
+        // 整段都在本页本栏：第一行和最后一行都在这里。浮动段落（framePr）一行一个浮动元素，不算。
+        const ownLines = paragraph ? page.items.filter((candidate): candidate is Extract<FlowItem, { type: 'line' }> =>
+          candidate.type === 'line' && candidate.paragraph === paragraph.index && (candidate.column ?? 0) === (item.column ?? 0)) : [];
+        const whole = !!paragraph && !paragraph.frame && ownLines.some((line) => line.line.startOffset === 0)
+          && ownLines.some((line) => line.line.endOffset >= paragraph.text.length);
+        if (paragraph && whole && this.pageEditParagraph === paragraph.index && this.isMarkupReviewView()) {
+          // 正在编辑的段落整段画成一个元素。各行行高一致（通常如此）时沿用它，否则交给浏览器。
+          const heights = new Set(ownLines.map((line) => line.line.heightPx));
+          const lastItem = page.items.lastIndexOf(ownLines.at(-1)!);
+          const hasFollowingParagraph = page.items.slice(lastItem + 1).some((candidate) =>
+            candidate.type === 'line' && candidate.paragraph !== paragraph.index);
+          this.pageEditRendering = true;
+          try {
+            column.append(this.makeParagraph(paragraph, defaultTabStopTwips, reviewContext,
+              heights.size === 1 ? [...heights][0] : undefined, previousByColumn.get(columnIndex), !hasFollowingParagraph));
+          } finally {
+            this.pageEditRendering = false;
+          }
+          previousByColumn.set(columnIndex, paragraph);
+          editingPlaced.add(paragraph.index);
+          continue;
+        }
         if (paragraph) {
           // paginate() 交出来的行高已经按 docGrid（和段落的 snapToGrid）吸附过了——它每个 line 项都出自
           // measureParagraph，吸附就在那里。这里原先再吸附一次：幂等所以看不出来，但它是第二份真相，
@@ -1494,6 +1529,10 @@ export class DocxEditor {
             marker.style[rtl ? 'right' : 'left'] = `-${distance + 2}px`;
             paragraphElement.style.position = 'relative';
             paragraphElement.append(marker);
+          }
+          if (this.isMarkupReviewView()) {
+            paragraphElement.dataset.docxPageEdit = whole ? 'paragraph' : 'split';
+            paragraphElement.dataset.docxLineStart = String(item.line.startOffset);
           }
           column.append(paragraphElement);
           if (lastLine) previousByColumn.set(columnIndex, paragraph);
@@ -1798,12 +1837,14 @@ export class DocxEditor {
       element.dataset.numberingFormat = paragraph.numbering.format;
     }
     content.className = 'docx-paragraph-content';
-    content.contentEditable = this.isMarkupReviewView() ? 'true' : 'false';
+    // 分页视图的行切片（以及整页里的表格单元格）只读：它们不登记，改了也写不回去。
+    const pageLocked = this.viewMode === 'paginated' && !this.pageEditRendering;
+    content.contentEditable = this.isMarkupReviewView() && !pageLocked ? 'true' : 'false';
     content.spellcheck = false;
     content.setAttribute('role', 'textbox');
     content.setAttribute('aria-multiline', 'true');
     content.setAttribute('aria-label', `第 ${paragraph.index + 1} 段`);
-    if (!this.isMarkupReviewView()) content.setAttribute('aria-readonly', 'true');
+    if (!this.isMarkupReviewView() || pageLocked) content.setAttribute('aria-readonly', 'true');
     if (paragraph.numbering) content.setAttribute('aria-description', `列表项 ${paragraph.numbering.text}，级别 ${paragraph.numbering.level + 1}`);
     const runRevisionIds = new Set<number>();
     const hasRunRevision = this.reviewFilter.showRevisions && paragraph.runs.some((run) =>
@@ -1892,9 +1933,27 @@ export class DocxEditor {
     if (!paragraph.runs.length && !math.length) content.textContent = paragraph.text;
     if (this.options.showFormattingMarks) content.append(this.makeMark('¶', '段落标记'));
     element.append(content);
-    if (!this.measuring) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
+    if (!this.measuring && !pageLocked) this.paragraphs.set(paragraph.index, { element, content, text: sanitizeText(this.readText(content)), failed: false });
     content.addEventListener('focus', () => this.selectParagraph(paragraph.index));
-    content.addEventListener('blur', () => { if (!this.composing) this.flush(); });
+    content.addEventListener('blur', () => {
+      if (this.composing) return;
+      const revision = this.document.revision;
+      this.flush();
+      // 分页视图里改过一段要重新分页：字多了少了，后面的行都要挪。段落仍可编辑（重画后它若还整段
+      // 在一页里），选中的段落也就还在，工具栏照常可用。
+      if (this.viewMode !== 'paginated' || pageLocked || !content.isConnected || this.document.revision === revision) return;
+      // 等焦点真正挪走再重画：blur 时选区还在这一段里，当场重画会把选区恢复回来、把焦点抢回来。
+      // 窗口失焦时焦点其实还在这里，不重画。
+      setTimeout(() => {
+        const owner = this.root.ownerDocument;
+        if (this.destroyed || this.viewMode !== 'paginated' || owner.activeElement === content) return;
+        const selection = owner.getSelection();
+        if (!this.root.contains(owner.activeElement) && selection?.anchorNode && this.root.contains(selection.anchorNode)) {
+          selection.removeAllRanges();
+        }
+        this.render();
+      }, 0);
+    });
     content.addEventListener('compositionstart', () => { this.composing = true; });
     content.addEventListener('compositionend', () => {
       this.composing = false;
@@ -3833,6 +3892,55 @@ export class DocxEditor {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 分页视图里点一行：整段在本页的段落进入编辑，光标落在点的位置；跨页 / 跨栏的段落切到连续视图
+   * 再定位过去。拦下 mousedown 的默认行为，焦点由这里给——否则浏览器会先让正在编辑的段落失焦，
+   * 重画掉被点的那一行。
+   */
+  private readonly handlePageMousedown = (event: MouseEvent): void => {
+    if (this.viewMode !== 'paginated' || event.button !== 0 || !this.isMarkupReviewView()) return;
+    const line = (event.target as Element | null)?.closest?.<HTMLElement>('[data-docx-page-edit]');
+    if (!line || !this.root.contains(line)) return;
+    const index = Number(line.dataset.paragraph);
+    if (!Number.isSafeInteger(index)) return;
+    event.preventDefault();
+    const offset = Number(line.dataset.docxLineStart ?? 0) + this.lineOffsetAtPoint(line, event.clientX, event.clientY);
+    if (line.dataset.docxPageEdit === 'split') {
+      this.setViewMode('continuous');
+    } else {
+      this.pageEditParagraph = index;
+      this.render();
+    }
+    const content = this.paragraphs.get(index)?.content;
+    if (!content) return;
+    content.focus({ preventScroll: true });
+    this.restoreDocumentRange({ start: { paragraph: index, offset }, end: { paragraph: index, offset } });
+    if (line.dataset.docxPageEdit === 'split') content.scrollIntoView?.({ block: 'center' });
+  };
+
+  /** 点击位置在这一行里的字符偏移；浏览器不支持按坐标取光标时取行首。 */
+  private lineOffsetAtPoint(line: HTMLElement, x: number, y: number): number {
+    const content = line.querySelector<HTMLElement>('.docx-paragraph-content');
+    if (!content) return 0;
+    const owner = this.root.ownerDocument as Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    const position = owner.caretPositionFromPoint?.(x, y);
+    const range = position ? null : owner.caretRangeFromPoint?.(x, y);
+    const node = position?.offsetNode ?? range?.startContainer;
+    const nodeOffset = position?.offset ?? range?.startOffset ?? 0;
+    if (!node || !content.contains(node)) return 0;
+    // offsetWithin 跳过 contentEditable=false 的子树——只读行的 content 自己就是 false。临时改成
+    // inherit（外面的页面仍是 false，依旧不可编辑），里面的标记、域照常按规则跳过。
+    content.contentEditable = 'inherit';
+    try {
+      return this.offsetWithin(content, node, nodeOffset);
+    } finally {
+      content.contentEditable = 'false';
+    }
   }
 
   private readonly handleRootKeydown = (event: KeyboardEvent): void => {

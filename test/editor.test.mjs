@@ -981,6 +981,84 @@ test('paginated line numbers are decorative and do not enter paragraph text', ()
   assert.equal(body.style.alignContent, 'end');
 });
 
+test('paginated view: only the paragraph being edited is editable, and only when it sits whole on the page', () => {
+  const setup = (revisionView = 'markup') => {
+    const editor = makeRunRenderEditor({ revisionView });
+    editor.paragraphs = new Map();
+    editor.measuring = false;
+    editor.composing = false;
+    editor.renderAfterComposition = false;
+    editor.readText = (content) => content.textContent ?? '';
+    editor.document = { getShapeParagraphs: () => [] };
+    editor.renderShapeInfos = [];
+    editor.viewMode = 'paginated';
+    editor.pageEditParagraph = null;
+    editor.pageEditRendering = false;
+    return editor;
+  };
+  const whole = { index: 0, text: 'abcdef', runs: [{ index: 0, text: 'abcdef', images: [] }], images: [] };
+  // 第二段只有前两个字在这一页：跨页段落。
+  const split = { index: 1, text: 'ghijk', runs: [{ index: 0, text: 'ghijk', images: [] }], images: [] };
+  const page = {
+    index: 0, number: 1, section: 0, contentHeightPx: 30,
+    items: [
+      { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 0, endOffset: 3 }, column: 0 },
+      { type: 'line', paragraph: 0, line: { heightPx: 10, startOffset: 3, endOffset: 6 }, column: 0 },
+      { type: 'line', paragraph: 1, line: { heightPx: 10, startOffset: 0, endOffset: 2 }, column: 0 },
+    ],
+  };
+  const section = { pageWidth: 1500, pageHeight: 1500, margins: { top: 0, right: 0, bottom: 0, left: 0 }, columns: { count: 1, space: 0, equalWidth: true } };
+  const blocks = [{ type: 'paragraph', paragraph: whole }, { type: 'paragraph', paragraph: split }];
+  const context = () => ({ deletedTextByRun: new Map(), revisionColors: new Map() });
+  const contentOf = (element) => element.childNodes.find((node) => node.className === 'docx-paragraph-content');
+
+  // 没在编辑：每行一个只读元素，标明点它会怎样；一个都不登记（登记了 flush 会把一行当整段写回）。
+  let editor = setup();
+  let lines = editor.makePageContent(page, section, blocks, [whole, split], 720, context()).childNodes[0].childNodes;
+  assert.deepEqual(lines.map((line) => [line.dataset.paragraph, line.dataset.docxPageEdit, line.dataset.docxLineStart]),
+    [['0', 'paragraph', '0'], ['0', 'paragraph', '3'], ['1', 'split', '0']]);
+  assert.deepEqual(lines.map((line) => contentOf(line).contentEditable), ['false', 'false', 'false']);
+  assert.equal(editor.paragraphs.size, 0);
+
+  // 编辑第一段：它整段画成一个可编辑元素并登记，沿用行高；跨页的那段照旧只读。
+  editor = setup();
+  editor.pageEditParagraph = 0;
+  lines = editor.makePageContent(page, section, blocks, [whole, split], 720, context()).childNodes[0].childNodes;
+  assert.equal(lines.length, 2);
+  assert.equal(contentOf(lines[0]).contentEditable, 'true');
+  assert.equal(lines[0].dataset.docxPageEdit, undefined);
+  assert.equal(lines[0].style.lineHeight, '10px');
+  assert.deepEqual([...editor.paragraphs.keys()], [0]);
+  assert.equal(editor.paragraphs.get(0).element, lines[0]);
+  assert.equal(contentOf(lines[1]).contentEditable, 'false');
+  assert.equal(editor.pageEditRendering, false);
+
+  // 跨页段落即使被指定也不能编辑（写回切片会丢字）。
+  editor = setup();
+  editor.pageEditParagraph = 1;
+  lines = editor.makePageContent(page, section, blocks, [whole, split], 720, context()).childNodes[0].childNodes;
+  assert.equal(lines.length, 3);
+  assert.equal(editor.paragraphs.size, 0);
+
+  // 不是 markup 视图（不能编辑）时不打标记。
+  editor = setup('final');
+  lines = editor.makePageContent(page, section, blocks, [whole, split], 720, context()).childNodes[0].childNodes;
+  assert.deepEqual(lines.map((line) => line.dataset.docxPageEdit), [undefined, undefined, undefined]);
+});
+
+test('flush writes back the paragraph being edited in paginated view', () => {
+  const editor = makeRunRenderEditor();
+  const calls = [];
+  editor.viewMode = 'paginated';
+  editor.destroyed = false;
+  editor.document = { setParagraphText: (index, text) => calls.push([index, text]), getSnapshot: () => ({}) };
+  editor.options = { onChange: () => calls.push('change') };
+  editor.readTextSegments = (content) => [content.textContent];
+  editor.paragraphs = new Map([[0, { element: {}, content: { textContent: 'abcXdef' }, text: 'abcdef', failed: false }]]);
+  editor.flush();
+  assert.deepEqual(calls, [[0, 'abcXdef'], 'change']);
+});
+
 test('makeTable renders only the requested row subset with row and column span datasets intact', () => {
   const editor = makeRunRenderEditor();
   editor.paragraphs = new Map();
@@ -1369,9 +1447,7 @@ test('setDocument and destroy remain usable after flush commit failures', () => 
   assert.equal(editor.destroyed, true);
   assert.equal(editor.paragraphs.size, 0);
   assert.equal(rootRemoved, true);
-  assert.equal(removed.length, 2);
-  assert.equal(removed[0][0], 'selectionchange');
-  assert.equal(removed[1][0], 'keydown');
+  assert.deepEqual(removed.map((args) => args[0]), ['selectionchange', 'keydown', 'mousedown']);
 });
 
 test('sanitizeTextWithInfo preserves surrogate pairs when truncating at max length', () => {
