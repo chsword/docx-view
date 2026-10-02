@@ -7029,3 +7029,20 @@ test('complex-script bold/italic, noProof, snapToGrid and specVanish read, write
   assert.throws(() => doc.formatRun(0, 0, { boldComplexScript: 'yes' }), /boldComplexScript must be boolean/);
   assert.throws(() => doc.formatParagraph(0, { snapToGrid: 'yes' }), /snapToGrid must be boolean/);
 });
+
+test('getImages hands out copies and sees edits made after an earlier call', () => {
+  const doc = withBody('<w:p><w:r><w:t>text only</w:t></w:r></w:p>');
+  assert.deepEqual(doc.getImages(), [], '没有图片标记时直接返回空数组');
+  doc.insertImage({ bytes: PNG_BYTES, contentType: 'image/png', paragraph: 0 });
+  // 第 8 条：缓存以后，改过文档要读到新值。
+  const [image] = doc.getImages();
+  assert.equal(image.contentType, 'image/png');
+  // 交出去的是副本：改它不影响下一次读到的。
+  image.alt = 'mutated';
+  image.widthEmu = 1;
+  const [again] = doc.getImages();
+  assert.notEqual(again.alt, 'mutated');
+  assert.notEqual(again.widthEmu, 1);
+  doc.deleteImage(again.id);
+  assert.deepEqual(doc.getImages(), []);
+});

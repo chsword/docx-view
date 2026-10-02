@@ -2695,6 +2695,8 @@ export class DocxDocument {
    * 判定形状一致，不要误以为它守住了什么。
    */
   private paragraphCache?: { revision: number; mainPath: string; paragraphs: ParagraphInfo[] };
+  /** 主文档里有没有能产出图片的元素；按 revision 失效（和其余读模型缓存同一个判定）。 */
+  private imageMarkupCache?: { revision: number; mainPath: string; present: boolean };
   private documents = new Map<string, Document>();
   private dirtyPartXml = new Set<string>();
   private dirtyPartSizes = new Map<string, number>();
@@ -6818,8 +6820,38 @@ export class DocxDocument {
     return numId;
   }
 
+  /**
+   * 原先是 `getParagraphs().flatMap(...)`：为了回答「有哪些图」先把整篇读模型重建一遍，1500 段
+   * 要上百毫秒，图一张没有也照付。现在两步：
+   * - 主文档里压根没有 `w:drawing` / `w:pict` / `w:object` 时直接返回空数组，只扫一遍 DOM；
+   * - 有的话从按 revision 缓存的读模型里取，**逐个克隆** `ImageInfo` 再交出去——共享缓存里的对象
+   *   不能外泄（`getParagraphs()` 不走缓存的原因见 `cachedParagraphs()` 的注释，这里图片很少，
+   *   克隆它们的成本可以忽略）。
+   */
   getImages(): ImageInfo[] {
-    return this.getParagraphs().flatMap((paragraph) => paragraph.images);
+    if (!this.mainHasImageMarkup()) return [];
+    return this.cachedParagraphs().flatMap((paragraph) => paragraph.images.map((image) => structuredClone(image)));
+  }
+
+  private mainHasImageMarkup(): boolean {
+    const cache = this.imageMarkupCache;
+    if (cache?.revision === this.revision && cache.mainPath === this.mainPath) return cache.present;
+    // 一遍深度优先、碰到就停。xmldom 的 getElementsByTagNameNS 返回活列表，取 length 要走完整棵树，
+    // 三个名字就是三遍，文档一大还明显超线性。
+    const names = new Set(['drawing', 'pict', 'object']);
+    const stack: Node[] = [bodyOf(this.getCachedPartDocument(this.mainPath))];
+    let present = false;
+    while (stack.length && !present) {
+      const node = stack.pop()!;
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        if (element.namespaceURI === WORD_NS && names.has(element.localName ?? '')) { present = true; break; }
+        stack.push(element);
+      }
+    }
+    this.imageMarkupCache = { revision: this.revision, mainPath: this.mainPath, present };
+    return present;
   }
 
   private resolveImage(image: ImageInfo | string): ImageInfo {

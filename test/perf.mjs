@@ -274,3 +274,19 @@ test('performance regression: cached getTableCellAt lookups do not scale linearl
   assertRatioBelow(result, 2.2, 'getTableCellAt lookup ratio',
     'cached getTableCellAt over 36 tables', 'cached getTableCellAt over 12 tables');
 });
+
+test('performance regression: getImages on an image-free document does not rebuild the paragraph model', () => {
+  // 原先 getImages() 是 getParagraphs().flatMap(...)，比值 ≈ 1。两侧同一份文档、同一规模，所以同进程
+  // 配对交替就够（第 21 条第 5 点）。每次都先改一下文档让缓存失效（setup，不计时）：测的是改完之后
+  // 第一次调用，那才是编辑器里真实的路径；缓存命中的情形测不出任何东西。
+  const doc = DocxDocument.create();
+  for (let i = 1; i < 1500; i++) doc.insertParagraph(`Paragraph ${i} with some ordinary text in it.`);
+  let edit = 0;
+  const invalidate = () => doc.setParagraphText(0, `edit ${edit++}`);
+  const result = measurePairedRatio(
+    { setup: invalidate, run: () => doc.getImages() },
+    { setup: invalidate, run: () => doc.getParagraphs() },
+  );
+  assertRatioBelow(result, 0.35, 'getImages / getParagraphs ratio on an image-free document',
+    'getImages after an edit', 'getParagraphs after an edit');
+});
