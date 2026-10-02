@@ -735,7 +735,28 @@ export interface ShapeChildInfo {
   rotation?: number;
   flipH?: boolean;
   flipV?: boolean;
+  /** 全部文字连成一串（向后兼容；排版用 `paragraphs`）。 */
   text?: string;
+  /**
+   * `dsp:txBody` 的段落与 run 格式。SmartArt 的字号是 Word 按框大小自动缩放后写下的，直接用；
+   * `a:br` 在段内另起一行，所以一个段落可能有多行。
+   */
+  paragraphs?: ShapeTextParagraph[];
+}
+
+export interface ShapeTextParagraph {
+  alignment?: 'left' | 'center' | 'right' | 'justify';
+  lines: Array<Array<{
+    text: string;
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    strike?: boolean;
+    /** 磅。 */
+    fontSize?: number;
+    fontFamily?: string;
+    color?: string;
+  }>>;
 }
 
 export type ChartKind = 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'radar' | 'bubble' | 'stock';

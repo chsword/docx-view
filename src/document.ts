@@ -703,11 +703,23 @@ function allElements(node: Element): Element[] {
   return result;
 }
 
+/**
+ * 段落**自己的**公式。文本框（`w:txbxContent`）里的段落挂在正文段落的 run 下面，按后代找会把
+ * 文本框里的公式算到锚定它的正文段落头上：`getMath()` 报错段落、`setMath()` 能按正文索引改到
+ * 文本框里去、编辑器在正文里再画一遍。所以只认最近的 `w:p` 祖先就是这一段的那些。
+ */
 function mathElements(paragraph: Element): Element[] {
   const elements = allElements(paragraph);
+  const ownParagraph = (element: Element): boolean => {
+    for (let parent = element.parentNode; parent; parent = parent.parentNode) {
+      if (parent === paragraph) return true;
+      if (parent.nodeType === 1 && (parent as Element).namespaceURI === WORD_NS && (parent as Element).localName === 'p') return false;
+    }
+    return false;
+  };
   return elements.filter(element =>
     element.namespaceURI === 'http://schemas.openxmlformats.org/officeDocument/2006/math' &&
-    (element.localName === 'oMath' || element.localName === 'oMathPara') &&
+    (element.localName === 'oMath' || element.localName === 'oMathPara') && ownParagraph(element) &&
     !elements.some(ancestor => ancestor !== element &&
       ancestor.namespaceURI === 'http://schemas.openxmlformats.org/officeDocument/2006/math' &&
       (ancestor.localName === 'oMath' || ancestor.localName === 'oMathPara') && (() => {

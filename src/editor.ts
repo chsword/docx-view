@@ -7,6 +7,7 @@ import type {
   BordersFormat,
   CellFormat,
   ChartSeriesInfo,
+  ShapeTextParagraph,
   EquationNode,
   TableException,
   WebDivInfo,
@@ -1710,29 +1711,7 @@ export class DocxEditor {
     let currentLineOffsetPx = 0;
     const math = paragraph.math ?? [];
     const appendMath = (info: MathInfo, index: number): void => {
-      const ns = 'http://www.w3.org/1998/Math/MathML';
-      const build = (node: MathMlNode): Element => {
-        const element = this.root.ownerDocument.createElementNS(ns, node.tag);
-        for (const [name, value] of Object.entries(node.attrs ?? {})) element.setAttribute(name, value);
-        if (node.text !== undefined) element.textContent = node.text;
-        for (const child of node.children ?? []) element.append(build(child));
-        return element;
-      };
-      const root = build(info.mathMl) as HTMLElement;
-      root.setAttribute('aria-label', info.linear);
-      root.contentEditable = 'false';
-      root.dataset.docxMath = '1';
-      root.dataset.docxMathIndex = String(
-        (info as MathInfo & { [MATH_RENDER_INDEX]?: number })[MATH_RENDER_INDEX] ?? index,
-      );
-      if (info.display === 'block') root.style.display = 'block';
-      const semantics = this.root.ownerDocument.createElementNS(ns, 'semantics');
-      const annotation = this.root.ownerDocument.createElementNS(ns, 'annotation');
-      annotation.setAttribute('encoding', 'text/plain');
-      annotation.textContent = info.linear;
-      semantics.append(annotation);
-      root.append(semantics);
-      content.append(root);
+      content.append(this.makeMath(info, (info as MathInfo & { [MATH_RENDER_INDEX]?: number })[MATH_RENDER_INDEX] ?? index));
     };
     for (const run of paragraph.runs) {
       math.forEach((info, index) => { if (info.runOffset === run.index) appendMath(info, index); });
@@ -2013,7 +1992,9 @@ export class DocxEditor {
       }
       childPath.setAttribute('transform', transforms.join(' '));
       svg.appendChild(childPath);
-      if (child.text) {
+      if (child.paragraphs?.length) {
+        svg.appendChild(this.makeShapeChildText(child.paragraphs, child.offsetXPx, child.offsetYPx, childWidth, childHeight));
+      } else if (child.text) {
         const text = this.root.ownerDocument.createElementNS(svgNs, 'text');
         text.setAttribute('x', String(child.offsetXPx + childWidth / 2));
         text.setAttribute('y', String(child.offsetYPx + childHeight / 2));
@@ -2033,8 +2014,16 @@ export class DocxEditor {
         element.style.zIndex = '1';
         applyParagraphStyle(element, paragraph, undefined, true, this.compatibilitySettings, this.divIndents);
         let offset = 0;
-        for (const run of paragraph.runs) offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
-        if (!paragraph.runs.length) element.textContent = paragraph.text;
+        // 文本框里的公式和正文一样按 runOffset 插在对应 run 之前；没有对应 run 的落在段尾。
+        const math = paragraph.math ?? [];
+        for (const run of paragraph.runs) {
+          for (const info of math) if (info.runOffset === run.index) element.append(this.makeMath(info, undefined));
+          offset = this.appendRun(element, paragraph, run, reviewContext, defaultTabStopTwips, offset);
+        }
+        for (const info of math) {
+          if (!paragraph.runs.some((run) => run.index === info.runOffset)) element.append(this.makeMath(info, undefined));
+        }
+        if (!paragraph.runs.length && !math.length) element.textContent = paragraph.text;
         wrapper.append(element);
       }
     }
@@ -2796,6 +2785,73 @@ export class DocxEditor {
     }
     paragraphElement.append(runSpan);
     return hideEquationResult ? startOffsetPx : currentLineOffsetPx;
+  }
+
+  /**
+   * SmartArt 子形状的文字：每一行一个 `<tspan>` 行，行内每个 run 一个 `<tspan>` 带格式。整块在框里
+   * 竖直居中（SmartArt 的默认锚点），水平位置按段落对齐。SVG 的 text 不会自动换行，Word 预渲染时
+   * 已经按框宽把字号缩好，这里不再折行。
+   */
+  private makeShapeChildText(paragraphs: ShapeTextParagraph[], x: number, y: number, width: number, height: number): Element {
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const text = this.root.ownerDocument.createElementNS(svgNs, 'text');
+    text.setAttribute('data-docx-shape-text', '1');
+    const lines = paragraphs.flatMap((paragraph) => paragraph.lines.map((line) => ({ line, alignment: paragraph.alignment ?? 'center' })));
+    const lineHeight = (line: typeof lines[number]['line']) => Math.max(12, ...line.map((run) => (run.fontSize ?? 10.5) * (4 / 3))) * 1.2;
+    const total = lines.reduce((sum, entry) => sum + lineHeight(entry.line), 0);
+    let cursor = y + (height - total) / 2;
+    for (const { line, alignment } of lines) {
+      const advance = lineHeight(line);
+      cursor += advance;
+      const row = this.root.ownerDocument.createElementNS(svgNs, 'tspan');
+      const anchor = alignment === 'left' ? 'start' : alignment === 'right' ? 'end' : 'middle';
+      row.setAttribute('x', String(alignment === 'left' ? x + 4 : alignment === 'right' ? x + width - 4 : x + width / 2));
+      // 基线在行底往上 1/5 行高处，近似字体的下沉部分。
+      row.setAttribute('y', String(cursor - advance * 0.2));
+      row.setAttribute('text-anchor', anchor);
+      for (const run of line) {
+        const span = this.root.ownerDocument.createElementNS(svgNs, 'tspan');
+        if (run.bold) span.setAttribute('font-weight', 'bold');
+        if (run.italic) span.setAttribute('font-style', 'italic');
+        const decorations = [run.underline ? 'underline' : '', run.strike ? 'line-through' : ''].filter(Boolean).join(' ');
+        if (decorations) span.setAttribute('text-decoration', decorations);
+        if (run.fontSize) span.setAttribute('font-size', `${run.fontSize}pt`);
+        if (run.fontFamily) span.setAttribute('font-family', run.fontFamily);
+        if (run.color) span.setAttribute('fill', run.color);
+        span.textContent = run.text;
+        row.appendChild(span);
+      }
+      text.appendChild(row);
+    }
+    return text;
+  }
+
+  /** OMML 公式渲染成 MathML 节点。正文段落和文本框 / 形状里的段落共用。 */
+  private makeMath(info: MathInfo, index: number | undefined): HTMLElement {
+    const ns = 'http://www.w3.org/1998/Math/MathML';
+    const build = (node: MathMlNode): Element => {
+      const element = this.root.ownerDocument.createElementNS(ns, node.tag);
+      for (const [name, value] of Object.entries(node.attrs ?? {})) element.setAttribute(name, value);
+      if (node.text !== undefined) element.textContent = node.text;
+      for (const child of node.children ?? []) element.append(build(child));
+      return element;
+    };
+    const root = build(info.mathMl) as HTMLElement;
+    root.setAttribute('aria-label', info.linear);
+    root.contentEditable = 'false';
+    root.dataset.docxMath = '1';
+    // 正文公式带索引，宿主拿它调 setMath()；文本框 / 形状里的公式不在正文的段落索引里，不给索引，
+    // 改标 data-docx-shape-math，免得宿主拿段内序号去改正文里的另一个公式。
+    if (index === undefined) root.dataset.docxShapeMath = '1';
+    else root.dataset.docxMathIndex = String(index);
+    if (info.display === 'block') root.style.display = 'block';
+    const semantics = this.root.ownerDocument.createElementNS(ns, 'semantics');
+    const annotation = this.root.ownerDocument.createElementNS(ns, 'annotation');
+    annotation.setAttribute('encoding', 'text/plain');
+    annotation.textContent = info.linear;
+    semantics.append(annotation);
+    root.append(semantics);
+    return root;
   }
 
   private makeEquation(equation: EquationNode): HTMLElement {

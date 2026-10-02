@@ -1,7 +1,7 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import { emuToPx, V_NS, WP_NS, A_NS, OFFICE_REL_NS } from './drawing.js';
 import type { RelationshipTarget } from './drawing.js';
-import type { ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind } from './types.js';
+import type { ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, ShapeChildInfo, ShapeInfo, ShapeKind, ShapeTextParagraph } from './types.js';
 import { MC_NS, selectAlternateContentBranch } from './xml.js';
 import { resolveDrawingColor, resolveDrawingThemeColor, type ThemeInfo } from './styles.js';
 
@@ -163,6 +163,51 @@ function readLine(spPr: Element | undefined, theme: ThemeInfo, style?: Element):
   const { none: _none, ...result } = merged;
   // lnRef idx="0" 而且 spPr 里没有 a:ln：根本没有线条，和「没写」一样。
   return !line && !Object.keys(result).length ? undefined : result;
+}
+
+const TEXT_ALIGNMENTS: Record<string, ShapeTextParagraph['alignment']> = { l: 'left', ctr: 'center', r: 'right', just: 'justify', dist: 'justify' };
+
+/**
+ * DrawingML 文本体（`a:p` / `a:r` / `a:br` / `a:fld`）读成带格式的行。run 格式取 `a:rPr`：
+ * `b` / `i` / `u`（`none` 以外都算下划线）/ `strike`、`sz`（百分之一磅）、`a:latin` 字体、
+ * 实心填充的颜色；段落对齐取 `a:pPr/@algn`。`a:lstStyle` 与形状样式里的默认字体不展开。
+ */
+function readTextBodyParagraphs(txBody: Element | undefined, theme: ThemeInfo): ShapeTextParagraph[] {
+  if (!txBody) return [];
+  return Array.from(txBody.childNodes)
+    .filter((node): node is Element => node.nodeType === 1 && (node as Element).namespaceURI === A_NS && (node as Element).localName === 'p')
+    .map((paragraph) => {
+      const lines: ShapeTextParagraph['lines'] = [[]];
+      for (const node of Array.from(paragraph.childNodes)) {
+        if (node.nodeType !== 1) continue;
+        const element = node as Element;
+        if (element.localName === 'br') { lines.push([]); continue; }
+        if (element.localName !== 'r' && element.localName !== 'fld') continue;
+        const content = first(element, A_NS, 't')?.textContent ?? '';
+        if (!content) continue;
+        const props = first(element, A_NS, 'rPr');
+        const on = (name: string) => ['1', 'true'].includes(props?.getAttribute(name) ?? '');
+        const size = Number(props?.getAttribute('sz'));
+        const underline = props?.getAttribute('u');
+        const strike = props?.getAttribute('strike');
+        const color = colorWithAlpha(theme, colorChild(first(props, A_NS, 'solidFill')));
+        const font = first(props, A_NS, 'latin')?.getAttribute('typeface') ?? first(props, A_NS, 'ea')?.getAttribute('typeface');
+        lines.at(-1)!.push({
+          text: content,
+          ...(on('b') ? { bold: true } : {}),
+          ...(on('i') ? { italic: true } : {}),
+          ...(underline && underline !== 'none' ? { underline: true } : {}),
+          ...(strike && strike !== 'noStrike' ? { strike: true } : {}),
+          ...(Number.isFinite(size) && size > 0 ? { fontSize: size / 100 } : {}),
+          // 主题字体占位（+mn-lt 之类）不是字体名，交给浏览器默认。
+          ...(font && !font.startsWith('+') ? { fontFamily: font } : {}),
+          ...(color ? { color } : {}),
+        });
+      }
+      const alignment = TEXT_ALIGNMENTS[first(paragraph, A_NS, 'pPr')?.getAttribute('algn') ?? ''];
+      return { ...(alignment ? { alignment } : {}), lines };
+    })
+    .filter((paragraph) => paragraph.lines.some((line) => line.length));
 }
 
 function direct(parent: Element | undefined, namespace: string, localName: string): Element | undefined {
@@ -445,6 +490,7 @@ function readSmartArtChildren(
     const off = first(xfrm, A_NS, 'off');
     const ext = first(xfrm, A_NS, 'ext');
     const text = descendants(shape, A_NS, 't').map((node) => node.textContent ?? '').join('');
+    const paragraphs = readTextBodyParagraphs(first(shape, DSP_NS, 'txBody'), theme);
     const rotation = Number(xfrm?.getAttribute('rot'));
     return {
       offsetXPx: emuToPx(numberAttribute(off, 'x')),
@@ -456,6 +502,7 @@ function readSmartArtChildren(
       ...(xfrm?.getAttribute('flipH') === '1' || xfrm?.getAttribute('flipH') === 'true' ? { flipH: true } : {}),
       ...(xfrm?.getAttribute('flipV') === '1' || xfrm?.getAttribute('flipV') === 'true' ? { flipV: true } : {}),
       ...(text ? { text } : {}),
+      ...(paragraphs.length ? { paragraphs } : {}),
     };
   });
 }

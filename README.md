@@ -200,7 +200,7 @@ DrawingML 颜色读 `srgbClr`、`schemeClr`、`sysClr`（取 `lastClr`）、`prs
 
 VML 支持 `v:shape`、`v:rect`、`v:oval`、`v:line` 的基础填充色/线条，以及内置类型 1、2、3、4、5、202、203 的常见几何映射；`v:path` 不解析，退化为矩形并保留颜色。形状 `blipFill` 只显示包内可渲染图片；外部链接图片不联网，以浅色虚线框占位。
 
-SmartArt 使用 Word 预渲染的 `diagrams/drawing*.xml` 形状绘制；缺少该部件时显示占位，子形状文字仅支持纯文本、不支持富文本。
+SmartArt 使用 Word 预渲染的 `diagrams/drawing*.xml` 形状绘制；缺少该部件时显示占位。子形状文字读成 `ShapeChildInfo.paragraphs`：段落对齐（`a:pPr/@algn`）、`a:br` 段内换行，run 的加粗 / 斜体 / 下划线 / 删除线、字号、`a:latin` 字体（主题字体占位 `+mn-lt` 之类不当字体名）与实心填充颜色；渲染为 SVG 的 `<tspan>` 行，整块竖直居中。Word 预渲染时已按框大小缩好字号，这里不再折行。`text` 仍给出全部文字连成的一串。
 
 `getFields(partPath)` 的段落与 run 索引只在指定部件内有效；页眉、页脚的索引不能用于正文数组。`DocxDocument.updateFields({ pagination })` 接受由调用方计算的页数、段落页索引与显示页码映射，核心文档 API 不依赖浏览器排版。
 
@@ -426,7 +426,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 
 - 当前可视化视图支持正文段落、常用样式继承、主题字体 / 主题色、段落与 run 的常见有效格式、基于 `numbering.xml` 的项目符号 / 编号列表、带 `w:gridSpan` / `w:vMerge`、显式边框 / 底纹、固定列宽、行高和单元格对齐的表格、常见 `w:drawing` / `w:pict` 图片、批注高亮与列表，以及分节页面设置近似和页眉页脚（默认 / 首页 / 偶数页）编辑；分页预览是只读的，分页位置在常见文档上尽量贴近 Word，但**不承诺像素级一致**。
 - 图片项目符号使用包内图片渲染；外部图片只显示占位图、不联网，图片不可用时退回编号级别中的文字标记。
-- OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、横线、组合字符、矩阵、对齐数组、前置上下标（`mmultiscripts` / `mprescripts`）及盒 / 边框 / phantom 等常见元素；矩阵一行中的每个 `m:e` 各自成为一个单元格；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内公式目前不纳入 `getMath()`，也不在形状文字渲染中显示。
+- OMML 读取并转换 `oMath` / `oMathPara`、分数、上下标、根号、n 元运算、括号、函数、极限、重音、横线、组合字符、矩阵、对齐数组、前置上下标（`mmultiscripts` / `mprescripts`）及盒 / 边框 / phantom 等常见元素；矩阵一行中的每个 `m:e` 各自成为一个单元格；未知元素递归保留可读文字。转换深度上限为 64 层，公式依赖浏览器原生 MathML，`getMath()` 同时提供线性文本和结构化 MathML 数据。文本框 / 形状内的公式从 `getShapeParagraphs(shapeId)` 返回的段落 `math` 读取，并在形状文字里渲染；它们不属于锚定文本框的正文段落，所以不进 `getMath()`，`setMath()` / `deleteMath()` 也按正文索引碰不到它们（渲染节点不带 `data-docx-math-index`，改标 `data-docx-shape-math`）。
 - 分页预览按栏宽重新度量内容，支持等宽 / 指定宽度分栏与 `nextColumn`，并按表格行跨页 / 跨栏拆分；连续的 `w:tblHeader` 标题行会在每个片段重复，`cantSplit` 行保持完整。
 - run 着重号支持 `w:em` 的 `dot`、`comma`、`circle`、`underDot`（分别使用浏览器原生 `text-emphasis`）；显式 `none` 可关闭继承的着重号。不按竖排文字方向调整着重号位置。
 - 注音（`w:ruby`）读取为 `RunInfo.ruby`，含注音文字、基字符、`w:rubyAlign`、`w:hps` / `w:hpsRaise` / `w:hpsBaseText`（半磅）与 `w:lid`。**注音不计入段落正文**：`paragraph.text` 与 run 的 `text` 都只含基字符，与 Word 的阅读顺序一致；注音排在基字符上方，通过浏览器原生 `<ruby>` / `<rt>` 渲染，`<rt>` 标为 `contentEditable="false"` 且被 `readText()` 跳过，因此编辑正文不会把注音追加进文本。`w:rubyAlign` 只映射 CSS `ruby-align` 真正支持的 `center` / `distributeLetter` / `distributeSpace` / `left`，`right` 与 `rightVertical` 没有对应值，交给浏览器默认行为。注音内容本期不提供写入 API。

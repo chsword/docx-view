@@ -3815,3 +3815,34 @@ test('charts render secondary axes, radar, bubble, stock, trendlines and error b
   assert.equal(having(fitted, 'data-docx-chart-trendline', '0').length, 1);
   assert.equal(having(fitted, 'data-docx-chart-error-bar', '0').length, 3);
 });
+
+test('shape text renders text-box formulas and SmartArt run formatting', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.renderShapeInfos = [];
+  editor.document = { getShapeParagraphs: () => [{ index: 0, text: 'Area: ', images: [], runs: [{ index: 0, text: 'Area: ' }],
+    math: [{ runOffset: 1, display: 'inline', linear: 'r^2', mathMl: { tag: 'math', children: [{ tag: 'mi', text: 'r' }] } }] }] };
+  const wrapper = editor.makeShape({ id: 'tb', paragraph: 0, run: 0, kind: 'textBox', form: 'drawingml', widthPx: 100, heightPx: 50,
+    placement: 'inline', hasTextContent: true }, 720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const paragraph = wrapper.childNodes.find((node) => node.className === 'docx-shape-paragraph');
+  const math = paragraph.childNodes.find((node) => node.dataset?.docxMath === '1');
+  assert.ok(math, '文本框里的公式要画出来');
+  assert.equal(math.dataset.docxShapeMath, '1');
+  assert.equal(math.dataset.docxMathIndex, undefined, '不给正文公式索引，宿主不能拿它去 setMath()');
+  assert.equal(paragraph.childNodes.indexOf(math), 1, '在 Area: 之后');
+
+  editor.document = {};
+  const smartArt = editor.makeShape({ id: 'sa', paragraph: 0, run: 0, kind: 'smartArt', form: 'drawingml', widthPx: 200, heightPx: 100,
+    placement: 'inline', hasTextContent: false, children: [{ offsetXPx: 0, offsetYPx: 0, widthPx: 200, heightPx: 100, geometry: 'rect',
+      paragraphs: [{ alignment: 'left', lines: [[{ text: '标题', bold: true, fontSize: 18, color: '#FFFFFF' }], [{ text: 'b', italic: true }]] }] }] },
+  720, { deletedTextByRun: new Map(), revisionColors: new Map() });
+  const text = smartArt.childNodes[0].childNodes.find((node) => node.attributes?.get('data-docx-shape-text') === '1');
+  assert.equal(text.childNodes.length, 2, '两行');
+  const [first, second] = text.childNodes;
+  assert.equal(first.attributes.get('text-anchor'), 'start');
+  assert.equal(first.attributes.get('x'), '4');
+  assert.ok(Number(second.attributes.get('y')) > Number(first.attributes.get('y')));
+  const run = first.childNodes[0];
+  assert.deepEqual(['font-weight', 'font-size', 'fill'].map((name) => run.attributes.get(name)), ['bold', '18pt', '#FFFFFF']);
+  assert.equal(second.childNodes[0].attributes.get('font-style'), 'italic');
+});
