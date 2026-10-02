@@ -107,6 +107,11 @@ const bytes = await doc.toUint8Array({
 - 收益是**主线程占用减半**，不是存盘变快：1500 段上主线程占用从约 57 ms 降到约 27~36 ms（剩下的是必须留在主线程的序列化），而墙钟因为多了一次往返反而略长。要的是「存盘时界面不卡」，不是「存盘更快」。
 - `zip` 必须返回 `Uint8Array`，否则 `toUint8Array()` 直接抛错——不然问题会推迟到宿主写文件时才暴露。
 
+### 其它可以搬进 Worker 的批处理
+
+`compareDocxBytes(base, revised, options?)`（比较两份 .docx，返回带修订的结果文档字节）、`readDocxSnapshot(bytes)`（只读打开，交回快照）、`searchDocxText(bytes, query, options?)`（全文搜索）都是字节进、纯数据或字节出，两头都过得了结构化克隆，宿主在 Worker 里 import 后照上面的方式收发即可。可编辑的文档对象搬不了：编辑模型是活的 XML 树，传不过线程边界；分页测量要 `getClientRects()`，只有主线程有。
+
+
 | API | 用途 |
 | --- | --- |
 | `getParagraphs()` / `getBlocks()` / `getSnapshot()` | 段落 / 表格结构、直接格式、有效格式、修订标记、样式清单、部件列表和修订号；`ParagraphInfo.text` 保留全部文字，隐藏 run 存在时另提供不含隐藏文字的 `visibleText` |
@@ -164,6 +169,7 @@ Agent JSON Schema 里 `formatParagraph` / `formatRun` / `formatRange` / `formatD
 | `getOutline()` / `setOutlineLevel(index, level)` / `moveOutlineSection(from, to)` | 读取标题大纲、显式设置 `outlineLevel`，以及按大纲整体移动标题节 |
 | `replaceText(search, replacement)` | 正文及表格段落内的字面替换，支持跨 run 匹配，不跨段落 |
 | `DocxDocument.compare(base, revised, options?)` | 比较两份主文档并返回新的带修订实例；纯文本/格式差异细化到段落与 run，表格及含图片的段落按粗粒度删除 + 插入处理 |
+| `findText(query, options?)` | 在正文段落文字里查找，返回 `{ paragraph, start, end }`，可直接拼成 `DocumentRange`；不跨段落匹配，默认不区分大小写，命中数默认最多 1000（`maxResults` 可到 100000） |
 | `getRevisions(filter?)` / `acceptRevision(id)` / `rejectRevision(id)` / `acceptAllRevisions(filter?)` / `rejectAllRevisions(filter?)` | 读取并逐条/批量接受或拒绝修订（支持按作者筛选）；`moveFrom` / `moveTo` 以 `kind: 'move'` 返回，并暴露 `{ move: { name, side, pairedId? } }` |
 | `getReviewers()` | 聚合主文档修订与主文档锚点批注的审阅者统计（修订数、批注数、未解决批注数、时间范围）；每项返回 `{ kind, author? }`（`kind`: `named` / `unattributed` / `empty` / `blank`，四种都可实际构造），结果默认按计数降序，再按 `kind+author` 稳定排序 |
 | `insertTable(rows)` / `insertTableAt(rows, cols, before?, format?)` | 在正文中插入表格；支持空白表格、基础表格格式和正文块级定位 |
@@ -227,6 +233,7 @@ SmartArt 使用 Word 预渲染的 `diagrams/drawing*.xml` 形状绘制；缺少�
 **文档比较**
 
 - `compare()` 返回的是新实例（`revision` 从 0 开始），不会修改输入文档；它对纯段落文字/格式做细粒度修订，对表格和含图片的段落仅做粗粒度删除 + 插入，不比较页眉/页脚/脚注/尾注。
+- `compare()` 的块级对齐先把首尾完全相同的块直接配上，再以两边**各只出现一次**的相同块为锚点（取位置的最长递增子序列），动态规划只跑在锚点之间不同的那一段——改动散在几处的长文档也能比较，3000 段改三处约 0.6 秒。上限有两道：每份输入最多 20000 段；单段要做动态规划的不同区域最多 400 万格（约 2000 × 2000 块），超过时报错说明是哪一段太大。
 - 超过 1000 个主文档段落的输入会直接抛错，避免段落级对齐的 O(N²) 内存开销。
 
 **文档属性与保护**

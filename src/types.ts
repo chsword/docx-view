@@ -945,6 +945,13 @@ export interface EditableRegionInfo {
   text: string;
 }
 
+/** `findText()` 的一处命中：正文段落索引与段内字符偏移（与 `DocumentRange` 同一套坐标）。 */
+export interface TextMatch {
+  paragraph: number;
+  start: number;
+  end: number;
+}
+
 export interface DocumentSnapshot {
   revision: number;
   paragraphs: ParagraphInfo[];

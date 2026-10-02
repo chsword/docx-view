@@ -6245,12 +6245,37 @@ test('compare treats table changes as coarse row deletion plus insertion', async
   assert.deepEqual(rejected.getTable(0).rows[0].cells[0].blocks[0].paragraph.text, 'old');
 });
 
-test('compare rejects oversized paragraph counts with a clear error', () => {
-  const paragraphs = Array.from({ length: 1001 }, (_, index) => `<w:p><w:r><w:t>p${index}</w:t></w:r></w:p>`).join('');
+test('compare rejects oversized inputs and oversized differing regions with clear errors', () => {
+  const paragraphs = (count, prefix) => Array.from({ length: count }, (_, index) => `<w:p><w:r><w:t>${prefix}${index}</w:t></w:r></w:p>`).join('');
   assert.throws(
-    () => DocxDocument.compare(withBody(paragraphs), withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>')),
-    /at most 1000 main-document paragraphs/,
+    () => DocxDocument.compare(withBody(paragraphs(20_001, 'p')), withBody('<w:p><w:r><w:t>x</w:t></w:r></w:p>')),
+    /at most 20000 main-document paragraphs/,
   );
+  // 两份 2100 段、没有一段相同：找不到锚点，只能整段做动态规划，超过格子上限。
+  assert.throws(
+    () => DocxDocument.compare(withBody(paragraphs(2100, 'a')), withBody(paragraphs(2100, 'b'))),
+    /differing region is too large to align \(2100 × 2100 blocks/,
+  );
+});
+
+test('compare aligns long documents with scattered edits through unique anchors', async () => {
+  // 原先整篇一次动态规划，上限 1000 段；改动散在开头、中间、结尾时首尾裁剪也帮不上忙。
+  const texts = Array.from({ length: 3000 }, (_, index) => `Paragraph ${index} body text.`);
+  const revisedTexts = texts.flatMap((text, index) => (
+    index === 0 ? ['A new opening line.', text]
+      : index === 1500 ? [`${text} With an appended clause.`]
+        : index === 2999 ? []
+          : [text]));
+  const body = (items) => items.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join('');
+  const base = withBody(body(texts));
+  const revised = withBody(body(revisedTexts));
+  const { compared, accepted, rejected } = await compareRoundTrip(base, revised, { author: 'Alice' });
+  assert.deepEqual(paragraphTexts(accepted), revisedTexts);
+  assert.deepEqual(paragraphTexts(rejected), texts);
+  // 只改了三处：相同的段落不该被标成删除 + 插入。
+  assert.ok(compared.getRevisions().length <= 6, `${compared.getRevisions().length} revisions`);
+  const ids = compared.getRevisions().map((revision) => revision.id);
+  assert.equal(new Set(ids).size, ids.length, '批量分配的修订 id 不重复');
 });
 
 test('compare can stack on a document that already contains revisions', async () => {

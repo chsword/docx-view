@@ -4,7 +4,7 @@ import type { ZipParts } from './zip.js';
 import { XMLSerializer } from '@xmldom/xmldom';
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import type {
-  AgentRequest, DocumentStatistics, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, WebDivInfo, TableFormat, TableInfo, TextRange, ThemeSettings,
+  AgentRequest, DocumentStatistics, BookmarkInfo, CellFormat, ClipboardBlock, ClipboardFragment, ClipboardImage, ClipboardParagraph, ClipboardRun, CommentAnchor, CommentInfo, CompatibilitySettings, ContentControlInfo, ContentControlKind, DocumentBlock, DocumentProperties, DocumentProtection, DocumentRange, DocumentSnapshot, EditableRegionEditorGroup, EditableRegionInfo, FieldInfo, FieldKind, HistoryEntry, HyperlinkInfo, ImageInfo, MathInfo, MathMlNode, MathSource, NoteInfo, NoteSettings, NoteSettingsValue, NumberingDefinition, NumberingInfo, OutlineNode, PageSetup, PaginationInfo, ParagraphFormat, ParagraphInfo, ReviewerInfo, RevisionInfo, RowFormat, RubyInfo, RunFormat, RunInfo, SectionInfo, SectionType, Shading, ShapeInfo, StyleInfo, StylePatch, TabStop, TableCellLocation, TableConditionName, TextMatch, WebDivInfo, TableFormat, TableInfo, TextRange, ThemeSettings,
 } from './types.js';
 import {
   APP_PROPERTY_KEYS,
@@ -187,6 +187,7 @@ import {
   readRevisionMark,
   readRunRevisionMarks,
   visibleTextOf,
+  withRevisionIdBatch,
 } from './revisions.js';
 
 const MAX_ARCHIVE = 50 * 1024 * 1024;
@@ -223,7 +224,14 @@ const CLIPBOARD_MAX_IMAGES = 200;
 const MAX_CLIPBOARD_STYLES = 200;
 const CLIPBOARD_STYLE_KEYS = ['id', 'name', 'type', 'basedOn', 'aliases', 'uiPriority', 'quickFormat'] as const;
 const REVISION_FILTER_MAX_AUTHORS = 1_000;
-const COMPARE_MAX_PARAGRAPHS = 1_000;
+/**
+ * compare() 的两道上限。原先只有一道：每份 1000 段——对齐是 O(n·m) 的动态规划，整篇一起算，
+ * 5000 段就是 2500 万格。现在先把首尾完全相同的块直接配上，动态规划只跑中间不同的那一段，
+ * 所以上限分开：输入规模（解析与建块是线性的）放宽到 20000 段，动态规划的格子数单独设限
+ * （约 2000×2000 块，20 MB）。改动集中在几处的长文档因此可以比较了。
+ */
+const COMPARE_MAX_PARAGRAPHS = 20_000;
+const COMPARE_MAX_ALIGNMENT_CELLS = 4_000_000;
 const COMPARE_PARAGRAPH_PAIR_THRESHOLD = 0.5;
 const REVISION_ELEMENT_NAMES = new Set([
   'ins', 'del', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'sectPrChange',
@@ -2369,7 +2377,112 @@ function canPairCompareBlocks(base: CompareBlockInfo, revised: CompareBlockInfo)
   return sharedTextLength(base.text, revised.text) / longest >= COMPARE_PARAGRAPH_PAIR_THRESHOLD;
 }
 
+/**
+ * 块级对齐。整篇一次动态规划是 O(n·m)：1500 段就是 225 万格，即使只改了三处。现在按
+ * patience diff 的思路先找锚点，动态规划只跑在锚点之间的小缝里：
+ * 1. 首尾完全相同的块直接配上（匹配代价为 0 时，先配相同的首元素总在某个最优对齐里）；
+ * 2. 两边**各只出现一次**的相同块当锚点，取它们位置的最长递增子序列（锚点不能交叉）；
+ * 3. 锚点之间的每一段重复 1、2；找不到锚点的段才做动态规划——它还负责把「相似但不相同」的
+ *    段落配成 modify，这件事锚点做不了。
+ * 用显式的工作栈而不是递归：病态输入下递归深度可以接近块数。
+ */
 function alignCompareBlocks(base: CompareBlockInfo[], revised: CompareBlockInfo[]): CompareStep[] {
+  type Task = { kind: 'range'; b0: number; b1: number; r0: number; r1: number } | { kind: 'equal'; baseIndex: number; revisedIndex: number };
+  const steps: CompareStep[] = [];
+  const stack: Task[] = [{ kind: 'range', b0: 0, b1: base.length, r0: 0, r1: revised.length }];
+  while (stack.length) {
+    const task = stack.pop()!;
+    if (task.kind === 'equal') {
+      steps.push({ kind: 'equal', baseIndex: task.baseIndex, revisedIndex: task.revisedIndex });
+      continue;
+    }
+    let { b0, b1, r0, r1 } = task;
+    const trailing: Array<{ baseIndex: number; revisedIndex: number }> = [];
+    while (b0 < b1 && r0 < r1 && base[b0]!.exactKey === revised[r0]!.exactKey) steps.push({ kind: 'equal', baseIndex: b0++, revisedIndex: r0++ });
+    while (b0 < b1 && r0 < r1 && base[b1 - 1]!.exactKey === revised[r1 - 1]!.exactKey) trailing.push({ baseIndex: --b1, revisedIndex: --r1 });
+    // 尾部配上的块要等这一段中间的部分处理完才输出，所以先压栈（中间的任务后压、先出）。
+    // trailing 是从后往前收集的，按这个顺序压栈，出栈时正好从前往后。
+    for (const step of trailing) stack.push({ kind: 'equal', ...step });
+    if (b0 === b1 || r0 === r1) {
+      for (let index = b0; index < b1; index++) steps.push({ kind: 'delete', baseIndex: index });
+      for (let index = r0; index < r1; index++) steps.push({ kind: 'insert', revisedIndex: index });
+      continue;
+    }
+    const anchors = uniqueCompareAnchors(base, revised, b0, b1, r0, r1);
+    if (anchors.length) {
+      // 倒着压栈，出栈时就是文档顺序：段、锚点、段、锚点……最后一段。
+      let nextB = b1;
+      let nextR = r1;
+      for (let index = anchors.length - 1; index >= 0; index--) {
+        const [anchorB, anchorR] = anchors[index]!;
+        stack.push({ kind: 'range', b0: anchorB + 1, b1: nextB, r0: anchorR + 1, r1: nextR });
+        stack.push({ kind: 'equal', baseIndex: anchorB, revisedIndex: anchorR });
+        nextB = anchorB;
+        nextR = anchorR;
+      }
+      stack.push({ kind: 'range', b0, b1: nextB, r0, r1: nextR });
+      continue;
+    }
+    const cells = (b1 - b0 + 1) * (r1 - r0 + 1);
+    if (cells > COMPARE_MAX_ALIGNMENT_CELLS) {
+      throw new Error(
+        `DocxDocument.compare(): the differing region is too large to align (${b1 - b0} × ${r1 - r0} blocks; ` +
+        `at most ${COMPARE_MAX_ALIGNMENT_CELLS} cells).`,
+      );
+    }
+    for (const step of alignCompareRegion(base.slice(b0, b1), revised.slice(r0, r1))) {
+      steps.push(
+        step.kind === 'insert' ? { kind: 'insert', revisedIndex: step.revisedIndex + r0 }
+          : step.kind === 'delete' ? { kind: 'delete', baseIndex: step.baseIndex + b0 }
+            : { kind: step.kind, baseIndex: step.baseIndex + b0, revisedIndex: step.revisedIndex + r0 },
+      );
+    }
+  }
+  return steps;
+}
+
+/** 两边各只出现一次的相同块，按 base 位置排序后取 revised 位置的最长递增子序列。 */
+function uniqueCompareAnchors(base: CompareBlockInfo[], revised: CompareBlockInfo[],
+  b0: number, b1: number, r0: number, r1: number): Array<[number, number]> {
+  const count = (blocks: CompareBlockInfo[], from: number, to: number) => {
+    const positions = new Map<string, number>();
+    const counts = new Map<string, number>();
+    for (let index = from; index < to; index++) {
+      const key = blocks[index]!.exactKey;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      positions.set(key, index);
+    }
+    return { positions, counts };
+  };
+  const left = count(base, b0, b1);
+  const right = count(revised, r0, r1);
+  const candidates: Array<[number, number]> = [];
+  for (const [key, total] of left.counts) {
+    if (total !== 1 || right.counts.get(key) !== 1) continue;
+    candidates.push([left.positions.get(key)!, right.positions.get(key)!]);
+  }
+  candidates.sort((x, y) => x[0] - y[0]);
+  // 最长递增子序列（按 revised 位置），O(k log k)。
+  const tails: number[] = [];
+  const previous = new Array<number>(candidates.length).fill(-1);
+  for (let index = 0; index < candidates.length; index++) {
+    const value = candidates[index]![1];
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (candidates[tails[middle]!]![1] < value) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) previous[index] = tails[low - 1]!;
+    tails[low] = index;
+  }
+  const result: Array<[number, number]> = [];
+  for (let index = tails.length ? tails[tails.length - 1]! : -1; index >= 0; index = previous[index]!) result.push(candidates[index]!);
+  return result.reverse();
+}
+
+function alignCompareRegion(base: CompareBlockInfo[], revised: CompareBlockInfo[]): CompareStep[] {
   const rows = base.length + 1;
   const cols = revised.length + 1;
   const costs = new Uint32Array(rows * cols);
@@ -2463,11 +2576,6 @@ function cloneNodeIntoDocument(document: Document, node: Node): Node {
     default:
       return document.createTextNode(node.nodeValue ?? '');
   }
-}
-
-function blockInsertionReference(body: Element, blockIndex: number): Node | null {
-  const blocks = blockElements(body);
-  return blocks[blockIndex] ?? children(body, 'sectPr')[0] ?? null;
 }
 
 function isHighSurrogateCodeUnit(code: number): boolean {
@@ -5893,44 +6001,54 @@ export class DocxDocument {
   ): void {
     const document = this.getCachedPartDocument(this.mainPath);
     const body = bodyOf(document);
-    for (let blockIndex = 0, stepIndex = 0; stepIndex < steps.length; stepIndex++) {
-      const step = steps[stepIndex]!;
-      const current = blockElements(body)[blockIndex];
-      switch (step.kind) {
-        case 'equal':
-          blockIndex++;
-          break;
-        case 'modify':
-          if (!current || current.localName !== 'p') throw new Error('Compared paragraph does not exist.');
-          this.compareParagraphAgainst(current, revisedBlocks[step.revisedIndex]!.element, revisedStyles, author, date);
-          blockIndex++;
-          break;
-        case 'delete':
-          if (!current) throw new Error('Compared block does not exist.');
-          this.markComparedBlockDeleted(current, author, date);
-          blockIndex++;
-          break;
-        case 'insert':
-          this.insertComparedBlock(body, blockIndex, revisedBlocks[step.revisedIndex]!.element, author, date);
-          blockIndex++;
-          break;
+    // 块列表只算一次，插入时同步插进数组。原先每一步都重新 blockElements(body)，那是整篇的
+    // 一次遍历，于是比较的耗时随「步数 × 文档长度」增长——1500 段只改 3 处也要将近 2 秒。
+    const blocks = blockElements(body);
+    const tail = children(body, 'sectPr')[0] ?? null;
+    // 批内只有比较写入的修订标记会带 id，所以可以一次算出最大 id、之后递增。
+    withRevisionIdBatch(document, () => {
+      for (let blockIndex = 0, stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+        const step = steps[stepIndex]!;
+        const current = blocks[blockIndex];
+        switch (step.kind) {
+          case 'equal':
+            blockIndex++;
+            break;
+          case 'modify':
+            if (!current || current.localName !== 'p') throw new Error('Compared paragraph does not exist.');
+            this.compareParagraphAgainst(current, revisedBlocks[step.revisedIndex]!.element, revisedStyles, author, date);
+            blockIndex++;
+            break;
+          case 'delete':
+            if (!current) throw new Error('Compared block does not exist.');
+            this.markComparedBlockDeleted(current, author, date);
+            blockIndex++;
+            break;
+          case 'insert':
+            blocks.splice(blockIndex, 0,
+              this.insertComparedBlock(body, blocks[blockIndex] ?? tail, revisedBlocks[step.revisedIndex]!.element, author, date));
+            blockIndex++;
+            break;
+        }
       }
-    }
+    });
     this.markPartDirty(this.mainPath);
   }
 
-  private insertComparedBlock(body: Element, blockIndex: number, source: Element, author?: string, date?: string): void {
+  private insertComparedBlock(body: Element, reference: Node | null, source: Element, author?: string, date?: string): Element {
     const clone = cloneNodeIntoDocument(body.ownerDocument!, source) as Element;
-    body.insertBefore(clone, blockInsertionReference(body, blockIndex));
+    // 参照块可能在 w:sdt 这类透明包裹里，插到它真正的父节点上（第 2 条的同一个坑）。
+    (reference?.parentNode ?? body).insertBefore(clone, reference);
     if (clone.localName === 'p') {
       const runs = ownRuns(clone);
       if (runs.length) wrapRunsWithRevision(clone, runs, 'ins', this.trackedRevisionAuthor(author), date);
       markRevision(property(properties(clone, 'pPr'), 'rPr'), 'ins', this.trackedRevisionAuthor(author), date, 'paraRPr');
-      return;
+      return clone;
     }
     if (clone.localName === 'tbl') {
       for (const row of tableRows(clone)) markRevision(tableProperty(row, 'trPr'), 'ins', this.trackedRevisionAuthor(author), date);
     }
+    return clone;
   }
 
   private markComparedBlockDeleted(block: Element, author?: string, date?: string): void {
@@ -6828,6 +6946,38 @@ export class DocxDocument {
    *   不能外泄（`getParagraphs()` 不走缓存的原因见 `cachedParagraphs()` 的注释，这里图片很少，
    *   克隆它们的成本可以忽略）。
    */
+  /**
+   * 在正文段落文字里找 `query`，返回每处命中的段落与段内偏移，可以直接拼成 `DocumentRange`
+   * 去选中、加批注或替换。不跨段落匹配；默认不区分大小写（按 `toLocaleLowerCase()`，长度不变的
+   * 字符才比，避免偏移错位）。命中数有上限，默认 1000。
+   */
+  findText(query: string, options: { caseSensitive?: boolean; maxResults?: number } = {}): TextMatch[] {
+    assertText(query, 'query');
+    if (!query) throw new Error('query must not be empty.');
+    if (query.length > 1000) throw new Error('query must be at most 1000 characters.');
+    const maxResults = options.maxResults ?? 1000;
+    if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 100_000) throw new Error('maxResults must be 1–100000.');
+    const fold = (text: string) => {
+      if (options.caseSensitive) return text;
+      const lowered = text.toLocaleLowerCase();
+      // 个别字符小写后长度会变（İ → i̇），那样偏移就对不上原文了：这时退回逐字符比较。
+      return lowered.length === text.length ? lowered : Array.from(text, (character) => {
+        const lower = character.toLocaleLowerCase();
+        return lower.length === character.length ? lower : character;
+      }).join('');
+    };
+    const needle = fold(query);
+    const matches: TextMatch[] = [];
+    for (const paragraph of this.cachedParagraphs()) {
+      const haystack = fold(paragraph.text);
+      for (let index = haystack.indexOf(needle); index !== -1; index = haystack.indexOf(needle, index + needle.length)) {
+        matches.push({ paragraph: paragraph.index, start: index, end: index + needle.length });
+        if (matches.length >= maxResults) return matches;
+      }
+    }
+    return matches;
+  }
+
   getImages(): ImageInfo[] {
     if (!this.mainHasImageMarkup()) return [];
     return this.cachedParagraphs().flatMap((paragraph) => paragraph.images.map((image) => structuredClone(image)));

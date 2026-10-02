@@ -3,6 +3,7 @@ export { DocxEditor } from './editor.js';
 export type { DocxEditorOptions, EditorReviewFilter } from './editor.js';
 export { AGENT_OPERATION_SCHEMA } from './operations.js';
 export { zipParts } from './zip.js';
+export { compareDocxBytes, readDocxSnapshot, searchDocxText } from './offload.js';
 export type { ZipParts } from './zip.js';
 export type {
   EastAsianLayout, EquationNode, FieldInfo, FieldKind, FieldSwitch, MathInfo, MathMlNode, MathSource,
@@ -38,7 +39,7 @@ export type {
   ColorSchemeMapping, CompatibilitySettings, DocumentBlock, DocumentProperties, DocumentProtection, DocumentSnapshot, HistoryEntry, HyperlinkInfo, ImageInfo, LatentStyleException, LatentStyles, NoteInfo, NoteSettings, NoteSettingsValue,
   RevisionInfo, RevisionMark, ReviewerAuthorKind, ReviewerFilterAuthor, ReviewerInfo,
   MarginFormat, NumberingDefinition, NumberingInfo, NumberingLevelDefinition, ParagraphFormat, ParagraphInfo,
-  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, StylePatch, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, DocumentStatistics, SectionProperties, TableConditionName, TableException, WebDivInfo, TableFormat, TableInfo, TableRowInfo,
+  RowFormat, RunFormat, RunInfo, Shading, ShadingFormat, StyleInfo, StylePatch, OutlineNode, TabStop, BorderSide, TableCellInfo, TableCellLocation, DocumentStatistics, SectionProperties, TableConditionName, TableException, TextMatch, WebDivInfo, TableFormat, TableInfo, TableRowInfo,
   TextRange, DocumentRange, ClipboardFragment,
   ThemeFontLanguages, ThemeSettings, WidthFormat,
   ChartInfo, ChartKind, ChartSeriesInfo, CustomGeometry, CustomGeometryCommand, PageSetup, SectionInfo, SectionType, ShapeChildInfo, ShapeInfo, ShapeKind, ShapeTextParagraph,

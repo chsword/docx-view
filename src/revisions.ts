@@ -186,15 +186,41 @@ export function markFormatRevision(
   return snapshot;
 }
 
+/**
+ * 批量分配修订 id。`applyRevisionMetadata()` 平时每分配一个 id 都扫一遍全文找最大值——单次编辑
+ * 这没问题，但 `compare()` 一次要打几百条修订，就成了「修订数 × 文档长度」。批内只扫一次，
+ * 之后递增。只在调用方能保证批内不会有别的途径往文档里加带 id 的元素时用。
+ */
+const revisionIdBatches = new WeakMap<Document, { next: number }>();
+
+function maxRevisionId(document: Document): number {
+  let max = 0;
+  for (const element of Array.from(document.getElementsByTagNameNS(WORD_NS, '*'))) {
+    const id = revisionIdOf(element);
+    if (id !== undefined && id > max) max = id;
+  }
+  return max;
+}
+
+export function withRevisionIdBatch<T>(document: Document, action: () => T): T {
+  if (revisionIdBatches.has(document)) return action();
+  revisionIdBatches.set(document, { next: maxRevisionId(document) + 1 });
+  try {
+    return action();
+  } finally {
+    revisionIdBatches.delete(document);
+  }
+}
+
 function applyRevisionMetadata(marker: Element, author?: string, date?: string): Element {
   if (author !== undefined) assertText(author, 'author');
   if (date !== undefined) assertText(date, 'date');
   const document = marker.ownerDocument!;
-  const used = Array.from(document.getElementsByTagNameNS(WORD_NS, '*'))
-    .map((element) => revisionIdOf(element))
-    .filter((value): value is number => value !== undefined);
+  const batch = revisionIdBatches.get(document);
+  // 原先是 Math.max(...ids)：展开参数在 id 极多时会抛 RangeError，改成逐个比较。
+  const id = batch ? batch.next++ : maxRevisionId(document) + 1;
   const resolvedAuthor = author?.trim() || DEFAULT_REVISION_AUTHOR;
-  marker.setAttributeNS(WORD_NS, 'w:id', String((used.length ? Math.max(...used) : 0) + 1));
+  marker.setAttributeNS(WORD_NS, 'w:id', String(id));
   marker.setAttributeNS(WORD_NS, 'w:author', resolvedAuthor);
   if (date?.trim()) marker.setAttributeNS(WORD_NS, 'w:date', date.trim());
   else { marker.removeAttributeNS(WORD_NS, 'date'); marker.removeAttribute('w:date'); }
