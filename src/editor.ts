@@ -910,9 +910,15 @@ export class DocxEditor {
       if (this.viewMode === 'paginated') {
         this.renderPaginated(fragment, reviewContext, defaultTabStopTwips);
       } else {
-        if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
-        this.appendBlocks(fragment, this.document.getBlocks(), defaultTabStopTwips, reviewContext);
-        if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
+        const blocks = this.document.getBlocks();
+        const sections = this.continuousSections();
+        if (sections.length > 1) {
+          this.appendContinuousSections(fragment, blocks, sections, defaultTabStopTwips, reviewContext, canRenderHeaderFooter);
+        } else {
+          if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('header'));
+          this.appendBlocks(fragment, blocks, defaultTabStopTwips, reviewContext);
+          if (canRenderHeaderFooter) fragment.append(this.makeHeaderFooter('footer'));
+        }
       }
       this.root.replaceChildren(fragment);
       if (this.selected !== null && !this.paragraphs.has(this.selected)) this.selected = null;
@@ -1528,6 +1534,66 @@ export class DocxEditor {
     }
   }
 
+  private continuousSections(): SectionInfo[] {
+    try {
+      return this.document.getSections();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 多节文档的连续视图：每一节放进自己的 `div.docx-section`，用那一节的纸张宽度、左右页边距和
+   * 分栏。原先整篇只套第一节，于是「纵向正文 + 一节横向宽表格」里横向那节被压在纵向的宽度里。
+   *
+   * 分节靠 `getBlocks()` 里的 `sectionBreak` 标记切：标记的 `section` 是它**结束**的那一节，
+   * 标记之后的内容属于下一节（第 23 条的那个坑）。标记本身留在它结束的那一节末尾。页眉页脚
+   * 仍只画第一节的——连续视图没有页，「每页的页眉」无从谈起；按节看页眉请用分页视图。
+   */
+  private appendContinuousSections(parent: Node, blocks: DocumentBlock[], sections: SectionInfo[], defaultTabStopTwips: number,
+    reviewContext: ReviewRenderContext, withHeaderFooter: boolean): void {
+    const groups: DocumentBlock[][] = [[]];
+    for (const block of blocks) {
+      groups.at(-1)!.push(block);
+      if (block.type === 'sectionBreak') groups.push([]);
+    }
+    if (!groups.at(-1)!.length && groups.length > 1) groups.pop();
+    const toPx = (twips: number) => `${Math.max(0, twips * 96 / 1440)}px`;
+    const wrap = (section: SectionInfo | undefined, index: number): HTMLElement => {
+      const element = this.root.ownerDocument.createElement('div');
+      element.className = 'docx-section';
+      element.dataset.section = String(index);
+      if (!section) return element;
+      element.dataset.orientation = section.orientation;
+      element.style.boxSizing = 'border-box';
+      element.style.maxWidth = toPx(section.pageWidth);
+      element.style.marginLeft = 'auto';
+      element.style.marginRight = 'auto';
+      element.style.paddingLeft = toPx(section.margins.left);
+      element.style.paddingRight = toPx(section.margins.right);
+      if (section.columns.count > 1) {
+        element.style.columnCount = String(section.columns.count);
+        element.style.columnGap = toPx(section.columns.space);
+      }
+      return element;
+    };
+    if (withHeaderFooter) {
+      const header = wrap(sections[0], 0);
+      header.append(this.makeHeaderFooter('header'));
+      parent.appendChild(header);
+    }
+    groups.forEach((group, index) => {
+      const element = wrap(sections[index] ?? sections.at(-1), index);
+      this.appendBlocks(element, group, defaultTabStopTwips, reviewContext);
+      parent.appendChild(element);
+    });
+    if (withHeaderFooter) {
+      const footer = wrap(sections[0], 0);
+      footer.append(this.makeHeaderFooter('footer'));
+      parent.appendChild(footer);
+    }
+  }
+
   private applyPageSetup(): void {
     const rootStyle = (this.root as unknown as { style?: CSSStyleDeclaration }).style;
     const paper = this.root.parentElement as HTMLElement | null;
@@ -1547,6 +1613,19 @@ export class DocxEditor {
     try { section = this.document.getSection(0); } catch { section = undefined; }
     if (!section) return;
     const toPx = (twips: number) => `${Math.max(0, twips * 96 / 1440)}px`;
+    const sections = this.continuousSections();
+    if (sections.length > 1) {
+      // 多节：纸张取最宽那一节的宽度，左右页边距与分栏交给各节自己的容器（appendContinuousSections）。
+      if (paper) {
+        paper.style.maxWidth = toPx(Math.max(...sections.map((entry) => entry.pageWidth)));
+        paper.style.paddingTop = toPx(section.margins.top);
+        paper.style.paddingRight = '0px';
+        paper.style.paddingBottom = toPx(sections.at(-1)!.margins.bottom);
+        paper.style.paddingLeft = '0px';
+        paper.dataset.orientation = section.orientation;
+      }
+      return;
+    }
     if (paper) {
       paper.style.maxWidth = toPx(section.pageWidth);
       paper.style.paddingTop = toPx(section.margins.top);

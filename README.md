@@ -441,7 +441,7 @@ MathML 的一个标签对应多个 OMML 元素（`mover` 可能来自 `m:bar` / 
 - `w:kern` 以半磅阈值近似映射为 `font-kerning: normal`（当前字号达到阈值）或 `none`（未达到）；CSS 不支持 Word 的字号阈值语义，且未解析到字号时不额外设置字距。
 - `w:w`、`w:fitText` 与 `w:effect` 读取为 `characterScale`、`fitTextWidth`、`textEffect`，也可通过 `formatRun()` 写入 / 清除，但不映射到 CSS：字符缩放与按宽度压缩会破坏行内布局 / 分页测量，动画效果已废弃且没有可靠静态映射。
 - 读取节的 `w:docGrid` `type`、`linePitch` 与 `charSpace`；`lines`、`linesAndChars`、`snapToChars` 的 `linePitch` 用于分页行高吸附，`default` 不吸附，段落显式 `w:snapToGrid w:val="0"` 也不吸附。`charSpace` 目前只读取并保留，不参与字符宽度计算。
-- 分页预览按节套用页面设置：每一页使用所在节的纸张宽度、页边距、方向、分栏与页眉页脚。连续视图（`viewMode: 'continuous'`，默认）是一条不分页的滚动流，整篇文档**只套用第一节**（`getSection(0)`）的纸张宽度、页边距、方向与分栏数 / 栏间距，页眉页脚也只显示第一节的，其余节的页面设置不会反映在连续视图中——例如「纵向正文 + 一节横向宽表格」的文档，横向那节会按第一节的宽度渲染，分栏数不同的节也按第一节的栏数排。查看多节文档的真实版式请切换到分页视图（`setViewMode('paginated')`）；文档中各节的页面设置本身不受影响，导出时原样保留。
+- 分页预览按节套用页面设置：每一页使用所在节的纸张宽度、页边距、方向、分栏与页眉页脚。连续视图（`viewMode: 'continuous'`，默认）是一条不分页的滚动流：单节文档照旧把第一节的纸张宽度、页边距与分栏套在纸张容器上；**多节文档**每一节放进自己的 `div.docx-section`（`data-section`、`data-orientation`），用该节的纸张宽度、左右页边距与分栏，纸张容器取最宽那一节的宽度、左右内边距归零——「纵向正文 + 一节横向宽表格」里横向那节按横向的宽度排。连续视图没有页，页眉页脚只显示第一节的；按节看页眉页脚与真实分页请切换到分页视图（`setViewMode('paginated')`）。文档中各节的页面设置本身不受影响，导出时原样保留。
 
 **列表与表格**
 

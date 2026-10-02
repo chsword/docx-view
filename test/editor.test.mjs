@@ -3846,3 +3846,38 @@ test('shape text renders text-box formulas and SmartArt run formatting', () => {
   assert.deepEqual(['font-weight', 'font-size', 'fill'].map((name) => run.attributes.get(name)), ['bold', '18pt', '#FFFFFF']);
   assert.equal(second.childNodes[0].attributes.get('font-style'), 'italic');
 });
+
+test('the continuous view gives each section its own width, margins and columns', () => {
+  const editor = makeRunRenderEditor();
+  editor.paragraphs = new Map();
+  editor.readText = (content) => content.textContent ?? '';
+  editor.renderShapeInfos = [];
+  editor.document = { getShapeParagraphs: () => [] };
+  const paragraph = (index) => ({ type: 'paragraph', paragraph: { index, text: `p${index}`, runs: [], images: [] } });
+  const section = (pageWidth, left, right, columns = 1, orientation = 'portrait') => ({
+    pageWidth, pageHeight: 16838, orientation, margins: { top: 1440, right, bottom: 1440, left, header: 720, footer: 720, gutter: 0 },
+    columns: { count: columns, space: 720, equalWidth: true }, titlePage: false, headers: {}, footers: {}, type: 'nextPage',
+  });
+  const host = { childNodes: [], appendChild(node) { this.childNodes.push(node); return node; } };
+  editor.appendContinuousSections(host, [
+    paragraph(0), { type: 'sectionBreak', section: 0, breakType: 'nextPage' },
+    // 分隔符之后的内容属于下一节（第 23 条）。
+    paragraph(1), paragraph(2), { type: 'sectionBreak', section: 1, breakType: 'continuous' },
+    paragraph(3),
+  ], [section(11906, 1440, 1440), section(16838, 720, 720, 1, 'landscape'), section(11906, 1440, 1440, 2)],
+  720, { deletedTextByRun: new Map(), revisionColors: new Map() }, false);
+  const [first, second, third] = host.childNodes;
+  assert.equal(host.childNodes.length, 3);
+  assert.deepEqual(host.childNodes.map((node) => node.dataset.section), ['0', '1', '2']);
+  // 横向那一节：16838 缇 = 1122.5px 宽，左右各 720 缇 = 48px。
+  assert.equal(second.style.maxWidth, `${16838 * 96 / 1440}px`);
+  assert.equal(second.style.paddingLeft, '48px');
+  assert.equal(second.dataset.orientation, 'landscape');
+  assert.equal(first.style.maxWidth, `${11906 * 96 / 1440}px`);
+  assert.equal(third.style.columnCount, '2', '分栏按各节自己的栏数');
+  assert.equal(first.style.columnCount, undefined);
+  // 每节拿到的是自己的段落，分节标记留在它结束的那一节末尾。
+  const paragraphsOf = (node) => node.childNodes.filter((child) => child.dataset?.paragraph !== undefined).map((child) => child.dataset.paragraph);
+  assert.deepEqual([paragraphsOf(first), paragraphsOf(second), paragraphsOf(third)], [['0'], ['1', '2'], ['3']]);
+  assert.equal(second.childNodes.at(-1).className, 'docx-break-marker');
+});
