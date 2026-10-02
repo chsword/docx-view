@@ -6139,15 +6139,18 @@ test('compare roundtrip accept/reject restores revised/base text', async () => {
 test('compare does not mutate input documents or their revisions', async () => {
   const base = withBody('<w:p><w:r><w:t>Base</w:t></w:r></w:p>');
   const revised = withBody('<w:p><w:r><w:t>Revised</w:t></w:r></w:p>');
-  const beforeBaseBytes = await base.toUint8Array();
-  const beforeRevisedBytes = await revised.toUint8Array();
+  // 比部件而不是比 ZIP 字节：JSZip 给每个条目打当前时间（2 秒精度），两次存盘跨过边界时字节就不同，
+  // 这条用例原先因此偶发失败——而它要证明的只是「输入文档没被改」。
+  const partsOf = (doc) => new Map(doc.listParts().map((path) => [path, Buffer.from(doc.getPartBytes(path)).toString('base64')]));
+  const beforeBase = partsOf(base);
+  const beforeRevised = partsOf(revised);
   const beforeBaseRevision = base.revision;
   const beforeRevisedRevision = revised.revision;
   DocxDocument.compare(base, revised, { author: 'Alice' });
   assert.equal(base.revision, beforeBaseRevision);
   assert.equal(revised.revision, beforeRevisedRevision);
-  assert.deepEqual(await base.toUint8Array(), beforeBaseBytes);
-  assert.deepEqual(await revised.toUint8Array(), beforeRevisedBytes);
+  assert.deepEqual(partsOf(base), beforeBase);
+  assert.deepEqual(partsOf(revised), beforeRevised);
 });
 
 test('compare returns a new document whose revision starts at 0', () => {
